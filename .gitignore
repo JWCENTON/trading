@@ -229,7 +229,7 @@ logs/
 *.log
 
 # Local configs / secrets
-.env.*
+.env
 *.pem
 *.key
 *.crt

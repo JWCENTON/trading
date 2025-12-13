@@ -13,7 +13,9 @@ services:
       - "5432:5432"
 
   bot-btc:
-    build: ./bot
+    build: 
+      context: .
+      dockerfile: bot/Dockerfile
     container_name: trading-bot-worker-btc
     restart: always
     depends_on:
@@ -39,7 +41,9 @@ services:
       PAPER_START_USDT: "1000"
 
   bot-eth:
-    build: ./bot
+    build: 
+      context: .
+      dockerfile: bot/Dockerfile
     container_name: trading-bot-worker-eth
     restart: always
     depends_on:
@@ -64,7 +68,9 @@ services:
       PAPER_START_USDT: "1000"
 
   bot-sol:
-    build: ./bot
+    build: 
+      context: .
+      dockerfile: bot/Dockerfile
     container_name: trading-bot-worker-sol
     restart: always
     depends_on:
@@ -89,7 +95,9 @@ services:
       PAPER_START_USDT: "1000"
 
   bot-bnb:
-    build: ./bot
+    build: 
+      context: .
+      dockerfile: bot/Dockerfile
     container_name: trading-bot-worker-bnb
     restart: always
     depends_on:
@@ -115,7 +123,9 @@ services:
       PAPER_START_USDT: "1000"
 
   bot-trend-btc:
-    build: ./bot_trend
+    build: 
+      context: .
+      dockerfile: bot_trend/Dockerfile
     container_name: trading-bot-trend-btc
     restart: always
     depends_on:
@@ -140,7 +150,9 @@ services:
       MAX_POSITION_MINUTES: "30"
 
   bot-trend-eth:
-    build: ./bot_trend
+    build: 
+      context: .
+      dockerfile: bot_trend/Dockerfile
     container_name: trading-bot-trend-eth
     restart: always
     depends_on:
@@ -165,7 +177,9 @@ services:
       MAX_POSITION_MINUTES: "30"
 
   bot-trend-sol:
-    build: ./bot_trend
+    build: 
+      context: .
+      dockerfile: bot_trend/Dockerfile
     container_name: trading-bot-trend-sol
     restart: always
     depends_on:
@@ -190,7 +204,9 @@ services:
       MAX_POSITION_MINUTES: "30"
 
   bot-trend-bnb:
-    build: ./bot_trend
+    build: 
+      context: .
+      dockerfile: bot_trend/Dockerfile
     container_name: trading-bot-trend-bnb
     restart: always
     depends_on:
@@ -215,7 +231,9 @@ services:
       MAX_POSITION_MINUTES: "30"
 
   trading-bot-bbrange-btc:
-    build: ./bot_bbrange
+    build: 
+      context: .
+      dockerfile: bot_bbrange/Dockerfile
     container_name: trading-bot-bbrange-btc
     restart: always
     depends_on:
@@ -243,10 +261,11 @@ services:
       DB_NAME: trading
       DB_USER: botuser
       DB_PASS: botpass
-    command: ["python", "-u", "main.py"]
 
   trading-bot-bbrange-eth:
-    build: ./bot_bbrange
+    build: 
+      context: .
+      dockerfile: bot_bbrange/Dockerfile
     container_name: trading-bot-bbrange-eth
     restart: always
     depends_on:
@@ -274,10 +293,11 @@ services:
       DB_NAME: trading
       DB_USER: botuser
       DB_PASS: botpass
-    command: ["python", "-u", "main.py"]
 
   trading-bot-bbrange-sol:
-    build: ./bot_bbrange
+    build: 
+      context: .
+      dockerfile: bot_bbrange/Dockerfile
     container_name: trading-bot-bbrange-sol
     restart: always
     depends_on:
@@ -305,10 +325,11 @@ services:
       DB_NAME: trading
       DB_USER: botuser
       DB_PASS: botpass
-    command: ["python", "-u", "main.py"]
 
   trading-bot-bbrange-bnb:
-    build: ./bot_bbrange
+    build: 
+      context: .
+      dockerfile: bot_bbrange/Dockerfile
     container_name: trading-bot-bbrange-bnb
     restart: always
     depends_on:
@@ -336,10 +357,11 @@ services:
       DB_NAME: trading
       DB_USER: botuser
       DB_PASS: botpass
-    command: ["python", "-u", "main.py"]
 
   bot-st-btc:
-    build: ./bot_supertrend
+    build: 
+      context: .
+      dockerfile: bot_supertrend/Dockerfile
     container_name: trading-bot-supertrend-btc
     restart: always
     depends_on:
@@ -365,7 +387,9 @@ services:
       ORDER_QTY_BTC: "0.0001"
 
   bot-st-eth:
-    build: ./bot_supertrend
+    build: 
+      context: .
+      dockerfile: bot_supertrend/Dockerfile
     container_name: trading-bot-supertrend-eth
     restart: always
     depends_on:
@@ -390,7 +414,9 @@ services:
       ORDER_QTY_BTC: "0.0001"
 
   bot-st-sol:
-    build: ./bot_supertrend
+    build: 
+      context: .
+      dockerfile: bot_supertrend/Dockerfile
     container_name: trading-bot-supertrend-sol
     restart: always
     depends_on:
@@ -415,7 +441,9 @@ services:
       ORDER_QTY_BTC: "0.0001"
 
   bot-st-bnb:
-    build: ./bot_supertrend
+    build: 
+      context: .
+      dockerfile: bot_supertrend/Dockerfile
     container_name: trading-bot-supertrend-bnb
     restart: always
     depends_on:

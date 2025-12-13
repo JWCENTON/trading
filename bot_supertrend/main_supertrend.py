@@ -23,6 +23,8 @@ DB_PASS = os.environ.get("DB_PASS", "botpass")
 SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
 INTERVAL = os.environ.get("INTERVAL", "1m")
 
+TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE (na razie PAPER)
+
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "SUPER_TREND")
 
 # parametry SuperTrend
@@ -62,6 +64,70 @@ DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
 
 # Ilość na trade (PAPER)
 ORDER_QTY_BTC = float(os.environ.get("ORDER_QTY_BTC", "0.0001"))
+
+# =================
+# Regime
+# =================
+
+from common.db import get_latest_regime
+from datetime import datetime, timezone
+
+REGIME_ENABLED = os.environ.get("REGIME_ENABLED", "0") == "1"
+REGIME_MODE = os.environ.get("REGIME_MODE", "DRY_RUN").strip().upper()  # DRY_RUN | ENFORCE
+REGIME_MAX_AGE_SECONDS = int(os.environ.get("REGIME_MAX_AGE_SECONDS", "180"))
+
+def regime_allows(strategy_name: str, symbol: str, interval: str):
+    """
+    Zwraca: (allow: bool, meta: dict)
+    DRY_RUN: zawsze allow=True, ale meta mówi czy 'would_block'.
+    """
+    if not REGIME_ENABLED:
+        return True, {"enabled": False}
+
+    r = get_latest_regime(symbol, interval)
+    if not r:
+        # fail-open (zależnie od preferencji); na etapie PAPER OK
+        return True, {"enabled": True, "reason": "no_regime"}
+
+    # świeżość
+    ts = r["ts"]
+    if ts is None:
+        return True, {"enabled": True, "reason": "regime_ts_null"}
+
+    now = datetime.now(timezone.utc)
+    age = (now - ts).total_seconds()
+    if age > REGIME_MAX_AGE_SECONDS:
+        return True, {"enabled": True, "reason": f"regime_stale age={age:.0f}s", "regime": r.get("regime")}
+
+    regime = r.get("regime")
+
+    # Polityka blokowania (v1):
+    # - RSI/BBRANGE: blokuj w TREND_UP/TREND_DOWN i SHOCK
+    # - TREND: blokuj w RANGE_* i SHOCK
+    # - SUPER_TREND: blokuj w SHOCK (opcjonalnie też RANGE_LOWVOL, ale zostawmy tylko SHOCK na start)
+    would_block = False
+    why = "ok"
+
+    if strategy_name in ("RSI", "BBRANGE"):
+        if regime in ("TREND_UP", "TREND_DOWN", "SHOCK"):
+            would_block = True
+            why = f"{strategy_name} blocked in {regime}"
+    elif strategy_name in ("TREND",):
+        if regime in ("RANGE_LOWVOL", "RANGE_HIGHVOL", "SHOCK"):
+            would_block = True
+            why = f"TREND blocked in {regime}"
+    elif strategy_name in ("SUPER_TREND", "SUPER_TREND", "ST"):
+        if regime in ("SHOCK",):
+            would_block = True
+            why = f"SUPER_TREND blocked in {regime}"
+
+    # DRY_RUN: nie blokujemy, tylko logujemy
+    if REGIME_MODE == "DRY_RUN":
+        return True, {"enabled": True, "mode": "DRY_RUN", "would_block": would_block, "why": why, **r}
+
+    # ENFORCE: blokujemy jeśli would_block
+    allow = not would_block
+    return allow, {"enabled": True, "mode": "ENFORCE", "would_block": would_block, "why": why, **r}
 
 
 def get_db_conn():
@@ -220,59 +286,6 @@ def init_db():
             supertrend_direction INTEGER,
             UNIQUE(symbol, interval, open_time)
         );
-        """
-    )
-
-    # jeśli tabela była stara – dołóż brakujące kolumny
-    cur.execute(
-        """
-        ALTER TABLE candles
-        ADD COLUMN IF NOT EXISTS atr_14 NUMERIC,
-        ADD COLUMN IF NOT EXISTS supertrend NUMERIC,
-        ADD COLUMN IF NOT EXISTS supertrend_direction INTEGER;
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS simulated_orders (
-            id SERIAL PRIMARY KEY,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            symbol TEXT NOT NULL,
-            interval TEXT NOT NULL,
-            side TEXT NOT NULL,
-            price NUMERIC NOT NULL,
-            quantity_btc NUMERIC NOT NULL,
-            reason TEXT,
-            rsi_14 NUMERIC,
-            ema_21 NUMERIC,
-            candle_open_time TIMESTAMPTZ NOT NULL
-        );
-        """
-    )
-
-    # strategy kolumna + backfill + DB-guard (jak TREND/BBRANGE)
-    cur.execute(
-        """
-        ALTER TABLE simulated_orders
-        ADD COLUMN IF NOT EXISTS strategy TEXT;
-        """
-    )
-
-    cur.execute(
-        """
-        UPDATE simulated_orders
-        SET strategy = %s
-        WHERE strategy IS NULL
-          AND created_at > now() - interval '30 days';
-        """,
-        (STRATEGY_NAME,),
-    )
-
-    cur.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_sim_orders_one_per_candle
-        ON simulated_orders(symbol, interval, strategy, candle_open_time);
         """
     )
 
@@ -872,7 +885,31 @@ def run_strategy():
     open_time, close_price, st_dir_curr, ema_val, rsi_val, atr_val = latest
     price = float(close_price)
 
-    heartbeat({"price": float(price), "open_time": str(open_time)})
+    # --- SAFE conversions for heartbeat (must exist before heartbeat) ---
+    ema_val_f = float(ema_val) if ema_val is not None else None
+    rsi_val_f = float(rsi_val) if rsi_val is not None else None
+
+    st_dir_curr_i = int(st_dir_curr) if st_dir_curr is not None else None
+    st_dir_prev_i = int(prev[2]) if (prev is not None and prev[2] is not None) else None
+
+    atr_pct = float(atr_val) / price * 100.0 if atr_val is not None and price > 0 else None
+
+    allow_hb, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    heartbeat({
+        "price": float(price),
+        "open_time": str(open_time),
+        "st_dir_curr": st_dir_curr_i,
+        "st_dir_prev": st_dir_prev_i,
+        "atr_14": float(atr_val) if atr_val is not None else None,
+        "atr_pct": float(atr_pct) if atr_pct is not None else None,
+        "ema_21": ema_val_f,
+        "rsi_14": rsi_val_f,
+        "regime_enabled": bool(rmeta_hb.get("enabled", False)),
+        "regime": rmeta_hb.get("regime"),
+        "regime_mode": rmeta_hb.get("mode"),
+        "regime_would_block": rmeta_hb.get("would_block"),
+    })
+
 
     mode = get_mode()
     if mode == "HALT":
@@ -1003,6 +1040,24 @@ def run_strategy():
         reason = f"SUPER_TREND flip UP -> DOWN (dir {st_dir_prev} -> {st_dir_curr})"
 
     if decision == "HOLD":
+        return
+    
+    # --- REGIME GATE (ENTRY ONLY) ---
+    allow, rmeta = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+
+    if rmeta.get("mode") == "DRY_RUN" and rmeta.get("would_block"):
+        logging.info(
+            "REGIME_GATE|dry_run would_block|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s",
+            STRATEGY_NAME, SYMBOL, INTERVAL, decision,
+            rmeta.get("regime"), rmeta.get("why"),
+        )
+
+    if not allow:
+        logging.info(
+            "REGIME_GATE|blocked entry|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s|mode=%s",
+            STRATEGY_NAME, SYMBOL, INTERVAL, decision,
+            rmeta.get("regime"), rmeta.get("why"), rmeta.get("mode"),
+        )
         return
 
     # filtr trendu po EMA21

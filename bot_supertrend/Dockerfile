@@ -7,10 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY bot_supertrend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY common /app/common
+COPY bot_supertrend/main_supertrend.py /app/main_supertrend.py
 
-COPY . .
-
-CMD ["python", "main_supertrend.py"]
+CMD ["python", "-u", "main_supertrend.py"]
