@@ -205,3 +205,46 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# --- Trading-bot project extras (Docker/DB/runtime) ---
+
+# Docker volumes / Postgres data (must never be committed)
+db_data/
+pgdata/
+postgres-data/
+**/db_data/
+**/pgdata/
+**/postgres-data/
+
+# Backups / dumps
+backup/
+backups/
+*.sql
+*.dump
+*.bak
+
+# Local runtime logs
+logs/
+**/logs/
+*.log
+
+# Local configs / secrets
+.env.*
+*.pem
+*.key
+*.crt
+secrets/
+**/secrets/
+
+# Frontend
+node_modules/
+**/node_modules/
+dist/
+build/
+.next/
+out/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
