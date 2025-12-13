@@ -468,3 +468,30 @@ services:
       - "3000:80"
     depends_on:
       - api
+
+  regime-worker:
+    build:
+      context: .
+      dockerfile: regime_worker/Dockerfile
+    container_name: trading-regime-worker
+    restart: always
+    depends_on:
+      - db
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: trading
+      DB_USER: botuser
+      DB_PASS: botpass
+
+      REGIME_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"
+      REGIME_INTERVAL: "1m"
+      REGIME_SLEEP_SECONDS: "60"
+      REGIME_LOOKBACK: "${REGIME_LOOKBACK:-200}"
+      REGIME_TREND_EMA_FAST: "${REGIME_TREND_EMA_FAST:-21}"
+      REGIME_TREND_EMA_SLOW: "${REGIME_TREND_EMA_SLOW:-100}"
+      REGIME_VOL_ATR_PERIOD: "${REGIME_VOL_ATR_PERIOD:-14}"
+      REGIME_VOL_THRESHOLD_PCT: "${REGIME_VOL_THRESHOLD_PCT:-0.08}"
+      REGIME_SHOCK_Z: "${REGIME_SHOCK_Z:-3.0}"
+      REGIME_TREND_MIN_STRENGTH_PCT: "${REGIME_TREND_MIN_STRENGTH_PCT:-0.05}"
