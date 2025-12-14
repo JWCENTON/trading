@@ -7,10 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY bot_bbrange/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY common /app/common
+COPY bot_bbrange/main.py /app/main.py
 
-COPY . .
-
-CMD ["python", "main.py"]
+CMD ["python", "-u", "main.py"]

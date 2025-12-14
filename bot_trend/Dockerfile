@@ -7,9 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY bot_trend/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY . .
+COPY common /app/common
+COPY bot_trend/main_trend.py /app/main_trend.py
 
-CMD ["python", "main_trend.py"]
+CMD ["python", "-u", "main_trend.py"]
