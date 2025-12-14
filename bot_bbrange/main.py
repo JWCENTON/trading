@@ -725,8 +725,14 @@ def run_strategy():
     if pd.isna(bb_mid) or pd.isna(bb_upper) or pd.isna(bb_lower) or float(bb_mid) == 0.0:
         logging.info("BBRANGE: Bollinger bands not ready yet (pre-heartbeat).")
         return
-
-    bb_width_pct = (float(bb_upper) - float(bb_lower)) / float(bb_mid)  # fraction, e.g. 0.003
+    
+    bb_width_pct = None
+    if bb_lower is not None and bb_mid is not None and bb_upper is not None:
+        if not pd.isna(bb_lower) and not pd.isna(bb_mid) and not pd.isna(bb_upper):
+            mid = float(bb_mid)
+            if mid != 0:
+                bb_width_pct = (float(bb_upper) - float(bb_lower)) / float(bb_mid)  # fraction, e.g. 0.003
+                
     trend = get_trend(price, ema_val)
 
     allow_hb, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)

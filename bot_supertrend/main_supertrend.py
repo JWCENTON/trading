@@ -889,8 +889,13 @@ def run_strategy():
     ema_val_f = float(ema_val) if ema_val is not None else None
     rsi_val_f = float(rsi_val) if rsi_val is not None else None
 
+    st_dir_prev = None  # default
+
     st_dir_curr_i = int(st_dir_curr) if st_dir_curr is not None else None
     st_dir_prev_i = int(prev[2]) if (prev is not None and prev[2] is not None) else None
+
+    st_dir_prev = st_dir_prev_i if st_dir_prev_i is not None else None
+    st_dir_curr = st_dir_curr_i if st_dir_curr_i is not None else None
 
     atr_pct = float(atr_val) / price * 100.0 if atr_val is not None and price > 0 else None
 
@@ -898,8 +903,8 @@ def run_strategy():
     heartbeat({
         "price": float(price),
         "open_time": str(open_time),
-        "st_dir_curr": st_dir_curr_i,
-        "st_dir_prev": st_dir_prev_i,
+        "st_dir_curr": int(st_dir_curr) if st_dir_curr is not None else None,
+        "st_dir_prev": int(st_dir_prev) if st_dir_prev is not None else None,
         "atr_14": float(atr_val) if atr_val is not None else None,
         "atr_pct": float(atr_pct) if atr_pct is not None else None,
         "ema_21": ema_val_f,
