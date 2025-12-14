@@ -735,7 +735,7 @@ def run_strategy():
 
     trend = get_trend(price, ema_val)
 
-    allow_hb, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    allow, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
     heartbeat({
         "price": float(price),
         "open_time": str(open_time),
@@ -750,6 +750,10 @@ def run_strategy():
         "regime": rmeta_hb.get("regime"),
         "regime_mode": rmeta_hb.get("mode"),
         "regime_would_block": rmeta_hb.get("would_block"),
+        "regime_why": rmeta_hb.get("why"),          
+        "regime_reason": rmeta_hb.get("reason"), 
+        "regime_ts": str(rmeta_hb.get("ts")),
+        "regime_age_s": rmeta_hb.get("age_s"),
     })
 
     mode = get_mode()
