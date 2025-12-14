@@ -23,8 +23,6 @@ DB_PASS = os.environ.get("DB_PASS", "botpass")
 SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
 INTERVAL = os.environ.get("INTERVAL", "1m")
 
-TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE (na razie PAPER)
-
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND")
 TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE
 
@@ -767,7 +765,7 @@ def run_trend_strategy():
 
     logging.info("TREND: price=%.2f ema_fast=%.2f ema_slow=%.2f trend=%s", price, ema_fast, ema_slow, trend)
 
-    allow_hb, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    allow, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
     pos = get_open_position()
     heartbeat({
         "price": float(price),
@@ -780,6 +778,10 @@ def run_trend_strategy():
         "regime": rmeta_hb.get("regime"),
         "regime_mode": rmeta_hb.get("mode"),
         "regime_would_block": rmeta_hb.get("would_block"),
+        "regime_why": rmeta_hb.get("why"),         
+        "regime_reason": rmeta_hb.get("reason"), 
+        "regime_ts": str(rmeta_hb.get("ts")),
+        "regime_age_s": rmeta_hb.get("age_s"),
     })
 
     pos = get_open_position()

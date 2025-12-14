@@ -607,6 +607,10 @@ def run_strategy():
         "regime": rmeta.get("regime"),
         "regime_mode": rmeta.get("mode"),
         "regime_would_block": rmeta.get("would_block"),
+        "regime_why": rmeta.get("why"),          
+        "regime_reason": rmeta.get("reason"), 
+        "regime_ts": str(rmeta.get("ts")),
+        "regime_age_s": rmeta.get("age_s"),
     })
 
     mode = get_mode()

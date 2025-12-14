@@ -725,11 +725,17 @@ def run_strategy():
     if pd.isna(bb_mid) or pd.isna(bb_upper) or pd.isna(bb_lower) or float(bb_mid) == 0.0:
         logging.info("BBRANGE: Bollinger bands not ready yet (pre-heartbeat).")
         return
+    
+    bb_width_pct = None
+    if bb_lower is not None and bb_mid is not None and bb_upper is not None:
+        if not pd.isna(bb_lower) and not pd.isna(bb_mid) and not pd.isna(bb_upper):
+            mid = float(bb_mid)
+            if mid != 0:
+                bb_width_pct = (float(bb_upper) - float(bb_lower)) / float(bb_mid)  # fraction, e.g. 0.003
 
-    bb_width_pct = (float(bb_upper) - float(bb_lower)) / float(bb_mid)  # fraction, e.g. 0.003
     trend = get_trend(price, ema_val)
 
-    allow_hb, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    allow, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
     heartbeat({
         "price": float(price),
         "open_time": str(open_time),
@@ -738,12 +744,16 @@ def run_strategy():
         "bb_lower": float(bb_lower),
         "bb_mid": float(bb_mid),
         "bb_upper": float(bb_upper),
-        "bb_width_pct": float(bb_width_pct),
+        "bb_width_pct": float(bb_width_pct) if bb_width_pct is not None else None,
         "trend": trend,
         "regime_enabled": bool(rmeta_hb.get("enabled", False)),
         "regime": rmeta_hb.get("regime"),
         "regime_mode": rmeta_hb.get("mode"),
         "regime_would_block": rmeta_hb.get("would_block"),
+        "regime_why": rmeta_hb.get("why"),          
+        "regime_reason": rmeta_hb.get("reason"), 
+        "regime_ts": str(rmeta_hb.get("ts")),
+        "regime_age_s": rmeta_hb.get("age_s"),
     })
 
     mode = get_mode()
