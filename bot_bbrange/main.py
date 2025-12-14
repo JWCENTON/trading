@@ -732,7 +732,7 @@ def run_strategy():
             mid = float(bb_mid)
             if mid != 0:
                 bb_width_pct = (float(bb_upper) - float(bb_lower)) / float(bb_mid)  # fraction, e.g. 0.003
-                
+
     trend = get_trend(price, ema_val)
 
     allow_hb, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
@@ -744,7 +744,7 @@ def run_strategy():
         "bb_lower": float(bb_lower),
         "bb_mid": float(bb_mid),
         "bb_upper": float(bb_upper),
-        "bb_width_pct": float(bb_width_pct),
+        "bb_width_pct": float(bb_width_pct) if bb_width_pct is not None else None,
         "trend": trend,
         "regime_enabled": bool(rmeta_hb.get("enabled", False)),
         "regime": rmeta_hb.get("regime"),
