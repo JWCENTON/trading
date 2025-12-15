@@ -47,6 +47,11 @@ export interface PnLSummary {
   pnl_pct: number;
   trades: number;
   history: EquityPoint[];
+  fees_usdt_est?: number;
+  slippage_usdt_est?: number;
+  pnl_net_usdt_est?: number;
+  pnl_net_pct_est?: number;
+  final_balance_net_usdt_est?: number;
 }
 
 export interface RoundtripTrade {
@@ -107,6 +112,52 @@ export interface StrategyMetrics {
 
 export interface AIAnalyzeResponse {
   analysis: string;
+}
+
+export interface WatchdogEvent {
+  id: number;
+  created_at: string;
+  symbol: string;
+  interval?: string | null;
+  strategy?: Strategy | null;
+  severity: string;
+  event: string;
+  details?: any;
+}
+
+export interface WatchdogEventPage {
+  total: number;
+  items: WatchdogEvent[];
+}
+
+export interface RegimePoint {
+  symbol: string;
+  interval: string;
+  ts: string;
+  regime?: string | null;
+  vol_regime?: string | null;
+  trend_dir?: number | null;
+  trend_strength_pct?: number | null;
+  atr_pct?: number | null;
+  shock_z?: number | null;
+}
+
+export async function getRegimeLatest(symbol: SymbolPair = "BTCUSDT", interval="1m") {
+  return (await api.get<RegimePoint>("/regime/latest", { params: { symbol, interval }})).data;
+}
+
+export async function getWatchdogEvents(
+  symbol: SymbolPair = "BTCUSDT",
+  interval = "1m",
+  strategy: Strategy = "RSI",
+  limit = 50,
+  offset = 0
+) {
+  return (
+    await api.get<WatchdogEventPage>("/watchdog/events", {
+      params: { symbol, interval, strategy, limit, offset },
+    })
+  ).data;
 }
 
 // (opcjonalnie, przyda się w App.tsx)

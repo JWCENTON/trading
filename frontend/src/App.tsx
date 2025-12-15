@@ -9,6 +9,10 @@ import {
   type AccountSummary,
   type Strategy,
   type StrategyMetrics,
+  type WatchdogEvent,
+  type RegimePoint,
+  getWatchdogEvents,
+  getRegimeLatest,
   getAccountSummary,
   getSummary,
   getOrders,
@@ -397,6 +401,10 @@ function App() {
   const [ordersPageNum, setOrdersPageNum] = useState(1);
   const ORDERS_PAGE_SIZE = 50;
 
+  const [regime, setRegime] = useState<RegimePoint | null>(null);
+  const [watchdog, setWatchdog] = useState<WatchdogEvent[]>([]);
+  const [watchdogTotal, setWatchdogTotal] = useState(0);
+
   const ordersTotalPages =
     ordersTotal === 0 ? 1 : Math.ceil(ordersTotal / ORDERS_PAGE_SIZE);
   const currentOrdersPage = Math.min(ordersPageNum, ordersTotalPages);
@@ -443,7 +451,7 @@ function App() {
         }
       }
 
-      const [s, oPage, rtPage, acct, pnlResults, metricsResults] =
+      const [s, oPage, rtPage, acct, pnlResults, metricsResults, reg, wd] =
         await Promise.all([
           getSummary(currentSymbol),
           getOrders(
@@ -464,6 +472,10 @@ function App() {
           getAccountSummary(),
           Promise.all(pnlPromises),
           Promise.all(metricsPromises),
+
+          // 🔹 NOWE
+          getRegimeLatest(currentSymbol, "1m"),
+          getWatchdogEvents(currentSymbol, "1m", strategy, 50, 0),
         ]);
 
       setSummary(s);
@@ -472,6 +484,9 @@ function App() {
       setRoundtrips(rtPage.items);
       setLosingTotal(rtPage.total);
       setAccount(acct);
+      setRegime(reg);
+      setWatchdog(wd.items);
+      setWatchdogTotal(wd.total);
 
       const pnlsMap: Record<string, PnLSummary> = {};
       const metricsMap: Record<string, StrategyMetrics> = {};
@@ -1256,6 +1271,132 @@ function App() {
               </div>
             </div>
           )}
+
+          {regime && (
+            <div
+              style={{
+                background: "#111827",
+                padding: "16px",
+                borderRadius: 12,
+                marginBottom: 24,
+                boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+              }}
+            >
+              <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
+                Market regime (latest)
+              </h2>
+
+              <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Regime</div>
+                  <div style={{ fontWeight: 600 }}>{regime.regime ?? "-"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Vol</div>
+                  <div>{regime.vol_regime ?? "-"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Trend dir</div>
+                  <div>
+                    {regime.trend_dir === 1
+                      ? "UP"
+                      : regime.trend_dir === -1
+                      ? "DOWN"
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    Trend strength %
+                  </div>
+                  <div>
+                    {typeof regime.trend_strength_pct === "number"
+                      ? regime.trend_strength_pct.toFixed(3)
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>ATR %</div>
+                  <div>
+                    {typeof regime.atr_pct === "number"
+                      ? regime.atr_pct.toFixed(3)
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Shock z</div>
+                  <div>
+                    {typeof regime.shock_z === "number"
+                      ? regime.shock_z.toFixed(2)
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>TS</div>
+                  <div>{formatDate(regime.ts)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div
+            style={{
+              background: "#020617",
+              padding: "16px",
+              borderRadius: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.7)",
+              marginBottom: 24,
+            }}
+          >
+            <h2 style={{ fontSize: "18px", marginBottom: 12 }}>
+              Watchdog events (latest) — total {watchdogTotal}
+            </h2>
+
+            {watchdog.length === 0 ? (
+              <div style={{ opacity: 0.7 }}>No events.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: 13,
+                  }}
+                >
+                  <thead>
+                    <tr
+                      style={{
+                        textAlign: "left",
+                        borderBottom: "1px solid #1f2937",
+                      }}
+                    >
+                      <th style={{ padding: "6px 8px" }}>Time</th>
+                      <th style={{ padding: "6px 8px" }}>Severity</th>
+                      <th style={{ padding: "6px 8px" }}>Event</th>
+                      <th style={{ padding: "6px 8px" }}>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {watchdog.map((e) => (
+                      <tr
+                        key={e.id}
+                        style={{ borderBottom: "1px solid #111827" }}
+                      >
+                        <td style={{ padding: "6px 8px" }}>
+                          {formatDate(e.created_at)}
+                        </td>
+                        <td style={{ padding: "6px 8px" }}>{e.severity}</td>
+                        <td style={{ padding: "6px 8px" }}>{e.event}</td>
+                        <td style={{ padding: "6px 8px" }}>
+                          {e.details ? JSON.stringify(e.details) : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           <div
             style={{
