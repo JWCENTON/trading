@@ -29,6 +29,7 @@ services:
       DB_PASS: botpass
       SYMBOL: "BTCUSDT"
       STRATEGY_NAME: "RSI"
+      REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       RSI_OVERSOLD: "18"
       RSI_OVERBOUGHT: "82"
@@ -57,6 +58,7 @@ services:
       DB_PASS: botpass
       SYMBOL: "ETHUSDT"
       STRATEGY_NAME: "RSI"
+      REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       RSI_OVERSOLD: "15"
       RSI_OVERBOUGHT: "85"
@@ -84,6 +86,7 @@ services:
       DB_PASS: botpass
       SYMBOL: "SOLUSDT"
       STRATEGY_NAME: "RSI"
+      REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       RSI_OVERSOLD: "22"
       RSI_OVERBOUGHT: "78"
@@ -111,6 +114,7 @@ services:
       DB_PASS: botpass
       SYMBOL: "BNBUSDT"
       STRATEGY_NAME: "RSI"
+      REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       RSI_OVERSOLD: "22"
       RSI_OVERBOUGHT: "78"
@@ -246,6 +250,7 @@ services:
     environment:
       SYMBOL: "BTCUSDT"
       STRATEGY_NAME: "BBRANGE"
+      REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
       STOP_LOSS_PCT: "0.4"
@@ -278,6 +283,7 @@ services:
     environment:
       SYMBOL: "ETHUSDT"
       STRATEGY_NAME: "BBRANGE"
+      REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
       STOP_LOSS_PCT: "0.5"
@@ -310,6 +316,7 @@ services:
     environment:
       SYMBOL: "SOLUSDT"
       STRATEGY_NAME: "BBRANGE"
+      REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
       STOP_LOSS_PCT: "0.6"
@@ -342,6 +349,7 @@ services:
     environment:
       SYMBOL: "BNBUSDT"
       STRATEGY_NAME: "BBRANGE"
+      REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
       STOP_LOSS_PCT: "0.5"
