@@ -24,6 +24,9 @@ DB_USER = os.environ.get("DB_USER", "botuser")
 DB_PASS = os.environ.get("DB_PASS", "botpass")
 PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "1000"))
 
+FEE_RATE = float(os.environ.get("PAPER_FEE_RATE", "0.0004"))       # 0.04% (taker-ish)
+SLIPPAGE_RATE = float(os.environ.get("PAPER_SLIPPAGE_RATE", "0.0002"))  # 0.02%
+
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -136,6 +139,9 @@ class CandleSummary(BaseModel):
     close: float
     ema_21: Optional[float]
     rsi_14: Optional[float]
+    atr_14: Optional[float] = None
+    supertrend: Optional[float] = None
+    supertrend_direction: Optional[int] = None
 
 
 class SimulatedOrder(BaseModel):
@@ -164,6 +170,11 @@ class PnLSummary(BaseModel):
     pnl_pct: float
     trades: int
     history: List[EquityPoint]
+    fees_usdt_est: float = 0.0
+    slippage_usdt_est: float = 0.0
+    pnl_net_usdt_est: float = 0.0
+    pnl_net_pct_est: float = 0.0
+    final_balance_net_usdt_est: float = 0.0
 
 
 class TradeWithPnl(BaseModel):
@@ -235,12 +246,53 @@ class StrategyMetrics(BaseModel):
     z_score: Optional[float]
 
 
+class WatchdogEvent(BaseModel):
+    id: int
+    created_at: datetime
+    symbol: str
+    interval: Optional[str] = None
+    strategy: Optional[str] = None
+    severity: str
+    event: str
+    details: Optional[dict] = None
+
+
+class WatchdogEventPage(BaseModel):
+    total: int
+    items: List[WatchdogEvent]
+
+
 class AIAnalyzeRequest(BaseModel):
     prompt: str
 
 
 class AIAnalyzeResponse(BaseModel):
     analysis: str
+
+
+class StrategyLeaderboardRow(BaseModel):
+    symbol: str
+    interval: str
+    strategy: str
+    trades: int
+    winrate_pct: float
+    total_pnl_usdt: float
+    max_drawdown_pct: float
+    sharpe_ratio: Optional[float]
+    z_score: Optional[float]
+    score: float
+
+
+class RegimePoint(BaseModel):
+    symbol: str
+    interval: str
+    ts: datetime
+    regime: Optional[str] = None
+    vol_regime: Optional[str] = None
+    trend_dir: Optional[int] = None
+    trend_strength_pct: Optional[float] = None
+    atr_pct: Optional[float] = None
+    shock_z: Optional[float] = None
 
 
 def compute_max_drawdown(equity_curve: List[float]) -> float:
@@ -983,6 +1035,8 @@ def get_simulated_pnl(
     start_balance = PAPER_START_USDT
     cash = start_balance
     btc = 0.0
+    fees_est = 0.0
+    slip_est = 0.0
     history: List[EquityPoint] = []
 
     if not rows:
@@ -1002,9 +1056,15 @@ def get_simulated_pnl(
         if side.upper() == "BUY":
             cash -= qty_f * price_f
             btc += qty_f
+            notional = abs(qty_f * price_f)
+            fees_est += notional * FEE_RATE
+            slip_est += notional * SLIPPAGE_RATE
         elif side.upper() == "SELL":
             cash += qty_f * price_f
             btc -= qty_f
+            notional = abs(qty_f * price_f)
+            fees_est += notional * FEE_RATE
+            slip_est += notional * SLIPPAGE_RATE
 
         equity = cash + btc * price_f
         history.append(EquityPoint(time=created_at, equity_usdt=equity))
@@ -1012,6 +1072,9 @@ def get_simulated_pnl(
     final_equity = history[-1].equity_usdt
     pnl_abs = final_equity - start_balance
     pnl_pct = (pnl_abs / start_balance) * 100.0 if start_balance > 0 else 0.0
+    pnl_net = pnl_abs - fees_est - slip_est
+    final_net = start_balance + pnl_net
+    pnl_net_pct = (pnl_net / start_balance) * 100.0 if start_balance > 0 else 0.0
 
     history_trimmed = history[-50:]
 
@@ -1022,6 +1085,11 @@ def get_simulated_pnl(
         pnl_pct=pnl_pct,
         trades=len(rows),
         history=history_trimmed,
+        fees_usdt_est=fees_est,
+        slippage_usdt_est=slip_est,
+        pnl_net_usdt_est=pnl_net,
+        pnl_net_pct_est=pnl_net_pct,
+        final_balance_net_usdt_est=final_net,
     )
 
 
@@ -1131,14 +1199,15 @@ def get_summary(
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """
-        SELECT symbol, interval, open_time, close, ema_21, rsi_14
-        FROM candles
-        WHERE symbol = %s AND interval = %s
-        ORDER BY open_time DESC
-        LIMIT 1
-        """,
-        (symbol, interval),
+    """
+    SELECT symbol, interval, open_time, close, ema_21, rsi_14,
+           atr_14, supertrend, supertrend_direction
+    FROM candles
+    WHERE symbol = %s AND interval = %s
+    ORDER BY open_time DESC
+    LIMIT 1
+    """,
+    (symbol, interval),
     )
     row = cur.fetchone()
     cur.close()
@@ -1154,6 +1223,9 @@ def get_summary(
         close=float(row[3]),
         ema_21=float(row[4]) if row[4] is not None else None,
         rsi_14=float(row[5]) if row[5] is not None else None,
+        atr_14=float(row[6]) if row[6] is not None else None,
+        supertrend=float(row[7]) if row[7] is not None else None,
+        supertrend_direction=int(row[8]) if row[8] is not None else None,
     )
 
 
@@ -1239,3 +1311,115 @@ def analyze_strategy_with_ai(req: AIAnalyzeRequest):
         raise HTTPException(status_code=500, detail=f"OpenAI error: {e}")
 
     return AIAnalyzeResponse(analysis=response.output_text)
+
+
+@app.get("/watchdog/events", response_model=WatchdogEventPage)
+def get_watchdog_events(
+    symbol: str = Query("BTCUSDT"),
+    interval: str = Query("1m"),
+    strategy: str = Query("RSI"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM watchdog_events
+        WHERE symbol = %s AND interval = %s AND strategy = %s
+        """,
+        (symbol, interval, strategy),
+    )
+    total = cur.fetchone()[0]
+
+    cur.execute(
+        """
+        SELECT id, created_at, symbol, interval, strategy, severity, event, details
+        FROM watchdog_events
+        WHERE symbol = %s AND interval = %s AND strategy = %s
+        ORDER BY created_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        (symbol, interval, strategy, limit, offset),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    items = []
+    for r in rows:
+        items.append(
+            WatchdogEvent(
+                id=r[0],
+                created_at=r[1],
+                symbol=r[2],
+                interval=r[3],
+                strategy=r[4],
+                severity=r[5],
+                event=r[6],
+                details=r[7] if r[7] is not None else None,
+            )
+        )
+
+    return WatchdogEventPage(total=total, items=items)
+
+
+@app.get("/regime/latest", response_model=RegimePoint)
+def get_regime_latest(symbol: str = Query("BTCUSDT"), interval: str = Query("1m")):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT symbol, interval, ts, regime, vol_regime, trend_dir,
+               trend_strength_pct, atr_pct, shock_z
+        FROM market_regime
+        WHERE symbol=%s AND interval=%s
+        ORDER BY ts DESC
+        LIMIT 1
+        """,
+        (symbol, interval),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="No regime data")
+    return RegimePoint(
+        symbol=row[0], interval=row[1], ts=row[2],
+        regime=row[3], vol_regime=row[4], trend_dir=row[5],
+        trend_strength_pct=row[6], atr_pct=row[7], shock_z=row[8],
+    )
+
+
+@app.get("/regime/history", response_model=List[RegimePoint])
+def get_regime_history(
+    symbol: str = Query("BTCUSDT"),
+    interval: str = Query("1m"),
+    limit: int = Query(200, ge=1, le=5000),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT symbol, interval, ts, regime, vol_regime, trend_dir,
+               trend_strength_pct, atr_pct, shock_z
+        FROM market_regime
+        WHERE symbol=%s AND interval=%s
+        ORDER BY ts DESC
+        LIMIT %s
+        """,
+        (symbol, interval, limit),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        RegimePoint(
+            symbol=r[0], interval=r[1], ts=r[2],
+            regime=r[3], vol_regime=r[4], trend_dir=r[5],
+            trend_strength_pct=r[6], atr_pct=r[7], shock_z=r[8],
+        )
+        for r in rows
+    ]

@@ -9,6 +9,10 @@ import {
   type AccountSummary,
   type Strategy,
   type StrategyMetrics,
+  type WatchdogEvent,
+  type RegimePoint,
+  getWatchdogEvents,
+  getRegimeLatest,
   getAccountSummary,
   getSummary,
   getOrders,
@@ -21,6 +25,24 @@ import {
 
 function formatDate(d: string) {
   return new Date(d).toLocaleString();
+}
+
+function getPnlPrimary(p: PnLSummary) {
+  const hasNet =
+    typeof p.pnl_net_usdt_est === "number" &&
+    typeof p.pnl_net_pct_est === "number" &&
+    typeof p.final_balance_net_usdt_est === "number";
+
+  return {
+    hasNet,
+    pnlUsdt: hasNet ? (p.pnl_net_usdt_est as number) : p.pnl_usdt,
+    pnlPct: hasNet ? (p.pnl_net_pct_est as number) : p.pnl_pct,
+    finalBalance: hasNet
+      ? (p.final_balance_net_usdt_est as number)
+      : p.final_balance_usdt,
+    fees: p.fees_usdt_est ?? 0,
+    slippage: p.slippage_usdt_est ?? 0,
+  };
 }
 
 function EquityChart({ history }: { history: EquityPoint[] }) {
@@ -397,6 +419,10 @@ function App() {
   const [ordersPageNum, setOrdersPageNum] = useState(1);
   const ORDERS_PAGE_SIZE = 50;
 
+  const [regime, setRegime] = useState<RegimePoint | null>(null);
+  const [watchdog, setWatchdog] = useState<WatchdogEvent[]>([]);
+  const [watchdogTotal, setWatchdogTotal] = useState(0);
+
   const ordersTotalPages =
     ordersTotal === 0 ? 1 : Math.ceil(ordersTotal / ORDERS_PAGE_SIZE);
   const currentOrdersPage = Math.min(ordersPageNum, ordersTotalPages);
@@ -443,7 +469,7 @@ function App() {
         }
       }
 
-      const [s, oPage, rtPage, acct, pnlResults, metricsResults] =
+      const [s, oPage, rtPage, acct, pnlResults, metricsResults, reg, wd] =
         await Promise.all([
           getSummary(currentSymbol),
           getOrders(
@@ -464,6 +490,10 @@ function App() {
           getAccountSummary(),
           Promise.all(pnlPromises),
           Promise.all(metricsPromises),
+
+          // 🔹 NOWE
+          getRegimeLatest(currentSymbol, "1m"),
+          getWatchdogEvents(currentSymbol, "1m", strategy, 50, 0),
         ]);
 
       setSummary(s);
@@ -472,6 +502,9 @@ function App() {
       setRoundtrips(rtPage.items);
       setLosingTotal(rtPage.total);
       setAccount(acct);
+      setRegime(reg);
+      setWatchdog(wd.items);
+      setWatchdogTotal(wd.total);
 
       const pnlsMap: Record<string, PnLSummary> = {};
       const metricsMap: Record<string, StrategyMetrics> = {};
@@ -496,10 +529,7 @@ function App() {
           (sum, p) => sum + p.start_balance_usdt,
           0
         );
-        const final = parts.reduce(
-          (sum, p) => sum + p.final_balance_usdt,
-          0
-        );
+        const final = parts.reduce((sum, p) => sum + getPnlPrimary(p).finalBalance, 0);          
         const pnlUsdt = final - start;
         const pnlPct = start > 0 ? (pnlUsdt / start) * 100 : 0;
         const tradesTotal = parts.reduce((sum, p) => sum + p.trades, 0);
@@ -563,10 +593,10 @@ function App() {
       (sum, p) => sum + p.start_balance_usdt,
       0
     );
-    const final = allPnLValues.reduce(
-      (sum, p) => sum + p.final_balance_usdt,
-      0
-    );
+    const final = allPnLValues.reduce((sum, p) => {
+      const prim = getPnlPrimary(p);
+      return sum + prim.finalBalance;
+    }, 0);
     const pnlUsdt = final - start;
     const pnlPct = start > 0 ? (pnlUsdt / start) * 100 : 0;
     const tradesTotal = allPnLValues.reduce((sum, p) => sum + p.trades, 0);
@@ -606,6 +636,8 @@ function App() {
     };
   }
 
+  const feesTotal = allPnLValues.reduce((sum, p) => sum + (p.fees_usdt_est ?? 0), 0);
+  const slipTotal = allPnLValues.reduce((sum, p) => sum + (p.slippage_usdt_est ?? 0), 0);
   const currentKey = `${symbol}-${strategy}`;
   const currentMetrics: StrategyMetrics | null = metrics[currentKey] ?? null;
 
@@ -885,6 +917,14 @@ function App() {
                     Trades (total)
                   </div>
                   <div>{globalPnL.trades}</div>
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>Fees (est.)</div>
+                    <div>{feesTotal.toFixed(2)} USDT</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>Slippage (est.)</div>
+                    <div>{slipTotal.toFixed(2)} USDT</div>
+                  </div>
                 </div>
               </div>
               <EquityChart history={globalPnL.history} />
@@ -936,6 +976,7 @@ function App() {
                     ALL_STRATEGIES.map((st) => {
                       const key = `${sym}-${st}`;
                       const stats = allPnL[key];
+                      const sPrim = stats ? getPnlPrimary(stats) : null;
                       const m = metrics[key];
 
                       return (
@@ -955,23 +996,23 @@ function App() {
                                 {stats.start_balance_usdt.toFixed(2)}
                               </td>
                               <td style={{ padding: "6px 8px" }}>
-                                {stats.final_balance_usdt.toFixed(2)}
+                                {sPrim ? sPrim.finalBalance.toFixed(2) : "-"}
                               </td>
+
                               <td
                                 style={{
                                   padding: "6px 8px",
-                                  color:
-                                    stats.pnl_usdt >= 0
-                                      ? "#22c55e"
-                                      : "#ef4444",
+                                  color: sPrim && sPrim.pnlUsdt >= 0 ? "#22c55e" : "#ef4444",
                                   fontWeight: 600,
                                 }}
                               >
-                                {stats.pnl_usdt.toFixed(2)}
+                                {sPrim ? sPrim.pnlUsdt.toFixed(2) : "-"}
                               </td>
+
                               <td style={{ padding: "6px 8px" }}>
-                                {stats.pnl_pct.toFixed(2)}%
+                                {sPrim ? sPrim.pnlPct.toFixed(2) : "-"}%
                               </td>
+
                               <td style={{ padding: "6px 8px" }}>
                                 {stats.trades}
                               </td>
@@ -1076,94 +1117,107 @@ function App() {
             </div>
           )}
 
-          {pnl && (
-            <div
-              style={{
-                background: "#111827",
-                padding: "16px",
-                borderRadius: 12,
-                marginBottom: 24,
-                boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-              }}
-            >
-              <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
-                Virtual account PnL ({symbol.replace("USDT", "")},{" "}
-                {strategy})
-              </h2>
-              <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>
-                    Start balance
+          {pnl && (() => {
+            const pPrim = getPnlPrimary(pnl);
+
+            return (
+              <div
+                style={{
+                  background: "#111827",
+                  padding: "16px",
+                  borderRadius: 12,
+                  marginBottom: 24,
+                  boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+                }}
+              >
+                <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
+                  Virtual account PnL ({symbol.replace("USDT", "")}, {strategy})
+                </h2>
+
+                <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>Start balance</div>
+                    <div>{pnl.start_balance_usdt.toFixed(2)} USDT</div>
                   </div>
-                  <div>{pnl.start_balance_usdt.toFixed(2)} USDT</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>
-                    Current balance
+
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>
+                      Current balance{pPrim.hasNet ? " (NET est.)" : ""}
+                    </div>
+                    <div>{pPrim.finalBalance.toFixed(2)} USDT</div>
                   </div>
-                  <div>{pnl.final_balance_usdt.toFixed(2)} USDT</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>PnL</div>
-                  <div
-                    style={{
-                      color: pnl.pnl_usdt >= 0 ? "#22c55e" : "#ef4444",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {pnl.pnl_usdt.toFixed(2)} USDT (
-                    {pnl.pnl_pct.toFixed(2)}%)
+
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>
+                      PnL{pPrim.hasNet ? " (NET est.)" : ""}
+                    </div>
+                    <div
+                      style={{
+                        color: pPrim.pnlUsdt >= 0 ? "#22c55e" : "#ef4444",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {pPrim.pnlUsdt.toFixed(2)} USDT ({pPrim.pnlPct.toFixed(2)}%)
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>Trades</div>
-                  <div>{pnl.trades}</div>
+
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>Trades</div>
+                    <div>{pnl.trades}</div>
+                  </div>
+
+                  {pPrim.hasNet && (
+                    <>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Fees (est.)</div>
+                        <div>{pPrim.fees.toFixed(2)} USDT</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Slippage (est.)</div>
+                        <div>{pPrim.slippage.toFixed(2)} USDT</div>
+                      </div>
+                    </>
+                  )}
+
+                  {currentMetrics && (
+                    <>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Winrate</div>
+                        <div>{currentMetrics.winrate_pct.toFixed(1)}%</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Max drawdown</div>
+                        <div>-{currentMetrics.max_drawdown_pct.toFixed(2)}%</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Sharpe</div>
+                        <div>
+                          {currentMetrics.sharpe_ratio !== null
+                            ? currentMetrics.sharpe_ratio.toFixed(2)
+                            : "-"}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>Z-score (vs 50%)</div>
+                        <div>
+                          {currentMetrics.z_score !== null
+                            ? currentMetrics.z_score.toFixed(2)
+                            : "-"}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
 
-                {currentMetrics && (
-                  <>
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Winrate
-                      </div>
-                      <div>
-                        {currentMetrics.winrate_pct.toFixed(1)}%
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Max drawdown
-                      </div>
-                      <div>
-                        -{currentMetrics.max_drawdown_pct.toFixed(2)}%
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Sharpe
-                      </div>
-                      <div>
-                        {currentMetrics.sharpe_ratio !== null
-                          ? currentMetrics.sharpe_ratio.toFixed(2)
-                          : "-"}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Z-score (vs 50%)
-                      </div>
-                      <div>
-                        {currentMetrics.z_score !== null
-                          ? currentMetrics.z_score.toFixed(2)
-                          : "-"}
-                      </div>
-                    </div>
-                  </>
+                <EquityChart history={pnl.history} />
+                {pPrim.hasNet && (
+                  <div style={{ marginTop: 6, fontSize: 11, opacity: 0.65 }}>
+                    Note: equity chart is gross; headline values are NET (est.).
+                  </div>
                 )}
               </div>
-              <EquityChart history={pnl.history} />
-            </div>
-          )}
+            );
+          })()}
 
           {summary && (
             <div
@@ -1256,6 +1310,132 @@ function App() {
               </div>
             </div>
           )}
+
+          {regime && (
+            <div
+              style={{
+                background: "#111827",
+                padding: "16px",
+                borderRadius: 12,
+                marginBottom: 24,
+                boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+              }}
+            >
+              <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
+                Market regime (latest)
+              </h2>
+
+              <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Regime</div>
+                  <div style={{ fontWeight: 600 }}>{regime.regime ?? "-"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Vol</div>
+                  <div>{regime.vol_regime ?? "-"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Trend dir</div>
+                  <div>
+                    {regime.trend_dir === 1
+                      ? "UP"
+                      : regime.trend_dir === -1
+                      ? "DOWN"
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    Trend strength %
+                  </div>
+                  <div>
+                    {typeof regime.trend_strength_pct === "number"
+                      ? regime.trend_strength_pct.toFixed(3)
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>ATR %</div>
+                  <div>
+                    {typeof regime.atr_pct === "number"
+                      ? regime.atr_pct.toFixed(3)
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Shock z</div>
+                  <div>
+                    {typeof regime.shock_z === "number"
+                      ? regime.shock_z.toFixed(2)
+                      : "-"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>TS</div>
+                  <div>{formatDate(regime.ts)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div
+            style={{
+              background: "#020617",
+              padding: "16px",
+              borderRadius: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.7)",
+              marginBottom: 24,
+            }}
+          >
+            <h2 style={{ fontSize: "18px", marginBottom: 12 }}>
+              Watchdog events (latest) — total {watchdogTotal}
+            </h2>
+
+            {watchdog.length === 0 ? (
+              <div style={{ opacity: 0.7 }}>No events.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: 13,
+                  }}
+                >
+                  <thead>
+                    <tr
+                      style={{
+                        textAlign: "left",
+                        borderBottom: "1px solid #1f2937",
+                      }}
+                    >
+                      <th style={{ padding: "6px 8px" }}>Time</th>
+                      <th style={{ padding: "6px 8px" }}>Severity</th>
+                      <th style={{ padding: "6px 8px" }}>Event</th>
+                      <th style={{ padding: "6px 8px" }}>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {watchdog.map((e) => (
+                      <tr
+                        key={e.id}
+                        style={{ borderBottom: "1px solid #111827" }}
+                      >
+                        <td style={{ padding: "6px 8px" }}>
+                          {formatDate(e.created_at)}
+                        </td>
+                        <td style={{ padding: "6px 8px" }}>{e.severity}</td>
+                        <td style={{ padding: "6px 8px" }}>{e.event}</td>
+                        <td style={{ padding: "6px 8px" }}>
+                          {e.details ? JSON.stringify(e.details) : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           <div
             style={{

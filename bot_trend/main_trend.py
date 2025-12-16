@@ -96,7 +96,7 @@ def regime_allows(strategy_name: str, symbol: str, interval: str):
     now = datetime.now(timezone.utc)
     age = (now - ts).total_seconds()
     if age > REGIME_MAX_AGE_SECONDS:
-        return True, {"enabled": True, "reason": f"regime_stale age={age:.0f}s", "regime": r.get("regime")}
+        return True, {"enabled": True, "reason": f"regime_stale age={age:.0f}s", "age_s": age, "regime": r.get("regime")}
 
     regime = r.get("regime")
 
@@ -122,11 +122,11 @@ def regime_allows(strategy_name: str, symbol: str, interval: str):
 
     # DRY_RUN: nie blokujemy, tylko logujemy
     if REGIME_MODE == "DRY_RUN":
-        return True, {"enabled": True, "mode": "DRY_RUN", "would_block": would_block, "why": why, **r}
+        return True, {"enabled": True, "mode": "DRY_RUN", "would_block": would_block, "why": why, **r, "age_s": age}
 
     # ENFORCE: blokujemy jeśli would_block
     allow = not would_block
-    return allow, {"enabled": True, "mode": "ENFORCE", "would_block": would_block, "why": why, **r}
+    return allow, {"enabled": True, "mode": "ENFORCE", "would_block": would_block, "why": why, **r, "age_s": age}
 
 
 def get_db_conn():
@@ -150,6 +150,63 @@ def heartbeat(info: dict):
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
         (SYMBOL, STRATEGY_NAME, json.dumps(info)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def log_regime_gate_event(
+    symbol: str,
+    interval: str,
+    strategy: str,
+    decision: str,
+    allow: bool,
+    rmeta: dict,
+    extra_meta: dict = None,
+):
+    """
+    Zapisuje event tylko gdy:
+    - ENFORCE blokuje (allow=False)
+    - lub DRY_RUN mówi would_block=True
+    """
+    if not rmeta:
+        return
+
+    mode = rmeta.get("mode")
+    would_block = rmeta.get("would_block", False)
+
+    should_log = (allow is False) or (mode == "DRY_RUN" and would_block)
+    if not should_log:
+        return
+
+    meta = {}
+    if isinstance(rmeta, dict):
+        meta["rmeta"] = rmeta
+    if extra_meta:
+        meta.update(extra_meta)
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO regime_gate_events
+          (symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
+        VALUES
+          (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
+        """,
+        (
+            symbol,
+            interval,
+            strategy,
+            decision,
+            bool(allow),
+            rmeta.get("regime"),
+            mode,
+            bool(would_block) if would_block is not None else None,
+            rmeta.get("why"),
+            json.dumps(meta),
+        ),
     )
     conn.commit()
     cur.close()
@@ -765,7 +822,7 @@ def run_trend_strategy():
 
     logging.info("TREND: price=%.2f ema_fast=%.2f ema_slow=%.2f trend=%s", price, ema_fast, ema_slow, trend)
 
-    allow, rmeta_hb = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    allow_gate, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
     pos = get_open_position()
     heartbeat({
         "price": float(price),
@@ -774,14 +831,14 @@ def run_trend_strategy():
         "ema_fast": float(ema_fast),
         "ema_slow": float(ema_slow),
         "has_position": bool(pos is not None),
-        "regime_enabled": bool(rmeta_hb.get("enabled", False)),
-        "regime": rmeta_hb.get("regime"),
-        "regime_mode": rmeta_hb.get("mode"),
-        "regime_would_block": rmeta_hb.get("would_block"),
-        "regime_why": rmeta_hb.get("why"),         
-        "regime_reason": rmeta_hb.get("reason"), 
-        "regime_ts": str(rmeta_hb.get("ts")),
-        "regime_age_s": rmeta_hb.get("age_s"),
+        "regime_enabled": bool(rmeta_gate.get("enabled", False)),
+        "regime": rmeta_gate.get("regime"),
+        "regime_mode": rmeta_gate.get("mode"),
+        "regime_would_block": rmeta_gate.get("would_block"),
+        "regime_why": rmeta_gate.get("why"),         
+        "regime_reason": rmeta_gate.get("reason"), 
+        "regime_ts": str(rmeta_gate.get("ts")),
+        "regime_age_s": rmeta_gate.get("age_s"),
     })
 
     pos = get_open_position()
@@ -922,21 +979,36 @@ def run_trend_strategy():
         logging.info("TREND: no entry signal (trend=%s).", trend)
         return
     
-        # --- REGIME GATE (ENTRY ONLY) ---
-    allow, rmeta = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    # --- REGIME GATE (ENTRY ONLY) ---
+    # logujemy zdarzenie (DRY_RUN would_block albo ENFORCE block)
+    log_regime_gate_event(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision=decision,
+        allow=allow_gate,
+        rmeta=rmeta_gate,
+        extra_meta={
+            "price": float(price),
+            "ema_fast": float(ema_fast),
+            "ema_slow": float(ema_slow),
+            "trend": trend,
+            "open_time": str(open_time),
+        },
+    )
 
-    if rmeta.get("mode") == "DRY_RUN" and rmeta.get("would_block"):
+    if rmeta_gate.get("mode") == "DRY_RUN" and rmeta_gate.get("would_block"):
         logging.info(
             "REGIME_GATE|dry_run would_block|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s",
             STRATEGY_NAME, SYMBOL, INTERVAL, decision,
-            rmeta.get("regime"), rmeta.get("why"),
+            rmeta_gate.get("regime"), rmeta_gate.get("why"),
         )
 
-    if not allow:
+    if not allow_gate:
         logging.info(
             "REGIME_GATE|blocked entry|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s|mode=%s",
             STRATEGY_NAME, SYMBOL, INTERVAL, decision,
-            rmeta.get("regime"), rmeta.get("why"), rmeta.get("mode"),
+            rmeta_gate.get("regime"), rmeta_gate.get("why"), rmeta_gate.get("mode"),
         )
         return
 
