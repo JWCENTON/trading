@@ -230,6 +230,9 @@ logs/
 
 # Local configs / secrets
 .env
+.env.old
+.env.paper
+.env.live
 *.pem
 *.key
 *.crt

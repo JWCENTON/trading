@@ -38,6 +38,11 @@ INTERNAL_API_BASE = os.environ.get("INTERNAL_API_BASE", "http://127.0.0.1:8000")
 ALL_SYMBOLS: list[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 ALL_STRATEGIES: list[str] = ["RSI", "TREND", "BBRANGE", "SUPER_TREND"]
 
+ALLOWED_ORIGINS = [
+    "http://192.168.101.10:3001",
+    "http://localhost:3001",
+]
+
 # Uwaga: tu mają być tylko paramy, które realnie chcesz pozwolić AI zmieniać.
 ALLOWED_PARAMS: dict[str, set[str]] = {
     "RSI": {
@@ -108,7 +113,7 @@ app = FastAPI(title="Trading Bot API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1047,6 +1052,11 @@ def get_simulated_pnl(
             pnl_pct=0.0,
             trades=0,
             history=[],
+            fees_usdt_est=0.0,
+            slippage_usdt_est=0.0,
+            pnl_net_usdt_est=0.0,
+            pnl_net_pct_est=0.0,
+            final_balance_net_usdt_est=start_balance,
         )
 
     for created_at, side, price, qty_btc in rows:

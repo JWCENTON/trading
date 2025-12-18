@@ -1,10 +1,18 @@
 import axios from "axios";
 
+function getApiBaseUrl() {
+  const w = window as any;
+  return (
+    w?.__ENV__?.VITE_API_BASE_URL ||
+    import.meta.env.VITE_API_BASE_URL ||
+    "http://localhost:8001"
+  );
+}
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL,
+  baseURL: getApiBaseUrl(),
 });
 
-// 🔹 dodaliśmy SUPER_TREND
 export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPER_TREND";
 
 export interface CandleSummary {

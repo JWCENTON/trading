@@ -3,17 +3,32 @@ services:
     image: postgres:16
     container_name: trading-db
     restart: always
+    env_file: .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-botuser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpass}
-      POSTGRES_DB: ${POSTGRES_DB:-trading}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ./db_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
 
+  db_live:
+    image: postgres:16
+    container_name: trading-db-live
+    restart: always
+    env_file: .env.live
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./db_live_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
   bot-btc:
-    build: 
+    build:
       context: .
       dockerfile: bot/Dockerfile
     container_name: trading-bot-worker-btc
@@ -22,11 +37,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "BTCUSDT"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
@@ -39,7 +49,7 @@ services:
       MAX_POSITION_MINUTES: "60"
       DAILY_MAX_LOSS_PCT: "0.5"
       DISABLE_HOURS: "7,17"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
 
   bot-eth:
     build: 
@@ -51,11 +61,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "ETHUSDT"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
@@ -67,7 +72,7 @@ services:
       TAKE_PROFIT_PCT: "1.8"
       MAX_POSITION_MINUTES: "45"
       DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
 
   bot-sol:
     build: 
@@ -79,11 +84,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "SOLUSDT"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
@@ -95,7 +95,7 @@ services:
       TAKE_PROFIT_PCT: "1.6"
       MAX_POSITION_MINUTES: "60"
       DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
 
   bot-bnb:
     build: 
@@ -107,11 +107,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "BNBUSDT"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
@@ -124,7 +119,7 @@ services:
       MAX_POSITION_MINUTES: "60"
       DAILY_MAX_LOSS_PCT: "0.5"
       DISABLE_HOURS: "7,17"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
 
   bot-trend-btc:
     build: 
@@ -136,15 +131,10 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "BTCUSDT"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
       EMA_FAST: "21"
       EMA_SLOW: "50"
@@ -164,15 +154,10 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "ETHUSDT"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
       EMA_FAST: "21"
       EMA_SLOW: "50"
@@ -192,15 +177,10 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "SOLUSDT"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
       EMA_FAST: "21"
       EMA_SLOW: "50"
@@ -220,15 +200,10 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "BNBUSDT"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
       EMA_FAST: "21"
       EMA_SLOW: "50"
@@ -265,11 +240,6 @@ services:
       RSI_SHORT_MIN: "55"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
 
   trading-bot-bbrange-eth:
     build: 
@@ -298,11 +268,6 @@ services:
       RSI_SHORT_MIN: "55"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
 
   trading-bot-bbrange-sol:
     build: 
@@ -331,11 +296,6 @@ services:
       RSI_SHORT_MIN: "60"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
 
   trading-bot-bbrange-bnb:
     build: 
@@ -364,11 +324,6 @@ services:
       RSI_SHORT_MIN: "60"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
 
   bot-st-btc:
     build: 
@@ -380,11 +335,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "BTCUSDT"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
@@ -395,7 +345,7 @@ services:
       TAKE_PROFIT_PCT: "2.0"
       MAX_POSITION_MINUTES: "90"
       DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       # jeśli używasz workera z ORDER_QTY_BTC:
       ORDER_QTY_BTC: "0.0001"
 
@@ -409,11 +359,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "ETHUSDT"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
@@ -424,7 +369,7 @@ services:
       TAKE_PROFIT_PCT: "1.8"
       MAX_POSITION_MINUTES: "90"
       DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
 
   bot-st-sol:
@@ -437,11 +382,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "SOLUSDT"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
@@ -452,7 +392,7 @@ services:
       TAKE_PROFIT_PCT: "2.5"
       MAX_POSITION_MINUTES: "90"
       DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
 
   bot-st-bnb:
@@ -465,11 +405,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
       SYMBOL: "BNBUSDT"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
@@ -480,7 +415,7 @@ services:
       TAKE_PROFIT_PCT: "1.8"
       MAX_POSITION_MINUTES: "90"
       DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "1000"
+      PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
 
   api:
@@ -491,18 +426,14 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
-      PAPER_START_USDT: "1000"
-      AI_TUNE_INTERVAL_MINUTES: "120"
+      PAPER_START_USDT: "100"
+      AI_TUNE_INTERVAL_MINUTES: "1440"
       AI_AUTO_APPLY: "true"
       INTERNAL_API_BASE: "http://127.0.0.1:8000"
       OPENAI_MODEL: "gpt-4.1-mini"
     ports:
       - "8000:8000"
+
 
   frontend:
     build: ./frontend
@@ -523,12 +454,6 @@ services:
       - db
     env_file: .env
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: trading
-      DB_USER: botuser
-      DB_PASS: botpass
-
       REGIME_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"
       REGIME_INTERVAL: "1m"
       REGIME_SLEEP_SECONDS: "60"

@@ -9,6 +9,8 @@ import psycopg2
 from psycopg2.extras import execute_batch
 from binance.client import Client
 
+from common.execution import place_live_order
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -25,6 +27,7 @@ INTERVAL = os.environ.get("INTERVAL", "1m")
 
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND")
 TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE
+LIVE_ORDERS_ENABLED = os.environ.get("LIVE_ORDERS_ENABLED", "0") == "1"
 
 EMA_FAST = int(os.environ.get("EMA_FAST", "21"))
 EMA_SLOW = int(os.environ.get("EMA_SLOW", "55"))
@@ -1022,6 +1025,9 @@ def run_trend_strategy():
 
     qty_btc = ORDER_QTY_BTC
     logging.info("TREND: opening %s at %.2f (%s)", decision, price, reason)
+
+    if TRADING_MODE == "LIVE":
+        place_live_order(side=decision, qty_btc=qty_btc)
 
     opened = False
     if decision == "BUY":
