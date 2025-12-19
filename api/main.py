@@ -35,7 +35,16 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 # W kontenerze "api" localhost jest OK, bo wątek działa w tym samym procesie.
 INTERNAL_API_BASE = os.environ.get("INTERNAL_API_BASE", "http://127.0.0.1:8000")
 
-ALL_SYMBOLS: list[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
+
+def sym(base: str) -> str:
+    return f"{base.upper()}{QUOTE_ASSET}"
+
+ALL_SYMBOLS: list[str] = [
+    sym("BTC"), sym("ETH"), sym("SOL"), sym("BNB")
+]
+DEFAULT_SYMBOL = os.environ.get("DEFAULT_SYMBOL", sym("BTC"))
+
 ALL_STRATEGIES: list[str] = ["RSI", "TREND", "BBRANGE", "SUPER_TREND"]
 
 ALLOWED_ORIGINS = [
@@ -698,7 +707,7 @@ def health():
 
 @app.get("/candles/latest", response_model=List[Candle])
 def get_latest_candles(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     limit: int = Query(50, ge=1, le=500),
 ):
@@ -731,7 +740,7 @@ def get_latest_candles(
 
 @app.get("/simulated/orders", response_model=SimulatedOrderPage)
 def get_simulated_orders(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     limit: int = Query(50, ge=1, le=50),
     offset: int = Query(0, ge=0),
@@ -788,7 +797,7 @@ def get_simulated_orders(
 
 @app.get("/simulated/trades", response_model=List[TradeWithPnl])
 def get_simulated_trades(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
 ):
@@ -870,7 +879,7 @@ def get_simulated_trades(
 
 @app.get("/simulated/roundtrips", response_model=RoundtripPage)
 def get_simulated_roundtrips(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -1018,7 +1027,7 @@ def get_simulated_roundtrips(
 
 @app.get("/simulated/pnl", response_model=PnLSummary)
 def get_simulated_pnl(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
 ):
@@ -1105,7 +1114,7 @@ def get_simulated_pnl(
 
 @app.get("/simulated/metrics", response_model=StrategyMetrics)
 def get_strategy_metrics(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
 ):
@@ -1203,7 +1212,7 @@ def get_strategy_metrics(
 
 @app.get("/candles/summary", response_model=CandleSummary)
 def get_summary(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
 ):
     conn = get_conn()
@@ -1253,9 +1262,9 @@ def get_account_summary():
     prices_cache: dict[str, float] = {}
 
     def get_price_usdt(asset: str) -> float:
-        if asset == "USDT":
+        if asset == QUOTE_ASSET:
             return 1.0
-        symbol = f"{asset}USDT"
+        symbol = f"{asset}{QUOTE_ASSET}"
         if symbol in prices_cache:
             return prices_cache[symbol]
         ticker = binance_client.get_symbol_ticker(symbol=symbol)
@@ -1263,7 +1272,7 @@ def get_account_summary():
         prices_cache[symbol] = price
         return price
 
-    tracked_assets = {"BTC", "ETH", "BNB", "USDT", "USDC"}
+    tracked_assets = {"BTC", "ETH", "BNB", "USDC", "SOL"}
 
     total_usdt = 0.0
     result_balances: list[AssetBalance] = []
@@ -1325,7 +1334,7 @@ def analyze_strategy_with_ai(req: AIAnalyzeRequest):
 
 @app.get("/watchdog/events", response_model=WatchdogEventPage)
 def get_watchdog_events(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
     limit: int = Query(50, ge=1, le=200),
@@ -1377,7 +1386,7 @@ def get_watchdog_events(
 
 
 @app.get("/regime/latest", response_model=RegimePoint)
-def get_regime_latest(symbol: str = Query("BTCUSDT"), interval: str = Query("1m")):
+def get_regime_latest(symbol: str = Query(DEFAULT_SYMBOL), interval: str = Query("1m")):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -1405,7 +1414,7 @@ def get_regime_latest(symbol: str = Query("BTCUSDT"), interval: str = Query("1m"
 
 @app.get("/regime/history", response_model=List[RegimePoint])
 def get_regime_history(
-    symbol: str = Query("BTCUSDT"),
+    symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     limit: int = Query(200, ge=1, le=5000),
 ):

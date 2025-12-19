@@ -100,7 +100,7 @@ export interface AccountSummary {
   balances: AssetBalance[];
 }
 
-export type SymbolPair = "BTCUSDT" | "ETHUSDT" | "SOLUSDT" | "BNBUSDT";
+export type SymbolPair = "BTCUSDC" | "ETHUSDC" | "SOLUSDC" | "BNBUSDC";
 
 /** 🔹 Metryki strategii dla (symbol, interval, strategy) */
 export interface StrategyMetrics {
@@ -150,12 +150,12 @@ export interface RegimePoint {
   shock_z?: number | null;
 }
 
-export async function getRegimeLatest(symbol: SymbolPair = "BTCUSDT", interval="1m") {
+export async function getRegimeLatest(symbol: SymbolPair = "BTCUSDC", interval="1m") {
   return (await api.get<RegimePoint>("/regime/latest", { params: { symbol, interval }})).data;
 }
 
 export async function getWatchdogEvents(
-  symbol: SymbolPair = "BTCUSDT",
+  symbol: SymbolPair = "BTCUSDC",
   interval = "1m",
   strategy: Strategy = "RSI",
   limit = 50,
@@ -181,7 +181,7 @@ export async function getAccountSummary() {
 }
 
 export async function getSummary(
-  symbol: SymbolPair = "BTCUSDT",
+  symbol: SymbolPair = "BTCUSDC",
   interval = "1m"
 ) {
   return (
@@ -192,7 +192,7 @@ export async function getSummary(
 }
 
 export async function getOrders(
-  symbol: SymbolPair = "BTCUSDT",
+  symbol: SymbolPair = "BTCUSDC",
   page = 1,
   pageSize = 50,
   interval = "1m",
@@ -207,7 +207,7 @@ export async function getOrders(
 }
 
 export async function getPnL(
-  symbol: SymbolPair = "BTCUSDT",
+  symbol: SymbolPair = "BTCUSDC",
   interval = "1m",
   strategy: Strategy = "RSI"
 ) {
@@ -219,7 +219,7 @@ export async function getPnL(
 }
 
 export async function getRoundtrips(
-  symbol: SymbolPair = "BTCUSDT",
+  symbol: SymbolPair = "BTCUSDC",
   page = 1,
   pageSize = 50,
   losersOnly = true,
@@ -243,7 +243,7 @@ export async function getRoundtrips(
 
 /** 🔹 API do pobrania metryk (winrate, DD, Sharpe, Z-score...) */
 export async function getMetrics(
-  symbol: SymbolPair = "BTCUSDT",
+  symbol: SymbolPair = "BTCUSDC",
   interval = "1m",
   strategy: Strategy = "RSI"
 ) {

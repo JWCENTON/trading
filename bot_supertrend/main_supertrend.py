@@ -31,7 +31,7 @@ STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "SUPER_TREND")
 ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))
 ST_MULTIPLIER = float(os.environ.get("ST_MULTIPLIER", "3.0"))
 
-PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "1000"))
+PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "100"))
 
 STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8"))      # np. 0.8%
 TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.2"))  # np. 1.2%

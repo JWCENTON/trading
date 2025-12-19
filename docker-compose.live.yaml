@@ -40,7 +40,8 @@ services:
         condition: service_healthy
     env_file: .env.live
     environment:
-      REGIME_SYMBOLS: "BTCUSDT"
+      QUOTE_ASSET: "USDC"
+      REGIME_SYMBOLS: "BTCUSDC,ETHUSDC,SOLUSDC,BNBUSDC"
       REGIME_INTERVAL: "1m"
       REGIME_SLEEP_SECONDS: "60"
 
@@ -65,7 +66,8 @@ services:
         condition: service_healthy
     env_file: .env.live
     environment:
-      SYMBOL: "BTCUSDT"
+      QUOTE_ASSET: "USDC"
+      SYMBOL: "BTCUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
       REGIME_MODE: "ENFORCE"
