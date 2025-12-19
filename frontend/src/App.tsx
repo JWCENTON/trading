@@ -111,8 +111,8 @@ function EquityChart({ history }: { history: EquityPoint[] }) {
           opacity: 0.7,
         }}
       >
-        <span>min: {min.toFixed(2)} USDT</span>
-        <span>max: {max.toFixed(2)} USDT</span>
+        <span>min: {min.toFixed(2)} USDC</span>
+        <span>max: {max.toFixed(2)} USDC</span>
       </div>
     </div>
   );
@@ -203,8 +203,8 @@ Metrics:
 - Winning trades: ${metrics.winning_trades}
 - Losing trades: ${metrics.losing_trades}
 - Winrate: ${metrics.winrate_pct.toFixed(2)}%
-- Total PnL (USDT): ${metrics.total_pnl_usdt.toFixed(4)}
-- Average PnL per trade (USDT): ${metrics.avg_pnl_usdt.toFixed(6)}
+- Total PnL (USDC): ${metrics.total_pnl_usdt.toFixed(4)}
+- Average PnL per trade (USDC): ${metrics.avg_pnl_usdt.toFixed(6)}
 - Max drawdown (%): ${metrics.max_drawdown_pct.toFixed(3)}
 - Sharpe ratio: ${
     metrics.sharpe_ratio !== null
@@ -282,7 +282,7 @@ Please:
       <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 8 }}>
         Poniżej masz gotowy prompt, który możesz wkleić do ChatGPT (lub innego
         AI). Jest zbudowany z metryk strategii i ostatnich stratnych roundtripów
-        dla bota <b>{symbol.replace("USDT", "")}</b> / <b>{strategy}</b>.
+        dla bota <b>{symbol.replace("USDC", "")}</b> / <b>{strategy}</b>.
         <br />
         Dodatkowo możesz użyć przycisku{" "}
         <b>„Zapytaj wbudowane AI (OpenAI)”</b>, żeby backend sam wysłał ten
@@ -388,13 +388,13 @@ Please:
   );
 }
 
-const ALL_SYMBOLS: SymbolPair[] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
+const ALL_SYMBOLS: SymbolPair[] = ["BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC"];
 // 🔹 usunięte lokalne const ALL_STRATEGIES – korzystamy z importu z api.ts
 
 function App() {
   const [activeTab, setActiveTab] = useState<"HOME" | "BOT">("HOME");
 
-  const [symbol, setSymbol] = useState<SymbolPair>("BTCUSDT");
+  const [symbol, setSymbol] = useState<SymbolPair>("BTCUSDC");
   const [strategy, setStrategy] = useState<Strategy>("RSI");
 
   const [summary, setSummary] = useState<CandleSummary | null>(null);
@@ -738,7 +738,7 @@ function App() {
                       cursor: "pointer",
                     }}
                   >
-                    {s.replace("USDT", "")}
+                    {s.replace("USDC", "")}
                   </button>
                 );
               })}
@@ -810,7 +810,7 @@ function App() {
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, opacity: 0.7 }}>Total value</div>
                 <div style={{ fontSize: 18, fontWeight: 600 }}>
-                  {account.total_usdt.toFixed(2)} USDT
+                  {account.total_usdt.toFixed(2)} USDC
                 </div>
               </div>
 
@@ -843,7 +843,7 @@ function App() {
                       <th style={{ padding: "6px 8px" }}>Free</th>
                       <th style={{ padding: "6px 8px" }}>Locked</th>
                       <th style={{ padding: "6px 8px" }}>Total</th>
-                      <th style={{ padding: "6px 8px" }}>Value (USDT)</th>
+                      <th style={{ padding: "6px 8px" }}>Value (USDC)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -891,13 +891,13 @@ function App() {
                   <div style={{ fontSize: 12, opacity: 0.7 }}>
                     Start balance
                   </div>
-                  <div>{globalPnL.start_balance_usdt.toFixed(2)} USDT</div>
+                  <div>{globalPnL.start_balance_usdt.toFixed(2)} USDC</div>
                 </div>
                 <div>
                   <div style={{ fontSize: 12, opacity: 0.7 }}>
                     Current balance
                   </div>
-                  <div>{globalPnL.final_balance_usdt.toFixed(2)} USDT</div>
+                  <div>{globalPnL.final_balance_usdt.toFixed(2)} USDC</div>
                 </div>
                 <div>
                   <div style={{ fontSize: 12, opacity: 0.7 }}>PnL</div>
@@ -908,7 +908,7 @@ function App() {
                       fontWeight: 600,
                     }}
                   >
-                    {globalPnL.pnl_usdt.toFixed(2)} USDT (
+                    {globalPnL.pnl_usdt.toFixed(2)} USDC (
                     {globalPnL.pnl_pct.toFixed(2)}%)
                   </div>
                 </div>
@@ -919,11 +919,11 @@ function App() {
                   <div>{globalPnL.trades}</div>
                   <div>
                     <div style={{ fontSize: 12, opacity: 0.7 }}>Fees (est.)</div>
-                    <div>{feesTotal.toFixed(2)} USDT</div>
+                    <div>{feesTotal.toFixed(2)} USDC</div>
                   </div>
                   <div>
                     <div style={{ fontSize: 12, opacity: 0.7 }}>Slippage (est.)</div>
-                    <div>{slipTotal.toFixed(2)} USDT</div>
+                    <div>{slipTotal.toFixed(2)} USDC</div>
                   </div>
                 </div>
               </div>
@@ -963,7 +963,7 @@ function App() {
                     <th style={{ padding: "6px 8px" }}>Strategy</th>
                     <th style={{ padding: "6px 8px" }}>Start</th>
                     <th style={{ padding: "6px 8px" }}>Current</th>
-                    <th style={{ padding: "6px 8px" }}>PnL (USDT)</th>
+                    <th style={{ padding: "6px 8px" }}>PnL (USDC)</th>
                     <th style={{ padding: "6px 8px" }}>PnL (%)</th>
                     <th style={{ padding: "6px 8px" }}>Trades</th>
                     <th style={{ padding: "6px 8px" }}>Winrate</th>
@@ -987,7 +987,7 @@ function App() {
                           }}
                         >
                           <td style={{ padding: "6px 8px" }}>
-                            {sym.replace("USDT", "")}
+                            {sym.replace("USDC", "")}
                           </td>
                           <td style={{ padding: "6px 8px" }}>{st}</td>
                           {stats ? (
@@ -1073,7 +1073,7 @@ function App() {
             >
               <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
                 Portfolio PnL (
-                {ALL_SYMBOLS.map((s) => s.replace("USDT", "")).join(" + ")}
+                {ALL_SYMBOLS.map((s) => s.replace("USDC", "")).join(" + ")}
                 , {strategy})
               </h2>
               <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
@@ -1082,7 +1082,7 @@ function App() {
                     Start balance
                   </div>
                   <div>
-                    {portfolioPnl.start_balance_usdt.toFixed(2)} USDT
+                    {portfolioPnl.start_balance_usdt.toFixed(2)} USDC
                   </div>
                 </div>
                 <div>
@@ -1090,7 +1090,7 @@ function App() {
                     Current balance
                   </div>
                   <div>
-                    {portfolioPnl.final_balance_usdt.toFixed(2)} USDT
+                    {portfolioPnl.final_balance_usdt.toFixed(2)} USDC
                   </div>
                 </div>
                 <div>
@@ -1102,7 +1102,7 @@ function App() {
                       fontWeight: 600,
                     }}
                   >
-                    {portfolioPnl.pnl_usdt.toFixed(2)} USDT (
+                    {portfolioPnl.pnl_usdt.toFixed(2)} USDC (
                     {portfolioPnl.pnl_pct.toFixed(2)}%)
                   </div>
                 </div>
@@ -1131,20 +1131,20 @@ function App() {
                 }}
               >
                 <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
-                  Virtual account PnL ({symbol.replace("USDT", "")}, {strategy})
+                  Virtual account PnL ({symbol.replace("USDC", "")}, {strategy})
                 </h2>
 
                 <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                   <div>
                     <div style={{ fontSize: 12, opacity: 0.7 }}>Start balance</div>
-                    <div>{pnl.start_balance_usdt.toFixed(2)} USDT</div>
+                    <div>{pnl.start_balance_usdt.toFixed(2)} USDC</div>
                   </div>
 
                   <div>
                     <div style={{ fontSize: 12, opacity: 0.7 }}>
                       Current balance{pPrim.hasNet ? " (NET est.)" : ""}
                     </div>
-                    <div>{pPrim.finalBalance.toFixed(2)} USDT</div>
+                    <div>{pPrim.finalBalance.toFixed(2)} USDC</div>
                   </div>
 
                   <div>
@@ -1157,7 +1157,7 @@ function App() {
                         fontWeight: 600,
                       }}
                     >
-                      {pPrim.pnlUsdt.toFixed(2)} USDT ({pPrim.pnlPct.toFixed(2)}%)
+                      {pPrim.pnlUsdt.toFixed(2)} USDC ({pPrim.pnlPct.toFixed(2)}%)
                     </div>
                   </div>
 
@@ -1170,11 +1170,11 @@ function App() {
                     <>
                       <div>
                         <div style={{ fontSize: 12, opacity: 0.7 }}>Fees (est.)</div>
-                        <div>{pPrim.fees.toFixed(2)} USDT</div>
+                        <div>{pPrim.fees.toFixed(2)} USDC</div>
                       </div>
                       <div>
                         <div style={{ fontSize: 12, opacity: 0.7 }}>Slippage (est.)</div>
-                        <div>{pPrim.slippage.toFixed(2)} USDT</div>
+                        <div>{pPrim.slippage.toFixed(2)} USDC</div>
                       </div>
                     </>
                   )}
@@ -1710,7 +1710,7 @@ function App() {
                           Qty BTC
                         </th>
                         <th style={{ padding: "6px 8px" }}>
-                          PnL (USDT)
+                          PnL (USDC)
                         </th>
                         <th style={{ padding: "6px 8px" }}>
                           RSI in

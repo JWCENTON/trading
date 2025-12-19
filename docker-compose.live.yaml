@@ -1,0 +1,83 @@
+services:
+  db_live:
+    image: postgres:16
+    restart: always
+    env_file: .env.live
+    environment:
+      POSTGRES_USER: botuser
+      POSTGRES_PASSWORD: botpass
+      POSTGRES_DB: trading_live
+    volumes:
+      - trading_live_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botuser -d trading_live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api_live:
+    build: ./api
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      INTERNAL_API_BASE: "http://127.0.0.1:8000"
+      AI_TUNE_INTERVAL_MINUTES: "1440"
+      AI_AUTO_APPLY: "false"
+      OPENAI_MODEL: "gpt-4.1-mini"
+    ports:
+      - "8001:8000"
+
+  regime-worker_live:
+    build:
+      context: .
+      dockerfile: regime_worker/Dockerfile
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      QUOTE_ASSET: "USDC"
+      REGIME_SYMBOLS: "BTCUSDC,ETHUSDC,SOLUSDC,BNBUSDC"
+      REGIME_INTERVAL: "1m"
+      REGIME_SLEEP_SECONDS: "60"
+
+  frontend_live:
+    build:
+      context: ./frontend
+    restart: always
+    ports:
+      - "3001:80"
+    depends_on:
+      - api_live
+    environment:
+      VITE_API_BASE_URL: "http://192.168.101.10:8001"
+
+  bot-btc-live:
+    build:
+      context: .
+      dockerfile: bot_trend/Dockerfile
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      QUOTE_ASSET: "USDC"
+      SYMBOL: "BTCUSDC"
+      INTERVAL: "1m"
+      STRATEGY_NAME: "TREND"
+      REGIME_MODE: "ENFORCE"
+      EMA_FAST: "21"
+      EMA_SLOW: "50"
+      ENTRY_BUFFER_PCT: "0.002"
+      STOP_LOSS_PCT: "0.8"
+      TAKE_PROFIT_PCT: "3.0"
+      DAILY_MAX_LOSS_PCT: "0.5"
+      MAX_POSITION_MINUTES: "30"
+
+volumes:
+  trading_live_db_data:

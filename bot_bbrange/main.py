@@ -31,7 +31,7 @@ INTERVAL = os.environ.get("INTERVAL", "1m")
 RSI_PERIOD = int(os.environ.get("RSI_PERIOD", "14"))
 EMA_PERIOD = int(os.environ.get("EMA_PERIOD", "21"))
 
-PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "1000"))
+PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "100"))
 
 STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8"))       # 0.8%
 TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.0"))   # 1.0%

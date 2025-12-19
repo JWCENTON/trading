@@ -35,7 +35,7 @@ EMA_PERIOD = int(os.environ.get("EMA_PERIOD", "21"))
 RSI_OVERSOLD = float(os.environ.get("RSI_OVERSOLD", "25"))
 RSI_OVERBOUGHT = float(os.environ.get("RSI_OVERBOUGHT", "75"))
 
-PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "1000"))
+PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "100"))
 
 STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8"))        # % (np 0.8 = 0.8%)
 TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.2"))     # % (np 1.2 = 1.2%)

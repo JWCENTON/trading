@@ -9,6 +9,8 @@ import psycopg2
 from psycopg2.extras import execute_batch
 from binance.client import Client
 
+from common.execution import place_live_order
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -25,6 +27,7 @@ INTERVAL = os.environ.get("INTERVAL", "1m")
 
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND")
 TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE
+LIVE_ORDERS_ENABLED = os.environ.get("LIVE_ORDERS_ENABLED", "0") == "1"
 
 EMA_FAST = int(os.environ.get("EMA_FAST", "21"))
 EMA_SLOW = int(os.environ.get("EMA_SLOW", "55"))
@@ -38,7 +41,7 @@ ENTRY_BUFFER_PCT = float(os.environ.get("ENTRY_BUFFER_PCT", "0.0015"))  # 0.15%
 RSI_OVERSOLD = float(os.environ.get("RSI_OVERSOLD", "25"))
 RSI_OVERBOUGHT = float(os.environ.get("RSI_OVERBOUGHT", "75"))
 
-PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "1000"))
+PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "100"))
 
 STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8"))      # %
 TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.2"))  # %
@@ -49,6 +52,10 @@ DISABLE_HOURS_SET = {
     for h in DISABLE_HOURS.split(",")
     if h.strip() != ""
 }
+
+QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
+if not SYMBOL.endswith(QUOTE_ASSET):
+    raise RuntimeError(f"SYMBOL={SYMBOL} does not match QUOTE_ASSET={QUOTE_ASSET}")
 
 API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
@@ -688,6 +695,35 @@ def insert_simulated_order(
     return inserted
 
 
+def execute_and_record(side: str, price: float, qty_btc: float, reason: str, candle_open_time):
+    """
+    Jeden punkt prawdy:
+    - jeśli LIVE: najpierw giełda (place_live_order)
+    - potem zapis do simulated_orders (na razie jako ledger dla UI)
+    Zwraca: inserted(bool)
+    """
+    if TRADING_MODE == "LIVE":
+        # jeśli LIVE_ORDERS_ENABLED=0 -> place_live_order zwróci None i to jest OK (tryb "shadow")
+        resp = place_live_order(client, SYMBOL, side, qty_btc)
+
+        # jeżeli włączyłeś LIVE_ORDERS_ENABLED=1, a resp=None -> traktuj to jako błąd
+        if LIVE_ORDERS_ENABLED and resp is None:
+            raise RuntimeError("LIVE_ORDERS_ENABLED=1 but no exchange response")
+
+    inserted = insert_simulated_order(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        side=side,
+        price=price,
+        qty_btc=qty_btc,
+        reason=reason,
+        rsi_14=None,
+        ema_21=None,
+        candle_open_time=candle_open_time,
+    )
+    return inserted
+
+
 def safe_close_if_open(current_price: float, candle_open_time):
     pos = get_open_position()
     if not pos:
@@ -702,15 +738,11 @@ def safe_close_if_open(current_price: float, candle_open_time):
         exit_side = "BUY"
         reason = "PANIC CLOSE SHORT"
 
-    inserted = insert_simulated_order(
-        symbol=SYMBOL,
-        interval=INTERVAL,
+    inserted = execute_and_record(
         side=exit_side,
         price=current_price,
-        qty_btc=qty,
+        qty_btc=float(qty),
         reason=reason,
-        rsi_14=None,
-        ema_21=None,
         candle_open_time=candle_open_time,
     )
     if not inserted:
@@ -856,14 +888,17 @@ def run_trend_strategy():
 
             if TAKE_PROFIT_PCT > 0 and change_pct >= TAKE_PROFIT_PCT:
                 reason = f"TREND TAKE PROFIT LONG {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    symbol=SYMBOL, interval=INTERVAL, side="SELL",
-                    price=price, qty_btc=pos_qty, reason=reason,
-                    rsi_14=None, ema_21=None, candle_open_time=open_time
+                inserted = execute_and_record(
+                    side="SELL",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
                     return
+
                 closed = close_position(exit_price=price, reason="TAKE_PROFIT")
                 if not closed:
                     logging.info("TREND: exit inserted but position was not OPEN (race/restart).")
@@ -872,15 +907,20 @@ def run_trend_strategy():
             drop_pct = -change_pct
             if STOP_LOSS_PCT > 0 and drop_pct >= STOP_LOSS_PCT:
                 reason = f"TREND STOP LOSS LONG {drop_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    symbol=SYMBOL, interval=INTERVAL, side="SELL",
-                    price=price, qty_btc=pos_qty, reason=reason,
-                    rsi_14=None, ema_21=None, candle_open_time=open_time
+                inserted = execute_and_record(
+                    side="SELL",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
                     return
-                close_position(exit_price=price, reason="STOP_LOSS")
+
+                closed = close_position(exit_price=price, reason="TAKE_PROFIT")
+                if not closed:
+                    logging.info("TREND: exit inserted but position was not OPEN (race/restart).")
                 return
 
         elif pos_side == "SHORT":
@@ -888,10 +928,12 @@ def run_trend_strategy():
 
             if TAKE_PROFIT_PCT > 0 and change_pct >= TAKE_PROFIT_PCT:
                 reason = f"TREND TAKE PROFIT SHORT {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    symbol=SYMBOL, interval=INTERVAL, side="BUY",
-                    price=price, qty_btc=pos_qty, reason=reason,
-                    rsi_14=None, ema_21=None, candle_open_time=open_time
+                inserted = execute_and_record(
+                    side="BUY",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -902,10 +944,12 @@ def run_trend_strategy():
             rise_pct = -change_pct
             if STOP_LOSS_PCT > 0 and rise_pct >= STOP_LOSS_PCT:
                 reason = f"TREND STOP LOSS SHORT {rise_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    symbol=SYMBOL, interval=INTERVAL, side="BUY",
-                    price=price, qty_btc=pos_qty, reason=reason,
-                    rsi_14=None, ema_21=None, candle_open_time=open_time
+                inserted = execute_and_record(
+                    side="BUY",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -922,10 +966,12 @@ def run_trend_strategy():
             if age_minutes >= MAX_POSITION_MINUTES:
                 side_timeout = "SELL" if pos_side == "LONG" else "BUY"
                 reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
-                inserted = insert_simulated_order(
-                    symbol=SYMBOL, interval=INTERVAL, side=side_timeout,
-                    price=price, qty_btc=pos_qty, reason=reason_timeout,
-                    rsi_14=None, ema_21=None, candle_open_time=open_time
+                inserted = execute_and_record(
+                    side=side_timeout,
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason_timeout,
+                    candle_open_time=open_time,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -1023,6 +1069,17 @@ def run_trend_strategy():
     qty_btc = ORDER_QTY_BTC
     logging.info("TREND: opening %s at %.2f (%s)", decision, price, reason)
 
+    inserted = execute_and_record(
+        side=decision,
+        price=price,
+        qty_btc=qty_btc,
+        reason=reason,
+        candle_open_time=open_time,
+    )
+    if not inserted:
+        logging.info("TREND: entry blocked by DB guard -> skipping open_position.")
+        return
+
     opened = False
     if decision == "BUY":
         opened = open_position("LONG", qty_btc, price)
@@ -1030,26 +1087,9 @@ def run_trend_strategy():
         opened = open_position("SHORT", qty_btc, price)
 
     if not opened:
-        logging.info("TREND: entry aborted because position could not be opened (already OPEN or race).")
-        return
-
-    inserted = insert_simulated_order(
-        symbol=SYMBOL,
-        interval=INTERVAL,
-        side=decision,
-        price=price,
-        qty_btc=qty_btc,
-        reason=reason,
-        rsi_14=None,
-        ema_21=None,
-        candle_open_time=open_time,
-    )
-
-    if not inserted:
-        logging.info("TREND: entry blocked by DB guard -> reverting OPEN position to keep consistency.")
-        closed = close_position(exit_price=price, reason="ENTRY_DB_GUARD_REVERT")
-        if not closed:
-            logging.info("TREND: revert requested but no OPEN position found (race/restart).")
+        # Jeśli to kiedykolwiek wystąpi, to znaczy że DB ma już OPEN (race/restart).
+        # W LIVE to oznacza potencjalny desync — dlatego chcemy to zobaczyć w logach.
+        logging.warning("TREND: order executed/recorded but position not opened (race). Investigate immediately.")
         return
 
 
