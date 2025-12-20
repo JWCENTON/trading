@@ -23,7 +23,7 @@ services:
         condition: service_healthy
     env_file: .env.live
     environment:
-      INTERNAL_API_BASE: "http://127.0.0.1:8000"
+      INTERNAL_API_BASE: "http://192.168.101.10:8001"
       AI_TUNE_INTERVAL_MINUTES: "1440"
       AI_AUTO_APPLY: "false"
       OPENAI_MODEL: "gpt-4.1-mini"
@@ -55,6 +55,7 @@ services:
       - api_live
     environment:
       VITE_API_BASE_URL: "http://192.168.101.10:8001"
+      VITE_QUOTE_ASSET: "USDC"
 
   bot-btc-live:
     build:

@@ -36,6 +36,8 @@ services:
       DAILY_MAX_LOSS_PCT: "0.5"
       DISABLE_HOURS: "7,17"
       PAPER_START_USDT: "100"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BTCUSDT
 
   bot-eth:
     build: 
@@ -59,6 +61,8 @@ services:
       MAX_POSITION_MINUTES: "45"
       DAILY_MAX_LOSS_PCT: "0.5"
       PAPER_START_USDT: "100"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: ETHUSDT
 
   bot-sol:
     build: 
@@ -82,6 +86,8 @@ services:
       MAX_POSITION_MINUTES: "60"
       DAILY_MAX_LOSS_PCT: "0.5"
       PAPER_START_USDT: "100"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: SOLUSDT
 
   bot-bnb:
     build: 
@@ -106,6 +112,8 @@ services:
       DAILY_MAX_LOSS_PCT: "0.5"
       DISABLE_HOURS: "7,17"
       PAPER_START_USDT: "100"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BNBUSDT
 
   bot-trend-btc:
     build: 
@@ -129,6 +137,8 @@ services:
       TAKE_PROFIT_PCT: "3.0"
       DAILY_MAX_LOSS_PCT: "0.5"
       MAX_POSITION_MINUTES: "30"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BTCUSDT
 
   bot-trend-eth:
     build: 
@@ -152,6 +162,8 @@ services:
       TAKE_PROFIT_PCT: "2.0"
       DAILY_MAX_LOSS_PCT: "0.5"
       MAX_POSITION_MINUTES: "30"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: ETHUSDT
 
   bot-trend-sol:
     build: 
@@ -175,6 +187,8 @@ services:
       TAKE_PROFIT_PCT: "3.0"
       DAILY_MAX_LOSS_PCT: "0.5"
       MAX_POSITION_MINUTES: "30"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: SOLUSDT
 
   bot-trend-bnb:
     build: 
@@ -198,6 +212,8 @@ services:
       TAKE_PROFIT_PCT: "2.0"
       DAILY_MAX_LOSS_PCT: "0.5"
       MAX_POSITION_MINUTES: "30"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BNBUSDT
 
   trading-bot-bbrange-btc:
     build: 
@@ -226,6 +242,8 @@ services:
       RSI_SHORT_MIN: "55"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BTCUSDT
 
   trading-bot-bbrange-eth:
     build: 
@@ -254,6 +272,8 @@ services:
       RSI_SHORT_MIN: "55"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: ETHUSDT
 
   trading-bot-bbrange-sol:
     build: 
@@ -282,6 +302,8 @@ services:
       RSI_SHORT_MIN: "60"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: SOLUSDT
 
   trading-bot-bbrange-bnb:
     build: 
@@ -310,6 +332,8 @@ services:
       RSI_SHORT_MIN: "60"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BNBUSDT
 
   bot-st-btc:
     build: 
@@ -334,6 +358,8 @@ services:
       PAPER_START_USDT: "100"
       # jeśli używasz workera z ORDER_QTY_BTC:
       ORDER_QTY_BTC: "0.0001"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BTCUSDT
 
   bot-st-eth:
     build: 
@@ -357,6 +383,8 @@ services:
       DAILY_MAX_LOSS_PCT: "0.5"
       PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: ETHUSDT
 
   bot-st-sol:
     build: 
@@ -380,6 +408,8 @@ services:
       DAILY_MAX_LOSS_PCT: "0.5"
       PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: SOLUSDT
 
   bot-st-bnb:
     build: 
@@ -403,6 +433,8 @@ services:
       DAILY_MAX_LOSS_PCT: "0.5"
       PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BNBUSDT
 
   api:
     build: ./api
@@ -417,20 +449,23 @@ services:
       AI_AUTO_APPLY: "true"
       INTERNAL_API_BASE: "http://127.0.0.1:8000"
       OPENAI_MODEL: "gpt-4.1-mini"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BTCUSDT
     ports:
       - "8000:8000"
 
   frontend:
     build:
       context: ./frontend
-      args:
-        VITE_API_BASE_URL: "http://127.0.0.1:8000"
     container_name: trading-frontend
     restart: always
     ports:
       - "3000:80"
     depends_on:
       - api
+    environment:
+      VITE_API_BASE_URL: "http://192.168.101.10:8000"
+      VITE_QUOTE_ASSET: "USDT"
 
   regime-worker:
     build:
@@ -452,3 +487,5 @@ services:
       REGIME_VOL_THRESHOLD_PCT: "${REGIME_VOL_THRESHOLD_PCT:-0.08}"
       REGIME_SHOCK_Z: "${REGIME_SHOCK_Z:-3.0}"
       REGIME_TREND_MIN_STRENGTH_PCT: "${REGIME_TREND_MIN_STRENGTH_PCT:-0.05}"
+      QUOTE_ASSET: USDT
+      DEFAULT_SYMBOL: BTCUSDT

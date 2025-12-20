@@ -48,6 +48,11 @@ DEFAULT_SYMBOL = os.environ.get("DEFAULT_SYMBOL", sym("BTC"))
 ALL_STRATEGIES: list[str] = ["RSI", "TREND", "BBRANGE", "SUPER_TREND"]
 
 ALLOWED_ORIGINS = [
+    # PAPER
+    "http://192.168.101.10:3000",
+    "http://localhost:3000",
+
+    # LIVE (jeśli chcesz, może zostać – nie szkodzi)
     "http://192.168.101.10:3001",
     "http://localhost:3001",
 ]
@@ -1442,3 +1447,13 @@ def get_regime_history(
         )
         for r in rows
     ]
+
+
+@app.get("/safety/status")
+def safety_status():
+    return {
+        "environment": os.environ.get("ENVIRONMENT"),
+        "trading_mode": os.environ.get("TRADING_MODE"),
+        "live_orders_enabled": os.environ.get("LIVE_ORDERS_ENABLED"),
+        "panic_disable_trading": os.environ.get("PANIC_DISABLE_TRADING"),
+    }

@@ -11,6 +11,7 @@ import {
   type StrategyMetrics,
   type WatchdogEvent,
   type RegimePoint,
+  type SafetyStatus,
   getWatchdogEvents,
   getRegimeLatest,
   getAccountSummary,
@@ -20,6 +21,10 @@ import {
   getRoundtrips,
   getMetrics,
   analyzeStrategyWithAI,
+  getSafetyStatus,
+  BASE_ASSETS,
+  makeSymbol,
+  QUOTE_ASSET,
   ALL_STRATEGIES, // 🔹 używamy wspólnej listy strategii z api.ts (RSI, TREND, BBRANGE, SUPER_TREND)
 } from "./api";
 
@@ -282,7 +287,7 @@ Please:
       <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 8 }}>
         Poniżej masz gotowy prompt, który możesz wkleić do ChatGPT (lub innego
         AI). Jest zbudowany z metryk strategii i ostatnich stratnych roundtripów
-        dla bota <b>{symbol.replace("USDC", "")}</b> / <b>{strategy}</b>.
+        dla bota <b>{symbol.replace(QUOTE_ASSET, "")}</b> / <b>{strategy}</b>.
         <br />
         Dodatkowo możesz użyć przycisku{" "}
         <b>„Zapytaj wbudowane AI (OpenAI)”</b>, żeby backend sam wysłał ten
@@ -388,13 +393,12 @@ Please:
   );
 }
 
-const ALL_SYMBOLS: SymbolPair[] = ["BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC"];
-// 🔹 usunięte lokalne const ALL_STRATEGIES – korzystamy z importu z api.ts
+const ALL_SYMBOLS: SymbolPair[] = BASE_ASSETS.map((b) => makeSymbol(b));
 
 function App() {
   const [activeTab, setActiveTab] = useState<"HOME" | "BOT">("HOME");
 
-  const [symbol, setSymbol] = useState<SymbolPair>("BTCUSDC");
+  const [symbol, setSymbol] = useState<SymbolPair>(makeSymbol("BTC"));
   const [strategy, setStrategy] = useState<Strategy>("RSI");
 
   const [summary, setSummary] = useState<CandleSummary | null>(null);
@@ -422,6 +426,8 @@ function App() {
   const [regime, setRegime] = useState<RegimePoint | null>(null);
   const [watchdog, setWatchdog] = useState<WatchdogEvent[]>([]);
   const [watchdogTotal, setWatchdogTotal] = useState(0);
+
+  const [safety, setSafety] = useState<SafetyStatus | null>(null);
 
   const ordersTotalPages =
     ordersTotal === 0 ? 1 : Math.ceil(ordersTotal / ORDERS_PAGE_SIZE);
@@ -469,7 +475,7 @@ function App() {
         }
       }
 
-      const [s, oPage, rtPage, acct, pnlResults, metricsResults, reg, wd] =
+      const [s, oPage, rtPage, acct, pnlResults, metricsResults, reg, wd, saf] =
         await Promise.all([
           getSummary(currentSymbol),
           getOrders(
@@ -491,9 +497,11 @@ function App() {
           Promise.all(pnlPromises),
           Promise.all(metricsPromises),
 
-          // 🔹 NOWE
           getRegimeLatest(currentSymbol, "1m"),
           getWatchdogEvents(currentSymbol, "1m", strategy, 50, 0),
+
+          // 🔹 NOWE (panic + runtime flags)
+          getSafetyStatus(),
         ]);
 
       setSummary(s);
@@ -505,6 +513,7 @@ function App() {
       setRegime(reg);
       setWatchdog(wd.items);
       setWatchdogTotal(wd.total);
+      setSafety(saf);
 
       const pnlsMap: Record<string, PnLSummary> = {};
       const metricsMap: Record<string, StrategyMetrics> = {};
@@ -706,6 +715,49 @@ function App() {
           </div>
         </div>
 
+        {safety && (
+          <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <span
+              style={{
+                padding: "2px 10px",
+                borderRadius: 999,
+                border: "1px solid #1f2937",
+                background: safety.panic_disable_trading === "1" ? "#7f1d1d" : "#064e3b",
+                color: "#e5e7eb",
+                fontSize: 12,
+              }}
+            >
+              PANIC: {safety.panic_disable_trading === "1" ? "ON" : "OFF"}
+            </span>
+
+            <span
+              style={{
+                padding: "2px 10px",
+                borderRadius: 999,
+                border: "1px solid #1f2937",
+                background: "#111827",
+                color: "#e5e7eb",
+                fontSize: 12,
+              }}
+            >
+              MODE: {safety.trading_mode ?? "-"}
+            </span>
+
+            <span
+              style={{
+                padding: "2px 10px",
+                borderRadius: 999,
+                border: "1px solid #1f2937",
+                background: safety.live_orders_enabled === "1" ? "#064e3b" : "#7c2d12",
+                color: "#e5e7eb",
+                fontSize: 12,
+              }}
+            >
+              LIVE: {safety.live_orders_enabled ?? "-"}
+            </span>
+          </div>
+        )}
+
         {activeTab === "BOT" && (
           <div
             style={{
@@ -738,7 +790,7 @@ function App() {
                       cursor: "pointer",
                     }}
                   >
-                    {s.replace("USDC", "")}
+                    {s.replace(QUOTE_ASSET, "")}
                   </button>
                 );
               })}
@@ -987,7 +1039,7 @@ function App() {
                           }}
                         >
                           <td style={{ padding: "6px 8px" }}>
-                            {sym.replace("USDC", "")}
+                            {sym.replace(QUOTE_ASSET, "")}
                           </td>
                           <td style={{ padding: "6px 8px" }}>{st}</td>
                           {stats ? (
@@ -1073,7 +1125,7 @@ function App() {
             >
               <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
                 Portfolio PnL (
-                {ALL_SYMBOLS.map((s) => s.replace("USDC", "")).join(" + ")}
+                {ALL_SYMBOLS.map((s) => s.replace(QUOTE_ASSET, "")).join(" + ")}
                 , {strategy})
               </h2>
               <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
@@ -1131,7 +1183,7 @@ function App() {
                 }}
               >
                 <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
-                  Virtual account PnL ({symbol.replace("USDC", "")}, {strategy})
+                  Virtual account PnL ({symbol.replace(QUOTE_ASSET, "")}, {strategy})
                 </h2>
 
                 <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
