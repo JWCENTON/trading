@@ -117,6 +117,12 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 AI_TUNE_INTERVAL_MINUTES = int(os.environ.get("AI_TUNE_INTERVAL_MINUTES", "1440"))
 AI_AUTO_APPLY = os.environ.get("AI_AUTO_APPLY", "false").lower() == "true"
 
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "").lower()
+TRADING_MODE = os.environ.get("TRADING_MODE", "").upper()
+
+# Twardy bezpiecznik: pozwalamy auto-zapis tylko w PAPER+PAPER.
+ALLOW_AI_DB_WRITES = (ENVIRONMENT == "paper" and TRADING_MODE == "PAPER" and AI_AUTO_APPLY)
+
 binance_client = (
     Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
     if BINANCE_API_KEY and BINANCE_API_SECRET
@@ -499,6 +505,12 @@ def apply_human_rules(strategy: str,
 
 
 def upsert_strategy_params(symbol: str, strategy: str, params: Dict[str, float], source: str = "AI"):
+    if source == "AI" and not ALLOW_AI_DB_WRITES:
+        logging.warning(
+            "AI tuner: blocked DB write (ENVIRONMENT=%s TRADING_MODE=%s AI_AUTO_APPLY=%s) for %s %s params=%s",
+            ENVIRONMENT, TRADING_MODE, AI_AUTO_APPLY, symbol, strategy, list(params.keys())
+        )
+        return
     conn = get_conn()
     cur = conn.cursor()
 
@@ -676,8 +688,11 @@ def ai_auto_tuner_loop():
     if openai_client is None:
         logging.warning("AI tuner: OPENAI_API_KEY not configured, skipping.")
         return
-    if not AI_AUTO_APPLY:
-        logging.info("AI tuner: AI_AUTO_APPLY is false – tuner disabled.")
+    if not ALLOW_AI_DB_WRITES:
+        logging.info(
+            "AI tuner: auto-apply disabled (ENVIRONMENT=%s TRADING_MODE=%s AI_AUTO_APPLY=%s) – tuner disabled.",
+            ENVIRONMENT, TRADING_MODE, AI_AUTO_APPLY
+        )
         return
 
     logging.info("AI tuner: starting auto-tuner loop, interval=%d minutes", AI_TUNE_INTERVAL_MINUTES)

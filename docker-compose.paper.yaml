@@ -136,7 +136,7 @@ services:
       STOP_LOSS_PCT: "0.8"
       TAKE_PROFIT_PCT: "3.0"
       DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "30"
+      MAX_POSITION_MINUTES: "90"
       QUOTE_ASSET: USDT
       DEFAULT_SYMBOL: BTCUSDT
 
@@ -445,7 +445,7 @@ services:
     env_file: .env.paper
     environment:
       PAPER_START_USDT: "100"
-      AI_TUNE_INTERVAL_MINUTES: "1440"
+      AI_TUNE_INTERVAL_MINUTES: "4320"
       AI_AUTO_APPLY: "true"
       INTERNAL_API_BASE: "http://127.0.0.1:8000"
       OPENAI_MODEL: "gpt-4.1-mini"

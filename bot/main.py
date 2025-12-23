@@ -4,7 +4,7 @@ import json
 import logging
 import psycopg2
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from psycopg2.extras import execute_batch
 from binance.client import Client
 
@@ -64,6 +64,12 @@ from common.db import get_latest_regime
 REGIME_ENABLED = os.environ.get("REGIME_ENABLED", "0") == "1"
 REGIME_MODE = os.environ.get("REGIME_MODE", "DRY_RUN").strip().upper()  # DRY_RUN | ENFORCE
 REGIME_MAX_AGE_SECONDS = int(os.environ.get("REGIME_MAX_AGE_SECONDS", "180"))
+
+
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    return str(o)
 
 
 def regime_allows(strategy_name: str, symbol: str, interval: str):
@@ -185,7 +191,7 @@ def log_regime_gate_event(
             mode,
             bool(would_block) if would_block is not None else None,
             rmeta.get("why"),
-            json.dumps(meta),
+            json.dumps(meta, default=_json_default),
         ),
     )
     conn.commit()

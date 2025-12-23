@@ -2,14 +2,14 @@ import os
 import time
 import json
 import logging
-import pandas as pd
-from datetime import datetime, timezone
-
 import psycopg2
-from psycopg2.extras import execute_batch
+import pandas as pd
 from binance.client import Client
-
+from common.db import get_latest_regime
+from datetime import datetime, timezone, date
+from psycopg2.extras import execute_batch
 from common.execution import place_live_order
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,12 +71,14 @@ DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
 ORDER_QTY_BTC = float(os.environ.get("ORDER_QTY_BTC", "0.0001"))
 MAX_DIST_FROM_EMA_FAST_PCT = float(os.environ.get("MAX_DIST_FROM_EMA_FAST_PCT", "0.6"))
 
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    return str(o)
+
 # =================
 # Regime
 # =================
-
-from common.db import get_latest_regime
-from datetime import datetime, timezone
 
 REGIME_ENABLED = os.environ.get("REGIME_ENABLED", "0") == "1"
 REGIME_MODE = os.environ.get("REGIME_MODE", "DRY_RUN").strip().upper()  # DRY_RUN | ENFORCE
@@ -151,16 +153,30 @@ def heartbeat(info: dict):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO bot_heartbeat(symbol, strategy, last_seen, info)
-        VALUES (%s, %s, now(), %s::jsonb)
-        ON CONFLICT (symbol, strategy)
+        INSERT INTO public.bot_heartbeat(symbol, strategy, interval, last_seen, info)
+        VALUES (%s, %s, %s, now(), %s::jsonb)
+        ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
-        (SYMBOL, STRATEGY_NAME, json.dumps(info)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info)),
     )
     conn.commit()
     cur.close()
     conn.close()
+
+
+def log_regime_gate_on_exit(decision: str, rmeta_gate: dict, allow_gate: bool, extra: dict):
+    # Zapisujmy EXIT zawsze, ale tylko jeśli reżim jest włączony i ma sensowne meta
+    # (i tak meta jest małe, a to Ci daje audyt trail)
+    log_regime_gate_event(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision=decision,
+        allow=allow_gate,
+        rmeta=rmeta_gate,
+        extra_meta={"event": "EXIT", **(extra or {})},
+    )
 
 
 def log_regime_gate_event(
@@ -212,7 +228,7 @@ def log_regime_gate_event(
             mode,
             bool(would_block) if would_block is not None else None,
             rmeta.get("why"),
-            json.dumps(meta),
+            json.dumps(meta, default=_json_default),
         ),
     )
     conn.commit()
@@ -399,7 +415,7 @@ def init_db():
           strategy TEXT NOT NULL,
           last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
           info JSONB,
-          UNIQUE(symbol, strategy)
+          UNIQUE(symbol, strategy, interval)
         );
         """
     )
@@ -433,11 +449,11 @@ def init_db():
 
     cur.execute(
         """
-        INSERT INTO bot_control(symbol, strategy, mode)
-        VALUES (%s, %s, 'NORMAL')
-        ON CONFLICT (symbol, strategy) DO NOTHING;
+        INSERT INTO bot_control(symbol, strategy, interval, mode)
+        VALUES (%s, %s, %s, 'NORMAL')
+        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
         """,
-        (SYMBOL, STRATEGY_NAME),
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
     )
 
     conn.commit()
@@ -966,6 +982,20 @@ def run_trend_strategy():
             if age_minutes >= MAX_POSITION_MINUTES:
                 side_timeout = "SELL" if pos_side == "LONG" else "BUY"
                 reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
+                allow_gate, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+                log_regime_gate_on_exit(
+                    decision=side_timeout,
+                    rmeta_gate=rmeta_gate,
+                    allow_gate=allow_gate,
+                    extra={
+                        "exit_reason": "TIMEOUT",
+                        "pos_side": pos_side,
+                        "age_minutes": float(age_minutes),
+                        "max_minutes": int(MAX_POSITION_MINUTES),
+                        "price": float(price),
+                        "open_time": str(open_time),
+                    },
+                )
                 inserted = execute_and_record(
                     side=side_timeout,
                     price=price,
