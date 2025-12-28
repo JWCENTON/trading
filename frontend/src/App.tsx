@@ -126,11 +126,13 @@ function EquityChart({ history }: { history: EquityPoint[] }) {
 function AiAnalyzer({
   symbol,
   strategy,
+  interval,
   metrics,
   losingTrades,
 }: {
   symbol: SymbolPair;
   strategy: Strategy;
+  interval: string;
   metrics: StrategyMetrics | null;
   losingTrades: RoundtripTrade[];
 }) {
@@ -201,7 +203,7 @@ Focus on simple changes I can implement in code (thresholds, filters, timeouts, 
 Bot:
 - Symbol: ${symbol}
 - Strategy: ${strategy}
-- Interval: 1m
+- Interval: ${interval}
 
 Metrics:
 - Total trades: ${metrics.trades}
@@ -394,12 +396,15 @@ Please:
 }
 
 const ALL_SYMBOLS: SymbolPair[] = BASE_ASSETS.map((b) => makeSymbol(b));
+const ALL_INTERVALS = ["1m", "5m"] as const;
+type Interval = typeof ALL_INTERVALS[number];
 
 function App() {
   const [activeTab, setActiveTab] = useState<"HOME" | "BOT">("HOME");
 
   const [symbol, setSymbol] = useState<SymbolPair>(makeSymbol("BTC"));
   const [strategy, setStrategy] = useState<Strategy>("RSI");
+  const [interval, setInterval] = useState<Interval>("1m");
 
   const [summary, setSummary] = useState<CandleSummary | null>(null);
   const [account, setAccount] = useState<AccountSummary | null>(null);
@@ -456,9 +461,11 @@ function App() {
   useEffect(() => {
     setTradesPage(1);
     setOrdersPageNum(1);
-  }, [symbol, strategy]);
+  }, [symbol, strategy, interval]);
 
-  async function loadData(currentSymbol: SymbolPair, page: number) {
+  async function loadData() {
+    const currentSymbol = symbol;
+    const page = currentPage;
     try {
       setError(null);
       setLoading(true);
@@ -468,21 +475,23 @@ function App() {
       const comboKeys: string[] = [];
 
       for (const sym of ALL_SYMBOLS) {
-        for (const strat of ALL_STRATEGIES) {
-          pnlPromises.push(getPnL(sym, "1m", strat));
-          metricsPromises.push(getMetrics(sym, "1m", strat));
-          comboKeys.push(`${sym}-${strat}`);
+        for (const iv of ALL_INTERVALS) {
+          for (const strat of ALL_STRATEGIES) {
+            pnlPromises.push(getPnL(sym, iv, strat));
+            metricsPromises.push(getMetrics(sym, iv, strat));
+            comboKeys.push(`${sym}-${iv}-${strat}`);
+          }
         }
       }
 
       const [s, oPage, rtPage, acct, pnlResults, metricsResults, reg, wd, saf] =
         await Promise.all([
-          getSummary(currentSymbol),
+          getSummary(currentSymbol, interval),
           getOrders(
             currentSymbol,
             currentOrdersPage,
             ORDERS_PAGE_SIZE,
-            "1m",
+            interval,
             strategy
           ),
           getRoundtrips(
@@ -490,15 +499,15 @@ function App() {
             page,
             TRADES_PAGE_SIZE,
             true,
-            "1m",
+            interval,
             strategy
           ),
           getAccountSummary(),
           Promise.all(pnlPromises),
           Promise.all(metricsPromises),
 
-          getRegimeLatest(currentSymbol, "1m"),
-          getWatchdogEvents(currentSymbol, "1m", strategy, 50, 0),
+          getRegimeLatest(currentSymbol, interval),
+          getWatchdogEvents(currentSymbol, interval, strategy, 50, 0),
 
           // 🔹 NOWE (panic + runtime flags)
           getSafetyStatus(),
@@ -524,12 +533,12 @@ function App() {
       setAllPnL(pnlsMap);
       setMetrics(metricsMap);
 
-      const currentPnl = pnlsMap[`${currentSymbol}-${strategy}`];
+      const currentPnl = pnlsMap[`${currentSymbol}-${interval}-${strategy}`];
       setPnl(currentPnl || null);
 
-      const parts = ALL_SYMBOLS.map(
-        (sym) => pnlsMap[`${sym}-${strategy}`]
-      ).filter((p): p is PnLSummary => !!p);
+      const parts = ALL_SYMBOLS
+        .map((sym) => pnlsMap[`${sym}-${interval}-${strategy}`])
+        .filter((p): p is PnLSummary => !!p);
 
       if (parts.length === 0) {
         setPortfolioPnl(null);
@@ -585,11 +594,11 @@ function App() {
   }
 
   useEffect(() => {
-    loadData(symbol, currentPage);
-    const interval = setInterval(() => loadData(symbol, currentPage), 60_000);
-    return () => clearInterval(interval);
+    loadData();
+    const t = window.setInterval(() => loadData(), 60_000);
+    return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, currentPage, currentOrdersPage, strategy]);
+  }, [symbol, currentPage, currentOrdersPage, strategy, interval]);
 
   const pageStartIndex = (currentPage - 1) * TRADES_PAGE_SIZE;
   const ordersRowStartIndex = (currentOrdersPage - 1) * ORDERS_PAGE_SIZE;
@@ -647,7 +656,7 @@ function App() {
 
   const feesTotal = allPnLValues.reduce((sum, p) => sum + (p.fees_usdt_est ?? 0), 0);
   const slipTotal = allPnLValues.reduce((sum, p) => sum + (p.slippage_usdt_est ?? 0), 0);
-  const currentKey = `${symbol}-${strategy}`;
+  const currentKey = `${symbol}-${interval}-${strategy}`;
   const currentMetrics: StrategyMetrics | null = metrics[currentKey] ?? null;
 
   return (
@@ -791,6 +800,35 @@ function App() {
                     }}
                   >
                     {s.replace(QUOTE_ASSET, "")}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div
+              style={{
+                display: "inline-flex",
+                borderRadius: 999,
+                border: "1px solid #1f2937",
+                overflow: "hidden",
+              }}
+            >
+              {ALL_INTERVALS.map((iv) => {
+                const active = iv === interval;
+                return (
+                  <button
+                    key={iv}
+                    onClick={() => setInterval(iv)}
+                    style={{
+                      padding: "6px 14px",
+                      fontSize: 13,
+                      border: "none",
+                      background: active ? "#fbbf24" : "transparent",
+                      color: active ? "#02110a" : "#e5e7eb",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {iv}
                   </button>
                 );
               })}
@@ -1012,6 +1050,7 @@ function App() {
                     }}
                   >
                     <th style={{ padding: "6px 8px" }}>Symbol</th>
+                    <th style={{ padding: "6px 8px" }}>Interval</th>
                     <th style={{ padding: "6px 8px" }}>Strategy</th>
                     <th style={{ padding: "6px 8px" }}>Start</th>
                     <th style={{ padding: "6px 8px" }}>Current</th>
@@ -1025,85 +1064,87 @@ function App() {
                 </thead>
                 <tbody>
                   {ALL_SYMBOLS.map((sym) =>
-                    ALL_STRATEGIES.map((st) => {
-                      const key = `${sym}-${st}`;
-                      const stats = allPnL[key];
-                      const sPrim = stats ? getPnlPrimary(stats) : null;
-                      const m = metrics[key];
+                    ALL_INTERVALS.map((iv) =>
+                      ALL_STRATEGIES.map((st) => {
+                        const key = `${sym}-${iv}-${st}`;
+                        const stats = allPnL[key];
+                        const sPrim = stats ? getPnlPrimary(stats) : null;
+                        const m = metrics[key];
 
-                      return (
-                        <tr
-                          key={key}
-                          style={{
-                            borderBottom: "1px solid #111827",
-                          }}
-                        >
-                          <td style={{ padding: "6px 8px" }}>
-                            {sym.replace(QUOTE_ASSET, "")}
-                          </td>
-                          <td style={{ padding: "6px 8px" }}>{st}</td>
-                          {stats ? (
-                            <>
-                              <td style={{ padding: "6px 8px" }}>
-                                {stats.start_balance_usdt.toFixed(2)}
-                              </td>
-                              <td style={{ padding: "6px 8px" }}>
-                                {sPrim ? sPrim.finalBalance.toFixed(2) : "-"}
-                              </td>
+                        return (
+                          <tr
+                            key={key}
+                            style={{
+                              borderBottom: "1px solid #111827",
+                            }}
+                          >
+                            <td style={{ padding: "6px 8px" }}>
+                              {sym.replace(QUOTE_ASSET, "")}
+                            </td>
+                            <td style={{ padding: "6px 8px" }}>{iv}</td>
+                            <td style={{ padding: "6px 8px" }}>{st}</td>
+                            {stats ? (
+                              <>
+                                <td style={{ padding: "6px 8px" }}>
+                                  {stats.start_balance_usdt.toFixed(2)}
+                                </td>
+                                <td style={{ padding: "6px 8px" }}>
+                                  {sPrim ? sPrim.finalBalance.toFixed(2) : "-"}
+                                </td>
 
-                              <td
-                                style={{
-                                  padding: "6px 8px",
-                                  color: sPrim && sPrim.pnlUsdt >= 0 ? "#22c55e" : "#ef4444",
-                                  fontWeight: 600,
-                                }}
-                              >
-                                {sPrim ? sPrim.pnlUsdt.toFixed(2) : "-"}
-                              </td>
+                                <td
+                                  style={{
+                                    padding: "6px 8px",
+                                    color: sPrim && sPrim.pnlUsdt >= 0 ? "#22c55e" : "#ef4444",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {sPrim ? sPrim.pnlUsdt.toFixed(2) : "-"}
+                                </td>
 
-                              <td style={{ padding: "6px 8px" }}>
-                                {sPrim ? sPrim.pnlPct.toFixed(2) : "-"}%
-                              </td>
+                                <td style={{ padding: "6px 8px" }}>
+                                  {sPrim ? sPrim.pnlPct.toFixed(2) : "-"}%
+                                </td>
 
-                              <td style={{ padding: "6px 8px" }}>
-                                {stats.trades}
-                              </td>
-                            </>
-                          ) : (
-                            <>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                            </>
-                          )}
+                                <td style={{ padding: "6px 8px" }}>
+                                  {stats.trades}
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                              </>
+                            )}
 
-                          {m ? (
-                            <>
-                              <td style={{ padding: "6px 8px" }}>
-                                {m.winrate_pct.toFixed(1)}%
-                              </td>
-                              <td style={{ padding: "6px 8px" }}>
-                                -{m.max_drawdown_pct.toFixed(2)}%
-                              </td>
-                              <td style={{ padding: "6px 8px" }}>
-                                {m.sharpe_ratio !== null
-                                  ? m.sharpe_ratio.toFixed(2)
-                                  : "-"}
-                              </td>
-                            </>
-                          ) : (
-                            <>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                              <td style={{ padding: "6px 8px" }}>-</td>
-                            </>
-                          )}
-                        </tr>
-                      );
-                    })
-                  )}
+                            {m ? (
+                              <>
+                                <td style={{ padding: "6px 8px" }}>
+                                  {m.winrate_pct.toFixed(1)}%
+                                </td>
+                                <td style={{ padding: "6px 8px" }}>
+                                  -{m.max_drawdown_pct.toFixed(2)}%
+                                </td>
+                                <td style={{ padding: "6px 8px" }}>
+                                  {m.sharpe_ratio !== null
+                                    ? m.sharpe_ratio.toFixed(2)
+                                    : "-"}
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                                <td style={{ padding: "6px 8px" }}>-</td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })
+                    ))}
                 </tbody>
               </table>
             </div>
@@ -1126,7 +1167,6 @@ function App() {
               <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
                 Portfolio PnL (
                 {ALL_SYMBOLS.map((s) => s.replace(QUOTE_ASSET, "")).join(" + ")}
-                , {strategy})
               </h2>
               <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                 <div>
@@ -1647,6 +1687,7 @@ function App() {
           <AiAnalyzer
             symbol={symbol}
             strategy={strategy}
+            interval={interval}
             metrics={currentMetrics}
             losingTrades={roundtrips}
           />

@@ -36,6 +36,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 INTERNAL_API_BASE = os.environ.get("INTERNAL_API_BASE", "http://127.0.0.1:8000")
 
 QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
+ALL_INTERVALS = (os.environ.get("ALL_INTERVALS","1m,5m")).split(",")
 
 def sym(base: str) -> str:
     return f"{base.upper()}{QUOTE_ASSET}"
@@ -550,8 +551,8 @@ def upsert_strategy_params(symbol: str, strategy: str, params: Dict[str, float],
     conn.close()
 
 
-def fetch_metrics_and_losers(symbol: str, strategy: str):
-    params = {"symbol": symbol, "interval": "1m", "strategy": strategy}
+def fetch_metrics_and_losers(symbol: str, strategy: str, interval: str):
+    params = {"symbol": symbol, "interval": interval, "strategy": strategy}
 
     m_resp = requests.get(f"{INTERNAL_API_BASE}/simulated/metrics", params=params, timeout=10)
     m_resp.raise_for_status()
@@ -566,7 +567,7 @@ def fetch_metrics_and_losers(symbol: str, strategy: str):
     return metrics, losing_trades
 
 
-def build_ai_prompt(symbol: str, strategy: str, metrics: dict, losing_trades: list[dict]) -> str:
+def build_ai_prompt(symbol: str, strategy: str, interval: str, metrics: dict, losing_trades: list[dict]) -> str:
     trades_lines = []
     for idx, rt in enumerate(losing_trades, start=1):
         entry_price = rt["entry_price"]
@@ -595,36 +596,37 @@ def build_ai_prompt(symbol: str, strategy: str, metrics: dict, losing_trades: li
     allowed = sorted(list(ALLOWED_PARAMS.get(strategy, set())))
 
     prompt = f"""
-You are an experienced quantitative trading assistant.
+        You are an experienced quantitative trading assistant.
 
-Return ONLY a JSON object (no markdown, no extra text) with schema:
-{{
-  "symbol": "{symbol}",
-  "strategy": "{strategy}",
-  "params": {{ ... }},
-  "notes": "Short explanation in English."
-}}
+        Return ONLY a JSON object (no markdown, no extra text) with schema:
+        {{
+        "symbol": "{symbol}",
+        "strategy": "{strategy}",
+        "interval": "{interval}",
+        "params": {{ ... }},
+        "notes": "Short explanation in English."
+        }}
 
-Rules:
-- Only include these allowed params for this strategy: {allowed}
-- ENTRY_BUFFER_PCT / TREND_FILTER_PCT / TREND_BUFFER / MIN_BB_WIDTH_PCT are FRACTIONS (e.g. 0.002 = 0.2%).
-- STOP_LOSS_PCT / TAKE_PROFIT_PCT / DAILY_MAX_LOSS_PCT are PERCENT values (e.g. 0.8 = 0.8%).
-- Keep values realistic.
+        Rules:
+        - Only include these allowed params for this strategy: {allowed}
+        - ENTRY_BUFFER_PCT / TREND_FILTER_PCT / TREND_BUFFER / MIN_BB_WIDTH_PCT are FRACTIONS (e.g. 0.002 = 0.2%).
+        - STOP_LOSS_PCT / TAKE_PROFIT_PCT / DAILY_MAX_LOSS_PCT are PERCENT values (e.g. 0.8 = 0.8%).
+        - Keep values realistic.
 
-Metrics:
-{json.dumps(metrics, indent=2)}
+        Metrics:
+        {json.dumps(metrics, indent=2)}
 
-Losing roundtrips (latest up to {len(losing_trades)}):
-{trades_text}
-"""
+        Losing roundtrips (latest up to {len(losing_trades)}):
+        {trades_text}
+        """
     return prompt
 
 
-def run_ai_tuning_for_pair(symbol: str, strategy: str):
+def run_ai_tuning_for_pair(symbol: str, strategy: str, interval: str):
     if openai_client is None:
         return
 
-    metrics, losing_trades = fetch_metrics_and_losers(symbol, strategy)
+    metrics, losing_trades = fetch_metrics_and_losers(symbol, strategy, interval)
 
     if not losing_trades or metrics.get("trades", 0) < 20:
         logging.info(
@@ -634,7 +636,7 @@ def run_ai_tuning_for_pair(symbol: str, strategy: str):
         return
 
     baseline_params = load_current_params(symbol, strategy)
-    prompt = build_ai_prompt(symbol, strategy, metrics, losing_trades)
+    prompt = build_ai_prompt(symbol, strategy, interval, metrics, losing_trades)
 
     try:
         resp = openai_client.responses.create(
@@ -705,8 +707,9 @@ def ai_auto_tuner_loop():
         try:
             for symbol in ALL_SYMBOLS:
                 for strategy in ALL_STRATEGIES:
-                    logging.info("AI tuner: processing %s %s", symbol, strategy)
-                    run_ai_tuning_for_pair(symbol, strategy)
+                    for interval in ALL_INTERVALS:
+                        logging.info("AI tuner: processing %s %s %s", symbol, strategy, interval)
+                        run_ai_tuning_for_pair(symbol, strategy, interval)
         except Exception as e:
             logging.exception("AI tuner: error in tuning cycle: %s", e)
 
@@ -1472,3 +1475,17 @@ def safety_status():
         "live_orders_enabled": os.environ.get("LIVE_ORDERS_ENABLED"),
         "panic_disable_trading": os.environ.get("PANIC_DISABLE_TRADING"),
     }
+
+
+@app.get("/bots/active")
+def bots_active(ttl_seconds: int = 600):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+      SELECT symbol, strategy, interval, last_seen, info
+      FROM bot_heartbeat
+      WHERE last_seen > now() - (%s || ' seconds')::interval
+      ORDER BY last_seen DESC
+    """, (ttl_seconds,))
+    rows = cur.fetchall()
+    

@@ -155,12 +155,12 @@ def heartbeat(info: dict):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO bot_heartbeat(symbol, strategy, last_seen, info)
-        VALUES (%s, %s, now(), %s::jsonb)
-        ON CONFLICT (symbol, strategy)
+        INSERT INTO public.bot_heartbeat(symbol, strategy, interval, last_seen, info)
+        VALUES (%s, %s, %s, now(), %s::jsonb)
+        ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
-        (SYMBOL, STRATEGY_NAME, json.dumps(info)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info)),
     )
     conn.commit()
     cur.close()
@@ -396,14 +396,15 @@ def init_db():
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS bot_heartbeat (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      strategy TEXT NOT NULL,
-      last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-      info JSONB,
-      UNIQUE(symbol, strategy)
-    );
+        CREATE TABLE IF NOT EXISTS bot_heartbeat (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+            info JSONB,
+            UNIQUE(symbol, strategy, interval)
+        );
     """)
 
     cur.execute("""
@@ -431,11 +432,11 @@ def init_db():
 
     cur.execute(
         """
-        INSERT INTO bot_control(symbol, strategy, mode)
-        VALUES (%s, %s, 'NORMAL')
-        ON CONFLICT (symbol, strategy) DO NOTHING;
+        INSERT INTO bot_control(symbol, strategy, interval, mode)
+        VALUES (%s, %s, %s, 'NORMAL')
+        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
         """,
-        (SYMBOL, STRATEGY_NAME),
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
     )
 
     conn.commit()
@@ -488,9 +489,9 @@ def seed_default_params_from_env(conn):
 
         cur.execute(
             """
-            INSERT INTO strategy_params(symbol, strategy, param_name, param_value)
+            INSERT INTO strategy_params (symbol, strategy, param_name, param_value)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (symbol, strategy, param_name) DO NOTHING;
+            ON CONFLICT (symbol, strategy, param_name) DO NOTHING
             """,
             (SYMBOL, STRATEGY_NAME, name, value),
         )
@@ -1088,7 +1089,11 @@ def save_klines(rows):
             open, high, low, close,
             volume, close_time, trades
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (
+            %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s
+        )
         ON CONFLICT (symbol, interval, open_time)
         DO NOTHING;
     """
