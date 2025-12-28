@@ -3,7 +3,9 @@ import time
 import json
 import logging
 import psycopg2
+import hashlib
 import pandas as pd
+from common.schema import ensure_schema
 from dataclasses import replace
 from common.bot_control import upsert_defaults, read as read_bot_control
 from binance.client import Client
@@ -30,9 +32,7 @@ DB_PASS = os.environ.get("DB_PASS", "botpass")
 SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
 INTERVAL = os.environ.get("INTERVAL", "1m")
 
-STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND")
-TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE
-LIVE_ORDERS_ENABLED = os.environ.get("LIVE_ORDERS_ENABLED", "0") == "1"
+STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND").upper()
 
 EMA_FAST = int(os.environ.get("EMA_FAST", "21"))
 EMA_SLOW = int(os.environ.get("EMA_SLOW", "55"))
@@ -93,12 +93,16 @@ def _json_default(o):
         return o.isoformat()
     return str(o)
 
+
+def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, candle_open_time) -> str:
+    raw = f"{symbol}|{strategy}|{interval}|{side}|{candle_open_time.isoformat()}"
+    h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+    return f"{symbol[:6]}-{strategy[:6]}-{interval}-{side}-{h}"[:36]
+
 # =================
 # Regime
 # =================
 
-REGIME_ENABLED = os.environ.get("REGIME_ENABLED", "0") == "1"
-REGIME_MODE = os.environ.get("REGIME_MODE", "DRY_RUN").strip().upper()  # DRY_RUN | ENFORCE
 REGIME_MAX_AGE_SECONDS = int(os.environ.get("REGIME_MAX_AGE_SECONDS", "180"))
 
 
@@ -271,14 +275,16 @@ def get_runtime_snapshot(price: float, open_time):
         regime_mode=bc.regime_mode,
     )
 
+    panic = (os.environ.get("PANIC_DISABLE_TRADING", "0") == "1")
+
     # ENTRY gate: zależny od reżimu
     allow_gate_entry, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
 
     # Czy wolno wysłać LIVE order (ENTRY uwzględnia regime gate)
-    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry)
+    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry, panic_disable_trading=panic)
 
     # EXIT: zawsze dozwolony (regime nie może blokować zamknięcia pozycji)
-    allowed_orders_exit, allow_meta_exit = can_trade(cfg_effective, regime_allows_trade=True)
+    allowed_orders_exit, allow_meta_exit   = can_trade(cfg_effective, regime_allows_trade=True, panic_disable_trading=panic)
 
     hb = {
         "price": float(price),
@@ -423,145 +429,6 @@ def close_position(exit_price: float, reason: str) -> bool:
     else:
         logging.info("TREND: close_position skipped - no OPEN position found.")
     return closed
-
-
-def init_db():
-    conn = get_db_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS candles (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            interval TEXT NOT NULL,
-            open_time TIMESTAMPTZ NOT NULL,
-            open NUMERIC,
-            high NUMERIC,
-            low NUMERIC,
-            close NUMERIC,
-            volume NUMERIC,
-            close_time TIMESTAMPTZ NOT NULL,
-            trades INTEGER,
-            ema_21 NUMERIC,
-            rsi_14 NUMERIC,
-            UNIQUE(symbol, interval, open_time)
-        );
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS simulated_orders (
-            id SERIAL PRIMARY KEY,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            symbol TEXT NOT NULL,
-            interval TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            side TEXT NOT NULL,
-            price NUMERIC NOT NULL,
-            quantity_btc NUMERIC NOT NULL,
-            reason TEXT,
-            rsi_14 NUMERIC,
-            ema_21 NUMERIC,
-            candle_open_time TIMESTAMPTZ NOT NULL
-        );
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_sim_orders_one_per_candle
-        ON simulated_orders(symbol, interval, strategy, candle_open_time);
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS strategy_params (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            param_name TEXT NOT NULL,
-            param_value NUMERIC NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE(symbol, strategy, param_name)
-        );
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS strategy_params_history (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            param_name TEXT NOT NULL,
-            old_value NUMERIC,
-            new_value NUMERIC NOT NULL,
-            changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            source TEXT NOT NULL
-        );
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS bot_heartbeat (
-          id SERIAL PRIMARY KEY,
-          symbol TEXT NOT NULL,
-          strategy TEXT NOT NULL,
-          interval TEXT NOT NULL,
-          last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-          info JSONB,
-          UNIQUE(symbol, strategy, interval)
-        );
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS positions (
-          id SERIAL PRIMARY KEY,
-          symbol TEXT NOT NULL,
-          strategy TEXT NOT NULL,
-          interval TEXT NOT NULL,
-          status TEXT NOT NULL,
-          side TEXT NOT NULL,
-          qty NUMERIC NOT NULL,
-          entry_price NUMERIC NOT NULL,
-          entry_time TIMESTAMPTZ NOT NULL DEFAULT now(),
-          exit_price NUMERIC,
-          exit_time TIMESTAMPTZ,
-          exit_reason TEXT
-        );
-        """
-    )
-
-    cur.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_open
-        ON positions(symbol, strategy, interval)
-        WHERE status='OPEN';
-        """
-    )
-
-    cur.execute(
-        """
-        INSERT INTO bot_control(symbol, strategy, interval, mode)
-        VALUES (%s, %s, %s, 'NORMAL')
-        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
-        """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
-    )
-
-    conn.commit()
-
-    seed_default_params_from_env(conn)
-
-    cur.close()
-    conn.close()
-    logging.info("DB initialized (candles, simulated_orders, strategy tables).")
 
 
 def seed_default_params_from_env(conn):
@@ -839,12 +706,14 @@ def execute_and_record(
     reason: str,
     candle_open_time,
     *,
+    is_exit: bool,
     cfg_used: RuntimeConfig,
     allow_live_orders: bool,
     allow_meta: dict,
 ):
     if cfg_used.trading_mode == "LIVE":
         if allow_live_orders:
+            client_order_id = make_client_order_id(cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time)
             resp = place_live_order(
                 client,
                 cfg_used.symbol,
@@ -853,8 +722,10 @@ def execute_and_record(
                 trading_mode=cfg_used.trading_mode,
                 live_orders_enabled=cfg_used.live_orders_enabled,
                 quote_asset=cfg_used.quote_asset,
+                client_order_id=client_order_id,
                 panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
                 live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+                skip_balance_precheck=is_exit,
             )
             if resp is None:
                 logging.error(
@@ -892,8 +763,7 @@ def safe_close_if_open(current_price: float, candle_open_time, bc, cfg_effective
     exit_side = "SELL" if str(side).upper() == "LONG" else "BUY"
     reason = "PANIC CLOSE LONG" if exit_side == "SELL" else "PANIC CLOSE SHORT"
 
-    allow_gate, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
-    allowed_orders, allow_meta = can_trade(cfg_effective, regime_allows_trade=allow_gate)
+    allowed_orders, allow_meta = can_trade(cfg_effective, regime_allows_trade=True)
 
     inserted = execute_and_record(
         side=exit_side,
@@ -904,6 +774,7 @@ def safe_close_if_open(current_price: float, candle_open_time, bc, cfg_effective
         cfg_used=cfg_effective,
         allow_live_orders=allowed_orders,
         allow_meta=allow_meta,
+        is_exit=True,
     )
     if not inserted:
         logging.info("TREND: exit blocked by DB guard (already traded this candle) -> skipping close.")
@@ -1057,6 +928,7 @@ def run_trend_strategy():
                     cfg_used=cfg_effective,
                     allow_live_orders=snap["allowed_orders_exit"],
                     allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -1079,6 +951,7 @@ def run_trend_strategy():
                     cfg_used=cfg_effective,
                     allow_live_orders=snap["allowed_orders_exit"],
                     allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -1103,6 +976,7 @@ def run_trend_strategy():
                     cfg_used=cfg_effective,
                     allow_live_orders=snap["allowed_orders_exit"],
                     allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -1122,6 +996,7 @@ def run_trend_strategy():
                     cfg_used=cfg_effective,
                     allow_live_orders=snap["allowed_orders_exit"],
                     allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -1150,6 +1025,7 @@ def run_trend_strategy():
                             cfg_used=cfg_effective,
                             allow_live_orders=snap["allowed_orders_exit"],
                             allow_meta=snap["allow_meta_exit"],
+                            is_exit=True,
                         )
                         if inserted:
                             close_position(exit_price=price, reason="EARLY_CUT_LONG")
@@ -1168,6 +1044,7 @@ def run_trend_strategy():
                             cfg_used=cfg_effective,
                             allow_live_orders=snap["allowed_orders_exit"],
                             allow_meta=snap["allow_meta_exit"],
+                            is_exit=True,
                         )
                         if inserted:
                             close_position(exit_price=price, reason="EARLY_CUT_SHORT")
@@ -1216,6 +1093,7 @@ def run_trend_strategy():
                     cfg_used=cfg_effective,
                     allow_live_orders=snap["allowed_orders_exit"],
                     allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -1262,7 +1140,7 @@ def run_trend_strategy():
                 f"{ema_fast:.2f} * (1+{ENTRY_BUFFER_PCT:.4f}))"
             )
     elif trend == "DOWN":
-        if cfg.trading_mode == "LIVE" and cfg.spot_mode:
+        if cfg.trading_mode == "LIVE" and cfg_effective.spot_mode:
             logging.warning("TREND: SHORT blocked (LIVE SPOT_MODE=1).")
             return
         if not ALLOW_SHORT:
@@ -1350,6 +1228,7 @@ def run_trend_strategy():
         cfg_used=cfg_effective,
         allow_live_orders=snap["allowed_orders_entry"],
         allow_meta=snap["allow_meta_entry"],
+        is_exit=False,
     )
     if not inserted:
         logging.info("TREND: entry blocked by DB guard -> skipping open_position.")
@@ -1362,9 +1241,8 @@ def run_trend_strategy():
         opened = open_position("SHORT", qty_btc, price)
 
     if not opened:
-        # Jeśli to kiedykolwiek wystąpi, to znaczy że DB ma już OPEN (race/restart).
-        # W LIVE to oznacza potencjalny desync — dlatego chcemy to zobaczyć w logach.
-        logging.warning("TREND: order executed/recorded but position not opened (race). Investigate immediately.")
+        logging.error("TREND DESYNC: order recorded but position not opened -> HALT for safety.")
+        set_mode("HALT", reason="DESYNC: order recorded but position not opened")
         return
 
 
@@ -1491,9 +1369,32 @@ def update_indicators():
     logging.info("Updated indicators for %d candles in %.3f s", len(data), elapsed)
 
 
+def get_latest_candle():
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT open_time, open, high, low, close, ema_21, rsi_14
+        FROM candles
+        WHERE symbol=%s AND interval=%s
+        ORDER BY open_time DESC
+        LIMIT 1
+        """,
+        (SYMBOL, INTERVAL),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row  # (open_time, open, high, low, close, ema_21, rsi_14)
+
+
+LAST_PROCESSED_OPEN_TIME = None
+
+
 def main_loop():
-    init_db()
-    upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL, cfg=cfg)
+    global LAST_PROCESSED_OPEN_TIME
+    ensure_schema()
+    upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
     if cfg.trading_mode == "LIVE" and cfg.regime_enabled and cfg.regime_mode == "DRY_RUN":
         logging.warning("LIVE + REGIME_ENABLED but REGIME_MODE=DRY_RUN. Consider ENFORCE for profitability.")
     while True:
@@ -1503,7 +1404,16 @@ def main_loop():
             rows = fetch_klines()
             save_klines(rows)
             update_indicators()
-            run_trend_strategy()
+
+            latest = get_latest_candle()
+            if latest:
+                open_time = latest[0]
+                if LAST_PROCESSED_OPEN_TIME != open_time:
+                    LAST_PROCESSED_OPEN_TIME = open_time
+                    run_trend_strategy()
+                else:
+                    logging.info("TREND: no new candle yet (%s) -> skip strategy.", str(open_time))
+
         except Exception as e:
             logging.exception("Error in trend loop: %s", e)
 

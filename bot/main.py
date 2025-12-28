@@ -1,9 +1,11 @@
 import os
 import time
 import json
+import hashlib
 import logging
 import psycopg2
 import pandas as pd
+from common.schema import ensure_schema
 from dataclasses import replace
 from datetime import datetime, timezone, date
 from psycopg2.extras import execute_batch
@@ -27,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
-STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "RSI")
+STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "RSI").upper()
 
 INTERVAL = os.environ.get("INTERVAL", "1m")
 
@@ -90,6 +92,13 @@ def _json_default(o):
     return str(o)
 
 
+def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, candle_open_time) -> str:
+    raw = f"{symbol}|{strategy}|{interval}|{side}|{candle_open_time.isoformat()}"
+    h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+    # 36 znaków max, czytelny prefix
+    return f"{symbol[:6]}-{strategy[:6]}-{interval}-{side}-{h}"[:36]
+
+
 def execute_and_record(
     side: str,
     price: float,
@@ -97,6 +106,7 @@ def execute_and_record(
     reason: str,
     candle_open_time,
     *,
+    is_exit: bool,
     cfg_used: RuntimeConfig,
     allow_live_orders: bool,
     allow_meta: dict,
@@ -109,6 +119,7 @@ def execute_and_record(
     """
     if cfg_used.trading_mode == "LIVE":
         if allow_live_orders:
+            client_order_id = make_client_order_id(cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time)
             resp = place_live_order(
                 client,
                 cfg_used.symbol,
@@ -117,8 +128,10 @@ def execute_and_record(
                 trading_mode=cfg_used.trading_mode,
                 live_orders_enabled=cfg_used.live_orders_enabled,
                 quote_asset=cfg_used.quote_asset,
+                client_order_id=client_order_id,
                 panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
                 live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+                skip_balance_precheck=is_exit,
             )
             logging.info("LIVE_ORDER|resp=%s", json.dumps(resp, default=_json_default) if resp else None)
             if resp is None:
@@ -292,14 +305,16 @@ def get_runtime_snapshot(price: float, open_time):
         regime_mode=bc.regime_mode,
     )
 
+    panic = (os.environ.get("PANIC_DISABLE_TRADING", "0") == "1")
+
     # ENTRY gate: zależny od reżimu
     allow_gate_entry, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
 
     # Czy wolno wysłać LIVE order (uwzględnia TRADING_MODE + LIVE_ORDERS_ENABLED + PANIC etc)
-    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry)
+    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry, panic_disable_trading=panic)
 
     # EXIT: zawsze dozwolony (regime nie może blokować zamknięcia pozycji)
-    allowed_orders_exit, allow_meta_exit = can_trade(cfg_effective, regime_allows_trade=True)
+    allowed_orders_exit, allow_meta_exit   = can_trade(cfg_effective, regime_allows_trade=True, panic_disable_trading=panic)
 
     hb = {
         "price": float(price),
@@ -447,111 +462,9 @@ def close_position(exit_price: float, reason: str) -> bool:
         logging.info("RSI: close_position skipped – no OPEN position.")
     return closed
 
-
-# =========================
-# DB INIT
-# =========================
-
-
-def init_db():
-    conn = get_db_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS candles (
-        id SERIAL PRIMARY KEY,
-        symbol TEXT NOT NULL,
-        interval TEXT NOT NULL,
-        open_time TIMESTAMPTZ NOT NULL,
-        open NUMERIC,
-        high NUMERIC,
-        low NUMERIC,
-        close NUMERIC,
-        volume NUMERIC,
-        close_time TIMESTAMPTZ NOT NULL,
-        trades INTEGER,
-        ema_21 NUMERIC,
-        rsi_14 NUMERIC,
-        UNIQUE(symbol, interval, open_time)
-    );
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS simulated_orders (
-        id SERIAL PRIMARY KEY,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        symbol TEXT NOT NULL,
-        interval TEXT NOT NULL,
-        strategy TEXT NOT NULL,
-        side TEXT NOT NULL,
-        price NUMERIC NOT NULL,
-        quantity_btc NUMERIC NOT NULL,
-        reason TEXT,
-        rsi_14 NUMERIC,
-        ema_21 NUMERIC,
-        candle_open_time TIMESTAMPTZ NOT NULL
-    );
-    """)
-
-    cur.execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_sim_orders_one_per_candle
-    ON simulated_orders(symbol, interval, strategy, candle_open_time);
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bot_heartbeat (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            interval TEXT NOT NULL,
-            last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-            info JSONB,
-            UNIQUE(symbol, strategy, interval)
-        );
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS positions (
-        id SERIAL PRIMARY KEY,
-        symbol TEXT NOT NULL,
-        strategy TEXT NOT NULL,
-        interval TEXT NOT NULL,
-        status TEXT NOT NULL,
-        side TEXT NOT NULL,
-        qty NUMERIC NOT NULL,
-        entry_price NUMERIC NOT NULL,
-        entry_time TIMESTAMPTZ NOT NULL DEFAULT now(),
-        exit_price NUMERIC,
-        exit_time TIMESTAMPTZ,
-        exit_reason TEXT
-    );
-    """)
-
-    cur.execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_open
-    ON positions(symbol, strategy, interval)
-    WHERE status='OPEN';
-    """)
-
-    cur.execute(
-        """
-        INSERT INTO bot_control(symbol, strategy, interval, mode)
-        VALUES (%s, %s, %s, 'NORMAL')
-        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
-        """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    logging.info("RSI DB initialized.")
-
-
 # =========================
 # ORDERS (IDEMPOTENT)
 # =========================
-
 
 def insert_simulated_order(
     symbol,
@@ -828,6 +741,7 @@ def run_strategy(row):
                 cfg_used=cfg_effective,
                 allow_live_orders=snap["allowed_orders_exit"],
                 allow_meta=snap["allow_meta_exit"],
+                is_exit=True,
             )
             if inserted:
                 close_position(exit_price=price, reason="PANIC")
@@ -853,20 +767,24 @@ def run_strategy(row):
 
             # TP intrabar
             if TAKE_PROFIT_PCT > 0 and high_price >= tp_level:
-                exec_px = tp_level  # dla ledger sensowniejsze niż close
+                exec_px = tp_level if cfg_effective.trading_mode == "PAPER" else price
                 reason = f"RSI TAKE PROFIT LONG intrabar high={high_price:.2f} >= tp={tp_level:.2f}"
-                inserted = execute_and_record("SELL", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
-                    allow_meta=snap["allow_meta_exit"],)
+                inserted = execute_and_record("SELL", exec_px, qty_f, reason, open_time,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
+                )
                 if inserted:
                     close_position(exit_price=exec_px, reason="TAKE_PROFIT")
                 return
 
             # SL intrabar
             if STOP_LOSS_PCT > 0 and low_price <= sl_level:
-                exec_px = sl_level
+                exec_px = sl_level if cfg_effective.trading_mode == "PAPER" else price
                 reason = f"RSI STOP LOSS LONG intrabar low={low_price:.2f} <= sl={sl_level:.2f}"
                 inserted = execute_and_record("SELL", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
-                    allow_meta=snap["allow_meta_exit"],)
+                    allow_meta=snap["allow_meta_exit"], is_exit=True,)
                 if inserted:
                     close_position(exit_price=exec_px, reason="STOP_LOSS")
                 return
@@ -878,20 +796,20 @@ def run_strategy(row):
 
             # TP intrabar
             if TAKE_PROFIT_PCT > 0 and low_price <= tp_level:
-                exec_px = tp_level
+                exec_px = tp_level if cfg_effective.trading_mode == "PAPER" else price
                 reason = f"RSI TAKE PROFIT SHORT intrabar low={low_price:.2f} <= tp={tp_level:.2f}"
                 inserted = execute_and_record("BUY", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
-                    allow_meta=snap["allow_meta_exit"],)
+                    allow_meta=snap["allow_meta_exit"], is_exit=True,)
                 if inserted:
                     close_position(exit_price=exec_px, reason="TAKE_PROFIT_SHORT")
                 return
 
             # SL intrabar
             if STOP_LOSS_PCT > 0 and high_price >= sl_level:
-                exec_px = sl_level
+                exec_px = sl_level if cfg_effective.trading_mode == "PAPER" else price
                 reason = f"RSI STOP LOSS SHORT intrabar high={high_price:.2f} >= sl={sl_level:.2f}"
                 inserted = execute_and_record("BUY", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
-                    allow_meta=snap["allow_meta_exit"],)
+                    allow_meta=snap["allow_meta_exit"], is_exit=True,)
                 if inserted:
                     close_position(exit_price=exec_px, reason="STOP_LOSS_SHORT")
                 return
@@ -913,6 +831,7 @@ def run_strategy(row):
                     cfg_used=cfg_effective, 
                     allow_live_orders=snap["allowed_orders_exit"],
                     allow_meta=snap["allow_meta_exit"],
+                    is_exit=True,
                 )
                 if inserted:
                     close_position(exit_price=price, reason="TIMEOUT")
@@ -1007,6 +926,7 @@ def run_strategy(row):
         cfg_used=cfg_effective, 
         allow_live_orders=snap["allowed_orders_entry"],
         allow_meta=snap["allow_meta_entry"],
+        is_exit=False,
     )
     if not inserted:
         logging.info("RSI: entry blocked/failed -> not opening position.")
@@ -1019,7 +939,8 @@ def run_strategy(row):
         opened = open_position("SHORT", qty_btc, price)
 
     if not opened:
-        logging.warning("RSI: order recorded but position not opened (race/desync). Investigate.")
+        logging.error("RSI DESYNC: order recorded but position not opened -> HALT for safety.")
+        set_mode("HALT", reason="DESYNC: order recorded but position not opened")
         return
 
 
@@ -1033,8 +954,8 @@ LAST_PROCESSED_OPEN_TIME = None
 def main_loop():
     global LAST_PROCESSED_OPEN_TIME
 
-    init_db()
-    upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL, cfg=cfg)
+    ensure_schema()
+    upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
     while True:
         loop_start = time.perf_counter()
         try:

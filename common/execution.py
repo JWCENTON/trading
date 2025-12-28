@@ -43,6 +43,7 @@ def place_live_order(
     panic_disable_trading: bool,
     live_max_notional: float,
     client_order_id: str = None,
+    skip_balance_precheck: bool = False,
 ):
     # --- HARD SAFETY: quote asset ---
     if not symbol.endswith(quote_asset.upper()):
@@ -82,32 +83,33 @@ def place_live_order(
     notional = px * qty_adj
 
     # --- balance pre-check ---
-    try:
-        acct = client.get_account()
-        balances = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
-    except Exception as e:
-        logging.error("LIVE ORDER: failed to fetch account balances: %s", e)
-        return None
-
-    base_asset = _base_asset_from_symbol(symbol, quote_asset)
-    free_base = balances.get(base_asset, 0.0)
-    free_quote = balances.get(quote_asset.upper(), 0.0)
-
-    if side == "SELL":
-        if free_base + 1e-12 < qty_adj:
-            logging.error(
-                "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=SELL need %s=%.8f free=%.8f",
-                symbol, base_asset, qty_adj, free_base
-            )
+    if not skip_balance_precheck:
+        try:
+            acct = client.get_account()
+            balances = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
+        except Exception as e:
+            logging.error("LIVE ORDER: failed to fetch account balances: %s", e)
             return None
 
-    if side == "BUY":
-        if free_quote + 1e-8 < notional:
-            logging.error(
-                "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=BUY need %s≈%.4f free=%.4f (qty=%.8f px=%.2f)",
-                symbol, quote_asset.upper(), notional, free_quote, qty_adj, px
-            )
-            return None
+        base_asset = _base_asset_from_symbol(symbol, quote_asset)
+        free_base = balances.get(base_asset, 0.0)
+        free_quote = balances.get(quote_asset.upper(), 0.0)
+
+        if side == "SELL":
+            if free_base + 1e-12 < qty_adj:
+                logging.error(
+                    "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=SELL need %s=%.8f free=%.8f",
+                    symbol, base_asset, qty_adj, free_base
+                )
+                return None
+
+        if side == "BUY":
+            if free_quote + 1e-8 < notional:
+                logging.error(
+                    "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=BUY need %s≈%.4f free=%.4f (qty=%.8f px=%.2f)",
+                    symbol, quote_asset.upper(), notional, free_quote, qty_adj, px
+                )
+                return None
 
     # --- safety: max notional ---
     if live_max_notional > 0 and notional > live_max_notional:
