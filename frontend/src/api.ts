@@ -1,19 +1,42 @@
 import axios from "axios";
 
-function getApiBaseUrl() {
-  const w = window as any;
-  return (
-    w?.__ENV__?.VITE_API_BASE_URL ||
-    import.meta.env.VITE_API_BASE_URL ||
-    "http://localhost:8001"
-  );
+declare global {
+  interface Window {
+    __ENV__?: Record<string, any>;
+  }
 }
 
-const api = axios.create({
-  baseURL: getApiBaseUrl(),
-});
+function getEnv(name: string): string | undefined {
+  return window?.__ENV__?.[name];
+}
+
+export const API_BASE_URL =
+  getEnv("VITE_API_BASE_URL") ||
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:8000";
+
+export const QUOTE_ASSET =
+  (getEnv("VITE_QUOTE_ASSET") ||
+    import.meta.env.VITE_QUOTE_ASSET ||
+    "USDC").toUpperCase();
+
+if (!API_BASE_URL) {
+  throw new Error("Missing API base URL (VITE_API_BASE_URL).");
+}
+
+export const api = axios.create({ baseURL: API_BASE_URL });
 
 export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPER_TREND";
+
+export type SymbolPair = string;
+
+export const BASE_ASSETS = ["BTC", "ETH", "SOL", "BNB"] as const;
+export type BaseAsset = typeof BASE_ASSETS[number];
+
+export function makeSymbol(base: BaseAsset): SymbolPair {
+  return `${base}${QUOTE_ASSET}`;
+}
+
 
 export interface CandleSummary {
   symbol: string;
@@ -100,8 +123,6 @@ export interface AccountSummary {
   balances: AssetBalance[];
 }
 
-export type SymbolPair = "BTCUSDC" | "ETHUSDC" | "SOLUSDC" | "BNBUSDC";
-
 /** 🔹 Metryki strategii dla (symbol, interval, strategy) */
 export interface StrategyMetrics {
   symbol: string;
@@ -138,6 +159,20 @@ export interface WatchdogEventPage {
   items: WatchdogEvent[];
 }
 
+
+export interface SafetyStatus {
+  environment?: string | null;
+  trading_mode?: string | null;
+  live_orders_enabled?: string | null; // env jest string
+  panic_disable_trading?: string | null;
+}
+
+
+export async function getSafetyStatus() {
+  return (await api.get<SafetyStatus>("/safety/status")).data;
+}
+
+
 export interface RegimePoint {
   symbol: string;
   interval: string;
@@ -150,12 +185,12 @@ export interface RegimePoint {
   shock_z?: number | null;
 }
 
-export async function getRegimeLatest(symbol: SymbolPair = "BTCUSDC", interval="1m") {
+export async function getRegimeLatest(symbol: SymbolPair = makeSymbol("BTC"), interval="1m") {
   return (await api.get<RegimePoint>("/regime/latest", { params: { symbol, interval }})).data;
 }
 
 export async function getWatchdogEvents(
-  symbol: SymbolPair = "BTCUSDC",
+  symbol: SymbolPair = makeSymbol("BTC"),
   interval = "1m",
   strategy: Strategy = "RSI",
   limit = 50,
@@ -181,7 +216,7 @@ export async function getAccountSummary() {
 }
 
 export async function getSummary(
-  symbol: SymbolPair = "BTCUSDC",
+  symbol: SymbolPair = makeSymbol("BTC"),
   interval = "1m"
 ) {
   return (
@@ -192,7 +227,7 @@ export async function getSummary(
 }
 
 export async function getOrders(
-  symbol: SymbolPair = "BTCUSDC",
+  symbol: SymbolPair = makeSymbol("BTC"),
   page = 1,
   pageSize = 50,
   interval = "1m",
@@ -207,7 +242,7 @@ export async function getOrders(
 }
 
 export async function getPnL(
-  symbol: SymbolPair = "BTCUSDC",
+  symbol: SymbolPair = makeSymbol("BTC"),
   interval = "1m",
   strategy: Strategy = "RSI"
 ) {
@@ -219,7 +254,7 @@ export async function getPnL(
 }
 
 export async function getRoundtrips(
-  symbol: SymbolPair = "BTCUSDC",
+  symbol: SymbolPair = makeSymbol("BTC"),
   page = 1,
   pageSize = 50,
   losersOnly = true,
@@ -243,7 +278,7 @@ export async function getRoundtrips(
 
 /** 🔹 API do pobrania metryk (winrate, DD, Sharpe, Z-score...) */
 export async function getMetrics(
-  symbol: SymbolPair = "BTCUSDC",
+  symbol: SymbolPair = makeSymbol("BTC"),
   interval = "1m",
   strategy: Strategy = "RSI"
 ) {

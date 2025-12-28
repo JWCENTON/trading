@@ -1,13 +1,15 @@
 import os
 import time
 import json
-import psycopg2
 import logging
 import pandas as pd
-from datetime import datetime, timezone, date
-from common.db import get_latest_regime
+from datetime import datetime, timezone
+
+import psycopg2
 from psycopg2.extras import execute_batch
 from binance.client import Client
+
+from common.execution import place_live_order
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,71 +22,65 @@ DB_NAME = os.environ.get("DB_NAME", "trading")
 DB_USER = os.environ.get("DB_USER", "botuser")
 DB_PASS = os.environ.get("DB_PASS", "botpass")
 
-# <<< NAZWA STRATEGII >>>
-STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "BBRANGE")
-
-TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE (na razie PAPER)
-
 SYMBOL = os.environ.get("SYMBOL", "BTCUSDT")
 INTERVAL = os.environ.get("INTERVAL", "1m")
+
+STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND")
+TRADING_MODE = os.environ.get("TRADING_MODE", "PAPER").upper()  # PAPER | LIVE
+LIVE_ORDERS_ENABLED = os.environ.get("LIVE_ORDERS_ENABLED", "0") == "1"
+
+EMA_FAST = int(os.environ.get("EMA_FAST", "21"))
+EMA_SLOW = int(os.environ.get("EMA_SLOW", "55"))
 
 RSI_PERIOD = int(os.environ.get("RSI_PERIOD", "14"))
 EMA_PERIOD = int(os.environ.get("EMA_PERIOD", "21"))
 
-PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "100"))
+TREND_FILTER_PCT = float(os.environ.get("TREND_FILTER_PCT", "0.001"))  # 0.1%
+ENTRY_BUFFER_PCT = float(os.environ.get("ENTRY_BUFFER_PCT", "0.0015"))  # 0.15%
 
-STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8"))       # 0.8%
-TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.0"))   # 1.0%
-
-# Dla zgodności z innymi strategiami (mogą być nadpisywane przez strategy_params)
 RSI_OVERSOLD = float(os.environ.get("RSI_OVERSOLD", "25"))
 RSI_OVERBOUGHT = float(os.environ.get("RSI_OVERBOUGHT", "75"))
 
-# 🔹 Specyficzne filtry RSI dla BBRANGE
-RSI_LONG_MAX = float(os.environ.get("RSI_LONG_MAX", "45"))                  # max RSI do LONG
-RSI_SHORT_MIN = float(os.environ.get("RSI_SHORT_MIN", "55"))                # min RSI do SHORT
-RSI_BLOCK_EXTREME_LOW = float(os.environ.get("RSI_BLOCK_EXTREME_LOW", "10"))   # blokada przy ultra low
-RSI_BLOCK_EXTREME_HIGH = float(os.environ.get("RSI_BLOCK_EXTREME_HIGH", "90")) # blokada przy ultra high
+PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "100"))
+
+STOP_LOSS_PCT = float(os.environ.get("STOP_LOSS_PCT", "0.8"))      # %
+TAKE_PROFIT_PCT = float(os.environ.get("TAKE_PROFIT_PCT", "1.2"))  # %
 
 DISABLE_HOURS = os.environ.get("DISABLE_HOURS", "")
-DISABLE_HOURS_SET = {int(h.strip()) for h in DISABLE_HOURS.split(",") if h.strip() != ""}
+DISABLE_HOURS_SET = {
+    int(h.strip())
+    for h in DISABLE_HOURS.split(",")
+    if h.strip() != ""
+}
+
+QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
+if not SYMBOL.endswith(QUOTE_ASSET):
+    raise RuntimeError(f"SYMBOL={SYMBOL} does not match QUOTE_ASSET={QUOTE_ASSET}")
 
 API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
+
 client = Client(api_key=API_KEY, api_secret=API_SECRET)
 
-# <<< Trend buffer – jak daleko od EMA21 uznajemy trend >>>
 TREND_BUFFER = float(os.environ.get("TREND_BUFFER", "0.001"))  # 0.1%
-
-# Max czas pozycji
 MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
 
-# Dzienny SL (jeśli <= 0 -> wyłączony)
+# jeśli DAILY_MAX_LOSS_PCT <= 0 -> dzienny SL wyłączony
 DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
 
-# Ilość na trade (PAPER)
 ORDER_QTY_BTC = float(os.environ.get("ORDER_QTY_BTC", "0.0001"))
+MAX_DIST_FROM_EMA_FAST_PCT = float(os.environ.get("MAX_DIST_FROM_EMA_FAST_PCT", "0.6"))
 
-# <<< Parametry Bollingera >>>
-BB_PERIOD = int(os.environ.get("BB_PERIOD", "20"))
-BB_STD = float(os.environ.get("BB_STD", "2.0"))
-# Minimalna szerokość pasma (jako ułamek, np 0.0015 = 0.15%)
-MIN_BB_WIDTH_PCT = float(os.environ.get("MIN_BB_WIDTH_PCT", "0.0015"))
-
-# ====================
+# =================
 # Regime
-# ====================
+# =================
+
+from common.db import get_latest_regime
+from datetime import datetime, timezone
 
 REGIME_ENABLED = os.environ.get("REGIME_ENABLED", "0") == "1"
 REGIME_MODE = os.environ.get("REGIME_MODE", "DRY_RUN").strip().upper()  # DRY_RUN | ENFORCE
 REGIME_MAX_AGE_SECONDS = int(os.environ.get("REGIME_MAX_AGE_SECONDS", "180"))
-
-
-def _json_default(o):
-    if isinstance(o, (datetime, date)):
-        return o.isoformat()
-    return str(o)
-
 
 def regime_allows(strategy_name: str, symbol: str, interval: str):
     """
@@ -155,12 +151,12 @@ def heartbeat(info: dict):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO public.bot_heartbeat(symbol, strategy, interval, last_seen, info)
-        VALUES (%s, %s, %s, now(), %s::jsonb)
-        ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
+        INSERT INTO bot_heartbeat(symbol, strategy, last_seen, info)
+        VALUES (%s, %s, now(), %s::jsonb)
+        ON CONFLICT (symbol, strategy)
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info)),
+        (SYMBOL, STRATEGY_NAME, json.dumps(info)),
     )
     conn.commit()
     cur.close()
@@ -216,7 +212,7 @@ def log_regime_gate_event(
             mode,
             bool(would_block) if would_block is not None else None,
             rmeta.get("why"),
-            json.dumps(meta, default=_json_default),
+            json.dumps(meta),
         ),
     )
     conn.commit()
@@ -287,7 +283,7 @@ def open_position(side: str, qty: float, entry_price: float) -> bool:
     if cur.fetchone():
         cur.close()
         conn.close()
-        logging.info("BBRANGE: open_position skipped - position already OPEN.")
+        logging.info("TREND: open_position skipped - position already OPEN.")
         return False
 
     cur.execute(
@@ -300,7 +296,7 @@ def open_position(side: str, qty: float, entry_price: float) -> bool:
     conn.commit()
     cur.close()
     conn.close()
-    logging.info("BBRANGE: position OPENED side=%s qty=%.8f entry=%.2f", side, float(qty), float(entry_price))
+    logging.info("TREND: position OPENED side=%s qty=%.8f entry=%.2f", side, float(qty), float(entry_price))
     return True
 
 
@@ -321,9 +317,9 @@ def close_position(exit_price: float, reason: str) -> bool:
     cur.close()
     conn.close()
     if closed:
-        logging.info("BBRANGE: position CLOSED reason=%s exit=%.2f", reason, float(exit_price))
+        logging.info("TREND: position CLOSED reason=%s exit=%.2f", reason, float(exit_price))
     else:
-        logging.info("BBRANGE: close_position skipped - no OPEN position found.")
+        logging.info("TREND: close_position skipped - no OPEN position found.")
     return closed
 
 
@@ -350,9 +346,8 @@ def init_db():
             UNIQUE(symbol, interval, open_time)
         );
         """
-    )    
+    )
 
-    # 🔹 Strategy params
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS strategy_params (
@@ -382,84 +377,92 @@ def init_db():
         """
     )
 
-    # Bot control / heartbeat / positions
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS bot_control (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      strategy TEXT NOT NULL,
-      mode TEXT NOT NULL DEFAULT 'NORMAL',
-      reason TEXT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(symbol, strategy)
-    );
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bot_heartbeat (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            interval TEXT NOT NULL,
-            last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
-            info JSONB,
-            UNIQUE(symbol, strategy, interval)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bot_control (
+          id SERIAL PRIMARY KEY,
+          symbol TEXT NOT NULL,
+          strategy TEXT NOT NULL,
+          mode TEXT NOT NULL DEFAULT 'NORMAL',
+          reason TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE(symbol, strategy)
         );
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS positions (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      strategy TEXT NOT NULL,
-      interval TEXT NOT NULL,
-      status TEXT NOT NULL,        -- OPEN | CLOSED
-      side TEXT NOT NULL,          -- LONG | SHORT
-      qty NUMERIC NOT NULL,
-      entry_price NUMERIC NOT NULL,
-      entry_time TIMESTAMPTZ NOT NULL DEFAULT now(),
-      exit_price NUMERIC,
-      exit_time TIMESTAMPTZ,
-      exit_reason TEXT
-    );
-    """)
-
-    cur.execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_open
-    ON positions(symbol, strategy, interval)
-    WHERE status='OPEN';
-    """)
+        """
+    )
 
     cur.execute(
         """
-        INSERT INTO bot_control(symbol, strategy, interval, mode)
-        VALUES (%s, %s, %s, 'NORMAL')
-        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
+        CREATE TABLE IF NOT EXISTS bot_heartbeat (
+          id SERIAL PRIMARY KEY,
+          symbol TEXT NOT NULL,
+          strategy TEXT NOT NULL,
+          last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+          info JSONB,
+          UNIQUE(symbol, strategy)
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS positions (
+          id SERIAL PRIMARY KEY,
+          symbol TEXT NOT NULL,
+          strategy TEXT NOT NULL,
+          interval TEXT NOT NULL,
+          status TEXT NOT NULL,
+          side TEXT NOT NULL,
+          qty NUMERIC NOT NULL,
+          entry_price NUMERIC NOT NULL,
+          entry_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+          exit_price NUMERIC,
+          exit_time TIMESTAMPTZ,
+          exit_reason TEXT
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_open
+        ON positions(symbol, strategy, interval)
+        WHERE status='OPEN';
+        """
+    )
+
+    cur.execute(
+        """
+        INSERT INTO bot_control(symbol, strategy, mode)
+        VALUES (%s, %s, 'NORMAL')
+        ON CONFLICT (symbol, strategy) DO NOTHING;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
+        (SYMBOL, STRATEGY_NAME),
     )
 
     conn.commit()
 
-    # seed parametrów z ENV (jak TREND) – nie nadpisuje DB
     seed_default_params_from_env(conn)
 
     cur.close()
     conn.close()
-    logging.info("DB initialized for BBRANGE.")
+    logging.info("DB initialized (candles, simulated_orders, strategy tables).")
 
 
 def seed_default_params_from_env(conn):
-    global STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER
-    global RSI_LONG_MAX, RSI_SHORT_MIN, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH
-    global BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT, ORDER_QTY_BTC
+    global EMA_FAST, EMA_SLOW
+    global RSI_OVERSOLD, RSI_OVERBOUGHT
+    global STOP_LOSS_PCT, TAKE_PROFIT_PCT
+    global MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT
+    global TREND_BUFFER, TREND_FILTER_PCT, ENTRY_BUFFER_PCT
+    global ORDER_QTY_BTC, MAX_DIST_FROM_EMA_FAST_PCT
 
     cur = conn.cursor()
     cur.execute(
         """
         SELECT param_name, param_value
         FROM strategy_params
-        WHERE symbol=%s AND strategy=%s
+        WHERE symbol = %s AND strategy = %s
         """,
         (SYMBOL, STRATEGY_NAME),
     )
@@ -467,22 +470,23 @@ def seed_default_params_from_env(conn):
     existing = {name: float(value) for (name, value) in existing_rows}
 
     defaults = {
+        "EMA_FAST": float(EMA_FAST),
+        "EMA_SLOW": float(EMA_SLOW),
+        "RSI_OVERSOLD": float(RSI_OVERSOLD),
+        "RSI_OVERBOUGHT": float(RSI_OVERBOUGHT),
         "STOP_LOSS_PCT": float(STOP_LOSS_PCT),
         "TAKE_PROFIT_PCT": float(TAKE_PROFIT_PCT),
         "MAX_POSITION_MINUTES": float(MAX_POSITION_MINUTES),
         "DAILY_MAX_LOSS_PCT": float(DAILY_MAX_LOSS_PCT),
         "TREND_BUFFER": float(TREND_BUFFER),
+        "TREND_FILTER_PCT": float(TREND_FILTER_PCT),
+        "ENTRY_BUFFER_PCT": float(ENTRY_BUFFER_PCT),
         "ORDER_QTY_BTC": float(ORDER_QTY_BTC),
-        "BB_PERIOD": float(BB_PERIOD),
-        "BB_STD": float(BB_STD),
-        "MIN_BB_WIDTH_PCT": float(MIN_BB_WIDTH_PCT),
-        "RSI_LONG_MAX": float(RSI_LONG_MAX),
-        "RSI_SHORT_MIN": float(RSI_SHORT_MIN),
-        "RSI_BLOCK_EXTREME_LOW": float(RSI_BLOCK_EXTREME_LOW),
-        "RSI_BLOCK_EXTREME_HIGH": float(RSI_BLOCK_EXTREME_HIGH),
+        "MAX_DIST_FROM_EMA_FAST_PCT": float(MAX_DIST_FROM_EMA_FAST_PCT),
     }
 
     inserted_any = False
+
     for name, value in defaults.items():
         if name in existing:
             continue
@@ -495,10 +499,12 @@ def seed_default_params_from_env(conn):
             """,
             (SYMBOL, STRATEGY_NAME, name, value),
         )
+
         cur.execute(
             """
-            INSERT INTO strategy_params_history(symbol, strategy, param_name, old_value, new_value, source)
-            VALUES (%s, %s, %s, %s, %s, %s);
+            INSERT INTO strategy_params_history
+            (symbol, strategy, param_name, old_value, new_value, source)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (SYMBOL, STRATEGY_NAME, name, None, value, "MANUAL"),
         )
@@ -506,14 +512,27 @@ def seed_default_params_from_env(conn):
 
     if inserted_any:
         conn.commit()
-        logging.info("Seeded default BBRANGE params from ENV for %s/%s.", SYMBOL, STRATEGY_NAME)
+        logging.info(
+            "Seeded default TREND params from ENV for %s / %s: %s",
+            SYMBOL,
+            STRATEGY_NAME,
+            ", ".join(defaults.keys()),
+        )
+    else:
+        logging.info(
+            "TREND params already exist in DB for %s / %s – skipping ENV seed.",
+            SYMBOL,
+            STRATEGY_NAME,
+        )
+
     cur.close()
 
 
 def load_runtime_params():
-    global STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER
-    global RSI_LONG_MAX, RSI_SHORT_MIN, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH
-    global BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT, ORDER_QTY_BTC
+    global RSI_OVERSOLD, RSI_OVERBOUGHT, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+    global MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER
+    global TREND_FILTER_PCT, ENTRY_BUFFER_PCT, EMA_FAST, EMA_SLOW
+    global ORDER_QTY_BTC, MAX_DIST_FROM_EMA_FAST_PCT
 
     conn = get_db_conn()
     cur = conn.cursor()
@@ -521,7 +540,7 @@ def load_runtime_params():
         """
         SELECT param_name, param_value
         FROM strategy_params
-        WHERE symbol=%s AND strategy=%s
+        WHERE symbol = %s AND strategy = %s
         """,
         (SYMBOL, STRATEGY_NAME),
     )
@@ -529,53 +548,97 @@ def load_runtime_params():
     cur.close()
     conn.close()
 
-    params = {name: float(value) for (name, value) in rows} if rows else {}
+    if not rows:
+        logging.info("TREND %s: no strategy_params rows found, using ENV/defaults.", SYMBOL)
+        return
+
+    params = {name: float(value) for (name, value) in rows}
 
     def clamp(val, lo, hi):
         return max(lo, min(hi, val))
+
+    if "EMA_FAST" in params:
+        EMA_FAST = int(clamp(params["EMA_FAST"], 2, 200))
+    if "EMA_SLOW" in params:
+        EMA_SLOW = int(clamp(params["EMA_SLOW"], max(EMA_FAST + 1, 3), 400))
+
+    if "RSI_OVERSOLD" in params:
+        RSI_OVERSOLD = clamp(params["RSI_OVERSOLD"], 5.0, 40.0)
+    if "RSI_OVERBOUGHT" in params:
+        RSI_OVERBOUGHT = clamp(params["RSI_OVERBOUGHT"], 60.0, 95.0)
 
     if "STOP_LOSS_PCT" in params:
         STOP_LOSS_PCT = clamp(params["STOP_LOSS_PCT"], 0.1, 5.0)
     if "TAKE_PROFIT_PCT" in params:
         TAKE_PROFIT_PCT = clamp(params["TAKE_PROFIT_PCT"], 0.1, 10.0)
+
     if "MAX_POSITION_MINUTES" in params:
         MAX_POSITION_MINUTES = int(clamp(params["MAX_POSITION_MINUTES"], 5, 24 * 60))
+
     if "DAILY_MAX_LOSS_PCT" in params:
-        # tutaj dopuszczamy 0.0 jako "wyłączone"
         DAILY_MAX_LOSS_PCT = clamp(params["DAILY_MAX_LOSS_PCT"], 0.0, 10.0)
+
     if "TREND_BUFFER" in params:
         TREND_BUFFER = clamp(params["TREND_BUFFER"], 0.0001, 0.02)
+    if "TREND_FILTER_PCT" in params:
+        TREND_FILTER_PCT = clamp(params["TREND_FILTER_PCT"], 0.0001, 0.05)
+    if "ENTRY_BUFFER_PCT" in params:
+        ENTRY_BUFFER_PCT = clamp(params["ENTRY_BUFFER_PCT"], 0.0005, 0.05)
 
     if "ORDER_QTY_BTC" in params:
         ORDER_QTY_BTC = clamp(params["ORDER_QTY_BTC"], 0.00001, 1.0)
+    if "MAX_DIST_FROM_EMA_FAST_PCT" in params:
+        MAX_DIST_FROM_EMA_FAST_PCT = clamp(params["MAX_DIST_FROM_EMA_FAST_PCT"], 0.05, 5.0)
 
-    if "BB_PERIOD" in params:
-        BB_PERIOD = int(clamp(params["BB_PERIOD"], 10, 200))
-    if "BB_STD" in params:
-        BB_STD = clamp(params["BB_STD"], 1.0, 4.0)
-    if "MIN_BB_WIDTH_PCT" in params:
-        MIN_BB_WIDTH_PCT = clamp(params["MIN_BB_WIDTH_PCT"], 0.0005, 0.01)
-
-    if "RSI_LONG_MAX" in params:
-        RSI_LONG_MAX = clamp(params["RSI_LONG_MAX"], 5.0, 60.0)
-    if "RSI_SHORT_MIN" in params:
-        RSI_SHORT_MIN = clamp(params["RSI_SHORT_MIN"], 40.0, 95.0)
-    if "RSI_BLOCK_EXTREME_LOW" in params:
-        RSI_BLOCK_EXTREME_LOW = clamp(params["RSI_BLOCK_EXTREME_LOW"], 0.0, 30.0)
-    if "RSI_BLOCK_EXTREME_HIGH" in params:
-        RSI_BLOCK_EXTREME_HIGH = clamp(params["RSI_BLOCK_EXTREME_HIGH"], 70.0, 100.0)
+    min_needed = ENTRY_BUFFER_PCT * 100.0
+    if MAX_DIST_FROM_EMA_FAST_PCT < min_needed:
+        logging.info(
+            "TREND: MAX_DIST_FROM_EMA_FAST_PCT %.2f%% < ENTRY_BUFFER_PCT(min) %.2f%% -> adjusting to %.2f%%",
+            MAX_DIST_FROM_EMA_FAST_PCT, min_needed, min_needed
+        )
+        MAX_DIST_FROM_EMA_FAST_PCT = min_needed
 
     logging.info(
-        "RUNTIME_PARAMS|symbol=%s|strategy=%s|STOP_LOSS_PCT=%.4f|TAKE_PROFIT_PCT=%.4f|"
-        "MAX_POSITION_MINUTES=%d|DAILY_MAX_LOSS_PCT=%.4f|TREND_BUFFER=%.5f|"
-        "ORDER_QTY_BTC=%.8f|BB_PERIOD=%d|BB_STD=%.3f|MIN_BB_WIDTH_PCT=%.5f|"
-        "RSI_LONG_MAX=%.2f|RSI_SHORT_MIN=%.2f|RSI_BLOCK_EXTREME_LOW=%.2f|RSI_BLOCK_EXTREME_HIGH=%.2f",
-        SYMBOL, STRATEGY_NAME,
-        STOP_LOSS_PCT, TAKE_PROFIT_PCT,
-        MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER,
-        ORDER_QTY_BTC, BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT,
-        RSI_LONG_MAX, RSI_SHORT_MIN, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH,
+        "RUNTIME_PARAMS|symbol=%s|strategy=%s|EMA_FAST=%d|EMA_SLOW=%d|"
+        "TREND_FILTER_PCT=%.4f|ENTRY_BUFFER_PCT=%.4f|TREND_BUFFER=%.4f|"
+        "STOP_LOSS_PCT=%.2f|TAKE_PROFIT_PCT=%.2f|MAX_POSITION_MINUTES=%d|"
+        "DAILY_MAX_LOSS_PCT=%.2f|RSI_OVERSOLD=%.1f|RSI_OVERBOUGHT=%.1f"
+        "|ORDER_QTY_BTC=%.8f|MAX_DIST_FROM_EMA_FAST_PCT=%.2f",
+        SYMBOL,
+        STRATEGY_NAME,
+        EMA_FAST,
+        EMA_SLOW,
+        TREND_FILTER_PCT,
+        ENTRY_BUFFER_PCT,
+        TREND_BUFFER,
+        STOP_LOSS_PCT,
+        TAKE_PROFIT_PCT,
+        MAX_POSITION_MINUTES,
+        DAILY_MAX_LOSS_PCT,
+        RSI_OVERSOLD,
+        RSI_OVERBOUGHT,
+        ORDER_QTY_BTC,
+        MAX_DIST_FROM_EMA_FAST_PCT,
     )
+
+
+def get_latest_candles(limit: int):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT symbol, interval, open_time, close, ema_21, rsi_14
+        FROM candles
+        WHERE symbol = %s AND interval = %s
+        ORDER BY open_time DESC
+        LIMIT %s
+        """,
+        (SYMBOL, INTERVAL, limit),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
 
 
 def insert_simulated_order(
@@ -617,16 +680,47 @@ def insert_simulated_order(
     )
     inserted = cur.fetchone() is not None
     conn.commit()
-    cur.close()
-    conn.close()
-
     if inserted:
-        logging.info("BBRANGE: Simulated %s at %.2f qty=%.8f (reason=%s)", side, float(price), float(qty_btc), reason)
+        logging.info(
+            "Simulated %s order at %.2f BTC qty=%.8f (reason=%s, strategy=%s)",
+            side, float(price), float(qty_btc), reason, strategy,
+        )
     else:
         logging.info(
-            "BBRANGE: Simulated order skipped by DB guard (symbol=%s interval=%s strategy=%s candle_open_time=%s).",
+            "Simulated order skipped by DB guard (symbol=%s interval=%s strategy=%s candle_open_time=%s).",
             symbol, interval, strategy, candle_open_time,
         )
+    cur.close()
+    conn.close()
+    return inserted
+
+
+def execute_and_record(side: str, price: float, qty_btc: float, reason: str, candle_open_time):
+    """
+    Jeden punkt prawdy:
+    - jeśli LIVE: najpierw giełda (place_live_order)
+    - potem zapis do simulated_orders (na razie jako ledger dla UI)
+    Zwraca: inserted(bool)
+    """
+    if TRADING_MODE == "LIVE":
+        # jeśli LIVE_ORDERS_ENABLED=0 -> place_live_order zwróci None i to jest OK (tryb "shadow")
+        resp = place_live_order(client, SYMBOL, side, qty_btc)
+
+        # jeżeli włączyłeś LIVE_ORDERS_ENABLED=1, a resp=None -> traktuj to jako błąd
+        if LIVE_ORDERS_ENABLED and resp is None:
+            raise RuntimeError("LIVE_ORDERS_ENABLED=1 but no exchange response")
+
+    inserted = insert_simulated_order(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        side=side,
+        price=price,
+        qty_btc=qty_btc,
+        reason=reason,
+        rsi_14=None,
+        ema_21=None,
+        candle_open_time=candle_open_time,
+    )
     return inserted
 
 
@@ -636,40 +730,26 @@ def safe_close_if_open(current_price: float, candle_open_time):
         return False
 
     _, side, qty, _, _ = pos
-    side_u = str(side).upper()
 
-    if side_u == "LONG":
+    if side == "LONG":
         exit_side = "SELL"
         reason = "PANIC CLOSE LONG"
     else:
         exit_side = "BUY"
         reason = "PANIC CLOSE SHORT"
 
-    inserted = insert_simulated_order(
-        symbol=SYMBOL,
-        interval=INTERVAL,
+    inserted = execute_and_record(
         side=exit_side,
         price=current_price,
         qty_btc=float(qty),
         reason=reason,
-        rsi_14=None,
-        ema_21=None,
         candle_open_time=candle_open_time,
     )
     if not inserted:
-        logging.info("BBRANGE: panic close blocked by DB guard (already traded this candle).")
+        logging.info("TREND: exit blocked by DB guard (already traded this candle) -> skipping close.")
         return False
 
     return close_position(exit_price=current_price, reason="PANIC")
-
-
-def get_trend(close: float, ema21: float, buffer_pct: float = TREND_BUFFER) -> str:
-    if close > ema21 * (1.0 + buffer_pct):
-        return "UP"
-    elif close < ema21 * (1.0 - buffer_pct):
-        return "DOWN"
-    else:
-        return "FLAT"
 
 
 def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> float:
@@ -684,11 +764,12 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
         """
         SELECT created_at, side, price, quantity_btc
         FROM simulated_orders
-        WHERE symbol=%s AND interval=%s AND strategy=%s
+        WHERE symbol = %s AND interval = %s AND strategy = %s
         ORDER BY created_at ASC
         """,
         (symbol, interval, STRATEGY_NAME),
     )
+
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -715,275 +796,237 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
             cash += qty_f * price_f
             btc -= qty_f
 
+    equity_now = cash + btc * current_price
+
     if equity_start_today is None:
         return 0.0
 
-    equity_now = cash + btc * current_price
     return (equity_now - equity_start_today) / equity_start_today * 100.0
 
 
-def get_latest_candles(limit=200):
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT symbol, interval, open_time, close, ema_21, rsi_14
-        FROM candles
-        WHERE symbol=%s AND interval=%s
-        ORDER BY open_time DESC
-        LIMIT %s
-        """,
-        (SYMBOL, INTERVAL, limit),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-
-def run_strategy():
-    rows = get_latest_candles(limit=max(BB_PERIOD + 30, 120))
-    if not rows or len(rows) < BB_PERIOD + 5:
-        logging.info("BBRANGE: not enough candles yet (have %d).", len(rows) if rows else 0)
+def run_trend_strategy():
+    rows = get_latest_candles(limit=max(EMA_SLOW + 20, 100))
+    if not rows or len(rows) < EMA_SLOW + 5:
+        logging.info("TREND: not enough candles yet (have %d).", len(rows) if rows else 0)
         return
 
     rows_asc = list(reversed(rows))
 
     df = pd.DataFrame(
         [
-            {
-                "open_time": r[2],
-                "close": float(r[3]),
-                "ema_21": float(r[4]) if r[4] is not None else None,
-                "rsi_14": float(r[5]) if r[5] is not None else None,
-            }
+            {"symbol": r[0], "interval": r[1], "open_time": r[2], "close": float(r[3])}
             for r in rows_asc
         ]
     )
 
-    if df["ema_21"].isna().iloc[-1]:
-        logging.info("BBRANGE: EMA not ready yet, skipping.")
-        return
-
     closes = df["close"]
-    mid = closes.rolling(window=BB_PERIOD).mean()
-    std = closes.rolling(window=BB_PERIOD).std()
+    df["ema_fast"] = closes.ewm(span=EMA_FAST, adjust=False).mean()
+    df["ema_slow"] = closes.ewm(span=EMA_SLOW, adjust=False).mean()
 
-    df["bb_mid"] = mid
-    df["bb_upper"] = mid + BB_STD * std
-    df["bb_lower"] = mid - BB_STD * std
+    if df["ema_slow"].isna().iloc[-1]:
+        logging.info("TREND: ema_slow not ready yet, skipping.")
+        return
 
     last = df.iloc[-1]
-    open_time = last["open_time"]
+    prev = df.iloc[-2]
+
     price = float(last["close"])
-    ema_val = float(last["ema_21"])
-    rsi_val = last["rsi_14"]
+    prev_price = float(prev["close"])
+    ema_fast = float(last["ema_fast"])
+    ema_slow = float(last["ema_slow"])
+    ema_fast_prev = float(prev["ema_fast"])
+    open_time = last["open_time"]
 
-    bb_mid = last["bb_mid"]
-    bb_upper = last["bb_upper"]
-    bb_lower = last["bb_lower"]
-
-    # --- Guard: bands must be ready before computing width ---
-    if pd.isna(bb_mid) or pd.isna(bb_upper) or pd.isna(bb_lower) or float(bb_mid) == 0.0:
-        logging.info("BBRANGE: Bollinger bands not ready yet (pre-heartbeat).")
+    mode = get_mode()
+    if mode == "HALT":
         return
-    
-    bb_width_pct = None
-    if bb_lower is not None and bb_mid is not None and bb_upper is not None:
-        if not pd.isna(bb_lower) and not pd.isna(bb_mid) and not pd.isna(bb_upper):
-            mid = float(bb_mid)
-            if mid != 0:
-                bb_width_pct = (float(bb_upper) - float(bb_lower)) / float(bb_mid)  # fraction, e.g. 0.003
 
-    trend = get_trend(price, ema_val)
+    if mode == "PANIC":
+        safe_close_if_open(current_price=float(price), candle_open_time=open_time)
+        set_mode("HALT", reason="Panic executed; halting.")
+        return
+
+    trend = "FLAT"
+    if ema_fast > ema_slow * (1.0 + TREND_FILTER_PCT):
+        trend = "UP"
+    elif ema_fast < ema_slow * (1.0 - TREND_FILTER_PCT):
+        trend = "DOWN"
+
+    logging.info("TREND: price=%.2f ema_fast=%.2f ema_slow=%.2f trend=%s", price, ema_fast, ema_slow, trend)
 
     allow_gate, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
+    pos = get_open_position()
     heartbeat({
         "price": float(price),
         "open_time": str(open_time),
-        "ema_21": float(ema_val),
-        "rsi_14": float(rsi_val) if (rsi_val is not None and not pd.isna(rsi_val)) else None,
-        "bb_lower": float(bb_lower),
-        "bb_mid": float(bb_mid),
-        "bb_upper": float(bb_upper),
-        "bb_width_pct": float(bb_width_pct) if bb_width_pct is not None else None,
         "trend": trend,
+        "ema_fast": float(ema_fast),
+        "ema_slow": float(ema_slow),
+        "has_position": bool(pos is not None),
         "regime_enabled": bool(rmeta_gate.get("enabled", False)),
         "regime": rmeta_gate.get("regime"),
         "regime_mode": rmeta_gate.get("mode"),
         "regime_would_block": rmeta_gate.get("would_block"),
-        "regime_why": rmeta_gate.get("why"),          
+        "regime_why": rmeta_gate.get("why"),         
         "regime_reason": rmeta_gate.get("reason"), 
         "regime_ts": str(rmeta_gate.get("ts")),
         "regime_age_s": rmeta_gate.get("age_s"),
     })
 
-    mode = get_mode()
-    if mode == "HALT":
-        return
-    if mode == "PANIC":
-        safe_close_if_open(current_price=price, candle_open_time=open_time)
-        set_mode("HALT", reason="Panic executed; halting.")
-        return
-
-    if pd.isna(bb_mid) or pd.isna(bb_upper) or pd.isna(bb_lower):
-        logging.info("BBRANGE: Bollinger bands not ready yet.")
-        return
-
-    if rsi_val is None or pd.isna(rsi_val):
-        logging.info("BBRANGE: RSI not ready yet, skipping.")
-        return
-    rsi_val = float(rsi_val)
-
-    if bb_width_pct < MIN_BB_WIDTH_PCT:
-        logging.info(
-            "BBRANGE: band too tight (width=%.4f%% < %.4f%%), skipping.",
-            bb_width_pct * 100.0,
-            MIN_BB_WIDTH_PCT * 100.0,
-        )
-        return
-
-    trend = get_trend(price, ema_val)
-    logging.info(
-        "BBRANGE: price=%.2f ema=%.2f trend=%s bb_lower=%.2f bb_mid=%.2f bb_upper=%.2f width=%.3f%% rsi=%.2f",
-        price, ema_val, trend, bb_lower, bb_mid, bb_upper, bb_width_pct * 100.0, rsi_val,
-    )
-
-    # =========================
-    # 1) HARD-TRUTH: pozycja z positions (jak TREND/RSI)
-    # =========================
     pos = get_open_position()
     has_position = pos is not None
 
     if has_position:
-        pos_id, pos_side, pos_qty, pos_entry_price, pos_entry_time = pos
-        pos_side_u = str(pos_side).upper()
-        pos_qty_f = float(pos_qty)
-        pos_entry_price_f = float(pos_entry_price)
+        _, pos_side, pos_qty, pos_entry_price, pos_entry_time = pos
+        pos_side = str(pos_side).upper()
+        pos_qty = float(pos_qty)
+        pos_entry_price = float(pos_entry_price)
 
-        # --- SL/TP
-        if pos_side_u == "LONG":
-            change_pct = (price - pos_entry_price_f) / pos_entry_price_f * 100.0
+        # --- EXIT LOGIC ---
+        if pos_side == "LONG":
+            change_pct = (price - pos_entry_price) / pos_entry_price * 100.0
 
             if TAKE_PROFIT_PCT > 0 and change_pct >= TAKE_PROFIT_PCT:
-                reason = f"BBRANGE TAKE PROFIT LONG {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    SYMBOL, INTERVAL, "SELL", price, pos_qty_f, reason,
-                    rsi_val, ema_val, open_time
+                reason = f"TREND TAKE PROFIT LONG {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
+                inserted = execute_and_record(
+                    side="SELL",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
-                if inserted:
-                    close_position(exit_price=price, reason="TAKE_PROFIT")
+                if not inserted:
+                    logging.info("TREND: exit blocked by DB guard -> skipping close.")
+                    return
+
+                closed = close_position(exit_price=price, reason="TAKE_PROFIT")
+                if not closed:
+                    logging.info("TREND: exit inserted but position was not OPEN (race/restart).")
                 return
 
             drop_pct = -change_pct
-            if drop_pct >= STOP_LOSS_PCT:
-                reason = f"BBRANGE STOP LOSS LONG {drop_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    SYMBOL, INTERVAL, "SELL", price, pos_qty_f, reason,
-                    rsi_val, ema_val, open_time
+            if STOP_LOSS_PCT > 0 and drop_pct >= STOP_LOSS_PCT:
+                reason = f"TREND STOP LOSS LONG {drop_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
+                inserted = execute_and_record(
+                    side="SELL",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
-                if inserted:
-                    close_position(exit_price=price, reason="STOP_LOSS")
+                if not inserted:
+                    logging.info("TREND: exit blocked by DB guard -> skipping close.")
+                    return
+
+                closed = close_position(exit_price=price, reason="TAKE_PROFIT")
+                if not closed:
+                    logging.info("TREND: exit inserted but position was not OPEN (race/restart).")
                 return
 
-        elif pos_side_u == "SHORT":
-            change_pct = (pos_entry_price_f - price) / pos_entry_price_f * 100.0
+        elif pos_side == "SHORT":
+            change_pct = (pos_entry_price - price) / pos_entry_price * 100.0
 
             if TAKE_PROFIT_PCT > 0 and change_pct >= TAKE_PROFIT_PCT:
-                reason = f"BBRANGE TAKE PROFIT SHORT {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    SYMBOL, INTERVAL, "BUY", price, pos_qty_f, reason,
-                    rsi_val, ema_val, open_time
+                reason = f"TREND TAKE PROFIT SHORT {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
+                inserted = execute_and_record(
+                    side="BUY",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
-                if inserted:
-                    close_position(exit_price=price, reason="TAKE_PROFIT_SHORT")
+                if not inserted:
+                    logging.info("TREND: exit blocked by DB guard -> skipping close.")
+                    return
+                close_position(exit_price=price, reason="TAKE_PROFIT_SHORT")
                 return
 
             rise_pct = -change_pct
-            if rise_pct >= STOP_LOSS_PCT:
-                reason = f"BBRANGE STOP LOSS SHORT {rise_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
-                inserted = insert_simulated_order(
-                    SYMBOL, INTERVAL, "BUY", price, pos_qty_f, reason,
-                    rsi_val, ema_val, open_time
+            if STOP_LOSS_PCT > 0 and rise_pct >= STOP_LOSS_PCT:
+                reason = f"TREND STOP LOSS SHORT {rise_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
+                inserted = execute_and_record(
+                    side="BUY",
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason,
+                    candle_open_time=open_time,
                 )
-                if inserted:
-                    close_position(exit_price=price, reason="STOP_LOSS_SHORT")
+                if not inserted:
+                    logging.info("TREND: exit blocked by DB guard -> skipping close.")
+                    return
+                close_position(exit_price=price, reason="STOP_LOSS_SHORT")
                 return
 
-        # --- TIMEOUT: liczony od entry_time
+        # TIMEOUT
         if MAX_POSITION_MINUTES > 0 and pos_entry_time is not None:
             if pos_entry_time.tzinfo is None:
                 pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
 
             age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
             if age_minutes >= MAX_POSITION_MINUTES:
-                side_timeout = "SELL" if pos_side_u == "LONG" else "BUY"
-                reason_timeout = f"BBRANGE TIMEOUT {pos_side_u} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
-                inserted = insert_simulated_order(
-                    SYMBOL, INTERVAL, side_timeout, price, pos_qty_f, reason_timeout,
-                    rsi_val, ema_val, open_time
+                side_timeout = "SELL" if pos_side == "LONG" else "BUY"
+                reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
+                inserted = execute_and_record(
+                    side=side_timeout,
+                    price=price,
+                    qty_btc=pos_qty,
+                    reason=reason_timeout,
+                    candle_open_time=open_time,
                 )
-                if inserted:
-                    close_position(exit_price=price, reason="TIMEOUT")
+                if not inserted:
+                    logging.info("TREND: exit blocked by DB guard -> skipping close.")
+                    return
+                close_position(exit_price=price, reason="TIMEOUT")
                 return
 
-        # jak jest pozycja i nic nie zaszło -> nie otwieramy nowej
-        return
+        return  # mamy pozycję -> brak nowych wejść
 
-    # =========================
-    # 2) Jesteśmy FLAT – filtry wejścia
-    # =========================
-
-    # filtr godzinowy
+    # --- ENTRY FILTERS ---
     hour_utc = open_time.hour
     if hour_utc in DISABLE_HOURS_SET:
-        logging.info("BBRANGE: hour %s UTC in DISABLE_HOURS=%s -> skip entries.", hour_utc, DISABLE_HOURS_SET)
+        logging.info("TREND: hour %s UTC in DISABLE_HOURS=%s -> skip opening new trades.", hour_utc, DISABLE_HOURS_SET)
         return
 
-    # dzienny SL
     if DAILY_MAX_LOSS_PCT > 0:
         daily_pct = compute_daily_pnl_pct(SYMBOL, INTERVAL, price)
         if daily_pct <= -DAILY_MAX_LOSS_PCT:
-            logging.info(
-                "BBRANGE %s: daily PnL %.2f%% <= -%.2f%% -> blocking new entries.",
-                SYMBOL, daily_pct, DAILY_MAX_LOSS_PCT,
-            )
+            logging.info("TREND %s: daily PnL %.2f%% <= -%.2f%% -> blocking new entries.", SYMBOL, daily_pct, DAILY_MAX_LOSS_PCT)
             return
 
-    # BBRANGE: tylko w FLAT
-    if trend != "FLAT":
-        logging.info("BBRANGE: trend=%s (not FLAT) -> no entries.", trend)
+    if trend == "FLAT":
+        logging.info("TREND: trend=FLAT -> no new entries.")
         return
 
-    # sygnał pasma
     decision = "HOLD"
     reason = None
-    if price < bb_lower:
-        decision = "BUY"
-        reason = f"BBRANGE LONG: price {price:.2f} < lower {bb_lower:.2f} (trend=FLAT)"
-    elif price > bb_upper:
-        decision = "SELL"
-        reason = f"BBRANGE SHORT: price {price:.2f} > upper {bb_upper:.2f} (trend=FLAT)"
+
+    up_breakout_now = price > ema_fast * (1.0 + ENTRY_BUFFER_PCT)
+    up_breakout_prev = prev_price > ema_fast_prev * (1.0 + ENTRY_BUFFER_PCT)
+
+    down_breakout_now = price < ema_fast * (1.0 - ENTRY_BUFFER_PCT)
+    down_breakout_prev = prev_price < ema_fast_prev * (1.0 - ENTRY_BUFFER_PCT)
+
+    if trend == "UP":
+        if up_breakout_now and not up_breakout_prev:
+            decision = "BUY"
+            reason = (
+                f"TREND UP: breakout above EMA_FAST (price {price:.2f} > ema_fast "
+                f"{ema_fast:.2f} * (1+{ENTRY_BUFFER_PCT:.4f}))"
+            )
+    elif trend == "DOWN":
+        if down_breakout_now and not down_breakout_prev:
+            decision = "SELL"
+            reason = (
+                f"TREND DOWN: breakout below EMA_FAST (price {price:.2f} < ema_fast "
+                f"{ema_fast:.2f} * (1-{ENTRY_BUFFER_PCT:.4f}))"
+            )
 
     if decision == "HOLD":
-        return
-
-    # RSI filtry
-    if rsi_val <= RSI_BLOCK_EXTREME_LOW or rsi_val >= RSI_BLOCK_EXTREME_HIGH:
-        logging.info(
-            "BBRANGE: skip %s – RSI=%.2f outside (%.1f, %.1f).",
-            decision, rsi_val, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH,
-        )
-        return
-
-    if decision == "BUY" and rsi_val > RSI_LONG_MAX:
-        logging.info("BBRANGE: skip BUY – RSI=%.2f > RSI_LONG_MAX=%.1f.", rsi_val, RSI_LONG_MAX)
-        return
-
-    if decision == "SELL" and rsi_val < RSI_SHORT_MIN:
-        logging.info("BBRANGE: skip SELL – RSI=%.2f < RSI_SHORT_MIN=%.1f.", rsi_val, RSI_SHORT_MIN)
+        logging.info("TREND: no entry signal (trend=%s).", trend)
         return
     
+    # --- REGIME GATE (ENTRY ONLY) ---
+    # logujemy zdarzenie (DRY_RUN would_block albo ENFORCE block)
     log_regime_gate_event(
         symbol=SYMBOL,
         interval=INTERVAL,
@@ -993,14 +1036,13 @@ def run_strategy():
         rmeta=rmeta_gate,
         extra_meta={
             "price": float(price),
-            "ema_21": float(ema_val),
-            "rsi_14": float(rsi_val),
+            "ema_fast": float(ema_fast),
+            "ema_slow": float(ema_slow),
+            "trend": trend,
             "open_time": str(open_time),
-            "reason": reason,
         },
     )
 
-    # --- REGIME GATE (ENTRY ONLY) ---
     if rmeta_gate.get("mode") == "DRY_RUN" and rmeta_gate.get("would_block"):
         logging.info(
             "REGIME_GATE|dry_run would_block|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s",
@@ -1016,8 +1058,27 @@ def run_strategy():
         )
         return
 
+    dist_from_fast_pct = (price - ema_fast) / ema_fast * 100.0
+    if abs(dist_from_fast_pct) > MAX_DIST_FROM_EMA_FAST_PCT:
+        logging.info(
+            "TREND: skip entry – price %.2f is %.2f%% away from EMA_FAST %.2f (max %.2f%%).",
+            price, dist_from_fast_pct, ema_fast, MAX_DIST_FROM_EMA_FAST_PCT
+        )
+        return
+
     qty_btc = ORDER_QTY_BTC
-    logging.info("BBRANGE: opening %s at %.2f (%s)", decision, price, reason)
+    logging.info("TREND: opening %s at %.2f (%s)", decision, price, reason)
+
+    inserted = execute_and_record(
+        side=decision,
+        price=price,
+        qty_btc=qty_btc,
+        reason=reason,
+        candle_open_time=open_time,
+    )
+    if not inserted:
+        logging.info("TREND: entry blocked by DB guard -> skipping open_position.")
+        return
 
     opened = False
     if decision == "BUY":
@@ -1026,25 +1087,9 @@ def run_strategy():
         opened = open_position("SHORT", qty_btc, price)
 
     if not opened:
-        logging.info("BBRANGE: entry aborted (could not open position).")
-        return
-
-    inserted = insert_simulated_order(
-        symbol=SYMBOL,
-        interval=INTERVAL,
-        side=decision,
-        price=price,
-        qty_btc=qty_btc,
-        reason=reason,
-        rsi_14=rsi_val,
-        ema_21=ema_val,
-        candle_open_time=open_time,
-    )
-    if not inserted:
-        logging.info("BBRANGE: entry blocked by DB guard -> reverting OPEN position to keep consistency.")
-        closed = close_position(exit_price=price, reason="ENTRY_DB_GUARD_REVERT")
-        if not closed:
-            logging.info("BBRANGE: revert requested but no OPEN position found (race/restart).")
+        # Jeśli to kiedykolwiek wystąpi, to znaczy że DB ma już OPEN (race/restart).
+        # W LIVE to oznacza potencjalny desync — dlatego chcemy to zobaczyć w logach.
+        logging.warning("TREND: order executed/recorded but position not opened (race). Investigate immediately.")
         return
 
 
@@ -1070,7 +1115,18 @@ def fetch_klines():
         trades = k[8]
 
         rows.append(
-            (SYMBOL, INTERVAL, open_time, open_price, high, low, close, volume, close_time, trades)
+            (
+                SYMBOL,
+                INTERVAL,
+                open_time,
+                open_price,
+                high,
+                low,
+                close,
+                volume,
+                close_time,
+                trades,
+            )
         )
 
     return rows
@@ -1154,7 +1210,6 @@ def update_indicators():
     cur.executemany(sql, data)
     conn.commit()
     elapsed = time.perf_counter() - start
-
     cur.close()
     conn.close()
 
@@ -1170,11 +1225,11 @@ def main_loop():
             rows = fetch_klines()
             save_klines(rows)
             update_indicators()
-            run_strategy()
+            run_trend_strategy()
         except Exception as e:
-            logging.exception("Error in main loop: %s", e)
+            logging.exception("Error in trend loop: %s", e)
 
-        logging.info("Loop finished in %.3f s", time.perf_counter() - loop_start)
+        logging.info("Trend loop finished in %.3f s", time.perf_counter() - loop_start)
         time.sleep(60)
 
 

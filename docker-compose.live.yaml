@@ -23,8 +23,8 @@ services:
         condition: service_healthy
     env_file: .env.live
     environment:
-      INTERNAL_API_BASE: "http://127.0.0.1:8000"
-      AI_TUNE_INTERVAL_MINUTES: "1440"
+      INTERNAL_API_BASE: "http://192.168.101.10:8001"
+      AI_TUNE_INTERVAL_MINUTES: "4320"
       AI_AUTO_APPLY: "false"
       OPENAI_MODEL: "gpt-4.1-mini"
     ports:
@@ -42,8 +42,37 @@ services:
     environment:
       QUOTE_ASSET: "USDC"
       REGIME_SYMBOLS: "BTCUSDC,ETHUSDC,SOLUSDC,BNBUSDC"
+      REGIME_INTERVAL: "5m"
+      REGIME_SLEEP_SECONDS: "60"
+      REGIME_LOOKBACK: "200"
+      REGIME_TREND_EMA_FAST: "21"
+      REGIME_TREND_EMA_SLOW: "100"
+      REGIME_VOL_ATR_PERIOD: "14"
+      REGIME_VOL_THRESHOLD_PCT: "0.08"
+      REGIME_SHOCK_Z: "3.0"
+      REGIME_TREND_MIN_STRENGTH_PCT: "0.05"
+  
+  regime-worker_1m_live:
+    build:
+      context: .
+      dockerfile: regime_worker/Dockerfile
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      QUOTE_ASSET: "USDC"
+      REGIME_SYMBOLS: "BTCUSDC,ETHUSDC,SOLUSDC,BNBUSDC"
       REGIME_INTERVAL: "1m"
       REGIME_SLEEP_SECONDS: "60"
+      REGIME_LOOKBACK: "400"
+      REGIME_TREND_EMA_FAST: "21"
+      REGIME_TREND_EMA_SLOW: "100"
+      REGIME_VOL_ATR_PERIOD: "14"
+      REGIME_VOL_THRESHOLD_PCT: "0.08"
+      REGIME_SHOCK_Z: "3.0"
+      REGIME_TREND_MIN_STRENGTH_PCT: "0.05"
 
   frontend_live:
     build:
@@ -55,6 +84,7 @@ services:
       - api_live
     environment:
       VITE_API_BASE_URL: "http://192.168.101.10:8001"
+      VITE_QUOTE_ASSET: "USDC"
 
   bot-btc-live:
     build:
@@ -70,14 +100,50 @@ services:
       SYMBOL: "BTCUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      REGIME_MODE: "ENFORCE"
+      REGIME_MODE: "DRY_RUN"
       EMA_FAST: "21"
       EMA_SLOW: "50"
       ENTRY_BUFFER_PCT: "0.002"
       STOP_LOSS_PCT: "0.8"
       TAKE_PROFIT_PCT: "3.0"
       DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "30"
+      MAX_POSITION_MINUTES: "90"
+
+  bot-rsi-btc-live:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      TRADING_MODE: "LIVE"
+      LIVE_ORDERS_ENABLED: "1"
+
+      DB_HOST: "db_live"
+      DB_NAME: "trading_live"
+      DB_PORT: "5432"
+
+      QUOTE_ASSET: "USDC"
+      SYMBOL: "BTCUSDC"
+      INTERVAL: "5m"
+      STRATEGY_NAME: "RSI"
+      REGIME_MODE: "ENFORCE"
+      REGIME_MAX_AGE_SECONDS: 900
+
+      RSI_OVERSOLD: "30"
+      RSI_OVERBOUGHT: "70"
+      STOP_LOSS_PCT: "0.80"
+      TAKE_PROFIT_PCT: "0.40"
+      MAX_POSITION_MINUTES: "450"
+      DAILY_MAX_LOSS_PCT: "0.5"
+      MAX_DIST_FROM_EMA_PCT: "0.5"
+      TREND_BUFFER: "0.001"
+      ENTRY_BUFFER_PCT: "0.002"
+      # ważne: w LIVE to powinno być małe i zgodne z MIN_NOTIONAL/filtrami
+      ORDER_QTY_BTC: "0.00010"
 
 volumes:
   trading_live_db_data:

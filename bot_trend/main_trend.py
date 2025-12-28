@@ -2,19 +2,24 @@ import os
 import time
 import json
 import logging
-import pandas as pd
-from datetime import datetime, timezone
-
 import psycopg2
-from psycopg2.extras import execute_batch
+import pandas as pd
+from dataclasses import replace
+from common.bot_control import upsert_defaults, read as read_bot_control
 from binance.client import Client
-
+from common.runtime import RuntimeConfig
+from common.permissions import can_trade
+from common.db import get_latest_regime
+from datetime import datetime, timezone, date
+from psycopg2.extras import execute_batch
 from common.execution import place_live_order
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+
 
 DB_HOST = os.environ.get("DB_HOST", "db")
 DB_PORT = int(os.environ.get("DB_PORT", "5432"))
@@ -65,29 +70,44 @@ client = Client(api_key=API_KEY, api_secret=API_SECRET)
 TREND_BUFFER = float(os.environ.get("TREND_BUFFER", "0.001"))  # 0.1%
 MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
 
+SPOT_MODE = os.environ.get("SPOT_MODE", "1") == "1"  # 1 = spot, no shorts
+
 # jeśli DAILY_MAX_LOSS_PCT <= 0 -> dzienny SL wyłączony
 DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
 
 ORDER_QTY_BTC = float(os.environ.get("ORDER_QTY_BTC", "0.0001"))
-MAX_DIST_FROM_EMA_FAST_PCT = float(os.environ.get("MAX_DIST_FROM_EMA_FAST_PCT", "0.6"))
+MAX_DIST_FROM_EMA_FAST_PCT = float(os.environ.get("MAX_DIST_FROM_EMA_FAST_PCT", "0.6")) # percent (e.g. 0.6 = 0.6%)
+
+# ===== Profitability hotfix params =====
+ALLOW_SHORT = os.environ.get("ALLOW_SHORT", "0") == "1"  # default OFF
+EMA_SLOPE_MIN_PCT = float(os.environ.get("EMA_SLOPE_MIN_PCT", "0.0000"))  # 0.00% by default; set later if needed
+
+EARLY_EXIT_MINUTES = int(os.environ.get("EARLY_EXIT_MINUTES", "30"))
+EARLY_EXIT_MAX_LOSS_PCT = float(os.environ.get("EARLY_EXIT_MAX_LOSS_PCT", "0.25"))  # cut losers earlier
+MIN_PROFIT_TO_KEEP_PCT = float(os.environ.get("MIN_PROFIT_TO_KEEP_PCT", "0.05"))  # if timeout and profit too small -> exit
+
+cfg = RuntimeConfig.from_env()
+
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    return str(o)
 
 # =================
 # Regime
 # =================
 
-from common.db import get_latest_regime
-from datetime import datetime, timezone
-
 REGIME_ENABLED = os.environ.get("REGIME_ENABLED", "0") == "1"
 REGIME_MODE = os.environ.get("REGIME_MODE", "DRY_RUN").strip().upper()  # DRY_RUN | ENFORCE
 REGIME_MAX_AGE_SECONDS = int(os.environ.get("REGIME_MAX_AGE_SECONDS", "180"))
 
-def regime_allows(strategy_name: str, symbol: str, interval: str):
+
+def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
     """
     Zwraca: (allow: bool, meta: dict)
     DRY_RUN: zawsze allow=True, ale meta mówi czy 'would_block'.
     """
-    if not REGIME_ENABLED:
+    if not bc.regime_enabled:
         return True, {"enabled": False}
 
     r = get_latest_regime(symbol, interval)
@@ -128,7 +148,7 @@ def regime_allows(strategy_name: str, symbol: str, interval: str):
             why = f"SUPER_TREND blocked in {regime}"
 
     # DRY_RUN: nie blokujemy, tylko logujemy
-    if REGIME_MODE == "DRY_RUN":
+    if bc.regime_mode == "DRY_RUN":
         return True, {"enabled": True, "mode": "DRY_RUN", "would_block": would_block, "why": why, **r, "age_s": age}
 
     # ENFORCE: blokujemy jeśli would_block
@@ -151,16 +171,30 @@ def heartbeat(info: dict):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO bot_heartbeat(symbol, strategy, last_seen, info)
-        VALUES (%s, %s, now(), %s::jsonb)
-        ON CONFLICT (symbol, strategy)
+        INSERT INTO public.bot_heartbeat(symbol, strategy, interval, last_seen, info)
+        VALUES (%s, %s, %s, now(), %s::jsonb)
+        ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
-        (SYMBOL, STRATEGY_NAME, json.dumps(info)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info)),
     )
     conn.commit()
     cur.close()
     conn.close()
+
+
+def log_regime_gate_on_exit(decision: str, rmeta_gate: dict, allow_gate: bool, extra: dict):
+    # Zapisujmy EXIT zawsze, ale tylko jeśli reżim jest włączony i ma sensowne meta
+    # (i tak meta jest małe, a to Ci daje audyt trail)
+    log_regime_gate_event(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision=decision,
+        allow=allow_gate,
+        rmeta=rmeta_gate,
+        extra_meta={"event": "EXIT", **(extra or {})},
+    )
 
 
 def log_regime_gate_event(
@@ -212,7 +246,7 @@ def log_regime_gate_event(
             mode,
             bool(would_block) if would_block is not None else None,
             rmeta.get("why"),
-            json.dumps(meta),
+            json.dumps(meta, default=_json_default),
         ),
     )
     conn.commit()
@@ -220,12 +254,80 @@ def log_regime_gate_event(
     conn.close()
 
 
+def get_runtime_snapshot(price: float, open_time):
+    """
+    Jedno miejsce prawdy dla runtime:
+    - bot_control
+    - regime gate (ENTRY gate)
+    - permissions (LIVE order send)
+    - heartbeat meta
+    """
+    bc = read_bot_control(SYMBOL, STRATEGY_NAME, INTERVAL)
+
+    cfg_effective = replace(
+        cfg,
+        live_orders_enabled=bc.live_orders_enabled,
+        regime_enabled=bc.regime_enabled,
+        regime_mode=bc.regime_mode,
+    )
+
+    # ENTRY gate: zależny od reżimu
+    allow_gate_entry, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+
+    # Czy wolno wysłać LIVE order (ENTRY uwzględnia regime gate)
+    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry)
+
+    # EXIT: zawsze dozwolony (regime nie może blokować zamknięcia pozycji)
+    allowed_orders_exit, allow_meta_exit = can_trade(cfg_effective, regime_allows_trade=True)
+
+    hb = {
+        "price": float(price),
+        "open_time": str(open_time),
+        "trading_mode": cfg_effective.trading_mode,
+        "live_orders_enabled": bool(cfg_effective.live_orders_enabled),
+        "bot_enabled": bool(getattr(bc, "enabled", True)),
+        "bot_mode": getattr(bc, "mode", None),
+
+        "regime_enabled": bool(bc.regime_enabled),
+        "regime_mode": bc.regime_mode,
+        "regime": (rmeta_gate or {}).get("regime"),
+        "regime_would_block": (rmeta_gate or {}).get("would_block"),
+        "regime_why": (rmeta_gate or {}).get("why"),
+        "regime_reason": (rmeta_gate or {}).get("reason"),
+        "regime_ts": str((rmeta_gate or {}).get("ts")),
+        "regime_age_s": (rmeta_gate or {}).get("age_s"),
+
+        "allow_entry_gate": bool(allow_gate_entry),
+        "allow_live_orders_entry": bool(allowed_orders_entry),
+        "allow_live_orders_exit": bool(allowed_orders_exit),
+        "allow_meta_entry": allow_meta_entry,
+        "allow_meta_exit": allow_meta_exit,
+
+        "symbol": cfg_effective.symbol,
+        "interval": cfg_effective.interval,
+        "strategy": STRATEGY_NAME,
+        "quote_asset": cfg_effective.quote_asset,
+    }
+
+    return {
+        "bc": bc,
+        "cfg_effective": cfg_effective,
+        "allow_gate_entry": allow_gate_entry,
+        "rmeta_gate": rmeta_gate,
+        "allowed_orders_entry": allowed_orders_entry,
+        "allow_meta_entry": allow_meta_entry,
+        "allowed_orders_exit": allowed_orders_exit,
+        "allow_meta_exit": allow_meta_exit,
+        "heartbeat": hb,
+    }
+
+
 def get_mode() -> str:
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT mode FROM bot_control WHERE symbol=%s AND strategy=%s",
-        (SYMBOL, STRATEGY_NAME),
+        "SELECT mode FROM bot_control WHERE symbol=%s AND strategy=%s AND interval=%s",
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
     )
     row = cur.fetchone()
     cur.close()
@@ -238,12 +340,12 @@ def set_mode(mode: str, reason: str = None):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO bot_control(symbol, strategy, mode, reason, updated_at)
-        VALUES (%s, %s, %s, %s, now())
-        ON CONFLICT (symbol, strategy)
+        INSERT INTO bot_control(symbol, strategy, interval, mode, reason, updated_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (symbol, strategy, interval)
         DO UPDATE SET mode=EXCLUDED.mode, reason=EXCLUDED.reason, updated_at=now();
         """,
-        (SYMBOL, STRATEGY_NAME, mode, reason),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, mode, reason),
     )
     conn.commit()
     cur.close()
@@ -350,6 +452,32 @@ def init_db():
 
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS simulated_orders (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            symbol TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            side TEXT NOT NULL,
+            price NUMERIC NOT NULL,
+            quantity_btc NUMERIC NOT NULL,
+            reason TEXT,
+            rsi_14 NUMERIC,
+            ema_21 NUMERIC,
+            candle_open_time TIMESTAMPTZ NOT NULL
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_sim_orders_one_per_candle
+        ON simulated_orders(symbol, interval, strategy, candle_open_time);
+        """
+    )
+
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS strategy_params (
             id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
@@ -379,27 +507,14 @@ def init_db():
 
     cur.execute(
         """
-        CREATE TABLE IF NOT EXISTS bot_control (
-          id SERIAL PRIMARY KEY,
-          symbol TEXT NOT NULL,
-          strategy TEXT NOT NULL,
-          mode TEXT NOT NULL DEFAULT 'NORMAL',
-          reason TEXT,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-          UNIQUE(symbol, strategy)
-        );
-        """
-    )
-
-    cur.execute(
-        """
         CREATE TABLE IF NOT EXISTS bot_heartbeat (
           id SERIAL PRIMARY KEY,
           symbol TEXT NOT NULL,
           strategy TEXT NOT NULL,
+          interval TEXT NOT NULL,
           last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
           info JSONB,
-          UNIQUE(symbol, strategy)
+          UNIQUE(symbol, strategy, interval)
         );
         """
     )
@@ -433,11 +548,11 @@ def init_db():
 
     cur.execute(
         """
-        INSERT INTO bot_control(symbol, strategy, mode)
-        VALUES (%s, %s, 'NORMAL')
-        ON CONFLICT (symbol, strategy) DO NOTHING;
+        INSERT INTO bot_control(symbol, strategy, interval, mode)
+        VALUES (%s, %s, %s, 'NORMAL')
+        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
         """,
-        (SYMBOL, STRATEGY_NAME),
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
     )
 
     conn.commit()
@@ -483,6 +598,10 @@ def seed_default_params_from_env(conn):
         "ENTRY_BUFFER_PCT": float(ENTRY_BUFFER_PCT),
         "ORDER_QTY_BTC": float(ORDER_QTY_BTC),
         "MAX_DIST_FROM_EMA_FAST_PCT": float(MAX_DIST_FROM_EMA_FAST_PCT),
+        "ALLOW_SHORT": 1.0 if ALLOW_SHORT else 0.0,
+        "EARLY_EXIT_MINUTES": float(EARLY_EXIT_MINUTES),
+        "EARLY_EXIT_MAX_LOSS_PCT": float(EARLY_EXIT_MAX_LOSS_PCT),
+        "MIN_PROFIT_TO_KEEP_PCT": float(MIN_PROFIT_TO_KEEP_PCT),
     }
 
     inserted_any = False
@@ -533,6 +652,7 @@ def load_runtime_params():
     global MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER
     global TREND_FILTER_PCT, ENTRY_BUFFER_PCT, EMA_FAST, EMA_SLOW
     global ORDER_QTY_BTC, MAX_DIST_FROM_EMA_FAST_PCT
+    global ALLOW_SHORT, EARLY_EXIT_MINUTES, EARLY_EXIT_MAX_LOSS_PCT, MIN_PROFIT_TO_KEEP_PCT
 
     conn = get_db_conn()
     cur = conn.cursor()
@@ -590,6 +710,18 @@ def load_runtime_params():
     if "MAX_DIST_FROM_EMA_FAST_PCT" in params:
         MAX_DIST_FROM_EMA_FAST_PCT = clamp(params["MAX_DIST_FROM_EMA_FAST_PCT"], 0.05, 5.0)
 
+    if "ALLOW_SHORT" in params:
+        ALLOW_SHORT = bool(int(clamp(params["ALLOW_SHORT"], 0.0, 1.0)))
+
+    if "EARLY_EXIT_MINUTES" in params:
+        EARLY_EXIT_MINUTES = int(clamp(params["EARLY_EXIT_MINUTES"], 5, 240))
+
+    if "EARLY_EXIT_MAX_LOSS_PCT" in params:
+        EARLY_EXIT_MAX_LOSS_PCT = clamp(params["EARLY_EXIT_MAX_LOSS_PCT"], 0.05, 5.0)
+
+    if "MIN_PROFIT_TO_KEEP_PCT" in params:
+        MIN_PROFIT_TO_KEEP_PCT = clamp(params["MIN_PROFIT_TO_KEEP_PCT"], 0.0, 5.0)
+
     min_needed = ENTRY_BUFFER_PCT * 100.0
     if MAX_DIST_FROM_EMA_FAST_PCT < min_needed:
         logging.info(
@@ -603,7 +735,8 @@ def load_runtime_params():
         "TREND_FILTER_PCT=%.4f|ENTRY_BUFFER_PCT=%.4f|TREND_BUFFER=%.4f|"
         "STOP_LOSS_PCT=%.2f|TAKE_PROFIT_PCT=%.2f|MAX_POSITION_MINUTES=%d|"
         "DAILY_MAX_LOSS_PCT=%.2f|RSI_OVERSOLD=%.1f|RSI_OVERBOUGHT=%.1f"
-        "|ORDER_QTY_BTC=%.8f|MAX_DIST_FROM_EMA_FAST_PCT=%.2f",
+        "ORDER_QTY_BTC=%.8f|MAX_DIST_FROM_EMA_FAST_PCT=%.2f|"
+        "ALLOW_SHORT=%s|EARLY_EXIT_MINUTES=%d|EARLY_EXIT_MAX_LOSS_PCT=%.2f|MIN_PROFIT_TO_KEEP_PCT=%.2f",
         SYMBOL,
         STRATEGY_NAME,
         EMA_FAST,
@@ -619,6 +752,10 @@ def load_runtime_params():
         RSI_OVERBOUGHT,
         ORDER_QTY_BTC,
         MAX_DIST_FROM_EMA_FAST_PCT,
+        ALLOW_SHORT,
+        EARLY_EXIT_MINUTES,
+        EARLY_EXIT_MAX_LOSS_PCT,
+        MIN_PROFIT_TO_KEEP_PCT,
     )
 
 
@@ -695,24 +832,46 @@ def insert_simulated_order(
     return inserted
 
 
-def execute_and_record(side: str, price: float, qty_btc: float, reason: str, candle_open_time):
-    """
-    Jeden punkt prawdy:
-    - jeśli LIVE: najpierw giełda (place_live_order)
-    - potem zapis do simulated_orders (na razie jako ledger dla UI)
-    Zwraca: inserted(bool)
-    """
-    if TRADING_MODE == "LIVE":
-        # jeśli LIVE_ORDERS_ENABLED=0 -> place_live_order zwróci None i to jest OK (tryb "shadow")
-        resp = place_live_order(client, SYMBOL, side, qty_btc)
+def execute_and_record(
+    side: str,
+    price: float,
+    qty_btc: float,
+    reason: str,
+    candle_open_time,
+    *,
+    cfg_used: RuntimeConfig,
+    allow_live_orders: bool,
+    allow_meta: dict,
+):
+    if cfg_used.trading_mode == "LIVE":
+        if allow_live_orders:
+            resp = place_live_order(
+                client,
+                cfg_used.symbol,
+                side,
+                qty_btc,
+                trading_mode=cfg_used.trading_mode,
+                live_orders_enabled=cfg_used.live_orders_enabled,
+                quote_asset=cfg_used.quote_asset,
+                panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
+                live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+            )
+            if resp is None:
+                logging.error(
+                    "LIVE order failed/blocked -> skipping record (symbol=%s side=%s qty=%.8f).",
+                    cfg_used.symbol, side, float(qty_btc),
+                )
+                return False
+        else:
+            logging.warning(
+                "LIVE ORDER SUPPRESSED symbol=%s side=%s qty=%.8f allow=false why=%s",
+                cfg_used.symbol, side, float(qty_btc), (allow_meta or {}).get("why")
+            )
+            return False
 
-        # jeżeli włączyłeś LIVE_ORDERS_ENABLED=1, a resp=None -> traktuj to jako błąd
-        if LIVE_ORDERS_ENABLED and resp is None:
-            raise RuntimeError("LIVE_ORDERS_ENABLED=1 but no exchange response")
-
-    inserted = insert_simulated_order(
-        symbol=SYMBOL,
-        interval=INTERVAL,
+    return insert_simulated_order(
+        symbol=cfg_used.symbol,
+        interval=cfg_used.interval,
         side=side,
         price=price,
         qty_btc=qty_btc,
@@ -721,22 +880,20 @@ def execute_and_record(side: str, price: float, qty_btc: float, reason: str, can
         ema_21=None,
         candle_open_time=candle_open_time,
     )
-    return inserted
 
 
-def safe_close_if_open(current_price: float, candle_open_time):
+def safe_close_if_open(current_price: float, candle_open_time, bc, cfg_effective):
     pos = get_open_position()
     if not pos:
         return False
 
     _, side, qty, _, _ = pos
 
-    if side == "LONG":
-        exit_side = "SELL"
-        reason = "PANIC CLOSE LONG"
-    else:
-        exit_side = "BUY"
-        reason = "PANIC CLOSE SHORT"
+    exit_side = "SELL" if str(side).upper() == "LONG" else "BUY"
+    reason = "PANIC CLOSE LONG" if exit_side == "SELL" else "PANIC CLOSE SHORT"
+
+    allow_gate, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+    allowed_orders, allow_meta = can_trade(cfg_effective, regime_allows_trade=allow_gate)
 
     inserted = execute_and_record(
         side=exit_side,
@@ -744,6 +901,9 @@ def safe_close_if_open(current_price: float, candle_open_time):
         qty_btc=float(qty),
         reason=reason,
         candle_open_time=candle_open_time,
+        cfg_used=cfg_effective,
+        allow_live_orders=allowed_orders,
+        allow_meta=allow_meta,
     )
     if not inserted:
         logging.info("TREND: exit blocked by DB guard (already traded this candle) -> skipping close.")
@@ -835,16 +995,21 @@ def run_trend_strategy():
     ema_fast = float(last["ema_fast"])
     ema_slow = float(last["ema_slow"])
     ema_fast_prev = float(prev["ema_fast"])
+    ema_fast_slope = ema_fast - ema_fast_prev
     open_time = last["open_time"]
 
-    mode = get_mode()
-    if mode == "HALT":
+    snap = get_runtime_snapshot(price=price, open_time=open_time)
+    bc = snap["bc"]
+    cfg_effective = snap["cfg_effective"]
+
+    if bc.mode == "HALT":
         return
 
-    if mode == "PANIC":
-        safe_close_if_open(current_price=float(price), candle_open_time=open_time)
+    if bc.mode == "PANIC":
+        safe_close_if_open(current_price=float(price), candle_open_time=open_time, bc=bc, cfg_effective=cfg_effective)
         set_mode("HALT", reason="Panic executed; halting.")
         return
+
 
     trend = "FLAT"
     if ema_fast > ema_slow * (1.0 + TREND_FILTER_PCT):
@@ -852,25 +1017,20 @@ def run_trend_strategy():
     elif ema_fast < ema_slow * (1.0 - TREND_FILTER_PCT):
         trend = "DOWN"
 
-    logging.info("TREND: price=%.2f ema_fast=%.2f ema_slow=%.2f trend=%s", price, ema_fast, ema_slow, trend)
+    logging.info(
+        "TREND: price=%.2f ema_fast=%.2f ema_slow=%.2f trend=%s ema_fast_slope=%.4f",
+        price, ema_fast, ema_slow, trend, ema_fast_slope
+    )
 
-    allow_gate, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL)
     pos = get_open_position()
+
     heartbeat({
-        "price": float(price),
-        "open_time": str(open_time),
+        **snap["heartbeat"],
         "trend": trend,
         "ema_fast": float(ema_fast),
         "ema_slow": float(ema_slow),
+        "ema_fast_slope": float(ema_fast_slope),
         "has_position": bool(pos is not None),
-        "regime_enabled": bool(rmeta_gate.get("enabled", False)),
-        "regime": rmeta_gate.get("regime"),
-        "regime_mode": rmeta_gate.get("mode"),
-        "regime_would_block": rmeta_gate.get("would_block"),
-        "regime_why": rmeta_gate.get("why"),         
-        "regime_reason": rmeta_gate.get("reason"), 
-        "regime_ts": str(rmeta_gate.get("ts")),
-        "regime_age_s": rmeta_gate.get("age_s"),
     })
 
     pos = get_open_position()
@@ -894,12 +1054,15 @@ def run_trend_strategy():
                     qty_btc=pos_qty,
                     reason=reason,
                     candle_open_time=open_time,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
                     return
 
-                closed = close_position(exit_price=price, reason="TAKE_PROFIT")
+                closed = close_position(exit_price=price, reason="TAKE_PROFIT_LONG")
                 if not closed:
                     logging.info("TREND: exit inserted but position was not OPEN (race/restart).")
                 return
@@ -913,12 +1076,15 @@ def run_trend_strategy():
                     qty_btc=pos_qty,
                     reason=reason,
                     candle_open_time=open_time,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
                     return
 
-                closed = close_position(exit_price=price, reason="TAKE_PROFIT")
+                closed = close_position(exit_price=price, reason="STOP_LOSS_LONG")
                 if not closed:
                     logging.info("TREND: exit inserted but position was not OPEN (race/restart).")
                 return
@@ -934,6 +1100,9 @@ def run_trend_strategy():
                     qty_btc=pos_qty,
                     reason=reason,
                     candle_open_time=open_time,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -950,12 +1119,59 @@ def run_trend_strategy():
                     qty_btc=pos_qty,
                     reason=reason,
                     candle_open_time=open_time,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
                     return
                 close_position(exit_price=price, reason="STOP_LOSS_SHORT")
                 return
+            
+        # --- EARLY EXIT: cut losers earlier than TIMEOUT/SL to make TIMEOUT non-negative on average ---
+        if EARLY_EXIT_MINUTES > 0 and pos_entry_time is not None:
+            if pos_entry_time.tzinfo is None:
+                pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+
+            age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+
+            if age_minutes >= EARLY_EXIT_MINUTES:
+                if pos_side == "LONG":
+                    pnl_pct = (price - pos_entry_price) / pos_entry_price * 100.0
+                    if pnl_pct <= -EARLY_EXIT_MAX_LOSS_PCT:
+                        reason_early = f"TREND EARLY_CUT LONG {pnl_pct:.2f}% <= -{EARLY_EXIT_MAX_LOSS_PCT:.2f}% after {age_minutes:.1f}m"
+                        inserted = execute_and_record(
+                            side="SELL",
+                            price=price,
+                            qty_btc=pos_qty,
+                            reason=reason_early,
+                            candle_open_time=open_time,
+                            cfg_used=cfg_effective,
+                            allow_live_orders=snap["allowed_orders_exit"],
+                            allow_meta=snap["allow_meta_exit"],
+                        )
+                        if inserted:
+                            close_position(exit_price=price, reason="EARLY_CUT_LONG")
+                        return
+
+                elif pos_side == "SHORT":
+                    pnl_pct = (pos_entry_price - price) / pos_entry_price * 100.0
+                    if pnl_pct <= -EARLY_EXIT_MAX_LOSS_PCT:
+                        reason_early = f"TREND EARLY_CUT SHORT {pnl_pct:.2f}% <= -{EARLY_EXIT_MAX_LOSS_PCT:.2f}% after {age_minutes:.1f}m"
+                        inserted = execute_and_record(
+                            side="BUY",
+                            price=price,
+                            qty_btc=pos_qty,
+                            reason=reason_early,
+                            candle_open_time=open_time,
+                            cfg_used=cfg_effective,
+                            allow_live_orders=snap["allowed_orders_exit"],
+                            allow_meta=snap["allow_meta_exit"],
+                        )
+                        if inserted:
+                            close_position(exit_price=price, reason="EARLY_CUT_SHORT")
+                        return
 
         # TIMEOUT
         if MAX_POSITION_MINUTES > 0 and pos_entry_time is not None:
@@ -964,14 +1180,42 @@ def run_trend_strategy():
 
             age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
             if age_minutes >= MAX_POSITION_MINUTES:
+                # If profit is too small, do not keep holding; exit to avoid negative TIMEOUT expectancy
+                if pos_side == "LONG":
+                    pnl_pct = (price - pos_entry_price) / pos_entry_price * 100.0
+                else:
+                    pnl_pct = (pos_entry_price - price) / pos_entry_price * 100.0
+
+                if pnl_pct < MIN_PROFIT_TO_KEEP_PCT:
+                    logging.info(
+                        "TREND: TIMEOUT exit - pnl_pct %.2f%% < MIN_PROFIT_TO_KEEP_PCT %.2f%%",
+                        pnl_pct, MIN_PROFIT_TO_KEEP_PCT
+                    )
                 side_timeout = "SELL" if pos_side == "LONG" else "BUY"
                 reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
+                allow_gate_exit, rmeta_gate_exit = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+                log_regime_gate_on_exit(
+                    decision=side_timeout,
+                    rmeta_gate=rmeta_gate_exit,
+                    allow_gate=allow_gate_exit,
+                    extra={
+                        "exit_reason": "TIMEOUT",
+                        "pos_side": pos_side,
+                        "age_minutes": float(age_minutes),
+                        "max_minutes": int(MAX_POSITION_MINUTES),
+                        "price": float(price),
+                        "open_time": str(open_time),
+                    },
+                )
                 inserted = execute_and_record(
                     side=side_timeout,
                     price=price,
                     qty_btc=pos_qty,
                     reason=reason_timeout,
                     candle_open_time=open_time,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
                 )
                 if not inserted:
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
@@ -980,6 +1224,10 @@ def run_trend_strategy():
                 return
 
         return  # mamy pozycję -> brak nowych wejść
+
+    if not bc.enabled:
+        logging.info("TREND: bot_control.enabled=false -> blocking new entries.")
+        return
 
     # --- ENTRY FILTERS ---
     hour_utc = open_time.hour
@@ -1014,12 +1262,34 @@ def run_trend_strategy():
                 f"{ema_fast:.2f} * (1+{ENTRY_BUFFER_PCT:.4f}))"
             )
     elif trend == "DOWN":
+        if cfg.trading_mode == "LIVE" and cfg.spot_mode:
+            logging.warning("TREND: SHORT blocked (LIVE SPOT_MODE=1).")
+            return
+        if not ALLOW_SHORT:
+            logging.info("TREND: trend=DOWN but ALLOW_SHORT=0 -> skipping shorts.")
+            return
         if down_breakout_now and not down_breakout_prev:
             decision = "SELL"
             reason = (
                 f"TREND DOWN: breakout below EMA_FAST (price {price:.2f} < ema_fast "
                 f"{ema_fast:.2f} * (1-{ENTRY_BUFFER_PCT:.4f}))"
             )
+
+    # Momentum confirmation: EMA_FAST slope must agree with direction
+    if decision == "BUY" and ema_fast_slope <= 0:
+        logging.info("TREND: BUY rejected - ema_fast_slope <= 0 (no momentum).")
+        return
+    if decision == "SELL" and ema_fast_slope >= 0:
+        logging.info("TREND: SELL rejected - ema_fast_slope >= 0 (no momentum).")
+        return
+
+    # Simple price momentum confirmation
+    if decision == "BUY" and price <= prev_price:
+        logging.info("TREND: BUY rejected - price not rising vs prev close.")
+        return
+    if decision == "SELL" and price >= prev_price:
+        logging.info("TREND: SELL rejected - price not falling vs prev close.")
+        return
 
     if decision == "HOLD":
         logging.info("TREND: no entry signal (trend=%s).", trend)
@@ -1032,8 +1302,8 @@ def run_trend_strategy():
         interval=INTERVAL,
         strategy=STRATEGY_NAME,
         decision=decision,
-        allow=allow_gate,
-        rmeta=rmeta_gate,
+        allow=snap["allow_gate_entry"],
+        rmeta=snap["rmeta_gate"],
         extra_meta={
             "price": float(price),
             "ema_fast": float(ema_fast),
@@ -1043,18 +1313,20 @@ def run_trend_strategy():
         },
     )
 
-    if rmeta_gate.get("mode") == "DRY_RUN" and rmeta_gate.get("would_block"):
+    rmeta = snap["rmeta_gate"] or {}
+
+    if rmeta.get("mode") == "DRY_RUN" and rmeta.get("would_block"):
         logging.info(
             "REGIME_GATE|dry_run would_block|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s",
             STRATEGY_NAME, SYMBOL, INTERVAL, decision,
-            rmeta_gate.get("regime"), rmeta_gate.get("why"),
+            rmeta.get("regime"), rmeta.get("why"),
         )
 
-    if not allow_gate:
+    if not snap["allow_gate_entry"]:
         logging.info(
             "REGIME_GATE|blocked entry|strategy=%s|symbol=%s|interval=%s|decision=%s|regime=%s|why=%s|mode=%s",
             STRATEGY_NAME, SYMBOL, INTERVAL, decision,
-            rmeta_gate.get("regime"), rmeta_gate.get("why"), rmeta_gate.get("mode"),
+            rmeta.get("regime"), rmeta.get("why"), rmeta.get("mode"),
         )
         return
 
@@ -1075,6 +1347,9 @@ def run_trend_strategy():
         qty_btc=qty_btc,
         reason=reason,
         candle_open_time=open_time,
+        cfg_used=cfg_effective,
+        allow_live_orders=snap["allowed_orders_entry"],
+        allow_meta=snap["allow_meta_entry"],
     )
     if not inserted:
         logging.info("TREND: entry blocked by DB guard -> skipping open_position.")
@@ -1218,6 +1493,9 @@ def update_indicators():
 
 def main_loop():
     init_db()
+    upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL, cfg=cfg)
+    if cfg.trading_mode == "LIVE" and cfg.regime_enabled and cfg.regime_mode == "DRY_RUN":
+        logging.warning("LIVE + REGIME_ENABLED but REGIME_MODE=DRY_RUN. Consider ENFORCE for profitability.")
     while True:
         loop_start = time.perf_counter()
         try:
