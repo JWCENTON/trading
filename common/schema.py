@@ -29,6 +29,10 @@ def ensure_schema():
         """
     )
 
+    cur.execute("ALTER TABLE candles ADD COLUMN IF NOT EXISTS atr_14 double precision;")
+    cur.execute("ALTER TABLE candles ADD COLUMN IF NOT EXISTS supertrend double precision;")
+    cur.execute("ALTER TABLE candles ADD COLUMN IF NOT EXISTS supertrend_direction integer;")
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS simulated_orders (
@@ -164,6 +168,10 @@ def ensure_schema():
         );
         """
         )
+    
+    cur.execute("ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS lookback integer;")
+    cur.execute("ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS meta jsonb;")
+    cur.execute("ALTER TABLE market_regime ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();")
 
     cur.execute(
         """
@@ -183,6 +191,28 @@ def ensure_schema():
         );
         """
         )
+    
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS watchdog_events (
+          id bigserial PRIMARY KEY,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          symbol text NOT NULL,
+          interval text,
+          strategy text,
+          severity text NOT NULL,
+          event text NOT NULL,
+          details jsonb
+        );
+        """
+    )
+    
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS watchdog_events_symbol_interval_strategy_created_idx
+          ON watchdog_events(symbol, interval, strategy, created_at DESC);
+        """
+    )
 
     cur.execute(
         """

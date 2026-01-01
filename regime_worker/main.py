@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import pandas as pd
+from common.schema import ensure_schema
 
 from common.db import get_db_conn
 from common.regime import detect_regime
@@ -105,6 +106,7 @@ def write_regime(symbol: str, interval: str, ts, payload: dict, lookback: int):
 
 
 def main():
+    ensure_schema()
     symbols = [s.strip() for s in SYMBOLS.split(",") if s.strip()]
     logging.info("Regime worker starting: symbols=%s interval=%s lookback=%d", symbols, INTERVAL, LOOKBACK)
 

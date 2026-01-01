@@ -1,0 +1,137 @@
+services:
+  db:
+    image: postgres:16
+    restart: always
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ${DB_VOLUME_NAME}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./api
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      INTERNAL_API_BASE: ${INTERNAL_API_BASE}
+      AI_TUNE_INTERVAL_MINUTES: ${AI_TUNE_INTERVAL_MINUTES}
+      AI_AUTO_APPLY: ${AI_AUTO_APPLY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: always
+    depends_on:
+      - api
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+      VITE_QUOTE_ASSET: ${QUOTE_ASSET}
+
+  regime-worker:
+    build:
+      context: .
+      dockerfile: regime_worker/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      QUOTE_ASSET: ${QUOTE_ASSET}
+      REGIME_SYMBOLS: ${REGIME_SYMBOLS}
+      REGIME_INTERVAL: ${REGIME_INTERVAL}
+      REGIME_SLEEP_SECONDS: ${REGIME_SLEEP_SECONDS}
+      REGIME_LOOKBACK: ${REGIME_LOOKBACK}
+      REGIME_TREND_EMA_FAST: ${REGIME_TREND_EMA_FAST}
+      REGIME_TREND_EMA_SLOW: ${REGIME_TREND_EMA_SLOW}
+      REGIME_VOL_ATR_PERIOD: ${REGIME_VOL_ATR_PERIOD}
+      REGIME_VOL_THRESHOLD_PCT: ${REGIME_VOL_THRESHOLD_PCT}
+      REGIME_SHOCK_Z: ${REGIME_SHOCK_Z}
+      REGIME_TREND_MIN_STRENGTH_PCT: ${REGIME_TREND_MIN_STRENGTH_PCT}
+
+  regime-worker-aux:
+    build:
+      context: .
+      dockerfile: regime_worker/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    profiles: ["aux"]
+    environment:
+      QUOTE_ASSET: ${QUOTE_ASSET}
+      REGIME_SYMBOLS: ${REGIME_SYMBOLS}
+      REGIME_INTERVAL: ${REGIME_AUX_INTERVAL}
+      REGIME_SLEEP_SECONDS: ${REGIME_SLEEP_SECONDS}
+      REGIME_LOOKBACK: ${REGIME_AUX_LOOKBACK}
+      REGIME_TREND_EMA_FAST: ${REGIME_TREND_EMA_FAST}
+      REGIME_TREND_EMA_SLOW: ${REGIME_TREND_EMA_SLOW}
+      REGIME_VOL_ATR_PERIOD: ${REGIME_VOL_ATR_PERIOD}
+      REGIME_VOL_THRESHOLD_PCT: ${REGIME_VOL_THRESHOLD_PCT}
+      REGIME_SHOCK_Z: ${REGIME_SHOCK_Z}
+      REGIME_TREND_MIN_STRENGTH_PCT: ${REGIME_TREND_MIN_STRENGTH_PCT}
+
+  bot-rsi-btc:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      TRADING_MODE: ${TRADING_MODE}
+      LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
+      QUOTE_ASSET: ${QUOTE_ASSET}
+      SYMBOL: BTCUSDC
+      INTERVAL: 1m
+      STRATEGY_NAME: RSI
+      REGIME_MODE: ${REGIME_MODE}
+      REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
+
+  bot-trend-btc:
+    build:
+      context: .
+      dockerfile: bot_trend/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      TRADING_MODE: ${TRADING_MODE}
+      LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
+      QUOTE_ASSET: ${QUOTE_ASSET}
+      SYMBOL: BTCUSDC
+      INTERVAL: 1m
+      STRATEGY_NAME: TREND
+      REGIME_MODE: ${REGIME_MODE}
+      REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
+
+volumes:
+  trading_paper_db_data:
+  trading_live_db_data:

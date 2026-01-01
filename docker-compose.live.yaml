@@ -96,18 +96,14 @@ services:
         condition: service_healthy
     env_file: .env.live
     environment:
+      TRADING_MODE: "LIVE"
+      LIVE_ORDERS_ENABLED: "1"
+      REGIME_MODE: "ENFORCE"
+      REGIME_MAX_AGE_SECONDS: "180"
       QUOTE_ASSET: "USDC"
       SYMBOL: "BTCUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      REGIME_MODE: "DRY_RUN"
-      EMA_FAST: "21"
-      EMA_SLOW: "50"
-      ENTRY_BUFFER_PCT: "0.002"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "3.0"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "90"
 
   bot-rsi-btc-live:
     build:
@@ -132,18 +128,6 @@ services:
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
       REGIME_MAX_AGE_SECONDS: 900
-
-      RSI_OVERSOLD: "30"
-      RSI_OVERBOUGHT: "70"
-      STOP_LOSS_PCT: "0.80"
-      TAKE_PROFIT_PCT: "0.40"
-      MAX_POSITION_MINUTES: "450"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_DIST_FROM_EMA_PCT: "0.5"
-      TREND_BUFFER: "0.001"
-      ENTRY_BUFFER_PCT: "0.002"
-      # ważne: w LIVE to powinno być małe i zgodne z MIN_NOTIONAL/filtrami
-      ORDER_QTY_BTC: "0.00010"
 
 volumes:
   trading_live_db_data:
