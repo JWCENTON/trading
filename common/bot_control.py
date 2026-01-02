@@ -11,6 +11,7 @@ from common.db import get_db_conn
 class BotControl:
     enabled: bool
     mode: str
+    reason: Optional[str]
     live_orders_enabled: bool
     regime_enabled: bool
     regime_mode: str
@@ -19,31 +20,23 @@ class BotControl:
 DEFAULT = BotControl(
     enabled=True,
     mode="NORMAL",
+    reason=None,
     live_orders_enabled=False,
     regime_enabled=False,
     regime_mode="DRY_RUN",
     updated_at=None,
 )
 
-def upsert_defaults(symbol: str, strategy: str, interval: str, *, cfg) -> None:
-    """
-    Gwarantuje, że rekord istnieje. Ustawia sensowne wartości startowe,
-    ale nie nadpisuje ręcznych ustawień użytkownika.
-    """
+def upsert_defaults(symbol: str, strategy: str, interval: str) -> None:
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO bot_control(symbol, strategy, interval, mode, enabled, live_orders_enabled, regime_enabled, regime_mode, updated_at)
-        VALUES (%s, %s, %s, 'NORMAL', TRUE, %s, %s, %s, now())
+        INSERT INTO bot_control(symbol, strategy, interval, mode, enabled, reason, live_orders_enabled, regime_enabled, regime_mode, updated_at)
+        VALUES (%s, %s, %s, 'NORMAL', TRUE, NULL, FALSE, FALSE, 'DRY_RUN', now())
         ON CONFLICT (symbol, strategy, interval) DO NOTHING;
         """,
-        (
-            symbol, strategy, interval,
-            bool(getattr(cfg, "live_orders_enabled", False)),
-            bool(getattr(cfg, "regime_enabled", False)),
-            str(getattr(cfg, "regime_mode", "DRY_RUN")).upper(),
-        ),
+        (symbol, strategy, interval),
     )
     conn.commit()
     cur.close()
@@ -54,7 +47,7 @@ def read(symbol: str, strategy: str, interval: str) -> BotControl:
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT enabled, mode, live_orders_enabled, regime_enabled, regime_mode, updated_at
+        SELECT enabled, mode, reason, live_orders_enabled, regime_enabled, regime_mode, updated_at
         FROM bot_control
         WHERE symbol=%s AND strategy=%s AND interval=%s
         """,
@@ -67,10 +60,12 @@ def read(symbol: str, strategy: str, interval: str) -> BotControl:
     if not row:
         return DEFAULT
 
-    enabled, mode, loe, re, rm, updated_at = row
+    enabled, mode, reason, loe, re, rm, updated_at = row[:7]
+
     return BotControl(
         enabled=bool(enabled),
         mode=str(mode or "NORMAL").upper(),
+        reason=str(reason) if reason is not None else None,
         live_orders_enabled=bool(loe),
         regime_enabled=bool(re),
         regime_mode=str(rm or "DRY_RUN").upper(),

@@ -23,21 +23,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BTCUSDT"
+      SYMBOL: "BTCUSDC"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
-      RSI_OVERSOLD: "18"
-      RSI_OVERBOUGHT: "82"
-      TREND_BUFFER: "0.001"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "1.8"
-      MAX_POSITION_MINUTES: "60"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      DISABLE_HOURS: "7,17"
-      PAPER_START_USDT: "100"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BTCUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BTCUSDC
 
   bot-eth:
     build: 
@@ -49,20 +40,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "ETHUSDT"
+      SYMBOL: "ETHUSDC"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
-      RSI_OVERSOLD: "15"
-      RSI_OVERBOUGHT: "85"
-      TREND_BUFFER: "0.001"
-      STOP_LOSS_PCT: "0.9"
-      TAKE_PROFIT_PCT: "1.8"
-      MAX_POSITION_MINUTES: "45"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "100"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: ETHUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: ETHUSDC
 
   bot-sol:
     build: 
@@ -74,20 +57,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "SOLUSDT"
+      SYMBOL: "SOLUSDC"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
-      RSI_OVERSOLD: "22"
-      RSI_OVERBOUGHT: "78"
-      TREND_BUFFER: "0.001"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "1.6"
-      MAX_POSITION_MINUTES: "60"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "100"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: SOLUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: SOLUSDC
 
   bot-bnb:
     build: 
@@ -99,21 +74,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BNBUSDT"
+      SYMBOL: "BNBUSDC"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
-      RSI_OVERSOLD: "22"
-      RSI_OVERBOUGHT: "78"
-      TREND_BUFFER: "0.001"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "1.6"
-      MAX_POSITION_MINUTES: "60"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      DISABLE_HOURS: "7,17"
-      PAPER_START_USDT: "100"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BNBUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BNBUSDC
 
   bot-trend-btc:
     build: 
@@ -125,20 +91,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BTCUSDT"
+      SYMBOL: "BTCUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
-      EMA_FAST: "21"
-      EMA_SLOW: "50"
-      ENTRY_BUFFER_PCT: "0.002"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "3.0"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "90"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BTCUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BTCUSDC
 
   bot-trend-eth:
     build: 
@@ -150,20 +108,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "ETHUSDT"
+      SYMBOL: "ETHUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
-      EMA_FAST: "21"
-      EMA_SLOW: "50"
-      ENTRY_BUFFER_PCT: "0.002"
-      STOP_LOSS_PCT: "0.6"
-      TAKE_PROFIT_PCT: "2.0"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "30"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: ETHUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: ETHUSDC
 
   bot-trend-sol:
     build: 
@@ -175,20 +125,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "SOLUSDT"
+      SYMBOL: "SOLUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
-      EMA_FAST: "21"
-      EMA_SLOW: "50"
-      ENTRY_BUFFER_PCT: "0.002"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "3.0"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "30"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: SOLUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: SOLUSDC
 
   bot-trend-bnb:
     build: 
@@ -200,22 +142,14 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BNBUSDT"
+      SYMBOL: "BNBUSDC"
       INTERVAL: "1m"
       STRATEGY_NAME: "TREND"
-      PAPER_START_USDT: "100"
       REGIME_MODE: "ENFORCE"
-      EMA_FAST: "21"
-      EMA_SLOW: "50"
-      ENTRY_BUFFER_PCT: "0.002"
-      STOP_LOSS_PCT: "0.6"
-      TAKE_PROFIT_PCT: "2.0"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      MAX_POSITION_MINUTES: "30"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BNBUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BNBUSDC
 
-  trading-bot-bbrange-btc:
+  bot-bbrange-btc:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -225,16 +159,11 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BTCUSDT"
+      SYMBOL: "BTCUSDC"
       STRATEGY_NAME: "BBRANGE"
       REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
-      STOP_LOSS_PCT: "0.4"
-      TAKE_PROFIT_PCT: "0.9"
-      TREND_BUFFER: "0.001"
-      MAX_POSITION_MINUTES: "60"
-      DAILY_MAX_LOSS_PCT: "0.5"
       BB_PERIOD: "20"
       BB_STD: "2.0"
       MIN_BB_WIDTH_PCT: "0.0025"
@@ -242,10 +171,10 @@ services:
       RSI_SHORT_MIN: "55"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BTCUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BTCUSDC
 
-  trading-bot-bbrange-eth:
+  bot-bbrange-eth:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -255,16 +184,11 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "ETHUSDT"
+      SYMBOL: "ETHUSDC"
       STRATEGY_NAME: "BBRANGE"
       REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
-      STOP_LOSS_PCT: "0.5"
-      TAKE_PROFIT_PCT: "0.85"
-      TREND_BUFFER: "0.001"
-      MAX_POSITION_MINUTES: "60"
-      DAILY_MAX_LOSS_PCT: "0.5"
       BB_PERIOD: "20"
       BB_STD: "2.0"
       MIN_BB_WIDTH_PCT: "0.0020"
@@ -272,10 +196,10 @@ services:
       RSI_SHORT_MIN: "55"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: ETHUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: ETHUSDC
 
-  trading-bot-bbrange-sol:
+  bot-bbrange-sol:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -285,16 +209,11 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "SOLUSDT"
+      SYMBOL: "SOLUSDC"
       STRATEGY_NAME: "BBRANGE"
       REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
-      STOP_LOSS_PCT: "0.6"
-      TAKE_PROFIT_PCT: "1.15"
-      TREND_BUFFER: "0.001"
-      MAX_POSITION_MINUTES: "25"
-      DAILY_MAX_LOSS_PCT: "0.5"
       BB_PERIOD: "20"
       BB_STD: "2.0"
       MIN_BB_WIDTH_PCT: "0.0030"
@@ -302,10 +221,10 @@ services:
       RSI_SHORT_MIN: "60"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: SOLUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: SOLUSDC
 
-  trading-bot-bbrange-bnb:
+  bot-bbrange-bnb:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -315,16 +234,11 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BNBUSDT"
+      SYMBOL: "BNBUSDC"
       STRATEGY_NAME: "BBRANGE"
       REGIME_MODE: "ENFORCE"
       RSI_PERIOD: "14"
       EMA_PERIOD: "21"
-      STOP_LOSS_PCT: "0.5"
-      TAKE_PROFIT_PCT: "1.0"
-      TREND_BUFFER: "0.001"
-      MAX_POSITION_MINUTES: "60"
-      DAILY_MAX_LOSS_PCT: "0.5"
       BB_PERIOD: "20"
       BB_STD: "2.0"
       MIN_BB_WIDTH_PCT: "0.0025"
@@ -332,8 +246,8 @@ services:
       RSI_SHORT_MIN: "60"
       RSI_BLOCK_EXTREME_LOW: "10"
       RSI_BLOCK_EXTREME_HIGH: "90"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BNBUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BNBUSDC
 
   bot-st-btc:
     build: 
@@ -345,21 +259,15 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BTCUSDT"
+      SYMBOL: "BTCUSDC"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       ATR_PERIOD: "14"
       ST_MULTIPLIER: "3.0"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "2.0"
-      MAX_POSITION_MINUTES: "90"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "100"
-      # jeśli używasz workera z ORDER_QTY_BTC:
       ORDER_QTY_BTC: "0.0001"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BTCUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BTCUSDC
 
   bot-st-eth:
     build: 
@@ -371,20 +279,15 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "ETHUSDT"
+      SYMBOL: "ETHUSDC"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       ATR_PERIOD: "14"
       ST_MULTIPLIER: "3.0"
-      STOP_LOSS_PCT: "0.6"
-      TAKE_PROFIT_PCT: "1.8"
-      MAX_POSITION_MINUTES: "90"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: ETHUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: ETHUSDC
 
   bot-st-sol:
     build: 
@@ -396,20 +299,15 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "SOLUSDT"
+      SYMBOL: "SOLUSDC"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       ATR_PERIOD: "14"
       ST_MULTIPLIER: "3.0"
-      STOP_LOSS_PCT: "0.8"
-      TAKE_PROFIT_PCT: "2.5"
-      MAX_POSITION_MINUTES: "90"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: SOLUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: SOLUSDC
 
   bot-st-bnb:
     build: 
@@ -421,20 +319,15 @@ services:
       - db
     env_file: .env.paper
     environment:
-      SYMBOL: "BNBUSDT"
+      SYMBOL: "BNBUSDC"
       STRATEGY_NAME: "SUPER_TREND"
       REGIME_MODE: "ENFORCE"
       INTERVAL: "1m"
       ATR_PERIOD: "14"
       ST_MULTIPLIER: "3.0"
-      STOP_LOSS_PCT: "0.6"
-      TAKE_PROFIT_PCT: "1.8"
-      MAX_POSITION_MINUTES: "90"
-      DAILY_MAX_LOSS_PCT: "0.5"
-      PAPER_START_USDT: "100"
       ORDER_QTY_BTC: "0.0001"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BNBUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BNBUSDC
 
   api:
     build: ./api
@@ -444,13 +337,12 @@ services:
       - db
     env_file: .env.paper
     environment:
-      PAPER_START_USDT: "100"
       AI_TUNE_INTERVAL_MINUTES: "4320"
       AI_AUTO_APPLY: "false"
       INTERNAL_API_BASE: "http://127.0.0.1:8000"
       OPENAI_MODEL: "gpt-4.1-mini"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BTCUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BTCUSDC
     ports:
       - "8000:8000"
 
@@ -465,7 +357,7 @@ services:
       - api
     environment:
       VITE_API_BASE_URL: "http://192.168.101.10:8000"
-      VITE_QUOTE_ASSET: "USDT"
+      VITE_QUOTE_ASSET: "USDC"
 
   regime-worker:
     build:
@@ -477,7 +369,7 @@ services:
       - db
     env_file: .env.paper
     environment:
-      REGIME_SYMBOLS: "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"
+      REGIME_SYMBOLS: "BTCUSDC,ETHUSDC,SOLUSDC,BNBUSDC"
       REGIME_INTERVAL: "1m"
       REGIME_SLEEP_SECONDS: "60"
       REGIME_LOOKBACK: "${REGIME_LOOKBACK:-200}"
@@ -487,5 +379,5 @@ services:
       REGIME_VOL_THRESHOLD_PCT: "${REGIME_VOL_THRESHOLD_PCT:-0.08}"
       REGIME_SHOCK_Z: "${REGIME_SHOCK_Z:-3.0}"
       REGIME_TREND_MIN_STRENGTH_PCT: "${REGIME_TREND_MIN_STRENGTH_PCT:-0.05}"
-      QUOTE_ASSET: USDT
-      DEFAULT_SYMBOL: BTCUSDT
+      QUOTE_ASSET: USDC
+      DEFAULT_SYMBOL: BTCUSDC

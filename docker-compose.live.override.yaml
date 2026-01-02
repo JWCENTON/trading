@@ -1,0 +1,14 @@
+services:
+  db:
+    ports: []
+
+  api:
+    ports:
+      - "8001:8000"
+
+  frontend:
+    ports:
+      - "3001:80"
+
+  regime-worker-aux:
+    profiles: ["aux"]
