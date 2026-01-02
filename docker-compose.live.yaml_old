@@ -124,10 +124,53 @@ services:
 
       QUOTE_ASSET: "USDC"
       SYMBOL: "BTCUSDC"
-      INTERVAL: "5m"
+      INTERVAL: "1m"
       STRATEGY_NAME: "RSI"
       REGIME_MODE: "ENFORCE"
-      REGIME_MAX_AGE_SECONDS: 900
+      REGIME_MAX_AGE_SECONDS: "900"
+
+  bot-bbrange-btc-live:
+    build: 
+      context: .
+      dockerfile: bot_bbrange/Dockerfile
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      TRADING_MODE: "LIVE"
+      LIVE_ORDERS_ENABLED: "1"
+
+      DB_HOST: "db_live"
+      DB_NAME: "trading_live"
+      DB_PORT: "5432"
+
+      REGIME_MODE: "ENFORCE"
+      REGIME_MAX_AGE_SECONDS: "900"
+      QUOTE_ASSET: "USDC"
+      SYMBOL: "BTCUSDC"
+      INTERVAL: "1m"
+      STRATEGY_NAME: "BBRANGE"
+
+  bot-supertrend-btc-live:
+    build:
+      context: .
+      dockerfile: bot_supertrend/Dockerfile
+    restart: always
+    depends_on:
+      db_live:
+        condition: service_healthy
+    env_file: .env.live
+    environment:
+      TRADING_MODE: "LIVE"
+      LIVE_ORDERS_ENABLED: "1"
+      REGIME_MODE: "ENFORCE"
+      REGIME_MAX_AGE_SECONDS: "180"
+      QUOTE_ASSET: "USDC"
+      SYMBOL: "BTCUSDC"
+      INTERVAL: "1m"
+      STRATEGY_NAME: "SUPERTREND"
 
 volumes:
   trading_live_db_data:

@@ -1009,6 +1009,8 @@ def run_trend_strategy():
     snap = get_runtime_snapshot(price=price, open_time=open_time)
     bc = snap["bc"]
     cfg_effective = snap["cfg_effective"]
+    time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
+    max_pos_minutes = int(getattr(cfg_effective, "max_position_minutes", MAX_POSITION_MINUTES))
 
     if bc.mode == "HALT":
         emit_strategy_event(
@@ -1203,26 +1205,44 @@ def run_trend_strategy():
                             close_position(exit_price=price, reason="EARLY_CUT_SHORT")
                         return
 
-        # TIMEOUT
-        if MAX_POSITION_MINUTES > 0 and pos_entry_time is not None:
+        # =========================
+        # TIMEOUT (optional) — keep winners, cut stagnation
+        # =========================
+        if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
             if pos_entry_time.tzinfo is None:
                 pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
 
             age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
-            if age_minutes >= MAX_POSITION_MINUTES:
-                # If profit is too small, do not keep holding; exit to avoid negative TIMEOUT expectancy
+
+            if age_minutes >= max_pos_minutes:
+                # PnL% depends on side
                 if pos_side == "LONG":
                     pnl_pct = (price - pos_entry_price) / pos_entry_price * 100.0
                 else:
                     pnl_pct = (pos_entry_price - price) / pos_entry_price * 100.0
 
-                if pnl_pct < MIN_PROFIT_TO_KEEP_PCT:
-                    logging.info(
-                        "TREND: TIMEOUT exit - pnl_pct %.2f%% < MIN_PROFIT_TO_KEEP_PCT %.2f%%",
-                        pnl_pct, MIN_PROFIT_TO_KEEP_PCT
+                # If position is doing well enough, we keep it (avoid cutting trend winners)
+                if pnl_pct >= MIN_PROFIT_TO_KEEP_PCT:
+                    emit_strategy_event(
+                        event_type="BLOCKED",
+                        decision=None,
+                        reason="TIME_EXIT_SKIPPED_KEEP_PROFIT",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "pos_side": pos_side,
+                            "age_minutes": float(age_minutes),
+                            "max_minutes": int(max_pos_minutes),
+                            "pnl_pct": float(pnl_pct),
+                            "min_profit_to_keep_pct": float(MIN_PROFIT_TO_KEEP_PCT),
+                        },
                     )
+                    return
+
                 side_timeout = "SELL" if pos_side == "LONG" else "BUY"
-                reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
+                reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {max_pos_minutes}m (pnl={pnl_pct:.2f}%)"
+
+                # Optional: audit regime meta on EXIT (does not block exit)
                 allow_gate_exit, rmeta_gate_exit = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
                 log_regime_gate_on_exit(
                     decision=side_timeout,
@@ -1232,11 +1252,14 @@ def run_trend_strategy():
                         "exit_reason": "TIMEOUT",
                         "pos_side": pos_side,
                         "age_minutes": float(age_minutes),
-                        "max_minutes": int(MAX_POSITION_MINUTES),
+                        "max_minutes": int(max_pos_minutes),
                         "price": float(price),
                         "open_time": str(open_time),
+                        "pnl_pct": float(pnl_pct),
+                        "min_profit_to_keep_pct": float(MIN_PROFIT_TO_KEEP_PCT),
                     },
                 )
+
                 inserted = execute_and_record(
                     side=side_timeout,
                     price=price,
@@ -1248,9 +1271,24 @@ def run_trend_strategy():
                     allow_meta=snap["allow_meta_exit"],
                     is_exit=True,
                 )
+
                 if not inserted:
+                    emit_strategy_event(
+                        event_type="BLOCKED",
+                        decision=side_timeout,
+                        reason="EXIT_BLOCKED",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "exit_reason": "TIMEOUT",
+                            "pos_side": pos_side,
+                            "age_minutes": float(age_minutes),
+                            "max_minutes": int(max_pos_minutes),
+                        },
+                    )
                     logging.info("TREND: exit blocked by DB guard -> skipping close.")
                     return
+
                 close_position(exit_price=price, reason="TIMEOUT")
                 return
 

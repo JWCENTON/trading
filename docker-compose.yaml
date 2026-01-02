@@ -131,6 +131,46 @@ services:
       STRATEGY_NAME: TREND
       REGIME_MODE: ${REGIME_MODE}
       REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
+  
+  bot-bbrange-btc:
+    build:
+      context: .
+      dockerfile: bot_bbrange/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      TRADING_MODE: ${TRADING_MODE}
+      LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
+      QUOTE_ASSET: ${QUOTE_ASSET}
+      SYMBOL: BTCUSDC
+      INTERVAL: 1m
+      STRATEGY_NAME: BBRANGE
+      REGIME_MODE: ${REGIME_MODE}
+      REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
+
+  bot-supertrend-btc:
+    build:
+      context: .
+      dockerfile: bot_supertrend/Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      TRADING_MODE: ${TRADING_MODE}
+      LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
+      QUOTE_ASSET: ${QUOTE_ASSET}
+      SYMBOL: BTCUSDC
+      INTERVAL: 1m
+      STRATEGY_NAME: SUPERTREND
+      REGIME_MODE: ${REGIME_MODE}
+      REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
 
 volumes:
   trading_paper_db_data:

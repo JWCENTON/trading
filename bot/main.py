@@ -988,6 +988,8 @@ def run_strategy(row):
         snap = get_runtime_snapshot(price=price, open_time=open_time)
         bc = snap["bc"]
         cfg_effective = snap["cfg_effective"]
+        time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
+        max_pos_minutes = int(getattr(cfg_effective, "max_position_minutes", MAX_POSITION_MINUTES))
 
         # HARD stop
         if bc.mode == "HALT":
@@ -1164,36 +1166,49 @@ def run_strategy(row):
                         return
                     return
 
-            # TIMEOUT (dla obu stron)
-            if MAX_POSITION_MINUTES > 0 and pos_entry_time is not None:
+            # TIME EXIT (dla obu stron)
+            if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
                 if pos_entry_time.tzinfo is None:
                     pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
                 age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
-                if age_minutes >= MAX_POSITION_MINUTES:
+                if age_minutes >= max_pos_minutes:
                     side_timeout = "SELL" if pos_side_u == "LONG" else "BUY"
-                    reason_timeout = f"RSI TIMEOUT {pos_side_u} {age_minutes:.1f}m >= {MAX_POSITION_MINUTES}m"
+                    reason_timeout = f"RSI TIME_EXIT {pos_side_u} {age_minutes:.1f}m >= {max_pos_minutes}m"
+
+                    emit_strategy_event(
+                        event_type="EXIT_TIME",
+                        decision=side_timeout,
+                        reason="TIME_EXIT",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "pos_side": pos_side_u,
+                            "age_minutes": float(age_minutes),
+                            "max_minutes": int(max_pos_minutes),
+                        },
+                    )
+
                     inserted = execute_and_record(
                         side=side_timeout,
-                        price=price,  # close_price
+                        price=price,
                         qty_btc=qty_f,
                         reason=reason_timeout,
                         candle_open_time=open_time,
-                        cfg_used=cfg_effective, 
+                        cfg_used=cfg_effective,
                         allow_live_orders=snap["allowed_orders_exit"],
                         allow_meta=snap["allow_meta_exit"],
                         is_exit=True,
                     )
                     if inserted:
-                        close_position(exit_price=price, reason="TIMEOUT")
-                    if not inserted:
+                        close_position(exit_price=price, reason="TIME_EXIT")
+                    else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
                             decision=side_timeout,
                             price=price,
                             candle_open_time=open_time,
-                            info={"exit_reason": "TIMEOUT"},
+                            info={"exit_reason": "TIME_EXIT"},
                         )
-                        return
                     return
             emit_strategy_event(
                 event_type="BLOCKED",

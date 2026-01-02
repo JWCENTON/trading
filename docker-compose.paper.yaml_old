@@ -149,7 +149,7 @@ services:
       QUOTE_ASSET: USDC
       DEFAULT_SYMBOL: BNBUSDC
 
-  trading-bot-bbrange-btc:
+  bot-bbrange-btc:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -174,7 +174,7 @@ services:
       QUOTE_ASSET: USDC
       DEFAULT_SYMBOL: BTCUSDC
 
-  trading-bot-bbrange-eth:
+  bot-bbrange-eth:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -199,7 +199,7 @@ services:
       QUOTE_ASSET: USDC
       DEFAULT_SYMBOL: ETHUSDC
 
-  trading-bot-bbrange-sol:
+  bot-bbrange-sol:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -224,7 +224,7 @@ services:
       QUOTE_ASSET: USDC
       DEFAULT_SYMBOL: SOLUSDC
 
-  trading-bot-bbrange-bnb:
+  bot-bbrange-bnb:
     build: 
       context: .
       dockerfile: bot_bbrange/Dockerfile
