@@ -215,6 +215,7 @@ postgres-data/
 **/db_data/
 **/pgdata/
 **/postgres-data/
+db_live_data/
 
 # Backups / dumps
 backup/

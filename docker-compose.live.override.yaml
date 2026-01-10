@@ -10,5 +10,16 @@ services:
     ports:
       - "3001:80"
 
-  regime-worker-aux:
-    profiles: ["aux"]
+  bot-runner:
+    build:
+      context: .
+      dockerfile: services/bot_runner/Dockerfile
+    env_file:
+      - ${ENV_FILE}
+    environment:
+      BOT_RUNNER_POLL_SECONDS: 5
+      BOT_RUNNER_GRACE_SECONDS: 20
+      BOT_RUNNER_RESTART_BACKOFF_SECONDS: 15
+    depends_on:
+      - db
+    restart: unless-stopped

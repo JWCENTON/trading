@@ -11,6 +11,6 @@ COPY bot_trend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY common /app/common
-COPY bot_trend/main_trend.py /app/main_trend.py
+COPY bot_trend/main.py /app/main.py
 
-CMD ["python", "-u", "main_trend.py"]
+CMD ["python", "-u", "main.py"]
