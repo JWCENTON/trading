@@ -1,0 +1,9 @@
+db_backups/
+**/db_backups/
+*.sql
+*.dump
+*.tar
+*.gz
+db_data/
+db_live_data/
+db_init/

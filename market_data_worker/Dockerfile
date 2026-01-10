@@ -7,10 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY bot_supertrend/requirements.txt /app/requirements.txt
+COPY bot/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY common /app/common
-COPY bot_supertrend/main.py /app/main.py
+COPY market_data_worker/main.py /app/main.py
+
+ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-u", "main.py"]

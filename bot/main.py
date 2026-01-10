@@ -175,7 +175,7 @@ def execute_and_record(
             side,
             qty_btc,
             trading_mode=cfg_used.trading_mode,
-            live_orders_enabled=cfg_used.live_orders_enabled,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
             quote_asset=cfg_used.quote_asset,
             client_order_id=client_order_id,
             panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
@@ -215,6 +215,8 @@ def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
     Zwraca: (allow: bool, meta: dict)
     DRY_RUN: zawsze allow=True, ale meta mówi czy 'would_block'.
     """
+    would_block = False
+    why = "ok"
     if not bc.regime_enabled:
         return True, {"enabled": False}
 
@@ -353,11 +355,7 @@ def log_regime_gate_event(
     mode = rmeta.get("mode")
     would_block = rmeta.get("would_block", False)
 
-    should_log = (allow is False) or (mode == "DRY_RUN" and would_block)
-    if not should_log:
-        return
-
-    meta = {}
+    meta = {"rmeta": rmeta}
     if isinstance(rmeta, dict):
         meta["rmeta"] = rmeta
     if extra_meta:
@@ -413,10 +411,10 @@ def get_runtime_snapshot(price: float, open_time):
     allow_gate_entry, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
 
     # Czy wolno wysłać LIVE order (uwzględnia TRADING_MODE + LIVE_ORDERS_ENABLED + PANIC etc)
-    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry, panic_disable_trading=panic)
+    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry, is_exit=False, panic_disable_trading=panic)
 
     # EXIT: zawsze dozwolony (regime nie może blokować zamknięcia pozycji)
-    allowed_orders_exit, allow_meta_exit   = can_trade(cfg_effective, regime_allows_trade=True, panic_disable_trading=panic)
+    allowed_orders_exit, allow_meta_exit   = can_trade(cfg_effective, regime_allows_trade=True, is_exit=True, panic_disable_trading=panic)
 
     hb = {
         "price": float(price),
@@ -964,10 +962,12 @@ def run_strategy(row):
         if close_price is None or high_price is None or low_price is None:
             fallback_price = float(open_px) if open_px is not None else None
             emit_strategy_event(
+                event_type="BLOCKED",
                 reason="CANDLE_MISSING_FIELDS",
                 decision=None,
                 price=fallback_price,
                 candle_open_time=open_time,
+                info={"open": open_px, "high": high_px, "low": low_px, "close": close_px},
             )
             return
 
@@ -986,6 +986,22 @@ def run_strategy(row):
         rsi_val = float(rsi_14)
 
         snap = get_runtime_snapshot(price=price, open_time=open_time)
+        # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
+        log_regime_gate_event(
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            strategy=STRATEGY_NAME,
+            decision="TICK",
+            allow=snap["allow_gate_entry"],
+            rmeta=snap["rmeta_gate"],
+            extra_meta={
+                "price": float(price),
+                "ema_21": float(ema_val) if ema_21 is not None else None,
+                "rsi_14": float(rsi_val) if rsi_14 is not None else None,
+                "open_time": str(open_time),
+                "note": "baseline per candle",
+            },
+        )
         bc = snap["bc"]
         cfg_effective = snap["cfg_effective"]
         time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
@@ -1393,15 +1409,6 @@ def run_strategy(row):
             opened = open_position("LONG", qty_btc, price)
         else:
             opened = open_position("SHORT", qty_btc, price)
-
-        emit_strategy_event(
-            event_type="RUN_END",
-            decision=None,
-            reason="EXIT",
-            price=float(price) if price is not None else None,
-            candle_open_time=open_time,
-            info={},
-        )
 
         if not opened:
             logging.error("RSI DESYNC: order recorded but position not opened -> HALT for safety.")

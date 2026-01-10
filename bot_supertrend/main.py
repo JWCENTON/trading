@@ -103,6 +103,17 @@ def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, c
     h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
     return f"{symbol[:6]}-{strategy[:6]}-{interval}-{side}-{h}"[:36]
 
+def log_regime_gate_on_exit(decision: str, rmeta_gate: dict, allow_gate: bool, extra: dict):
+    log_regime_gate_event(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision=decision,
+        allow=allow_gate,
+        rmeta=rmeta_gate,
+        extra_meta={"event": "EXIT", **(extra or {})},
+    )
+
 # =========================
 # Telemetry (strategy_events)
 # =========================
@@ -192,7 +203,7 @@ def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
     why = "ok"
 
     # v1: SUPER_TREND blocked in SHOCK only
-    if strategy_name in ("SUPER_TREND", "ST"):
+    if strategy_name in ("SUPERTREND", "SUPER_TREND", "ST"):
         if regime in ("SHOCK",):
             would_block = True
             why = f"SUPER_TREND blocked in {regime}"
@@ -219,13 +230,9 @@ def log_regime_gate_event(
     """
     if not rmeta:
         return
-
+    
     mode = rmeta.get("mode")
     would_block = rmeta.get("would_block", False)
-
-    should_log = (allow is False) or (mode == "DRY_RUN" and would_block)
-    if not should_log:
-        return
 
     meta = {}
     if isinstance(rmeta, dict):
@@ -249,7 +256,7 @@ def log_regime_gate_event(
             decision,
             bool(allow),
             rmeta.get("regime"),
-            rmeta.get("mode"),
+            mode,
             bool(would_block) if would_block is not None else None,
             rmeta.get("why"),
             json.dumps(meta, default=_json_default),
@@ -283,12 +290,12 @@ def get_runtime_snapshot(price: float, open_time):
 
     # LIVE permission for entry
     allowed_orders_entry, allow_meta_entry = can_trade(
-        cfg_effective, regime_allows_trade=allow_gate_entry, panic_disable_trading=panic
+        cfg_effective, regime_allows_trade=allow_gate_entry, is_exit=False, panic_disable_trading=panic
     )
 
     # EXIT should never be blocked by regime gate
     allowed_orders_exit, allow_meta_exit = can_trade(
-        cfg_effective, regime_allows_trade=True, panic_disable_trading=panic
+        cfg_effective, regime_allows_trade=True, is_exit=True, panic_disable_trading=panic
     )
 
     hb = {
@@ -331,6 +338,23 @@ def get_runtime_snapshot(price: float, open_time):
         "allow_meta_exit": allow_meta_exit,
         "heartbeat": hb,
     }
+
+
+def set_mode(mode: str, reason: str = None):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO bot_control(symbol, strategy, interval, mode, reason, updated_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (symbol, strategy, interval)
+        DO UPDATE SET mode=EXCLUDED.mode, reason=EXCLUDED.reason, updated_at=now();
+        """,
+        (SYMBOL, STRATEGY_NAME, INTERVAL, mode, reason),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # =========================
 # Positions (hard-truth)
@@ -445,6 +469,7 @@ def seed_default_params_from_env(conn):
         "MAX_POSITION_MINUTES": float(MAX_POSITION_MINUTES),
         "DAILY_MAX_LOSS_PCT": float(DAILY_MAX_LOSS_PCT),
         "ORDER_QTY_BTC": float(ORDER_QTY_BTC),
+        "EXIT_ON_FLIP_DOWN": 1.0 if EXIT_ON_FLIP_DOWN else 0.0,
     }
 
     cur = conn.cursor()
@@ -494,6 +519,7 @@ def load_runtime_params():
     global ATR_PERIOD, ST_MULTIPLIER, EMA_PERIOD, RSI_PERIOD
     global MIN_ATR_PCT, STOP_LOSS_PCT, TAKE_PROFIT_PCT
     global MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, ORDER_QTY_BTC
+    global EXIT_ON_FLIP_DOWN
 
     conn = get_db_conn()
     cur = conn.cursor()
@@ -539,6 +565,9 @@ def load_runtime_params():
 
     if "ORDER_QTY_BTC" in params:
         ORDER_QTY_BTC = clamp(params["ORDER_QTY_BTC"], 0.00001, 1.0)
+    
+    if "EXIT_ON_FLIP_DOWN" in params:
+        EXIT_ON_FLIP_DOWN = bool(int(clamp(params["EXIT_ON_FLIP_DOWN"], 0.0, 1.0)))
 
     logging.info(
         "RUNTIME_PARAMS|symbol=%s|strategy=%s|ATR_PERIOD=%d|ST_MULTIPLIER=%.3f|EMA_PERIOD=%d|RSI_PERIOD=%d|"
@@ -665,7 +694,7 @@ def execute_and_record(
             side,
             qty_btc,
             trading_mode=cfg_used.trading_mode,
-            live_orders_enabled=cfg_used.live_orders_enabled,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
             quote_asset=cfg_used.quote_asset,
             client_order_id=client_order_id,
             panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
@@ -966,12 +995,10 @@ def get_prev_closed_candle():
     conn.close()
     return row
 
-LAST_PROCESSED_OPEN_TIME = None
-
 # =========================
 # Strategy Logic (SPOT LONG-only)
 # =========================
-def run_strategy():
+def run_strategy(latest, prev):
     """
     Entry (LONG-only SPOT):
       - signal: SuperTrend flip -1 -> +1
@@ -987,25 +1014,34 @@ def run_strategy():
       - DB guard (is_exit=True)
       - execute_and_record(SELL) then close_position
     """
-    global LAST_PROCESSED_OPEN_TIME
-
-    latest = get_last_closed_candle()
-    prev = get_prev_closed_candle()
-
-    if not latest or not prev:
-        return
 
     open_time, close_price, ema_21, rsi_14, atr_14, st_val, st_dir = latest
     _, prev_close, _, _, _, _, prev_st_dir = prev
 
-    if LAST_PROCESSED_OPEN_TIME == open_time:
-        return
-    LAST_PROCESSED_OPEN_TIME = open_time
 
     price = float(close_price)
 
+    ema_val = float(ema_21) if ema_21 is not None else None
+    rsi_val = float(rsi_14) if rsi_14 is not None else None
+
     # snapshot + basic tick event
     snap = get_runtime_snapshot(price=price, open_time=open_time)
+    # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
+    log_regime_gate_event(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision="TICK",
+        allow=snap["allow_gate_entry"],
+        rmeta=snap["rmeta_gate"],
+        extra_meta={
+            "price": float(price),
+            "ema_21": float(ema_val) if ema_21 is not None else None,
+            "rsi_14": float(rsi_val) if rsi_14 is not None else None,
+            "open_time": str(open_time),
+            "note": "baseline per candle",
+        },
+    )
     bc = snap["bc"]
     cfg_effective = snap["cfg_effective"]
     time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
@@ -1050,19 +1086,7 @@ def run_strategy():
                 if inserted:
                     close_position(exit_price=price, reason="PANIC")
         # after panic, HALT
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            UPDATE bot_control
-            SET mode='HALT', reason=%s, updated_at=now()
-            WHERE symbol=%s AND strategy=%s AND interval=%s
-            """,
-            ("Panic executed; halting.", SYMBOL, STRATEGY_NAME, INTERVAL),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        set_mode("HALT", reason="Panic executed; halting.")
         return
 
     # indicators readiness
@@ -1119,6 +1143,13 @@ def run_strategy():
         # Take profit
         if TAKE_PROFIT_PCT > 0 and change_pct >= TAKE_PROFIT_PCT:
             reason = f"SUPER_TREND TAKE PROFIT LONG {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
+            allow_gate_exit, rmeta_gate_exit = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+            log_regime_gate_on_exit(
+                decision="SELL",
+                rmeta_gate=rmeta_gate_exit,
+                allow_gate=allow_gate_exit,
+                extra={"exit_reason": "TAKE_PROFIT", "price": price, "open_time": str(open_time)},
+            )
             inserted = execute_and_record(
                 side="SELL",
                 price=price,
@@ -1138,6 +1169,13 @@ def run_strategy():
         drop_pct = -change_pct
         if STOP_LOSS_PCT > 0 and drop_pct >= STOP_LOSS_PCT:
             reason = f"SUPER_TREND STOP LOSS LONG {drop_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
+            allow_gate_exit, rmeta_gate_exit = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+            log_regime_gate_on_exit(
+                decision="SELL",
+                rmeta_gate=rmeta_gate_exit,
+                allow_gate=allow_gate_exit,
+                extra={"exit_reason": "STOP_LOSS", "price": price, "open_time": str(open_time)},
+            )
             inserted = execute_and_record(
                 side="SELL",
                 price=price,
@@ -1172,6 +1210,13 @@ def run_strategy():
                     },
                 )
                 reason = f"SUPER_TREND TIME_EXIT LONG {age_minutes:.1f}m >= {max_pos_minutes}m"
+                allow_gate_exit, rmeta_gate_exit = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+                log_regime_gate_on_exit(
+                    decision="SELL",
+                    rmeta_gate=rmeta_gate_exit,
+                    allow_gate=allow_gate_exit,
+                    extra={"exit_reason": "TIME_EXIT", "price": price, "open_time": str(open_time)},
+                )
                 inserted = execute_and_record(
                     side="SELL",
                     price=price,
@@ -1190,6 +1235,13 @@ def run_strategy():
         # Optional: exit on flip down
         if EXIT_ON_FLIP_DOWN and st_dir_prev == 1 and st_dir_curr == -1:
             reason = f"SUPER_TREND EXIT ON FLIP DOWN (dir {st_dir_prev}->{st_dir_curr})"
+            allow_gate_exit, rmeta_gate_exit = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+            log_regime_gate_on_exit(
+                decision="SELL",
+                rmeta_gate=rmeta_gate_exit,
+                allow_gate=allow_gate_exit,
+                extra={"exit_reason": "FLIP_DOWN", "price": price, "open_time": str(open_time)},
+            )
             inserted = execute_and_record(
                 side="SELL",
                 price=price,
@@ -1351,10 +1403,12 @@ def run_strategy():
         conn.close()
         return
 
+LAST_PROCESSED_OPEN_TIME = None
 # =========================
 # Main Loop
 # =========================
 def main_loop():
+    global LAST_PROCESSED_OPEN_TIME
     ensure_schema()
     upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
 
@@ -1364,8 +1418,8 @@ def main_loop():
     finally:
         conn.close()
 
-    if cfg.trading_mode == "LIVE":
-        logging.info("SUPER_TREND running in LIVE mode (orders may still be suppressed by bot_control/can_trade).")
+    if cfg.trading_mode == "LIVE" and cfg.regime_enabled and cfg.regime_mode == "DRY_RUN":
+        logging.info("LIVE + REGIME_ENABLED but REGIME_MODE=DRY_RUN. Consider ENFORCE for profitability.")
 
     while True:
         loop_start = time.perf_counter()
@@ -1374,7 +1428,15 @@ def main_loop():
             rows = fetch_klines()
             save_klines(rows)
             update_indicators()
-            run_strategy()
+            latest = get_last_closed_candle()
+            prev = get_prev_closed_candle()
+            if latest and prev:
+                open_time = latest[0]
+                if LAST_PROCESSED_OPEN_TIME != open_time:
+                    LAST_PROCESSED_OPEN_TIME = open_time
+                    run_strategy(latest, prev)
+                else:
+                    logging.info("SUPER_TREND: no new candle yet (%s) -> skip strategy.", str(open_time))
         except Exception as e:
             logging.exception("SUPER_TREND loop error")
             emit_strategy_event(

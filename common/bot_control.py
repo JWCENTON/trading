@@ -34,7 +34,15 @@ def upsert_defaults(symbol: str, strategy: str, interval: str) -> None:
         """
         INSERT INTO bot_control(symbol, strategy, interval, mode, enabled, reason, live_orders_enabled, regime_enabled, regime_mode, updated_at)
         VALUES (%s, %s, %s, 'NORMAL', TRUE, NULL, FALSE, FALSE, 'DRY_RUN', now())
-        ON CONFLICT (symbol, strategy, interval) DO NOTHING;
+        ON CONFLICT (symbol, strategy, interval)
+        DO UPDATE SET
+            mode = COALESCE(bot_control.mode, EXCLUDED.mode),
+            enabled = COALESCE(bot_control.enabled, EXCLUDED.enabled),
+            live_orders_enabled = COALESCE(bot_control.live_orders_enabled, EXCLUDED.live_orders_enabled),
+            regime_enabled = COALESCE(bot_control.regime_enabled, EXCLUDED.regime_enabled),
+            regime_mode = COALESCE(bot_control.regime_mode, EXCLUDED.regime_mode),
+            updated_at = bot_control.updated_at
+        WHERE 1=0;
         """,
         (symbol, strategy, interval),
     )
@@ -65,7 +73,7 @@ def read(symbol: str, strategy: str, interval: str) -> BotControl:
     return BotControl(
         enabled=bool(enabled),
         mode=str(mode or "NORMAL").upper(),
-        reason=str(reason) if reason is not None else None,
+        reason=reason if reason is not None else None,
         live_orders_enabled=bool(loe),
         regime_enabled=bool(re),
         regime_mode=str(rm or "DRY_RUN").upper(),

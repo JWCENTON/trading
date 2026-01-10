@@ -58,7 +58,7 @@ services:
     environment:
       QUOTE_ASSET: ${QUOTE_ASSET}
       REGIME_SYMBOLS: ${REGIME_SYMBOLS}
-      REGIME_INTERVAL: ${REGIME_INTERVAL}
+      REGIME_INTERVALS: ${REGIME_INTERVALS}
       REGIME_SLEEP_SECONDS: ${REGIME_SLEEP_SECONDS}
       REGIME_LOOKBACK: ${REGIME_LOOKBACK}
       REGIME_TREND_EMA_FAST: ${REGIME_TREND_EMA_FAST}
@@ -67,32 +67,36 @@ services:
       REGIME_VOL_THRESHOLD_PCT: ${REGIME_VOL_THRESHOLD_PCT}
       REGIME_SHOCK_Z: ${REGIME_SHOCK_Z}
       REGIME_TREND_MIN_STRENGTH_PCT: ${REGIME_TREND_MIN_STRENGTH_PCT}
+      REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
 
-  regime-worker-aux:
+  market-data-worker:
     build:
       context: .
-      dockerfile: regime_worker/Dockerfile
+      dockerfile: market_data_worker/Dockerfile
     restart: always
     depends_on:
       db:
         condition: service_healthy
     env_file:
       - ${ENV_FILE}
-    profiles: ["aux"]
     environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET}
       QUOTE_ASSET: ${QUOTE_ASSET}
       REGIME_SYMBOLS: ${REGIME_SYMBOLS}
-      REGIME_INTERVAL: ${REGIME_AUX_INTERVAL}
-      REGIME_SLEEP_SECONDS: ${REGIME_SLEEP_SECONDS}
-      REGIME_LOOKBACK: ${REGIME_AUX_LOOKBACK}
-      REGIME_TREND_EMA_FAST: ${REGIME_TREND_EMA_FAST}
-      REGIME_TREND_EMA_SLOW: ${REGIME_TREND_EMA_SLOW}
-      REGIME_VOL_ATR_PERIOD: ${REGIME_VOL_ATR_PERIOD}
-      REGIME_VOL_THRESHOLD_PCT: ${REGIME_VOL_THRESHOLD_PCT}
-      REGIME_SHOCK_Z: ${REGIME_SHOCK_Z}
-      REGIME_TREND_MIN_STRENGTH_PCT: ${REGIME_TREND_MIN_STRENGTH_PCT}
+      MD_INTERVALS: "1m,5m"
+      MD_SLEEP_SECONDS: 10
+      MD_BACKFILL_CANDLES: 500
+      MD_MAX_LIMIT: 1000
+      MD_LAG_TOLERANCE_SECONDS: 120
 
   bot-rsi-btc:
+    profiles: ["bots"]
     build:
       context: .
       dockerfile: bot/Dockerfile
@@ -113,6 +117,7 @@ services:
       REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
 
   bot-trend-btc:
+    profiles: ["bots"]
     build:
       context: .
       dockerfile: bot_trend/Dockerfile
@@ -133,6 +138,7 @@ services:
       REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
   
   bot-bbrange-btc:
+    profiles: ["bots"]
     build:
       context: .
       dockerfile: bot_bbrange/Dockerfile
@@ -153,6 +159,7 @@ services:
       REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
 
   bot-supertrend-btc:
+    profiles: ["bots"]
     build:
       context: .
       dockerfile: bot_supertrend/Dockerfile
@@ -168,7 +175,7 @@ services:
       QUOTE_ASSET: ${QUOTE_ASSET}
       SYMBOL: BTCUSDC
       INTERVAL: 1m
-      STRATEGY_NAME: SUPERTREND
+      STRATEGY_NAME: SUPER_TREND
       REGIME_MODE: ${REGIME_MODE}
       REGIME_MAX_AGE_SECONDS: ${REGIME_MAX_AGE_SECONDS}
 

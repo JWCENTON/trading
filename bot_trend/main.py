@@ -162,14 +162,21 @@ def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
         return True, {"enabled": True, "reason": "no_regime"}
 
     # świeżość
-    ts = r["ts"]
+    ts = r.get("ts")
     if ts is None:
-        return True, {"enabled": True, "reason": "regime_ts_null"}
+        return True, {"enabled": True, "reason": "regime_ts_null", **r}
 
     now = datetime.now(timezone.utc)
     age = (now - ts).total_seconds()
     if age > REGIME_MAX_AGE_SECONDS:
-        return True, {"enabled": True, "reason": f"regime_stale age={age:.0f}s", "age_s": age, "regime": r.get("regime")}
+        return True, {
+            "enabled": True,
+            "reason": f"regime_stale age={age:.0f}s",
+            "age_s": age,
+            "regime": r.get("regime"),
+            "ts": ts,
+            **r,
+        }
 
     regime = r.get("regime")
 
@@ -181,17 +188,16 @@ def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
     why = "ok"
 
     if strategy_name in ("RSI", "BBRANGE"):
-        if regime in ("TREND_UP", "TREND_DOWN", "SHOCK"):
-            would_block = True
-            why = f"{strategy_name} blocked in {regime}"
+        would_block = False
+        why = "ok"
     elif strategy_name in ("TREND",):
         if regime in ("RANGE_LOWVOL", "SHOCK"):
             would_block = True
             why = f"TREND blocked in {regime}"
-    elif strategy_name in ("SUPER_TREND", "ST"):
+    elif strategy_name in ("SUPERTREND", "SUPER_TREND", "ST"):
         if regime in ("SHOCK",):
             would_block = True
-            why = f"SUPER_TREND blocked in {regime}"
+            why = f"SUPERTREND blocked in {regime}"
 
     # DRY_RUN: nie blokujemy, tylko logujemy
     if bc.regime_mode == "DRY_RUN":
@@ -253,51 +259,50 @@ def log_regime_gate_event(
     extra_meta: dict = None,
 ):
     """
-    Zapisuje event tylko gdy:
-    - ENFORCE blokuje (allow=False)
-    - lub DRY_RUN mówi would_block=True
+    Zapisuje event ZAWSZE gdy mamy rmeta (telemetry baseline).
+    Telemetry nie może zabijać pętli bota.
     """
     if not rmeta:
         return
 
-    mode = rmeta.get("mode")
-    would_block = rmeta.get("would_block", False)
+    try:
+        mode = rmeta.get("mode")
+        would_block = rmeta.get("would_block", False)
 
-    should_log = (allow is False) or (mode == "DRY_RUN" and would_block)
-    if not should_log:
-        return
+        meta = {}
+        if isinstance(rmeta, dict):
+            meta["rmeta"] = rmeta
+        if extra_meta:
+            meta.update(extra_meta)
 
-    meta = {}
-    if isinstance(rmeta, dict):
-        meta["rmeta"] = rmeta
-    if extra_meta:
-        meta.update(extra_meta)
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO regime_gate_events
+              (symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
+            VALUES
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
+            """,
+            (
+                symbol,
+                interval,
+                strategy,
+                decision,
+                bool(allow),
+                rmeta.get("regime"),
+                mode,
+                bool(would_block) if would_block is not None else None,
+                rmeta.get("why"),
+                json.dumps(meta, default=_json_default),
+            ),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO regime_gate_events
-          (symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
-        VALUES
-          (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
-        """,
-        (
-            symbol,
-            interval,
-            strategy,
-            decision,
-            bool(allow),
-            rmeta.get("regime"),
-            mode,
-            bool(would_block) if would_block is not None else None,
-            rmeta.get("why"),
-            json.dumps(meta, default=_json_default),
-        ),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    except Exception:
+        logging.exception("regime_gate_events insert failed")
 
 
 def get_runtime_snapshot(price: float, open_time):
@@ -323,10 +328,13 @@ def get_runtime_snapshot(price: float, open_time):
     allow_gate_entry, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
 
     # Czy wolno wysłać LIVE order (ENTRY uwzględnia regime gate)
-    allowed_orders_entry, allow_meta_entry = can_trade(cfg_effective, regime_allows_trade=allow_gate_entry, panic_disable_trading=panic)
-
+    allowed_orders_entry, allow_meta_entry = can_trade(
+        cfg_effective, regime_allows_trade=allow_gate_entry, is_exit=False, panic_disable_trading=panic
+    )
     # EXIT: zawsze dozwolony (regime nie może blokować zamknięcia pozycji)
-    allowed_orders_exit, allow_meta_exit   = can_trade(cfg_effective, regime_allows_trade=True, panic_disable_trading=panic)
+    allowed_orders_exit, allow_meta_exit = can_trade(
+        cfg_effective, regime_allows_trade=True, is_exit=True, panic_disable_trading=panic
+    )
 
     hb = {
         "price": float(price),
@@ -849,7 +857,7 @@ def execute_and_record(
             side,
             qty_btc,
             trading_mode=cfg_used.trading_mode,
-            live_orders_enabled=cfg_used.live_orders_enabled,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
             quote_asset=cfg_used.quote_asset,
             client_order_id=client_order_id,
             panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
@@ -896,7 +904,9 @@ def safe_close_if_open(current_price: float, candle_open_time, bc, cfg_effective
     reason = "PANIC CLOSE LONG" if exit_side == "SELL" else "PANIC CLOSE SHORT"
 
     panic = (os.environ.get("PANIC_DISABLE_TRADING", "0") == "1")
-    allowed_orders, allow_meta = can_trade(cfg_effective, regime_allows_trade=True, panic_disable_trading=panic)
+    allowed_orders, allow_meta = can_trade(
+        cfg_effective, regime_allows_trade=True, is_exit=True, panic_disable_trading=panic
+    )
 
     inserted = execute_and_record(
         side=exit_side,
@@ -1007,6 +1017,22 @@ def run_trend_strategy():
     ema_fast_slope_pct = 0.0 if ema_fast_prev == 0 else (ema_fast - ema_fast_prev) / ema_fast_prev
 
     snap = get_runtime_snapshot(price=price, open_time=open_time)
+    # Telemetry: zapisuj status reżimu raz na świecę (baseline), nawet bez sygnału
+    log_regime_gate_event(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision="TICK",
+        allow=snap["allow_gate_entry"],
+        rmeta=snap["rmeta_gate"],
+        extra_meta={
+            "price": float(price),
+            "ema_fast": float(ema_fast) if "ema_fast" in locals() else None,
+            "ema_slow": float(ema_slow) if "ema_slow" in locals() else None,
+            "open_time": str(open_time),
+            "note": "baseline per candle",
+        },
+    )
     bc = snap["bc"]
     cfg_effective = snap["cfg_effective"]
     time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))

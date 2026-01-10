@@ -87,8 +87,20 @@ def place_live_order(
         try:
             acct = client.get_account()
             balances = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
-        except Exception as e:
-            logging.error("LIVE ORDER: failed to fetch account balances: %s", e)
+        except BinanceAPIException as e:
+            logging.error(
+                "LIVE ORDER REJECTED symbol=%s side=%s qty=%.8f code=%s msg=%s clientOrderId=%s",
+                symbol, side, float(qty_adj),
+                getattr(e, "code", None),
+                getattr(e, "message", str(e)),
+                client_order_id,
+            )
+            return None
+        except Exception:
+            logging.exception(
+                "LIVE ORDER ERROR symbol=%s side=%s qty=%.8f clientOrderId=%s",
+                symbol, side, float(qty_adj), client_order_id
+            )
             return None
 
         base_asset = _base_asset_from_symbol(symbol, quote_asset)
