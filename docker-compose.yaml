@@ -95,6 +95,14 @@ services:
       MD_MAX_LIMIT: 1000
       MD_LAG_TOLERANCE_SECONDS: 120
 
+  automation-runner:
+    build:
+      context: .
+      dockerfile: automation_runner/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - db
+
   bot-rsi-btc:
     profiles: ["bots"]
     build:

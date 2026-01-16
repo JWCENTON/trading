@@ -1,8 +1,65 @@
 # common/execution.py
 import uuid
 import logging
-from decimal import Decimal, ROUND_DOWN
 from binance.exceptions import BinanceAPIException
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
+
+
+def _blocked(reason: str, **meta):
+    return {"ok": False, "blocked": True, "reason": reason, "meta": meta}
+
+
+def compute_live_qty_from_notional(
+    client,
+    symbol: str,
+    *,
+    target_notional: float,
+    quote_asset: str,
+    min_notional_buffer_pct: float = 0.05,  # 5% bufor
+):
+    step_size, min_qty, min_notional = _get_symbol_filters(client, symbol)
+
+    px = float(client.get_symbol_ticker(symbol=symbol)["price"])
+
+    # docelowy notional: max z target i minNotional*(1+bufor)
+    want_notional = float(target_notional)
+    if min_notional and min_notional > 0:
+        want_notional = max(want_notional, min_notional * (1.0 + min_notional_buffer_pct))
+
+    qty_raw = want_notional / px
+
+    # CEIL do kroku, żeby nie spaść poniżej minNotional przez rounding
+    qty_adj = float(_ceil_to_step(qty_raw, step_size))
+
+    # jeszcze minQty
+    if min_qty and qty_adj < min_qty:
+        qty_adj = float(_ceil_to_step(min_qty, step_size))
+
+    notional = px * qty_adj
+    return qty_adj, px, notional, step_size, min_qty, min_notional
+
+
+def _qty_to_plain_str(qty) -> str:
+    """
+    Binance expects: ^([0-9]{1,20})(\.[0-9]{1,20})?$
+    so: no exponent, no commas, no spaces.
+    """
+    d = Decimal(str(qty))  # str() to avoid numpy repr issues
+    # normalize to plain decimal (no exponent)
+    s = format(d, "f")
+    # trim trailing zeros
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _ceil_to_step(qty: float, step: str) -> Decimal:
+    q = Decimal(str(qty))
+    s = Decimal(str(step))
+    if s == 0:
+        return q
+    return (q / s).to_integral_value(rounding=ROUND_UP) * s
+
 
 def _base_asset_from_symbol(symbol: str, quote_asset: str) -> str:
     s = symbol.upper()
@@ -11,12 +68,14 @@ def _base_asset_from_symbol(symbol: str, quote_asset: str) -> str:
         return s
     return s[:-len(q)]
 
-def _floor_to_step(qty: float, step: str) -> float:
+
+def _floor_to_step(qty: float, step: str) -> Decimal:
     q = Decimal(str(qty))
     s = Decimal(str(step))
     if s == 0:
-        return float(q)
-    return float((q / s).to_integral_value(rounding=ROUND_DOWN) * s)
+        return q
+    return (q / s).to_integral_value(rounding=ROUND_DOWN) * s
+
 
 def _get_symbol_filters(client, symbol: str):
     info = client.get_symbol_info(symbol)
@@ -30,6 +89,7 @@ def _get_symbol_filters(client, symbol: str):
     min_qty = float(lot["minQty"]) if lot else 0.0
     min_notional_val = float(min_notional.get("minNotional", 0.0)) if min_notional else 0.0
     return step_size, min_qty, min_notional_val
+
 
 def place_live_order(
     client,
@@ -51,7 +111,7 @@ def place_live_order(
 
     # --- MODE GUARD ---
     if trading_mode != "LIVE":
-        return None
+        return _blocked("NOT_LIVE_MODE", trading_mode=trading_mode)
 
     side = side.strip().upper()
     if side not in ("BUY", "SELL"):
@@ -60,12 +120,12 @@ def place_live_order(
     # --- PANIC / KILL SWITCH ---
     if panic_disable_trading:
         logging.warning("LIVE ORDER BLOCKED (PANIC_DISABLE_TRADING=1) symbol=%s side=%s qty=%.8f", symbol, side, qty)
-        return None
+        return _blocked("PANIC_DISABLE_TRADING", symbol=symbol, side=side, qty=float(qty))
 
     # --- MASTER ENABLE ---
     if not live_orders_enabled:
         logging.warning("LIVE ORDER BLOCKED (LIVE_ORDERS_ENABLED=0) symbol=%s side=%s qty=%.8f", symbol, side, qty)
-        return None
+        return _blocked("LIVE_ORDERS_DISABLED", symbol=symbol, side=side, qty=float(qty))
 
     # --- idempotency ---
     if client_order_id is None:
@@ -75,12 +135,16 @@ def place_live_order(
     step_size, min_qty, min_notional = _get_symbol_filters(client, symbol)
 
     qty_adj = _floor_to_step(qty, step_size)
-    if qty_adj <= 0 or qty_adj < min_qty:
-        raise RuntimeError(f"Qty too small after step rounding: qty={qty} -> {qty_adj}, min_qty={min_qty}")
+    if qty_adj <= 0 or qty_adj < Decimal(str(min_qty)):
+        logging.warning(
+            "LIVE ORDER BLOCKED (minQty/step): symbol=%s side=%s qty=%.8f -> qty_adj=%.8f step=%s min_qty=%.8f",
+            symbol, side, qty, qty_adj, step_size, min_qty
+        )
+        return _blocked("MIN_QTY_OR_STEP", qty=float(qty), qty_adj=float(qty_adj), step=step_size, min_qty=float(min_qty))
 
     # --- single price fetch ---
     px = float(client.get_symbol_ticker(symbol=symbol)["price"])
-    notional = px * qty_adj
+    notional = Decimal(str(px)) * qty_adj
 
     # --- balance pre-check ---
     if not skip_balance_precheck:
@@ -113,7 +177,7 @@ def place_live_order(
                     "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=SELL need %s=%.8f free=%.8f",
                     symbol, base_asset, qty_adj, free_base
                 )
-                return None
+                return _blocked("INSUFFICIENT_BASE", base_asset=base_asset, need=float(qty_adj), free=float(free_base))
 
         if side == "BUY":
             if free_quote + 1e-8 < notional:
@@ -121,7 +185,7 @@ def place_live_order(
                     "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=BUY need %s≈%.4f free=%.4f (qty=%.8f px=%.2f)",
                     symbol, quote_asset.upper(), notional, free_quote, qty_adj, px
                 )
-                return None
+                return _blocked("INSUFFICIENT_QUOTE", quote_asset=quote_asset.upper(), need=float(notional), free=float(free_quote), qty=float(qty_adj), px=float(px))
 
     # --- safety: max notional ---
     if live_max_notional > 0 and notional > live_max_notional:
@@ -129,11 +193,15 @@ def place_live_order(
 
     # --- exchange MIN_NOTIONAL ---
     if min_notional and min_notional > 0 and notional < min_notional:
-        raise RuntimeError(f"Notional {notional:.2f} < minNotional {min_notional:.2f} for {symbol}")
+        logging.warning(
+            "LIVE ORDER BLOCKED (minNotional): symbol=%s side=%s notional=%.4f < min_notional=%.4f (qty=%.8f px=%.4f)",
+            symbol, side, notional, min_notional, qty_adj, px
+        )
+        return _blocked("MIN_NOTIONAL", notional=float(notional), min_notional=float(min_notional), qty=float(qty_adj), px=float(px))
 
     logging.warning(
         "LIVE ORDER SENDING symbol=%s side=%s type=MARKET qty=%.8f clientOrderId=%s",
-        symbol, side, qty_adj, client_order_id
+        symbol, side, float(qty_adj), client_order_id
     )
 
     try:
@@ -141,17 +209,29 @@ def place_live_order(
             symbol=symbol,
             side=side,
             type="MARKET",
-            quantity=qty_adj,
+            quantity=_qty_to_plain_str(qty_adj),
             newClientOrderId=client_order_id,
         )
     except BinanceAPIException as e:
         if getattr(e, "code", None) == -2010:
             logging.error("LIVE ORDER REJECTED (-2010 insufficient balance): %s", e)
-            return None
+            return _blocked("BINANCE_REJECTED_2010", code=getattr(e, "code", None), msg=getattr(e, "message", str(e)))
         raise
 
     logging.warning(
         "LIVE ORDER ACK symbol=%s side=%s orderId=%s status=%s",
         symbol, side, resp.get("orderId"), resp.get("status")
     )
-    return resp
+    status = (resp or {}).get("status")
+    executed_qty = float((resp or {}).get("executedQty", 0) or 0)
+    live_ok = (status in ("FILLED", "PARTIALLY_FILLED")) and executed_qty > 0
+
+    return {
+    "ok": True,               # backward compat = ACK
+    "blocked": False,
+    "resp": resp,
+    "send_ok": True,
+    "live_ok": live_ok,
+    "status": status,
+    "executed_qty": executed_qty,
+    }
