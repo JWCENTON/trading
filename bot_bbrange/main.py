@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import math
 import hashlib
 import logging
 import psycopg2
@@ -17,6 +18,9 @@ from common.permissions import can_trade
 from common.execution import place_live_order
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.db import get_latest_regime
+from common.sizing import compute_qty_from_notional
+from common.telemetry_throttle import should_emit_throttled_event
+
 
 # =========================
 # BASICS
@@ -29,7 +33,7 @@ QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
 if not SYMBOL.endswith(QUOTE_ASSET):
     raise RuntimeError(f"SYMBOL={SYMBOL} does not match QUOTE_ASSET={QUOTE_ASSET}")
 
-STRATEGY_NAME = os.environ.get("STRATEGY", "BBRANGE").upper()
+STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "BBRANGE").upper()
 INTERVAL = os.environ.get("INTERVAL", "1m")
 
 cfg = RuntimeConfig.from_env()
@@ -58,7 +62,10 @@ DISABLE_HOURS_SET = {int(h.strip()) for h in DISABLE_HOURS.split(",") if h.strip
 TREND_BUFFER = float(os.environ.get("TREND_BUFFER", "0.001"))  # fraction (0.001 = 0.1%)
 MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
 DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
-ORDER_QTY_BTC = float(os.environ.get("ORDER_QTY_BTC", "0.0001"))
+ORDER_NOTIONAL_USDC = float(os.environ.get("ORDER_NOTIONAL_USDC", "10"))
+MIN_NOTIONAL_BUFFER_PCT = float(os.environ.get("MIN_NOTIONAL_BUFFER_PCT", "0.05"))
+MIN_QTY_BTC = float(os.environ.get("MIN_QTY_BTC", "0.00001"))
+QTY_STEP_BTC = float(os.environ.get("QTY_STEP_BTC", "0.00001"))
 
 BB_PERIOD = int(os.environ.get("BB_PERIOD", "20"))
 BB_STD = float(os.environ.get("BB_STD", "2.0"))
@@ -89,6 +96,31 @@ def _json_default(o):
         return o.isoformat()
     return str(o)
 
+
+def emit_alert_throttled(*, open_time, price, info):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT MAX(created_at)
+        FROM strategy_events
+        WHERE symbol=%s AND interval=%s AND strategy=%s
+          AND event_type='ALERT' AND reason='DAILY_MAX_LOSS_SHADOW'
+          AND created_at >= now() - interval '15 minutes'
+    """, (SYMBOL, INTERVAL, STRATEGY_NAME))
+    last = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+
+    if last is not None:
+        return  # throttle: był alert w ostatnich 15 minutach
+
+    emit_strategy_event(
+        event_type="ALERT",
+        reason="DAILY_MAX_LOSS_SHADOW",
+        price=price,
+        candle_open_time=open_time,
+        info=info,
+    )
 # =========================
 # DB
 # =========================
@@ -210,6 +242,7 @@ def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
     allow = not would_block
     return allow, {"enabled": True, "mode": "ENFORCE", "would_block": would_block, "why": why, **r, "age_s": age}
 
+
 def log_regime_gate_event(symbol: str, interval: str, strategy: str, decision: str, allow: bool, rmeta: dict, extra_meta: dict = None):
     """
     Log only when:
@@ -218,35 +251,30 @@ def log_regime_gate_event(symbol: str, interval: str, strategy: str, decision: s
     """
     if not rmeta:
         return
-    
+
     try:
         mode = rmeta.get("mode")
         would_block = rmeta.get("would_block", False)
 
-        meta = {"rmeta": rmeta}
-        if extra_meta:
-            meta.update(extra_meta)
-
         meta = {}
-        if isinstance(rmeta, dict):
-            meta["rmeta"] = rmeta
+        meta["rmeta"] = rmeta if isinstance(rmeta, dict) else {"value": str(rmeta)}
         if extra_meta:
-            meta.update(extra_meta)
+            meta["extra"] = extra_meta
 
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO regime_gate_events
-            (symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
+              (symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
             VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
             """,
             (
                 symbol, interval, strategy, decision,
                 bool(allow),
                 rmeta.get("regime"),
-                rmeta.get("mode"),
+                mode,
                 bool(would_block) if would_block is not None else None,
                 rmeta.get("why"),
                 json.dumps(meta, default=_json_default),
@@ -312,13 +340,13 @@ def get_open_position():
     conn.close()
     return row
 
-def open_position(side: str, qty: float, entry_price: float) -> bool:
-    # SPOT-only: we only allow LONG
+def open_position(side: str, qty: float, entry_price: float, candle_open_time) -> bool:
     if str(side).upper() != "LONG":
         return False
 
     conn = get_db_conn()
     cur = conn.cursor()
+
     cur.execute(
         """
         SELECT 1 FROM positions
@@ -341,9 +369,19 @@ def open_position(side: str, qty: float, entry_price: float) -> bool:
     conn.commit()
     cur.close()
     conn.close()
+
+    emit_strategy_event(
+        event_type="POSITION_OPENED",
+        decision="BUY",
+        reason="OK",
+        price=float(entry_price),
+        candle_open_time=candle_open_time,
+        info={"side": "LONG", "qty": float(qty), "entry_price": float(entry_price)},
+    )
     return True
 
-def close_position(exit_price: float, reason: str) -> bool:
+
+def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
@@ -359,7 +397,18 @@ def close_position(exit_price: float, reason: str) -> bool:
     conn.commit()
     cur.close()
     conn.close()
+
+    if closed:
+        emit_strategy_event(
+            event_type="POSITION_CLOSED",
+            decision=None,
+            reason=reason,
+            price=float(exit_price),
+            candle_open_time=candle_open_time,
+            info={"exit_reason": reason, "exit_price": float(exit_price)},
+        )
     return closed
+
 
 # =========================
 # PARAMS (per interval)
@@ -372,7 +421,10 @@ def seed_default_params_from_env(conn):
         "MAX_POSITION_MINUTES": float(MAX_POSITION_MINUTES),
         "DAILY_MAX_LOSS_PCT": float(DAILY_MAX_LOSS_PCT),
         "TREND_BUFFER": float(TREND_BUFFER),
-        "ORDER_QTY_BTC": float(ORDER_QTY_BTC),
+        "ORDER_NOTIONAL_USDC": float(ORDER_NOTIONAL_USDC),
+        "MIN_NOTIONAL_BUFFER_PCT": float(MIN_NOTIONAL_BUFFER_PCT),
+        "MIN_QTY_BTC": float(MIN_QTY_BTC),
+        "QTY_STEP_BTC": float(QTY_STEP_BTC),
 
         "BB_PERIOD": float(BB_PERIOD),
         "BB_STD": float(BB_STD),
@@ -415,8 +467,11 @@ def seed_default_params_from_env(conn):
 
 def load_runtime_params():
     global STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER
-    global ORDER_QTY_BTC, BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT
+    global ORDER_NOTIONAL_USDC, MIN_QTY_BTC, QTY_STEP_BTC
+    global BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT
     global RSI_LONG_MAX, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH
+    global MIN_NOTIONAL_BUFFER_PCT
+
 
     conn = get_db_conn()
     cur = conn.cursor()
@@ -447,7 +502,10 @@ def load_runtime_params():
     DAILY_MAX_LOSS_PCT = clamp(params.get("DAILY_MAX_LOSS_PCT", DAILY_MAX_LOSS_PCT), 0.0, 10.0)
     TREND_BUFFER = clamp(params.get("TREND_BUFFER", TREND_BUFFER), 0.0001, 0.05)
 
-    ORDER_QTY_BTC = clamp(params.get("ORDER_QTY_BTC", ORDER_QTY_BTC), 0.00001, 1.0)
+    ORDER_NOTIONAL_USDC = clamp(params.get("ORDER_NOTIONAL_USDC", ORDER_NOTIONAL_USDC), 1.0, 1_000_000.0)
+    MIN_NOTIONAL_BUFFER_PCT = clamp(params.get("MIN_NOTIONAL_BUFFER_PCT", MIN_NOTIONAL_BUFFER_PCT), 0.0, 0.50)
+    MIN_QTY_BTC = clamp(params.get("MIN_QTY_BTC", MIN_QTY_BTC), 0.0, 10.0)
+    QTY_STEP_BTC = clamp(params.get("QTY_STEP_BTC", QTY_STEP_BTC), 0.0, 10.0)
 
     BB_PERIOD = int(clamp(params.get("BB_PERIOD", BB_PERIOD), 10, 200))
     BB_STD = clamp(params.get("BB_STD", BB_STD), 1.0, 4.0)
@@ -459,13 +517,13 @@ def load_runtime_params():
 
     logging.info(
         "RUNTIME_PARAMS|symbol=%s|strategy=%s|STOP_LOSS_PCT=%.3f|TAKE_PROFIT_PCT=%.3f|MAX_POSITION_MINUTES=%d|"
-        "DAILY_MAX_LOSS_PCT=%.3f|TREND_BUFFER=%.5f|ORDER_QTY_BTC=%.8f|BB_PERIOD=%d|BB_STD=%.2f|MIN_BB_WIDTH_PCT=%.5f|"
-        "RSI_LONG_MAX=%.2f|RSI_BLOCK_EXTREME_LOW=%.2f|RSI_BLOCK_EXTREME_HIGH=%.2f",
+        "DAILY_MAX_LOSS_PCT=%.3f|TREND_BUFFER=%.5f|ORDER_NOTIONAL_USDC=%.2f|MIN_QTY_BTC=%.8f|QTY_STEP_BTC=%.8f|BB_PERIOD=%d|BB_STD=%.2f|MIN_BB_WIDTH_PCT=%.5f|"
+        "RSI_LONG_MAX=%.2f|RSI_BLOCK_EXTREME_LOW=%.2f|RSI_BLOCK_EXTREME_HIGH=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f",
         SYMBOL, STRATEGY_NAME,
         STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_MINUTES,
-        DAILY_MAX_LOSS_PCT, TREND_BUFFER, ORDER_QTY_BTC,
+        DAILY_MAX_LOSS_PCT, TREND_BUFFER, ORDER_NOTIONAL_USDC, MIN_QTY_BTC, QTY_STEP_BTC,
         BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT,
-        RSI_LONG_MAX, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH,
+        RSI_LONG_MAX, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH, MIN_NOTIONAL_BUFFER_PCT,
     )
 
 # =========================
@@ -519,6 +577,7 @@ def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, c
     h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
     return f"{symbol[:6]}-{strategy[:6]}-{interval}-{side}-{h}"[:36]
 
+
 def execute_and_record(
     side: str,
     price: float,
@@ -533,7 +592,14 @@ def execute_and_record(
     rsi_14: float | None,
     ema_21: float | None,
 ):
-    # 1) DB guard first
+    """
+    Guard-first (Model A jak RSI):
+    1) Rezerwuj slot w DB (simulated_orders) -> idempotencja per candle + is_exit.
+    2) Dopiero potem (opcjonalnie) LIVE.
+    3) Ledger zostaje jako audyt, nawet jeśli LIVE suppressed/failed.
+
+    Zwraca dict: ledger_ok/live_attempted/live_ok/blocked_reason/client_order_id/resp
+    """
     inserted = insert_simulated_order(
         symbol=cfg_used.symbol,
         interval=cfg_used.interval,
@@ -556,7 +622,14 @@ def execute_and_record(
             candle_open_time=candle_open_time,
             info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
         )
-        return False
+        return {
+            "ledger_ok": False,
+            "live_attempted": False,
+            "live_ok": False,
+            "blocked_reason": "DB_GUARD_DUPLICATE",
+            "client_order_id": None,
+            "resp": None,
+        }
 
     emit_strategy_event(
         event_type="SIM_ORDER_CREATED",
@@ -567,55 +640,129 @@ def execute_and_record(
         info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
     )
 
-    # 2) live after ledger reservation
-    if cfg_used.trading_mode == "LIVE":
-        if not allow_live_orders:
-            emit_strategy_event(
-                event_type="BLOCKED",
-                decision=side,
-                reason="LIVE_ORDER_SUPPRESSED",
-                price=price,
-                candle_open_time=candle_open_time,
-                info={"allow_meta": allow_meta, "is_exit": bool(is_exit), "reason_text": reason},
-            )
-            return False
+    # PAPER => traktujemy jako wykonane
+    if cfg_used.trading_mode != "LIVE":
+        return {
+            "ledger_ok": True,
+            "live_attempted": False,
+            "live_ok": True,
+            "blocked_reason": None,
+            "client_order_id": None,
+            "resp": None,
+        }
 
-        client_order_id = make_client_order_id(cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time)
-        resp = place_live_order(
-            client,
-            cfg_used.symbol,
-            side,
-            qty_btc,
-            trading_mode=cfg_used.trading_mode,
-            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
-            quote_asset=cfg_used.quote_asset,
-            client_order_id=client_order_id,
-            panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
-            live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
-            skip_balance_precheck=is_exit,
+    if not allow_live_orders:
+        logging.warning(
+            "LIVE ORDER NOT ATTEMPTED (live disabled/policy) symbol=%s side=%s qty=%.8f is_exit=%s why=%s",
+            cfg_used.symbol, side, float(qty_btc), bool(is_exit), (allow_meta or {}).get("why")
         )
 
-        if resp is None:
-            emit_strategy_event(
-                event_type="BLOCKED",
-                decision=side,
-                reason="LIVE_ORDER_FAILED",
-                price=price,
-                candle_open_time=candle_open_time,
-                info={"is_exit": bool(is_exit), "client_order_id": client_order_id},
-            )
-            return False
+        reason_code = "LIVE_EXIT_NOT_ATTEMPTED" if is_exit else "LIVE_ENTRY_NOT_ATTEMPTED"
 
         emit_strategy_event(
-            event_type="LIVE_ORDER_SENT",
+            event_type="BLOCKED",
             decision=side,
-            reason="OK",
+            reason=reason_code,
             price=price,
             candle_open_time=candle_open_time,
-            info={"is_exit": bool(is_exit), "client_order_id": client_order_id, "resp": resp},
+            info={
+                "allow_meta": allow_meta,
+                "is_exit": bool(is_exit),
+                "reason_text": reason,
+                # diagnostyka wewnętrzna (opcjonalnie)
+                "blocked_reason": "LIVE_ORDER_SUPPRESSED",
+            },
         )
+        return {
+            "ledger_ok": True,
+            "live_attempted": False,
+            "live_ok": False,
+            "blocked_reason": "LIVE_ORDER_SUPPRESSED",  # zostaje w res jako diagnostyka
+            "client_order_id": None,
+            "resp": None,
+        }
 
-    return True
+    client_order_id = make_client_order_id(
+        cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time
+    )
+
+    resp = place_live_order(
+        client,
+        cfg_used.symbol,
+        side,
+        qty_btc,
+        trading_mode=cfg_used.trading_mode,
+        live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
+        quote_asset=cfg_used.quote_asset,
+        client_order_id=client_order_id,
+        panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
+        live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+        skip_balance_precheck=is_exit,
+    )
+
+    if not resp or not resp.get("ok"):
+        emit_strategy_event(
+            event_type="BLOCKED",
+            decision=side,
+            reason="LIVE_ORDER_FAILED",
+            price=price,
+            candle_open_time=candle_open_time,
+            info={"is_exit": bool(is_exit), "client_order_id": client_order_id, "resp": (resp or {}).get("resp")},
+        )
+        return {
+            "ledger_ok": True,
+            "live_attempted": True,
+            "live_ok": False,
+            "blocked_reason": "LIVE_ORDER_FAILED",
+            "client_order_id": client_order_id,
+            "resp": (resp or {}).get("resp"),
+        }
+
+    # Wyznacz live_ok bezpiecznie
+    live_ok = resp.get("live_ok")
+    raw = (resp or {}).get("resp") or {}
+    if live_ok is None:
+        status = str(raw.get("status", "")).upper()
+        executed = raw.get("executedQty")
+        try:
+            executed_f = float(executed) if executed is not None else 0.0
+        except Exception:
+            executed_f = 0.0
+        live_ok = executed_f > 0.0 or status == "FILLED"
+    live_ok = bool(live_ok)
+
+    status_raw = str(raw.get("status", "")).upper()
+    executed_raw = raw.get("executedQty")
+    try:
+        executed_f = float(executed_raw) if executed_raw is not None else 0.0
+    except Exception:
+        executed_f = 0.0
+
+    emit_strategy_event(
+        event_type="LIVE_ORDER_SENT",
+        decision=side,
+        reason="OK" if live_ok else "ACK_NO_FILL",
+        price=price,
+        candle_open_time=candle_open_time,
+        info={
+            "is_exit": bool(is_exit),
+            "client_order_id": client_order_id,
+            "live_ok": bool(live_ok),
+            "status": status_raw,
+            "executed_qty": executed_f,
+            "resp": raw,
+        },
+    )
+
+    return {
+        "ledger_ok": True,
+        "live_attempted": True,
+        "live_ok": live_ok,
+        "blocked_reason": None if live_ok else "ACK_NO_FILL",
+        "client_order_id": client_order_id,
+        "resp": (resp or {}).get("resp"),
+    }
+
 
 # =========================
 # DAILY PNL (paper ledger)
@@ -832,6 +979,7 @@ def get_runtime_snapshot(price: float, open_time):
         "strategy": STRATEGY_NAME,
         "quote_asset": cfg_effective.quote_asset,
         "spot_mode": bool(cfg_effective.spot_mode),
+        "bot_version": os.environ.get("BOT_VERSION"),
     }
 
     return {
@@ -858,78 +1006,134 @@ def get_trend(close: float, ema21: float, buffer_pct: float = TREND_BUFFER) -> s
     return "FLAT"
 
 def run_strategy(row):
-    if not row:
-        emit_blocked(reason="NO_ROW", decision=None, price=None, candle_open_time=None)
-        return
+    open_time = (row[0] if row else None)
+    price_for_events = float(row[4]) if row and row[4] is not None else None
 
-    open_time, open_px, high_px, low_px, close_px, ema_21, rsi_14 = row
-    price = float(close_px) if close_px is not None else None
-    if price is None:
-        emit_blocked(reason="CANDLE_MISSING_CLOSE", decision=None, price=None, candle_open_time=open_time)
-        return
-
-    if ema_21 is None or rsi_14 is None:
-        emit_blocked(
-            reason="INDICATORS_NOT_READY",
-            decision=None,
-            price=price,
-            candle_open_time=open_time,
-            info={"ema_21": ema_21, "rsi_14": rsi_14},
-        )
-        return
-
-    ema_val = float(ema_21)
-    rsi_val = float(rsi_14)
-
-    snap = get_runtime_snapshot(price=price, open_time=open_time)
-    # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
-    log_regime_gate_event(
-        symbol=SYMBOL,
-        interval=INTERVAL,
-        strategy=STRATEGY_NAME,
-        decision="TICK",
-        allow=snap["allow_gate_entry"],
-        rmeta=snap["rmeta_gate"],
-        extra_meta={
-            "price": float(price),
-            "ema_21": float(ema_val) if ema_21 is not None else None,
-            "rsi_14": float(rsi_val) if rsi_14 is not None else None,
-            "open_time": str(open_time),
-            "note": "baseline per candle",
-        },
+    emit_strategy_event(
+        event_type="RUN_START",
+        decision=None,
+        reason="ENTER",
+        price=price_for_events,
+        candle_open_time=open_time,
+        info={"has_row": bool(row), "bot_version": os.environ.get("BOT_VERSION")},
     )
-    bc = snap["bc"]
-    cfg_effective = snap["cfg_effective"]
-    time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
-    max_pos_minutes = int(getattr(cfg_effective, "max_position_minutes", MAX_POSITION_MINUTES))
+    try:
+        if not row:
+            emit_blocked(reason="NO_ROW", decision=None, price=None, candle_open_time=None)
+            return
 
-    # heartbeat always
-    pos = get_open_position()
-    heartbeat({
-        **snap["heartbeat"],
-        "ema_21": float(ema_val),
-        "rsi_14": float(rsi_val),
-        "has_position": bool(pos),
-        "pos_side": (str(pos[1]).upper() if pos else None),
-        "pos_qty": (float(pos[2]) if pos else None),
-        "pos_entry_price": (float(pos[3]) if pos else None),
-    })
+        open_time, open_px, high_px, low_px, close_px, ema_21, rsi_14 = row
+        price = float(close_px) if close_px is not None else None
+        if price is None:
+            emit_blocked(reason="CANDLE_MISSING_CLOSE", decision=None, price=None, candle_open_time=open_time)
+            return
 
-    # hard stop
-    if bc.mode == "HALT":
-        emit_blocked(reason="BOT_MODE_HALT", decision=None, price=price, candle_open_time=open_time, info={})
-        return
+        if ema_21 is None or rsi_14 is None:
+            emit_blocked(
+                reason="INDICATORS_NOT_READY",
+                decision=None,
+                price=price,
+                candle_open_time=open_time,
+                info={"ema_21": ema_21, "rsi_14": rsi_14},
+            )
+            return
 
-    # PANIC: close if open + halt
-    if bc.mode == "PANIC":
+        ema_val = float(ema_21)
+        rsi_val = float(rsi_14)
+
+        snap = get_runtime_snapshot(price=price, open_time=open_time)
+        # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
+        log_regime_gate_event(
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            strategy=STRATEGY_NAME,
+            decision="TICK",
+            allow=snap["allow_gate_entry"],
+            rmeta=snap["rmeta_gate"],
+            extra_meta={
+                "price": float(price),
+                "ema_21": float(ema_val) if ema_21 is not None else None,
+                "rsi_14": float(rsi_val) if rsi_14 is not None else None,
+                "open_time": str(open_time),
+                "note": "baseline per candle",
+                "stage": "BASELINE",
+            },
+        )
+        bc = snap["bc"]
+        cfg_effective = snap["cfg_effective"]
+        time_exit_enabled = True
+        max_pos_minutes = int(MAX_POSITION_MINUTES)
+
+        # heartbeat always
+        pos = get_open_position()
+        heartbeat({
+            **snap["heartbeat"],
+            "ema_21": float(ema_val),
+            "rsi_14": float(rsi_val),
+            "has_position": bool(pos),
+            "pos_side": (str(pos[1]).upper() if pos else None),
+            "pos_qty": (float(pos[2]) if pos else None),
+            "pos_entry_price": (float(pos[3]) if pos else None),
+            "order_notional_usdc": float(ORDER_NOTIONAL_USDC),
+            "min_qty_btc": float(MIN_QTY_BTC),
+            "qty_step_btc": float(QTY_STEP_BTC),
+            "min_notional_buffer_pct": float(MIN_NOTIONAL_BUFFER_PCT),
+        })
+
+        # hard stop
+        if bc.mode == "HALT":
+            emit_blocked(reason="BOT_MODE_HALT", decision=None, price=price, candle_open_time=open_time, info={})
+            return
+
+        # PANIC: close if open + halt
+        if bc.mode == "PANIC":
+            if pos:
+                _pos_id, pos_side, pos_qty, _ep, _et = pos
+                side_u = str(pos_side).upper()
+                if side_u != "LONG":
+                    emit_strategy_event(
+                        event_type="ERROR",
+                        decision=None,
+                        reason="PANIC_SHORT_IN_SPOT",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={"pos_side": side_u},
+                    )
+                    set_mode("HALT", reason="SHORT found in SPOT mode")
+                    return
+
+                res = execute_and_record(
+                    side="SELL",
+                    price=price,
+                    qty_btc=float(pos_qty),
+                    reason="PANIC CLOSE",
+                    candle_open_time=open_time,
+                    is_exit=True,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
+                    rsi_14=rsi_val,
+                    ema_21=ema_val,
+                )
+                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    close_position(exit_price=price, reason="PANIC", candle_open_time=open_time)
+            set_mode("HALT", reason="Panic executed; halting.")
+            return
+
+        # =========================
+        # EXIT (only LONG exists)
+        # =========================
         if pos:
-            _pos_id, pos_side, pos_qty, _ep, _et = pos
+            _pos_id, pos_side, pos_qty, pos_entry_price, pos_entry_time = pos
             side_u = str(pos_side).upper()
+            qty_f = float(pos_qty)
+            entry_f = float(pos_entry_price)
+
             if side_u != "LONG":
                 emit_strategy_event(
                     event_type="ERROR",
                     decision=None,
-                    reason="PANIC_SHORT_IN_SPOT",
+                    reason="SHORT_POSITION_IN_SPOT",
                     price=price,
                     candle_open_time=open_time,
                     info={"pos_side": side_u},
@@ -937,112 +1141,18 @@ def run_strategy(row):
                 set_mode("HALT", reason="SHORT found in SPOT mode")
                 return
 
-            inserted = execute_and_record(
-                side="SELL",
-                price=price,
-                qty_btc=float(pos_qty),
-                reason="PANIC CLOSE",
-                candle_open_time=open_time,
-                is_exit=True,
-                cfg_used=cfg_effective,
-                allow_live_orders=snap["allowed_orders_exit"],
-                allow_meta=snap["allow_meta_exit"],
-                rsi_14=rsi_val,
-                ema_21=ema_val,
-            )
-            if inserted:
-                close_position(exit_price=price, reason="PANIC")
-        set_mode("HALT", reason="Panic executed; halting.")
-        return
+            # TP/SL intrabar based on high/low
+            high_price = float(high_px) if high_px is not None else price
+            low_price = float(low_px) if low_px is not None else price
 
-    # =========================
-    # EXIT (only LONG exists)
-    # =========================
-    if pos:
-        _pos_id, pos_side, pos_qty, pos_entry_price, pos_entry_time = pos
-        side_u = str(pos_side).upper()
-        qty_f = float(pos_qty)
-        entry_f = float(pos_entry_price)
+            tp_level = entry_f * (1.0 + TAKE_PROFIT_PCT / 100.0)
+            sl_level = entry_f * (1.0 - STOP_LOSS_PCT / 100.0)
 
-        if side_u != "LONG":
-            emit_strategy_event(
-                event_type="ERROR",
-                decision=None,
-                reason="SHORT_POSITION_IN_SPOT",
-                price=price,
-                candle_open_time=open_time,
-                info={"pos_side": side_u},
-            )
-            set_mode("HALT", reason="SHORT found in SPOT mode")
-            return
-
-        # TP/SL intrabar based on high/low
-        high_price = float(high_px) if high_px is not None else price
-        low_price = float(low_px) if low_px is not None else price
-
-        tp_level = entry_f * (1.0 + TAKE_PROFIT_PCT / 100.0)
-        sl_level = entry_f * (1.0 - STOP_LOSS_PCT / 100.0)
-
-        if TAKE_PROFIT_PCT > 0 and high_price >= tp_level:
-            reason = f"BBRANGE TAKE PROFIT LONG intrabar high={high_price:.2f} >= tp={tp_level:.2f}"
-            inserted = execute_and_record(
-                side="SELL",
-                price=tp_level if cfg_effective.trading_mode == "PAPER" else price,
-                qty_btc=qty_f,
-                reason=reason,
-                candle_open_time=open_time,
-                is_exit=True,
-                cfg_used=cfg_effective,
-                allow_live_orders=snap["allowed_orders_exit"],
-                allow_meta=snap["allow_meta_exit"],
-                rsi_14=rsi_val,
-                ema_21=ema_val,
-            )
-            if inserted:
-                close_position(exit_price=(tp_level if cfg_effective.trading_mode == "PAPER" else price), reason="TAKE_PROFIT")
-            return
-
-        if STOP_LOSS_PCT > 0 and low_price <= sl_level:
-            reason = f"BBRANGE STOP LOSS LONG intrabar low={low_price:.2f} <= sl={sl_level:.2f}"
-            inserted = execute_and_record(
-                side="SELL",
-                price=sl_level if cfg_effective.trading_mode == "PAPER" else price,
-                qty_btc=qty_f,
-                reason=reason,
-                candle_open_time=open_time,
-                is_exit=True,
-                cfg_used=cfg_effective,
-                allow_live_orders=snap["allowed_orders_exit"],
-                allow_meta=snap["allow_meta_exit"],
-                rsi_14=rsi_val,
-                ema_21=ema_val,
-            )
-            if inserted:
-                close_position(exit_price=(sl_level if cfg_effective.trading_mode == "PAPER" else price), reason="STOP_LOSS")
-            return
-
-        # TIME EXIT
-        if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
-            if pos_entry_time.tzinfo is None:
-                pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
-            age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
-            if age_minutes >= max_pos_minutes:
-                emit_strategy_event(
-                    event_type="EXIT_TIME",
-                    decision="SELL",
-                    reason="TIME_EXIT",
-                    price=price,
-                    candle_open_time=open_time,
-                    info={
-                        "pos_side": "LONG",
-                        "age_minutes": float(age_minutes),
-                        "max_minutes": int(max_pos_minutes),
-                    },
-                )
-                reason = f"BBRANGE TIME_EXIT LONG {age_minutes:.1f}m >= {max_pos_minutes}m"
-                inserted = execute_and_record(
+            if TAKE_PROFIT_PCT > 0 and high_price >= tp_level:
+                reason = f"BBRANGE TAKE PROFIT LONG intrabar high={high_price:.2f} >= tp={tp_level:.2f}"
+                res = execute_and_record(
                     side="SELL",
-                    price=price,
+                    price=tp_level if cfg_effective.trading_mode == "PAPER" else price,
                     qty_btc=qty_f,
                     reason=reason,
                     candle_open_time=open_time,
@@ -1053,179 +1163,350 @@ def run_strategy(row):
                     rsi_14=rsi_val,
                     ema_21=ema_val,
                 )
-                if inserted:
-                    close_position(exit_price=price, reason="TIME_EXIT")
+                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    close_position(exit_price=(tp_level if cfg_effective.trading_mode == "PAPER" else price), reason="TAKE_PROFIT", candle_open_time=open_time)
+                else:
+                    emit_blocked(
+                        reason="EXIT_BLOCKED",
+                        decision="SELL",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={"res": res},
+                    )
+                return
+
+            if STOP_LOSS_PCT > 0 and low_price <= sl_level:
+                reason = f"BBRANGE STOP LOSS LONG intrabar low={low_price:.2f} <= sl={sl_level:.2f}"
+                res = execute_and_record(
+                    side="SELL",
+                    price=sl_level if cfg_effective.trading_mode == "PAPER" else price,
+                    qty_btc=qty_f,
+                    reason=reason,
+                    candle_open_time=open_time,
+                    is_exit=True,
+                    cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
+                    rsi_14=rsi_val,
+                    ema_21=ema_val,
+                )
+                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    close_position(exit_price=(sl_level if cfg_effective.trading_mode == "PAPER" else price), reason="STOP_LOSS", candle_open_time=open_time)
+                else:
+                    emit_blocked(
+                        reason="EXIT_BLOCKED",
+                        decision="SELL",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={"res": res},
+                    )
+                return
+
+            # TIME EXIT
+            if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
+                if pos_entry_time.tzinfo is None:
+                    pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+                age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+                if age_minutes >= max_pos_minutes:
+                    emit_strategy_event(
+                        event_type="EXIT_TIME",
+                        decision="SELL",
+                        reason="TIME_EXIT",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "pos_side": "LONG",
+                            "age_minutes": float(age_minutes),
+                            "max_minutes": int(max_pos_minutes),
+                        },
+                    )
+                    reason = f"BBRANGE TIME_EXIT LONG {age_minutes:.1f}m >= {max_pos_minutes}m"
+                    res = execute_and_record(
+                        side="SELL",
+                        price=price,
+                        qty_btc=qty_f,
+                        reason=reason,
+                        candle_open_time=open_time,
+                        is_exit=True,
+                        cfg_used=cfg_effective,
+                        allow_live_orders=snap["allowed_orders_exit"],
+                        allow_meta=snap["allow_meta_exit"],
+                        rsi_14=rsi_val,
+                        ema_21=ema_val,
+                    )
+                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                        close_position(exit_price=price, reason="TIME_EXIT", candle_open_time=open_time)
+                    else:
+                        emit_blocked(
+                            reason="EXIT_BLOCKED",
+                            decision="SELL",
+                            price=price,
+                            candle_open_time=open_time,
+                            info={"res": res},
+                        )
+                    return
+
+            emit_blocked(reason="POSITION_OPEN_NO_EXIT", decision=None, price=price, candle_open_time=open_time, info={"pos_side": "LONG"})
             return
 
-        emit_blocked(reason="POSITION_OPEN_NO_EXIT", decision=None, price=price, candle_open_time=open_time, info={"pos_side": "LONG"})
-        return
+        # =========================
+        # ENTRY (SPOT LONG ONLY)
+        # =========================
 
-    # =========================
-    # ENTRY (SPOT LONG ONLY)
-    # =========================
-
-    # disable hours
-    if open_time.hour in DISABLE_HOURS_SET:
-        emit_blocked(
-            reason="DISABLE_HOURS",
-            decision=None,
-            price=price,
-            candle_open_time=open_time,
-            info={"hour_utc": int(open_time.hour), "disable_hours": sorted(list(DISABLE_HOURS_SET))},
-        )
-        return
-
-    if not bc.enabled:
-        emit_blocked(reason="BOT_DISABLED", decision=None, price=price, candle_open_time=open_time, info={})
-        return
-
-    if DAILY_MAX_LOSS_PCT > 0:
-        daily_pct = compute_daily_pnl_pct(SYMBOL, INTERVAL, price)
-        if daily_pct <= -DAILY_MAX_LOSS_PCT:
+        # disable hours
+        if open_time.hour in DISABLE_HOURS_SET:
             emit_blocked(
-                reason="DAILY_MAX_LOSS",
+                reason="DISABLE_HOURS",
                 decision=None,
                 price=price,
                 candle_open_time=open_time,
-                info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                info={"hour_utc": int(open_time.hour), "disable_hours": sorted(list(DISABLE_HOURS_SET))},
             )
             return
 
-    # Build BB on recent closes (need at least BB_PERIOD)
-    conn = get_db_conn()
-    df = pd.read_sql_query(
-        """
-        SELECT open_time, close
-        FROM candles
-        WHERE symbol=%s AND interval=%s AND open_time <= %s
-        ORDER BY open_time DESC
-        LIMIT %s
-        """,
-        conn,
-        params=(SYMBOL, INTERVAL, open_time, max(BB_PERIOD + 30, 120)),
-    )
-    conn.close()
+        if not bc.enabled:
+            emit_blocked(reason="BOT_DISABLED", decision=None, price=price, candle_open_time=open_time, info={})
+            return
 
-    if df.empty or len(df) < BB_PERIOD + 5:
-        emit_blocked(reason="NOT_ENOUGH_CANDLES", decision=None, price=price, candle_open_time=open_time, info={"have": int(len(df))})
-        return
+        # Daily loss gate (ledger-based) — PAPER blocks, LIVE alerts (throttled)
+        if DAILY_MAX_LOSS_PCT > 0:
+            daily_pct = compute_daily_pnl_pct(symbol=SYMBOL, interval=INTERVAL, current_price=price)
+            if daily_pct <= -DAILY_MAX_LOSS_PCT:
+                if cfg_effective.trading_mode == "LIVE":
+                    # Throttle: max 1 alert / 15 min per symbol/interval/strategy
+                    conn = get_db_conn()
+                    try:
+                        if should_emit_throttled_event(
+                            conn=conn,
+                            symbol=SYMBOL,
+                            interval=INTERVAL,
+                            strategy=STRATEGY_NAME,
+                            event_type="ALERT",
+                            reason="DAILY_MAX_LOSS_SHADOW",
+                            throttle_seconds=15 * 60,
+                        ):
+                            emit_alert_throttled(open_time=open_time, price=price, info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)})
+                    finally:
+                        conn.close()
+                    # LIVE: nie blokujemy
+                else:
+                    emit_strategy_event(
+                        event_type="BLOCKED",
+                        reason="DAILY_MAX_LOSS",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                    )
+                    return
 
-    df = df.sort_values("open_time")
-    closes = df["close"].astype(float)
-    mid = closes.rolling(window=BB_PERIOD).mean()
-    std = closes.rolling(window=BB_PERIOD).std()
-    bb_mid = float(mid.iloc[-1]) if not pd.isna(mid.iloc[-1]) else None
-    bb_upper = float((mid + BB_STD * std).iloc[-1]) if not pd.isna((mid + BB_STD * std).iloc[-1]) else None
-    bb_lower = float((mid - BB_STD * std).iloc[-1]) if not pd.isna((mid - BB_STD * std).iloc[-1]) else None
-
-    if bb_mid is None or bb_upper is None or bb_lower is None or bb_mid == 0:
-        emit_blocked(reason="BB_NOT_READY", decision=None, price=price, candle_open_time=open_time, info={})
-        return
-
-    bb_width_pct = (bb_upper - bb_lower) / bb_mid
-    trend = get_trend(price, ema_val)
-
-    if bb_width_pct < MIN_BB_WIDTH_PCT:
-        emit_blocked(
-            reason="BB_WIDTH_TOO_LOW",
-            decision=None,
-            price=price,
-            candle_open_time=open_time,
-            info={"bb_width_pct": float(bb_width_pct), "min": float(MIN_BB_WIDTH_PCT)},
+        # Build BB on recent closes (need at least BB_PERIOD)
+        conn = get_db_conn()
+        df = pd.read_sql_query(
+            """
+            SELECT open_time, close
+            FROM candles
+            WHERE symbol=%s AND interval=%s AND open_time <= %s
+            ORDER BY open_time DESC
+            LIMIT %s
+            """,
+            conn,
+            params=(SYMBOL, INTERVAL, open_time, max(BB_PERIOD + 30, 120)),
         )
-        return
+        conn.close()
 
-    # BBRANGE entries only in FLAT trend
-    if trend != "FLAT":
-        emit_blocked(reason="TREND_NOT_FLAT", decision=None, price=price, candle_open_time=open_time, info={"trend": trend})
-        return
+        if df.empty or len(df) < BB_PERIOD + 5:
+            emit_blocked(reason="NOT_ENOUGH_CANDLES", decision=None, price=price, candle_open_time=open_time, info={"have": int(len(df))})
+            return
 
-    # Long entry signal only: price < lower
-    if price >= bb_lower:
-        emit_blocked(reason="NO_SIGNAL", decision=None, price=price, candle_open_time=open_time, info={"bb_lower": bb_lower})
-        return
+        df = df.sort_values("open_time")
+        closes = df["close"].astype(float)
+        mid = closes.rolling(window=BB_PERIOD).mean()
+        std = closes.rolling(window=BB_PERIOD).std()
+        bb_mid = float(mid.iloc[-1]) if not pd.isna(mid.iloc[-1]) else None
+        bb_upper = float((mid + BB_STD * std).iloc[-1]) if not pd.isna((mid + BB_STD * std).iloc[-1]) else None
+        bb_lower = float((mid - BB_STD * std).iloc[-1]) if not pd.isna((mid - BB_STD * std).iloc[-1]) else None
 
-    # RSI filters
-    if rsi_val <= RSI_BLOCK_EXTREME_LOW or rsi_val >= RSI_BLOCK_EXTREME_HIGH:
-        emit_blocked(
-            reason="RSI_EXTREME_BLOCK",
-            decision="BUY",
-            price=price,
-            candle_open_time=open_time,
-            info={"rsi": float(rsi_val), "low": float(RSI_BLOCK_EXTREME_LOW), "high": float(RSI_BLOCK_EXTREME_HIGH)},
+        if bb_mid is None or bb_upper is None or bb_lower is None or bb_mid == 0:
+            emit_blocked(reason="BB_NOT_READY", decision=None, price=price, candle_open_time=open_time, info={})
+            return
+
+        bb_width_pct = (bb_upper - bb_lower) / bb_mid
+        trend = get_trend(price, ema_val)
+
+        if bb_width_pct < MIN_BB_WIDTH_PCT:
+            emit_blocked(
+                reason="BB_WIDTH_TOO_LOW",
+                decision=None,
+                price=price,
+                candle_open_time=open_time,
+                info={"bb_width_pct": float(bb_width_pct), "min": float(MIN_BB_WIDTH_PCT)},
+            )
+            return
+
+        # BBRANGE entries only in FLAT trend
+        if trend != "FLAT":
+            emit_blocked(reason="TREND_NOT_FLAT", decision=None, price=price, candle_open_time=open_time, info={"trend": trend})
+            return
+
+        # Long entry signal only: price < lower
+        if price >= bb_lower:
+            emit_blocked(reason="NO_SIGNAL", decision=None, price=price, candle_open_time=open_time, info={"bb_lower": bb_lower})
+            return
+
+        # RSI filters
+        if rsi_val <= RSI_BLOCK_EXTREME_LOW or rsi_val >= RSI_BLOCK_EXTREME_HIGH:
+            emit_blocked(
+                reason="RSI_EXTREME_BLOCK",
+                decision="BUY",
+                price=price,
+                candle_open_time=open_time,
+                info={"rsi": float(rsi_val), "low": float(RSI_BLOCK_EXTREME_LOW), "high": float(RSI_BLOCK_EXTREME_HIGH)},
+            )
+            return
+        if rsi_val > RSI_LONG_MAX:
+            emit_blocked(
+                reason="RSI_LONG_MAX_BLOCK",
+                decision="BUY",
+                price=price,
+                candle_open_time=open_time,
+                info={"rsi": float(rsi_val), "rsi_long_max": float(RSI_LONG_MAX)},
+            )
+            return
+
+        decision = "BUY"
+        reason = f"BBRANGE LONG: price {price:.2f} < lower {bb_lower:.2f} (trend=FLAT)"
+
+        # SPOT short block (defensive; here decision is BUY anyway)
+        if decision == "SELL" and cfg_effective.spot_mode:
+            emit_blocked(reason="SPOT_SHORT_BLOCK", decision="SELL", price=price, candle_open_time=open_time, info={"spot_mode": True})
+            return
+
+        # REGIME gate (ENTRY only) — standard: ENTRY_CHECK
+        log_regime_gate_event(
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            strategy=STRATEGY_NAME,
+            decision="ENTRY_CHECK",
+            allow=snap["allow_gate_entry"],
+            rmeta=snap["rmeta_gate"],
+            extra_meta={
+                "stage": "ENTRY",
+                "side": decision,  # "BUY"
+                "price": float(price),
+                "ema_21": float(ema_val),
+                "rsi_14": float(rsi_val),
+                "trend": trend,
+                "bb_lower": float(bb_lower),
+                "bb_mid": float(bb_mid),
+                "bb_upper": float(bb_upper),
+                "bb_width_pct": float(bb_width_pct),
+                "open_time": str(open_time),
+                "reason": reason,
+            },
         )
-        return
-    if rsi_val > RSI_LONG_MAX:
-        emit_blocked(
-            reason="RSI_LONG_MAX_BLOCK",
-            decision="BUY",
-            price=price,
-            candle_open_time=open_time,
-            info={"rsi": float(rsi_val), "rsi_long_max": float(RSI_LONG_MAX)},
-        )
-        return
 
-    decision = "BUY"
-    reason = f"BBRANGE LONG: price {price:.2f} < lower {bb_lower:.2f} (trend=FLAT)"
+        if not snap["allow_gate_entry"]:
+            emit_blocked(
+                reason="REGIME_BLOCK",
+                decision=decision,
+                price=price,
+                candle_open_time=open_time,
+                info={"rmeta": snap["rmeta_gate"]},
+            )
+            return
 
-    # SPOT short block (defensive; here decision is BUY anyway)
-    if decision == "SELL" and cfg_effective.spot_mode:
-        emit_blocked(reason="SPOT_SHORT_BLOCK", decision="SELL", price=price, candle_open_time=open_time, info={"spot_mode": True})
-        return
-
-    # REGIME gate (ENTRY only)
-    log_regime_gate_event(
-        symbol=SYMBOL,
-        interval=INTERVAL,
-        strategy=STRATEGY_NAME,
-        decision=decision,
-        allow=snap["allow_gate_entry"],
-        rmeta=snap["rmeta_gate"],
-        extra_meta={"price": float(price), "ema_21": float(ema_val), "rsi_14": float(rsi_val), "open_time": str(open_time), "reason": reason},
-    )
-    if not snap["allow_gate_entry"]:
-        emit_blocked(reason="REGIME_BLOCK", decision=decision, price=price, candle_open_time=open_time, info={"rmeta": snap["rmeta_gate"]})
-        return
-
-    emit_strategy_event(
-        event_type="SIGNAL",
-        decision=decision,
-        reason="OK",
-        price=price,
-        candle_open_time=open_time,
-        info={"reason_text": reason, "bb_lower": bb_lower, "bb_mid": bb_mid, "bb_upper": bb_upper, "bb_width_pct": bb_width_pct},
-    )
-
-    qty_btc = ORDER_QTY_BTC
-
-    inserted = execute_and_record(
-        side="BUY",
-        price=price,
-        qty_btc=qty_btc,
-        reason=reason,
-        candle_open_time=open_time,
-        is_exit=False,
-        cfg_used=cfg_effective,
-        allow_live_orders=snap["allowed_orders_entry"],
-        allow_meta=snap["allow_meta_entry"],
-        rsi_14=rsi_val,
-        ema_21=ema_val,
-    )
-    if not inserted:
-        return
-
-    opened = open_position("LONG", qty_btc, price)
-    if not opened:
         emit_strategy_event(
-            event_type="ERROR",
-            decision="BUY",
-            reason="DESYNC_POSITION_NOT_OPENED",
+            event_type="SIGNAL",
+            decision=decision,
+            reason="OK",
             price=price,
+            candle_open_time=open_time,
+            info={"reason_text": reason, "bb_lower": bb_lower, "bb_mid": bb_mid, "bb_upper": bb_upper, "bb_width_pct": bb_width_pct},
+        )
+            
+        qty_btc, sizing_info = compute_qty_from_notional(
+            client,
+            symbol=SYMBOL,
+            px=price,                 # albo price / close_price - ten sam px, którego używasz do ordera
+            target_notional=ORDER_NOTIONAL_USDC,
+            min_notional_buffer_pct=MIN_NOTIONAL_BUFFER_PCT,
+        )
+
+        emit_strategy_event(
+            event_type="SIZING",
+            decision="BUY",
+            reason="NOTIONAL",
+            price=float(price),
+            candle_open_time=open_time,
+            info=sizing_info,
+        )
+
+        if qty_btc <= 0:
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision="BUY",
+                reason="SIZING_QTY_ZERO",
+                price=float(price),
+                candle_open_time=open_time,
+                info=sizing_info,
+            )
+            return
+
+        res = execute_and_record(
+            side="BUY",
+            price=price,
+            qty_btc=float(qty_btc),
+            reason=reason,
+            candle_open_time=open_time,
+            is_exit=False,
+            cfg_used=cfg_effective,
+            allow_live_orders=snap["allowed_orders_entry"],
+            allow_meta=snap["allow_meta_entry"],
+            rsi_14=rsi_val,
+            ema_21=ema_val,
+        )
+        if not res["ledger_ok"]:
+            logging.info("RSI: entry blocked/failed -> not opening position.")
+            return
+
+        if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
+            # NOT_ATTEMPTED jest już emitowane w execute_and_record() (SSOT)
+            if not res.get("live_attempted", False):
+                return
+
+            # attempted, ale brak fill -> logujemy tutaj
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=decision,
+                reason="LIVE_ENTRY_NOT_FILLED",
+                price=price,
+                candle_open_time=open_time,
+                info={"res": res},
+            )
+            return
+
+        opened = open_position("LONG", qty_btc, price, open_time)
+        if not opened:
+            emit_strategy_event(
+                event_type="ERROR",
+                decision="BUY",
+                reason="DESYNC_POSITION_NOT_OPENED",
+                price=price,
+                candle_open_time=open_time,
+                info={},
+            )
+            set_mode("HALT", reason="DESYNC: order recorded but position not opened")
+            return
+    finally:
+        emit_strategy_event(
+            event_type="RUN_END",
+            decision=None,
+            reason="DONE",
+            price=price_for_events,
             candle_open_time=open_time,
             info={},
         )
-        set_mode("HALT", reason="DESYNC: order recorded but position not opened")
-        return
+    
 
 # =========================
 # MAIN LOOP
@@ -1272,13 +1553,15 @@ def main_loop():
                     LAST_PROCESSED_OPEN_TIME = open_time
                     run_strategy(latest)
                 else:
-                    emit_blocked(
-                        reason="NO_NEW_CANDLE",
+                    emit_strategy_event(
+                        event_type="IDLE",
                         decision=None,
-                        price=price,
+                        reason="NO_NEW_CANDLE",
+                        price=float(latest[4]) if latest[4] is not None else None,
                         candle_open_time=open_time,
                         info={"open_time": str(open_time), "last_processed": str(LAST_PROCESSED_OPEN_TIME)},
                     )
+                    logging.info("BBRANGE: no new candle yet (%s) -> skip strategy.", str(open_time))
 
         except Exception as e:
             logging.exception("BBRANGE loop error")

@@ -1,5 +1,7 @@
 # common/permissions.py
 from .runtime import RuntimeConfig
+from common.db import get_db_conn
+
 
 def can_trade(
     cfg: RuntimeConfig,
@@ -18,6 +20,10 @@ def can_trade(
             - does NOT block EXIT (so we can always flatten risk)
         - regime_allows_trade: blocks ENTRY only (exit should not be blocked by regime)
     """
+    # PANIC (DB) blocks ENTRY, allows EXIT
+    panic_enabled, panic_reason = get_panic_state()
+    if panic_enabled and not is_exit:
+        return False, {"why": "PANIC_ENABLED", "panic_reason": panic_reason}
 
     # PAPER
     if cfg.trading_mode == "PAPER":
@@ -41,3 +47,31 @@ def can_trade(
         return True, {"why": "live_allowed"}
 
     return False, {"why": f"unknown_trading_mode:{cfg.trading_mode}"}
+
+
+def is_panic_enabled() -> tuple[bool, str]:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT panic_enabled, COALESCE(reason,'') FROM panic_state WHERE id=true;")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return False, ""
+    return bool(row[0]), str(row[1])
+
+
+def get_panic_state() -> tuple[bool, str]:
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT panic_enabled, COALESCE(reason,'') FROM panic_state WHERE id=true;")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return False, ""
+        return bool(row[0]), str(row[1])
+    except Exception:
+        # fail-open: jeśli DB padła, nie zabijamy bota samym checkiem
+        return False, "panic_state_check_failed"
