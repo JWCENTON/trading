@@ -1488,4 +1488,115 @@ def bots_active(ttl_seconds: int = 600):
       ORDER BY last_seen DESC
     """, (ttl_seconds,))
     rows = cur.fetchall()
-    
+
+
+@app.get("/ops/positions/open")
+def ops_positions_open():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+      SELECT
+        id, symbol, interval, strategy, side,
+        entry_time, entry_price, qty,
+        now() - entry_time AS age
+      FROM positions
+      WHERE status = 'OPEN'
+      ORDER BY entry_time ASC
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [
+      {
+        "id": r[0],
+        "symbol": r[1],
+        "interval": r[2],
+        "strategy": r[3],
+        "side": r[4],
+        "entry_time": r[5],
+        "entry_price": float(r[6]),
+        "qty": float(r[7]),
+        "age_seconds": r[8].total_seconds(),
+      }
+      for r in rows
+    ]
+
+
+@app.get("/ops/live-attempts")
+def ops_live_attempts(minutes: int = 120):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+      SELECT
+        symbol,
+        interval,
+        strategy,
+        reason,
+        COUNT(*) AS n,
+        MIN(created_at) AS first_at,
+        MAX(created_at) AS last_at
+      FROM strategy_events
+      WHERE created_at >= now() - (%s || ' minutes')::interval
+        AND reason LIKE 'LIVE_%'
+      GROUP BY symbol, interval, strategy, reason
+      ORDER BY last_at DESC
+    """, (minutes,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [
+      {
+        "symbol": r[0],
+        "interval": r[1],
+        "strategy": r[2],
+        "reason": r[3],
+        "count": r[4],
+        "first_at": r[5],
+        "last_at": r[6],
+      }
+      for r in rows
+    ]
+
+
+@app.get("/ops/bot-control")
+def ops_bot_control():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+      SELECT
+        symbol, interval, strategy,
+        enabled, live_orders_enabled,
+        regime_enabled, regime_mode,
+        updated_at
+      FROM bot_control
+      ORDER BY symbol, interval, strategy
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    return [
+      {
+        "symbol": r[0],
+        "interval": r[1],
+        "strategy": r[2],
+        "enabled": r[3],
+        "live_orders_enabled": r[4],
+        "regime_enabled": r[5],
+        "regime_mode": r[6],
+        "updated_at": r[7],
+      }
+      for r in rows
+    ]
+
+
+@app.get("/ops/environment")
+def ops_environment():
+    return {
+        "environment": ENVIRONMENT,
+        "trading_mode": TRADING_MODE,
+        "db_name": DB_NAME,
+        "quote_asset": QUOTE_ASSET,
+    }

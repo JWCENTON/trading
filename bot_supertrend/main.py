@@ -20,7 +20,8 @@ from common.permissions import can_trade
 from common.db import get_latest_regime
 from common.execution import place_live_order
 from common.sizing import compute_qty_from_notional as common_compute_qty_from_notional
-from common.telemetry_throttle import should_emit_throttled_event
+from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +71,7 @@ MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
 # Daily loss gate on PAPER ledger (if <=0 -> disabled)
 DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
 PAPER_START_USDC = float(os.environ.get("PAPER_START_USDC", "100"))
+DAILY_MAX_LOSS_BASE_USDC = float(os.environ.get("DAILY_MAX_LOSS_BASE_USDC", str(PAPER_START_USDC)))
 
 # Trade size (BTC qty for BTCUSDC spot market BUY/SELL)
 ORDER_QTY_BTC = float(os.environ.get("ORDER_QTY_BTC", "0.0001"))
@@ -97,29 +99,43 @@ def _json_default(o):
     return str(o)
 
 
-def emit_alert_throttled(*, open_time, price, info):
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT MAX(created_at)
-        FROM strategy_events
-        WHERE symbol=%s AND interval=%s AND strategy=%s
-          AND event_type='ALERT' AND reason='DAILY_MAX_LOSS_SHADOW'
-          AND created_at >= now() - interval '15 minutes'
-    """, (SYMBOL, INTERVAL, STRATEGY_NAME))
-    last = cur.fetchone()[0]
-    cur.close()
-    conn.close()
+def emit_alert_throttled(
+    *,
+    conn,
+    symbol: str,
+    interval: str,
+    strategy: str,
+    reason: str,
+    open_time,
+    price,
+    info,
+    throttle_minutes: int = 15,
+):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM strategy_events
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+              AND event_type='ALERT' AND reason=%s
+              AND created_at >= now() - (%s || ' minutes')::interval
+            LIMIT 1
+            """,
+            (symbol, interval, strategy, reason, throttle_minutes),
+        )
+        if cur.fetchone() is not None:
+            return
 
-    if last is not None:
-        return  # throttle: był alert w ostatnich 15 minutach
-
-    emit_strategy_event(
+    emit_strategy_event_with_conn(
+        conn=conn,
         event_type="ALERT",
-        reason="DAILY_MAX_LOSS_SHADOW",
+        reason=reason,
         price=price,
         candle_open_time=open_time,
         info=info,
+        symbol=symbol,
+        interval=interval,
+        strategy=strategy,
     )
 
 
@@ -222,21 +238,69 @@ def emit_strategy_event(
     price: float | None = None,
     candle_open_time=None,
     info: dict | None = None,
+    symbol=None,
+    interval=None,
+    strategy=None,
 ):
     try:
+        sym = symbol or SYMBOL
+        itv = interval or INTERVAL
+        strat = strategy or STRATEGY_NAME
+
         conn = get_db_conn()
-        cur = conn.cursor()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO public.strategy_events
+                    (symbol, interval, strategy, event_type, decision, reason, price, candle_open_time, info)
+                    VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """,
+                    (
+                        symbol or SYMBOL,
+                        interval or INTERVAL,
+                        strategy or STRATEGY_NAME,
+                        event_type,
+                        decision,
+                        reason,
+                        float(price) if price is not None else None,
+                        candle_open_time,
+                        json.dumps(info or {}, default=_json_default),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logging.exception("strategy_events insert failed")
+
+
+def emit_strategy_event_with_conn(
+    *,
+    conn,
+    event_type: str,
+    decision: str | None = None,
+    reason: str | None = None,
+    price: float | None = None,
+    candle_open_time=None,
+    info: dict | None = None,
+    symbol=None,
+    interval=None,
+    strategy=None,
+):
+    with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO public.strategy_events
-              (symbol, interval, strategy, event_type, decision, reason, price, candle_open_time, info)
+            (symbol, interval, strategy, event_type, decision, reason, price, candle_open_time, info)
             VALUES
-              (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s);
             """,
             (
-                SYMBOL,
-                INTERVAL,
-                STRATEGY_NAME,
+                symbol or SYMBOL,
+                interval or INTERVAL,
+                strategy or STRATEGY_NAME,
                 event_type,
                 decision,
                 reason,
@@ -245,15 +309,12 @@ def emit_strategy_event(
                 json.dumps(info or {}, default=_json_default),
             ),
         )
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception:
-        logging.exception("strategy_events insert failed")
+    conn.commit()
 
 # =========================
 # Heartbeat
 # =========================
+
 def heartbeat(info: dict):
     conn = get_db_conn()
     cur = conn.cursor()
@@ -300,7 +361,7 @@ def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
     why = "ok"
 
     # v1: SUPER_TREND blocked in SHOCK only
-    if strategy_name in ("SUPERTREND", "SUPER_TREND", "ST"):
+    if strategy_name in ("SUPER_TREND", "ST"):
         if regime in ("SHOCK",):
             would_block = True
             why = f"SUPER_TREND blocked in {regime}"
@@ -1530,34 +1591,55 @@ def run_strategy(latest, prev):
             )
             return
 
-        # Daily loss gate (ledger-based) — PAPER blocks, LIVE alerts (throttled)
+        # Daily loss gate — SSOT = positions. PAPER: telemetry only. LIVE: hard-block by positions.
         if DAILY_MAX_LOSS_PCT > 0:
-            daily_pct = compute_daily_pnl_pct(symbol=SYMBOL, interval=INTERVAL, current_price=price)
-            if daily_pct <= -DAILY_MAX_LOSS_PCT:
+            pos_payload = compute_daily_loss_pct_positions(
+                SYMBOL, INTERVAL, STRATEGY_NAME,
+                base_usdc=float(DAILY_MAX_LOSS_BASE_USDC),
+            )
+
+            conn = get_db_conn()
+            try:
+                emit_alert_throttled(
+                    conn=conn,
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    strategy=STRATEGY_NAME,
+                    reason="DAILY_MAX_LOSS_POSITIONS_SHADOW",
+                    open_time=open_time,
+                    price=price,
+                    info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                )
+
+                # legacy sim-ledger shadow ONLY in LIVE (optional)
                 if cfg_effective.trading_mode == "LIVE":
-                    # Throttle: max 1 alert / 15 min per symbol/interval/strategy
-                    conn = get_db_conn()
-                    try:
-                        if should_emit_throttled_event(
+                    daily_pct = compute_daily_pnl_pct(symbol=SYMBOL, interval=INTERVAL, current_price=price)
+                    if daily_pct <= -DAILY_MAX_LOSS_PCT:
+                        emit_alert_throttled(
                             conn=conn,
                             symbol=SYMBOL,
                             interval=INTERVAL,
                             strategy=STRATEGY_NAME,
-                            event_type="ALERT",
                             reason="DAILY_MAX_LOSS_SHADOW",
-                            throttle_seconds=15 * 60,
-                        ):
-                            emit_alert_throttled(open_time=open_time, price=price, info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)})
-                    finally:
-                        conn.close()
-                    # LIVE: nie blokujemy
-                else:
+                            open_time=open_time,
+                            price=price,
+                            info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                        )
+            finally:
+                conn.close()
+
+            # LIVE hard block only by positions-based DML (after telemetry)
+            if cfg_effective.trading_mode == "LIVE":
+                if should_block_daily_loss_positions(
+                    daily_pct=float(pos_payload["daily_pct"]),
+                    limit_pct=float(DAILY_MAX_LOSS_PCT),
+                ):
                     emit_strategy_event(
                         event_type="BLOCKED",
-                        reason="DAILY_MAX_LOSS",
+                        reason="DAILY_MAX_LOSS_POSITIONS",
                         price=price,
                         candle_open_time=open_time,
-                        info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                        info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
                     )
                     return
 
