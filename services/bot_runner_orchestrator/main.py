@@ -4,7 +4,9 @@ import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Dict, Tuple, Any, Optional, List
+from common.db import get_db_conn
+from typing import Dict, Tuple, Any, Optional, List, Set
+from datetime import datetime, timezone, timedelta
 
 import psycopg2
 import psycopg2.extras
@@ -18,6 +20,23 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [orchestrator_v1] %(message)s",
 )
 
+log = logging.getLogger(__name__)
+
+UNIVERSE_SYMBOLS = {"BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC"}
+UNIVERSE_STRATS = {"RSI", "SUPERTREND"}
+UNIVERSE_INTERVALS = tuple(
+    x.strip() for x in os.getenv("ORC_ALLOC_INTERVALS", "1m").split(",") if x.strip()
+)
+
+TRADING_MODE = os.getenv("TRADING_MODE", "").upper()
+
+MAX_PICKS = int(os.getenv("ORC_ALLOC_MAX_PICKS", "4"))
+HYSTERESIS_MIN = int(os.getenv("ORC_ALLOC_HYSTERESIS_MIN", "10"))
+REGIME_LOOKBACK_MIN = int(os.getenv("ORC_ALLOC_REGIME_LOOKBACK_MIN", "30"))
+
+CANDLES_MAX_LAG_S = int(os.getenv("ORC_ALLOC_CANDLES_MAX_LAG_S", "120"))  # 2x 1m default
+HB_MAX_LAG_S = int(os.getenv("ORC_ALLOC_HB_MAX_LAG_S", "60"))             # reasonable default
+
 
 # -------------------------
 # Types
@@ -27,26 +46,6 @@ class BotKey:
     symbol: str
     interval: str
     strategy: str
-
-
-# -------------------------
-# DB
-# -------------------------
-DB_HOST = os.environ.get("DB_HOST", "db")
-DB_PORT = int(os.environ.get("DB_PORT", "5432"))
-DB_NAME = os.environ.get("DB_NAME", "trading")
-DB_USER = os.environ.get("DB_USER", "botuser")
-DB_PASS = os.environ.get("DB_PASS", "botpass")
-
-
-def get_db_conn():
-    return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASS,
-    )
 
 
 def fetch_all_dict(cur) -> List[dict]:
@@ -99,9 +98,40 @@ def load_orc_cfg(conn) -> dict:
     return cfg
 
 
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def kv_get(conn, key: str) -> Optional[str]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM automation_kv WHERE key=%s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def kv_set(conn, key: str, value: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO automation_kv(key, value, updated_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (key) DO UPDATE
+            SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+        """, (key, value))
+
 # -------------------------
 # Data loaders
 # -------------------------
+def load_open_symbols(conn) -> Set[str]:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT symbol
+            FROM positions
+            WHERE status='OPEN'
+        """)
+        return {r[0] for r in cur.fetchall()}
+
+
 def get_panic(conn) -> dict:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT panic_enabled, reason, updated_at FROM panic_state WHERE id = true")
@@ -204,7 +234,113 @@ def load_realized_pnl_today(conn) -> Dict[BotKey, dict]:
             bk = BotKey(r["symbol"], r["interval"], r["strategy"])
             out[bk] = dict(r)
         return out
+    
 
+def load_open_pos_flags(conn) -> Set[BotKey]:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT symbol, interval, strategy
+            FROM positions
+            WHERE status='OPEN'
+        """)
+        out: Set[BotKey] = set()
+        for r in cur.fetchall():
+            out.add(BotKey(r["symbol"], r["interval"], r["strategy"]))
+        return out
+
+
+def load_last_regime_gate(conn, window_minutes: int) -> Dict[BotKey, dict]:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"""
+            SELECT DISTINCT ON (symbol, interval, strategy)
+                symbol, interval, strategy,
+                created_at, allow, would_block, why, regime
+            FROM regime_gate_events
+            WHERE created_at >= now() - interval '{int(window_minutes)} minutes'
+            ORDER BY symbol, interval, strategy, created_at DESC
+        """)
+        out: Dict[BotKey, dict] = {}
+        for r in cur.fetchall():
+            bk = BotKey(r["symbol"], r["interval"], r["strategy"])
+            out[bk] = dict(r)
+        return out
+
+def parse_last_pick(conn) -> Tuple[Optional[datetime], List[BotKey]]:
+    ts_s = kv_get(conn, "orc_alloc_last_pick_ts")
+    js = kv_get(conn, "orc_alloc_last_pick_json")
+
+    last_ts: Optional[datetime] = None
+    if ts_s:
+        try:
+            last_ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00"))
+        except Exception:
+            last_ts = None
+
+    picks: List[BotKey] = []
+    if js:
+        try:
+            arr = json.loads(js)
+            for x in arr:
+                picks.append(BotKey(x["symbol"], x["interval"], x["strategy"]))
+        except Exception:
+            picks = []
+
+    return last_ts, picks
+
+def save_last_pick(conn, picks: List[BotKey]) -> None:
+    kv_set(conn, "orc_alloc_last_pick_ts", utc_now().isoformat().replace("+00:00", "Z"))
+    kv_set(conn, "orc_alloc_last_pick_json", json.dumps([
+        {"symbol": p.symbol, "interval": p.interval, "strategy": p.strategy}
+        for p in picks
+    ]))
+
+def universe_filter(bk: BotKey) -> bool:
+    return (
+        bk.interval in UNIVERSE_INTERVALS and
+        bk.symbol in UNIVERSE_SYMBOLS and
+        bk.strategy in UNIVERSE_STRATS
+    )
+
+def rank_key(bk: BotKey):
+    # deterministic: SUPERTREND first, then RSI; BTC>ETH>SOL>BNB
+    strat_rank = 0 if bk.strategy == "SUPERTREND" else 1
+    sym_rank = {"BTCUSDC": 0, "ETHUSDC": 1, "SOLUSDC": 2, "BNBUSDC": 3}.get(bk.symbol, 9)
+    return (strat_rank, sym_rank)
+
+
+def preferred_strategy_for_regime(regime: Optional[str]) -> str:
+    r = (regime or "").upper()
+    if r.startswith("TREND"):
+        return "SUPERTREND"
+    if r.startswith("RANGE"):
+        return "RSI"
+    # fallback
+    return "SUPERTREND"
+
+def preferred_strategy_by_symbol(last_rg: Dict[BotKey, dict]) -> Dict[Tuple[str, str], str]:
+    """
+    (symbol, interval) -> preferred strategy based on latest regime.
+    TREND* => SUPERTREND
+    RANGE* => RSI
+    If missing, fallback to SUPERTREND.
+    """
+    out: Dict[Tuple[str, str], str] = {}
+
+    # pick first seen regime per (symbol, interval)
+    for bk, rg in last_rg.items():
+        if not universe_filter(bk):
+            continue
+        key = (bk.symbol, bk.interval)
+        if key in out:
+            continue
+        out[key] = preferred_strategy_for_regime(rg.get("regime"))
+
+    # ensure fallback for all universe symbols x intervals
+    for sym in UNIVERSE_SYMBOLS:
+        for itv in UNIVERSE_INTERVALS:
+            out.setdefault((sym, itv), "SUPERTREND")
+
+    return out
 
 # -------------------------
 # Decision logic
@@ -344,6 +480,58 @@ WHERE symbol=%(symbol)s AND interval=%(interval)s AND strategy=%(strategy)s
   AND live_orders_enabled = true;
 """
 
+def set_live_orders_enabled(conn, bk: BotKey, enabled: bool, reason: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE bot_control
+            SET live_orders_enabled=%s,
+                updated_at=now(),
+                reason=%s
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+              AND enabled=true
+              AND live_orders_enabled IS DISTINCT FROM %s
+        """, (enabled, reason, bk.symbol, bk.interval, bk.strategy, enabled))
+        return cur.rowcount > 0
+
+
+def set_entries_and_regime(
+    conn,
+    bk: BotKey,
+    *,
+    entries_enabled: bool,
+    regime_mode: str,
+    reason: str
+) -> bool:
+    """
+    Variant A SSOT:
+      entries ON  => regime_enabled=true, regime_mode=ENFORCE
+      entries OFF => optionally regime_mode=DRY_RUN (still regime_enabled=true for telemetry)
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE bot_control
+            SET live_orders_enabled=%s,
+                regime_enabled=true,
+                regime_mode=%s,
+                updated_at=now(),
+                reason=%s
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+              AND enabled=true
+              AND (
+                   live_orders_enabled IS DISTINCT FROM %s
+                   OR regime_mode IS DISTINCT FROM %s
+                   OR regime_enabled IS DISTINCT FROM true
+              )
+        """, (
+            entries_enabled,
+            regime_mode,
+            reason,
+            bk.symbol, bk.interval, bk.strategy,
+            entries_enabled,
+            regime_mode,
+        ))
+        return cur.rowcount > 0
+
 
 def insert_risk_metrics(conn, bk: BotKey, realized_pnl: Decimal, unrealized: Decimal, pnl_total: Decimal,
                         exposure: Decimal, last_price: Optional[Decimal], n_closed_today: int, has_open: bool,
@@ -454,6 +642,213 @@ def disable_live_orders(conn, bk: BotKey, reason: str) -> bool:
         })
         return cur.rowcount > 0
 
+def allocator_pick(
+    *,
+    bot_control: Dict[BotKey, dict],
+    hb: Dict[BotKey, dict],
+    candles: Dict[Tuple[str, str], dict],
+    last_rg: Dict[BotKey, dict],
+    open_pos: Set[BotKey],
+    open_symbols: Set[str],
+) -> List[BotKey]:
+    pref = preferred_strategy_by_symbol(last_rg)
+    candidates: List[BotKey] = []
+
+    for bk, bc in bot_control.items():
+        if not universe_filter(bk):
+            continue
+        if not bc.get("enabled", False):
+            continue
+
+        # HARD: one strategy per (symbol, interval) (no hybrid in this phase) + regime preference
+        if bk.strategy != pref.get((bk.symbol, bk.interval), "SUPERTREND"):
+            continue
+
+        # HARD: 1 position per symbol (global, across intervals/strategies)
+        if bk.symbol in open_symbols:
+            continue
+
+        if bk in open_pos:
+            continue
+
+        hb_row = hb.get(bk)
+        if not hb_row:
+            continue
+        hb_lag = hb_row.get("hb_lag_s")
+        if hb_lag is None or hb_lag > HB_MAX_LAG_S:
+            continue
+
+        c_row = candles.get((bk.symbol, bk.interval))
+        if not c_row:
+            continue
+        c_lag = c_row.get("candles_lag_s")
+        if c_lag is None or c_lag > CANDLES_MAX_LAG_S:
+            continue
+
+        rg = last_rg.get(bk)
+        if not rg:
+            continue
+        if not bool(rg.get("allow", False)):
+            continue
+        if bool(rg.get("would_block", False)):
+            continue
+
+        candidates.append(bk)
+
+    # deterministic order: interval first (1m before 5m), then BTC>ETH>SOL>BNB
+    itv_rank = {"1m": 0, "5m": 1}
+    sym_rank = {"BTCUSDC": 0, "ETHUSDC": 1, "SOLUSDC": 2, "BNBUSDC": 3}
+    candidates.sort(key=lambda x: (itv_rank.get(x.interval, 9), sym_rank.get(x.symbol, 9), x.strategy))
+
+    # EXTRA safety: dedupe by symbol (global) so we never pick both 1m and 5m on same symbol
+    out: List[BotKey] = []
+    seen_sym: Set[str] = set()
+    for bk in candidates:
+        if bk.symbol in seen_sym:
+            continue
+        out.append(bk)
+        seen_sym.add(bk.symbol)
+        if len(out) >= MAX_PICKS:
+            break
+
+    return out
+
+
+def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
+    if not effective_actions_enabled:
+        return
+
+    now = utc_now()
+    last_ts, sticky = parse_last_pick(conn)
+
+    bc_all = load_bot_control(conn)
+    open_pos = load_open_pos_flags(conn)
+    open_symbols = load_open_symbols(conn)   # <--- DODAJ TO
+
+    # zawsze przygotuj dane do pickowania (tanie i proste)
+    hb = load_heartbeat(conn)
+    candles = load_candles_latest(conn)
+    last_rg = load_last_regime_gate(conn, window_minutes=REGIME_LOOKBACK_MIN)
+
+    pref = preferred_strategy_by_symbol(last_rg)
+    kept_symbols: Set[str] = set()
+
+    desired: List[BotKey] = []
+
+    if last_ts and (now - last_ts) < timedelta(minutes=HYSTERESIS_MIN):
+        keep = []
+        for bk in sticky:
+            row = bc_all.get(bk)
+            if not row or not row.get("enabled", False):
+                continue
+            if not universe_filter(bk):
+                continue
+            if bk in open_pos:
+                continue
+            # HARD: one strategy per symbol + regime-based preference
+            if bk.strategy != pref.get((bk.symbol, bk.interval), "SUPERTREND"):
+                continue
+            if bk.symbol in kept_symbols:
+                continue
+            kept_symbols.add(bk.symbol)
+            # (opcjonalnie) jak chcesz twardo: sticky też nie trzyma symbolu z open gdziekolwiek
+            if bk.symbol in open_symbols:
+                continue
+            keep.append(bk)
+
+        desired = keep[:MAX_PICKS]
+
+        if not desired:
+            desired = allocator_pick(
+                bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
+                open_pos=open_pos, open_symbols=open_symbols
+            )
+            save_last_pick(conn, desired)
+            log.info("[alloc] sticky empty -> repick: %s", desired)
+        else:
+            # TOP-UP: jeśli sticky ma mniej niż MAX_PICKS, dobierz resztę z aktualnych kandydatów
+            if len(desired) < MAX_PICKS:
+                extra = allocator_pick(
+                    bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
+                    open_pos=open_pos, open_symbols=open_symbols
+                )
+                desired_set = set(desired)
+                for bk in extra:
+                    if bk in desired_set:
+                        continue
+                    # twardo: nadal bez hybrydy (1 symbol) — allocator_pick i tak dedupuje,
+                    # ale tu też trzymamy barierę.
+                    if any(x.symbol == bk.symbol for x in desired):
+                        continue
+                    desired.append(bk)
+                    desired_set.add(bk)
+                    if len(desired) >= MAX_PICKS:
+                        break
+
+                save_last_pick(conn, desired)
+                log.info("[alloc] sticky keep + topup (%sm): %s", HYSTERESIS_MIN, desired)
+            else:
+                log.info("[alloc] sticky keep (%sm): %s", HYSTERESIS_MIN, desired)
+    else:
+        desired = allocator_pick(
+            bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
+            open_pos=open_pos, open_symbols=open_symbols       # <--- DODAJ
+        )
+        save_last_pick(conn, desired)
+        log.info("[alloc] new pick: %s", desired)
+
+    desired_set = set(desired)
+
+    n_on = 0
+    n_off = 0
+    for bk, row in bc_all.items():
+        if not universe_filter(bk):
+            continue
+        if not row.get("enabled", False):
+            continue
+
+        if bk in open_pos:
+            set_entries_and_regime(
+                conn, bk,
+                entries_enabled=False,
+                regime_mode="DRY_RUN",
+                reason="ORC_ALLOC_A: has OPEN (entries OFF, DRY_RUN)"
+            )
+            n_off += 1
+            continue
+
+        if bk.symbol in open_symbols:
+            set_entries_and_regime(
+                conn, bk,
+                entries_enabled=False,
+                regime_mode="DRY_RUN",
+                reason="ORC_ALLOC_A: symbol has OPEN (entries OFF, DRY_RUN)"
+            )
+            n_off += 1
+            continue
+
+        if bk in desired_set:
+            changed = set_entries_and_regime(
+                conn, bk,
+                entries_enabled=True,
+                regime_mode="ENFORCE",
+                reason="ORC_ALLOC_A: picked (entries ON, ENFORCE)"
+            )
+            n_on += 1
+            if changed:
+                log.info("[alloc] entries ON + ENFORCE %s", bk)
+        else:
+            changed = set_entries_and_regime(
+                conn, bk,
+                entries_enabled=False,
+                regime_mode="DRY_RUN",
+                reason="ORC_ALLOC_A: not picked (entries OFF, DRY_RUN)"
+            )
+            n_off += 1
+            if changed:
+                log.info("[alloc] entries OFF + DRY_RUN %s", bk)
+
+    log.info("[alloc] applied desired=%d universe_seen_on=%d universe_seen_off=%d", len(desired), n_on, n_off)
 
 # -------------------------
 # Main orchestrator loop
@@ -551,6 +946,12 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
             reason_detail=blocker_detail,
             meta={"policy_version": cfg.get("policy_version"), "actions_enabled": effective_actions_enabled, "tick_id": tick_id},
         )
+    # ---- ALLOCATOR (Phase A) ----
+    panic_enabled = bool(panic.get("panic_enabled"))
+
+    if effective_actions_enabled and (not panic_enabled) and TRADING_MODE == "LIVE":
+        if os.getenv("ORC_ALLOC_A_ENABLED", "0") == "1":
+            run_allocator_phase_a(conn, effective_actions_enabled)
 
 
 def main():

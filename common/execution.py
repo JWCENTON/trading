@@ -1,8 +1,179 @@
 # common/execution.py
 import uuid
+import time
 import logging
 from binance.exceptions import BinanceAPIException
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
+
+
+def build_live_client_order_id(symbol: str, pos_id: int, leg: str) -> str:
+    """
+    Binance SPOT limit: 36 chars.
+    Canon: ORC|L|{symbol}|P{pos_id}|{E|X}
+    """
+    sym = str(symbol).upper()
+    leg_u = str(leg).upper()[:1]  # "E" or "X"
+    cid = f"ORC|L|{sym}|P{int(pos_id)}|{leg_u}"
+    if len(cid) <= 36:
+        return cid
+    return f"ORC|L|P{int(pos_id)}|{leg_u}"[:36]
+
+
+def _safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def get_best_bid_ask(client, symbol: str):
+    ob = client.get_order_book(symbol=symbol, limit=5)
+    best_bid = _safe_float(ob["bids"][0][0]) if ob.get("bids") else None
+    best_ask = _safe_float(ob["asks"][0][0]) if ob.get("asks") else None
+    return best_bid, best_ask
+
+
+def mk_child_client_order_id(base_id: str, suffix: str) -> str:
+    # Binance max 36 chars for newClientOrderId
+    s = str(suffix).upper()[:3]
+    b = str(base_id)
+    if len(b) > 32:
+        b = b[:32]
+    return f"{b}-{s}"[:36]
+
+
+def place_live_exit_maker_then_market(
+    client,
+    symbol: str,
+    side: str,
+    qty: float,
+    *,
+    base_client_order_id: str,
+    maker_offset_bps: float = 2.0,
+    timeout_sec: int = 7,
+    poll_sec: float = 1.0,
+):
+    """
+    EXIT execution:
+      1) LIMIT_MAKER (post-only)
+      2) poll up to timeout_sec
+      3) cancel + MARKET for remaining
+    Returns dict {ok, live_ok, status, executed_qty, filled_as, resp, maker_price, best_bid, best_ask}
+    """
+
+    side_u = str(side).upper()
+    qty_f = float(qty)
+
+    best_bid, best_ask = get_best_bid_ask(client, symbol)
+    if best_bid is None or best_ask is None:
+        return {"ok": False, "live_ok": False, "status": "NO_BOOK", "executed_qty": 0.0, "filled_as": None, "resp": {"error": "order_book_empty"}}
+
+    # SELL: price slightly ABOVE best_bid to remain maker
+    # BUY:  price slightly BELOW best_ask to remain maker
+    if side_u == "SELL":
+        maker_price = best_bid * (1.0 + maker_offset_bps / 10_000.0)
+    else:
+        maker_price = best_ask * (1.0 - maker_offset_bps / 10_000.0)
+
+    maker_cid = mk_child_client_order_id(base_client_order_id, "MKR")
+
+    try:
+        resp_maker = client.create_order(
+            symbol=symbol,
+            side=side_u,
+            type="LIMIT_MAKER",
+            quantity=f"{qty_f:.8f}",
+            price=f"{maker_price:.2f}",
+            newClientOrderId=maker_cid,
+        )
+    except Exception as e:
+        return {"ok": False, "live_ok": False, "status": "MAKER_CREATE_FAILED", "executed_qty": 0.0, "filled_as": None, "resp": {"error": str(e)}, "maker_price": float(maker_price), "best_bid": best_bid, "best_ask": best_ask}
+
+    order_id = resp_maker.get("orderId")
+    executed_qty = 0.0
+
+    deadline = time.time() + max(0, int(timeout_sec))
+    status = None
+
+    while time.time() < deadline:
+        time.sleep(max(0.1, float(poll_sec)))
+        try:
+            o = client.get_order(symbol=symbol, orderId=order_id)
+        except Exception:
+            continue
+
+        status = str(o.get("status", "")).upper()
+        executed_qty = _safe_float(o.get("executedQty"), 0.0)
+
+        if status == "FILLED" or executed_qty >= qty_f * 0.999:
+            return {
+                "ok": True,
+                "live_ok": True,
+                "status": status or "FILLED_BY_QTY",
+                "executed_qty": float(executed_qty),
+                "filled_as": "MAKER",
+                "resp": {"maker_create": resp_maker, "maker_final": o},
+                "maker_price": float(maker_price),
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+            }
+
+    # timeout -> cancel
+    try:
+        cancel_resp = client.cancel_order(symbol=symbol, orderId=order_id)
+    except Exception as e:
+        cancel_resp = {"error": str(e)}
+
+    remaining = max(0.0, qty_f - float(executed_qty))
+
+    if remaining > 0.0:
+        mkt_cid = mk_child_client_order_id(base_client_order_id, "MKT")
+        try:
+            resp_mkt = client.create_order(
+                symbol=symbol,
+                side=side_u,
+                type="MARKET",
+                quantity=f"{remaining:.8f}",
+                newClientOrderId=mkt_cid,
+            )
+            mkt_status = str(resp_mkt.get("status", "")).upper()
+            mkt_exec = _safe_float(resp_mkt.get("executedQty"), 0.0)
+            live_ok = (mkt_status == "FILLED") or (mkt_exec > 0.0)
+            return {
+                "ok": True,
+                "live_ok": bool(live_ok),
+                "status": "FALLBACK_MARKET",
+                "executed_qty": float(executed_qty) + float(mkt_exec),
+                "filled_as": "MARKET_FALLBACK",
+                "resp": {"maker_create": resp_maker, "cancel": cancel_resp, "market": resp_mkt},
+                "maker_price": float(maker_price),
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "live_ok": False,
+                "status": "FALLBACK_MARKET_FAILED",
+                "executed_qty": float(executed_qty),
+                "filled_as": None,
+                "resp": {"maker_create": resp_maker, "cancel": cancel_resp, "error": str(e)},
+                "maker_price": float(maker_price),
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+            }
+
+    return {
+        "ok": True,
+        "live_ok": float(executed_qty) > 0.0,
+        "status": "MAKER_TIMEOUT_NO_REMAIN",
+        "executed_qty": float(executed_qty),
+        "filled_as": "MAKER_TIMEOUT",
+        "resp": {"maker_create": resp_maker, "cancel": cancel_resp},
+        "maker_price": float(maker_price),
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+    }
 
 
 def _blocked(reason: str, **meta):
@@ -227,11 +398,11 @@ def place_live_order(
     live_ok = (status in ("FILLED", "PARTIALLY_FILLED")) and executed_qty > 0
 
     return {
-    "ok": True,               # backward compat = ACK
-    "blocked": False,
-    "resp": resp,
-    "send_ok": True,
-    "live_ok": live_ok,
-    "status": status,
-    "executed_qty": executed_qty,
-    }
+        "ok": True,               # backward compat = ACK
+        "blocked": False,
+        "resp": resp,
+        "send_ok": True,
+        "live_ok": live_ok,
+        "status": status,
+        "executed_qty": executed_qty,
+        }

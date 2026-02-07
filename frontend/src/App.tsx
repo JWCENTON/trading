@@ -12,6 +12,17 @@ import {
   type WatchdogEvent,
   type RegimePoint,
   type SafetyStatus,
+  type OpsEnvironmentResponse,
+  type OpsBotControlResponse,
+  type OpsPositionsOpenResponse,
+  type OpsLiveAttemptsResponse,
+  type BotsActiveResponse,
+  getOpsEnvironment,
+  getOpsBotControl,
+  getOpsPositionsOpen,
+  getOpsLiveAttempts,
+  getBotsActive,
+  envBool,
   getWatchdogEvents,
   getRegimeLatest,
   getAccountSummary,
@@ -25,7 +36,7 @@ import {
   BASE_ASSETS,
   makeSymbol,
   QUOTE_ASSET,
-  ALL_STRATEGIES, // 🔹 używamy wspólnej listy strategii z api.ts (RSI, TREND, BBRANGE, SUPER_TREND)
+  ALL_STRATEGIES, // 🔹 używamy wspólnej listy strategii z api.ts (RSI, TREND, BBRANGE, SUPERTREND)
 } from "./api";
 
 function formatDate(d: string) {
@@ -400,7 +411,7 @@ const ALL_INTERVALS = ["1m", "5m"] as const;
 type Interval = typeof ALL_INTERVALS[number];
 
 function App() {
-  const [activeTab, setActiveTab] = useState<"HOME" | "BOT">("HOME");
+  const [activeTab, setActiveTab] = useState<"HOME" | "BOT" | "OPS">("HOME");
 
   const [symbol, setSymbol] = useState<SymbolPair>(makeSymbol("BTC"));
   const [strategy, setStrategy] = useState<Strategy>("RSI");
@@ -442,6 +453,13 @@ function App() {
     losingTotal === 0 ? 1 : Math.ceil(losingTotal / TRADES_PAGE_SIZE);
   const currentPage = Math.min(tradesPage, totalLosingPages);
 
+  const [opsEnv, setOpsEnv] = useState<OpsEnvironmentResponse | null>(null);
+  const [opsControl, setOpsControl] = useState<OpsBotControlResponse | null>(null);
+  const [opsPositions, setOpsPositions] = useState<OpsPositionsOpenResponse | null>(null);
+  const [opsAttempts, setOpsAttempts] = useState<OpsLiveAttemptsResponse | null>(null);
+  const [botsActive, setBotsActive] = useState<BotsActiveResponse | null>(null);
+  const [opsMinutes, setOpsMinutes] = useState(180);
+
   function handleOrdersPrev() {
     setOrdersPageNum((p) => Math.max(1, p - 1));
   }
@@ -469,6 +487,26 @@ function App() {
     try {
       setError(null);
       setLoading(true);
+
+      if (activeTab === "OPS") {
+        const [env, ctrl, pos, att, ba, saf] = await Promise.all([
+          getOpsEnvironment(),
+          getOpsBotControl(),
+          getOpsPositionsOpen(),
+          getOpsLiveAttempts(opsMinutes),
+          getBotsActive(600),
+          getSafetyStatus(),
+        ]);
+
+        setOpsEnv(env);
+        setOpsControl(ctrl);
+        setOpsPositions(pos);
+        setOpsAttempts(att);
+        setBotsActive(ba);
+        setSafety(saf);
+
+        return; // ważne: nie ładuj reszty dashboardu
+      }
 
       const pnlPromises: Promise<PnLSummary>[] = [];
       const metricsPromises: Promise<StrategyMetrics>[] = [];
@@ -721,6 +759,19 @@ function App() {
             >
               BOT VIEW
             </button>
+            <button
+              onClick={() => setActiveTab("OPS")}
+              style={{
+                padding: "6px 14px",
+                fontSize: 13,
+                border: "none",
+                background: activeTab === "OPS" ? "#a78bfa" : "transparent",
+                color: activeTab === "OPS" ? "#02110a" : "#e5e7eb",
+                cursor: "pointer",
+              }}
+            >
+              OPS
+            </button>
           </div>
         </div>
 
@@ -731,7 +782,7 @@ function App() {
                 padding: "2px 10px",
                 borderRadius: 999,
                 border: "1px solid #1f2937",
-                background: safety.panic_disable_trading === "1" ? "#7f1d1d" : "#064e3b",
+                background: envBool(safety.panic_disable_trading) ? "#7f1d1d" : "#064e3b",
                 color: "#e5e7eb",
                 fontSize: 12,
               }}
@@ -757,7 +808,7 @@ function App() {
                 padding: "2px 10px",
                 borderRadius: 999,
                 border: "1px solid #1f2937",
-                background: safety.live_orders_enabled === "1" ? "#064e3b" : "#7c2d12",
+                background: envBool(safety.live_orders_enabled) ? "#064e3b" : "#7c2d12",
                 color: "#e5e7eb",
                 fontSize: 12,
               }}
@@ -1867,6 +1918,191 @@ function App() {
                   </table>
                 </div>
               </>
+            )}
+          </div>
+        </>
+      )}
+
+      {!loading && activeTab === "OPS" && (
+        <>
+          <div style={{ background:"#111827", padding:16, borderRadius:12, marginBottom:16 }}>
+            <h2 style={{ fontSize: 18, marginBottom: 8 }}>OPS</h2>
+            <div style={{ display:"flex", gap:16, flexWrap:"wrap", fontSize:13, opacity:0.9 }}>
+              <div><div style={{fontSize:12,opacity:0.7}}>ENV</div>{opsEnv?.environment ?? "-"}</div>
+              <div><div style={{fontSize:12,opacity:0.7}}>MODE</div>{opsEnv?.trading_mode ?? "-"}</div>
+              <div><div style={{fontSize:12,opacity:0.7}}>DB</div>{opsEnv?.db_name ?? "-"}</div>
+              <div><div style={{fontSize:12,opacity:0.7}}>QUOTE</div>{opsEnv?.quote_asset ?? "-"}</div>
+            </div>
+          </div>
+
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:16 }}>
+            <div style={{ background:"#020617", padding:16, borderRadius:12, flex:"1 1 420px" }}>
+              <h3 style={{ fontSize: 16, marginBottom: 8 }}>Bots active</h3>
+              {botsActive?.items?.length ? (
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                    <thead>
+                      <tr style={{ textAlign:"left", borderBottom:"1px solid #1f2937" }}>
+                        <th style={{ padding:"6px 8px" }}>Symbol</th>
+                        <th style={{ padding:"6px 8px" }}>Interval</th>
+                        <th style={{ padding:"6px 8px" }}>Strategy</th>
+                        <th style={{ padding:"6px 8px" }}>Last seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {botsActive.items.map((b, i) => (
+                        <tr key={i} style={{ borderBottom:"1px solid #111827" }}>
+                          <td style={{ padding:"6px 8px" }}>{b.symbol}</td>
+                          <td style={{ padding:"6px 8px" }}>{b.interval}</td>
+                          <td style={{ padding:"6px 8px" }}>{b.strategy}</td>
+                          <td style={{ padding:"6px 8px" }}>{formatDate(b.last_seen)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ opacity:0.7 }}>
+                  {botsActive?.error ? `Error: ${botsActive.error}` : "No active bots in TTL window."}
+                </div>
+              )}
+            </div>
+
+            <div style={{ background:"#020617", padding:16, borderRadius:12, flex:"1 1 420px" }}>
+              <h3 style={{ fontSize: 16, marginBottom: 8 }}>Open positions</h3>
+              {opsPositions?.items?.length ? (
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                    <thead>
+                      <tr style={{ textAlign:"left", borderBottom:"1px solid #1f2937" }}>
+                        <th style={{ padding:"6px 8px" }}>ID</th>
+                        <th style={{ padding:"6px 8px" }}>Symbol</th>
+                        <th style={{ padding:"6px 8px" }}>Iv</th>
+                        <th style={{ padding:"6px 8px" }}>Strat</th>
+                        <th style={{ padding:"6px 8px" }}>Side</th>
+                        <th style={{ padding:"6px 8px" }}>Entry</th>
+                        <th style={{ padding:"6px 8px" }}>Qty</th>
+                        <th style={{ padding:"6px 8px" }}>Age</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {opsPositions.items.map((p) => (
+                        <tr key={p.id} style={{ borderBottom:"1px solid #111827" }}>
+                          <td style={{ padding:"6px 8px" }}>{p.id}</td>
+                          <td style={{ padding:"6px 8px" }}>{p.symbol}</td>
+                          <td style={{ padding:"6px 8px" }}>{p.interval}</td>
+                          <td style={{ padding:"6px 8px" }}>{p.strategy}</td>
+                          <td style={{ padding:"6px 8px" }}>{p.side}</td>
+                          <td style={{ padding:"6px 8px" }}>{p.entry_price.toFixed(2)}</td>
+                          <td style={{ padding:"6px 8px" }}>{p.qty.toFixed(8)}</td>
+                          <td style={{ padding:"6px 8px" }}>{Math.round(p.age_seconds)}s</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ opacity:0.7 }}>
+                  {opsPositions?.error ? `Error: ${opsPositions.error}` : "No open positions."}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ background:"#020617", padding:16, borderRadius:12, marginBottom:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+              <h3 style={{ fontSize: 16, margin: 0 }}>Live attempts (reason LIKE LIVE_*)</h3>
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <span style={{ fontSize: 12, opacity: 0.7 }}>Window (min)</span>
+                <input
+                  value={opsMinutes}
+                  onChange={(e) => setOpsMinutes(Number(e.target.value || 0))}
+                  style={{ width: 90, padding:"6px 8px", borderRadius:8, border:"1px solid #1f2937", background:"#111827", color:"#e5e7eb" }}
+                  type="number"
+                  min={10}
+                />
+                <button
+                  onClick={() => loadData()}
+                  style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #1f2937", background:"#1f2937", color:"#e5e7eb", cursor:"pointer" }}
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {opsAttempts?.items?.length ? (
+              <div style={{ overflowX:"auto", marginTop: 10 }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                  <thead>
+                    <tr style={{ textAlign:"left", borderBottom:"1px solid #1f2937" }}>
+                      <th style={{ padding:"6px 8px" }}>Symbol</th>
+                      <th style={{ padding:"6px 8px" }}>Iv</th>
+                      <th style={{ padding:"6px 8px" }}>Strat</th>
+                      <th style={{ padding:"6px 8px" }}>Reason</th>
+                      <th style={{ padding:"6px 8px" }}>Count</th>
+                      <th style={{ padding:"6px 8px" }}>First</th>
+                      <th style={{ padding:"6px 8px" }}>Last</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {opsAttempts.items.map((r, idx) => (
+                      <tr key={idx} style={{ borderBottom:"1px solid #111827" }}>
+                        <td style={{ padding:"6px 8px" }}>{r.symbol}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.interval}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.strategy}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.reason}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.count}</td>
+                        <td style={{ padding:"6px 8px" }}>{formatDate(r.first_at)}</td>
+                        <td style={{ padding:"6px 8px" }}>{formatDate(r.last_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ opacity:0.7, marginTop: 10 }}>
+                {opsAttempts?.error ? `Error: ${opsAttempts.error}` : "No LIVE_* events in this window."}
+              </div>
+            )}
+          </div>
+
+          <div style={{ background:"#020617", padding:16, borderRadius:12 }}>
+            <h3 style={{ fontSize: 16, marginBottom: 8 }}>Bot control</h3>
+            {opsControl?.items?.length ? (
+              <div style={{ overflowX:"auto" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                  <thead>
+                    <tr style={{ textAlign:"left", borderBottom:"1px solid #1f2937" }}>
+                      <th style={{ padding:"6px 8px" }}>Symbol</th>
+                      <th style={{ padding:"6px 8px" }}>Iv</th>
+                      <th style={{ padding:"6px 8px" }}>Strat</th>
+                      <th style={{ padding:"6px 8px" }}>Enabled</th>
+                      <th style={{ padding:"6px 8px" }}>Live</th>
+                      <th style={{ padding:"6px 8px" }}>Regime</th>
+                      <th style={{ padding:"6px 8px" }}>Mode</th>
+                      <th style={{ padding:"6px 8px" }}>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {opsControl.items.map((r, idx) => (
+                      <tr key={idx} style={{ borderBottom:"1px solid #111827" }}>
+                        <td style={{ padding:"6px 8px" }}>{r.symbol}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.interval}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.strategy}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.enabled ? "YES" : "NO"}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.live_orders_enabled ? "YES" : "NO"}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.regime_enabled ? "YES" : "NO"}</td>
+                        <td style={{ padding:"6px 8px" }}>{r.regime_mode ?? "-"}</td>
+                        <td style={{ padding:"6px 8px" }}>{formatDate(r.updated_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ opacity:0.7 }}>
+                {opsControl?.error ? `Error: ${opsControl.error}` : "No bot_control rows."}
+              </div>
             )}
           </div>
         </>

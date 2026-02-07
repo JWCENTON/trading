@@ -69,3 +69,23 @@ def should_block_daily_loss_positions(*, daily_pct: float, limit_pct: float) -> 
     if limit_pct <= 0:
         return False
     return float(daily_pct) <= -float(limit_pct)
+
+import os
+
+def should_emit_daily_loss_shadow(*, strategy: str) -> bool:
+    """
+    Opcja A: tylko jeden sentinel emituje DAILY_MAX_LOSS_POSITIONS_SHADOW.
+    Sterowanie env:
+      - DAILY_LOSS_SHADOW_SENTINEL=1  -> ten proces emituje
+      - DAILY_LOSS_SHADOW_STRATEGY_ALLOWLIST="TREND,REGIME_WORKER" (opcjonalnie)
+    Default: False (czyli strategie nie spamują).
+    """
+    if os.environ.get("DAILY_LOSS_SHADOW_SENTINEL", "0") == "1":
+        return True
+
+    allow = os.environ.get("DAILY_LOSS_SHADOW_STRATEGY_ALLOWLIST", "").strip()
+    if not allow:
+        return False
+
+    allowed = {x.strip().upper() for x in allow.split(",") if x.strip()}
+    return str(strategy or "").upper() in allowed

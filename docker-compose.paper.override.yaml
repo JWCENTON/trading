@@ -6,6 +6,8 @@ services:
   api:
     ports:
       - "8000:8000"
+    environment: 
+      API_BUILD: "paper-20260118-1"
 
   frontend:
     ports:
@@ -21,7 +23,7 @@ services:
       BOT_RUNNER_POLL_SECONDS: 5
       BOT_RUNNER_GRACE_SECONDS: 20
       BOT_RUNNER_RESTART_BACKOFF_SECONDS: 15
-      BOT_VERSION: 2026-01-14a
+      BOT_VERSION: 2026-01-24d
     depends_on:
       - db
     restart: unless-stopped
@@ -39,7 +41,11 @@ services:
     environment:
       ORC_POLL_SECONDS: 10
       ORC_ACTIONS_ENABLED: ${ORC_ACTIONS_ENABLED:-false}
-      BOT_VERSION: 2026-01-15_orc_v1_paper
+      BOT_VERSION: 2026-02-05_a__paper
     depends_on:
       - db
     restart: unless-stopped
+  
+  regime-worker:
+    environment:
+      BOT_VERSION: 2026-01-26a

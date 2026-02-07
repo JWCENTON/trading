@@ -6,18 +6,23 @@ import hashlib
 import logging
 import psycopg2
 import pandas as pd
-
+from common.execution import build_live_client_order_id
 from dataclasses import replace
 from datetime import datetime, timezone, date
 from psycopg2.extras import execute_batch
 from binance.client import Client
-
+from common.execution import place_live_exit_maker_then_market
+from common.daily_loss import should_emit_daily_loss_shadow
+from common.alerts import emit_alert_throttled
+from common.binance_ingest_trades import ingest_my_trades
+from common.flags import binance_mytrades_enabled
+from common.db import get_db_conn
 from common.schema import ensure_schema
 from common.runtime import RuntimeConfig
 from common.permissions import can_trade
 from common.execution import place_live_order
 from common.bot_control import upsert_defaults, read as read_bot_control
-from common.db import get_latest_regime
+from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.sizing import compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 
@@ -35,6 +40,7 @@ if not SYMBOL.endswith(QUOTE_ASSET):
 
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "BBRANGE").upper()
 INTERVAL = os.environ.get("INTERVAL", "1m")
+LIVE_TARGET_NOTIONAL = float(os.environ.get("LIVE_TARGET_NOTIONAL", "6.0"))
 
 cfg = RuntimeConfig.from_env()
 
@@ -79,13 +85,11 @@ RSI_BLOCK_EXTREME_HIGH = float(os.environ.get("RSI_BLOCK_EXTREME_HIGH", "90"))
 
 API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
-client = Client(api_key=API_KEY, api_secret=API_SECRET)
-
-REGIME_MAX_AGE_SECONDS = int(os.environ.get("REGIME_MAX_AGE_SECONDS", "180"))
+client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
 
 logging.info(
-    "CONFIG|SYMBOL=%s|INTERVAL=%s|SPOT_MODE=%s|cfg_trading_mode=%s|REGIME_MAX_AGE_SECONDS=%s",
-    SYMBOL, INTERVAL, cfg.spot_mode, cfg.trading_mode, REGIME_MAX_AGE_SECONDS
+    "CONFIG|SYMBOL=%s|INTERVAL=%s|SPOT_MODE=%s|cfg_trading_mode=%s",
+    SYMBOL, INTERVAL, cfg.spot_mode, cfg.trading_mode
 )
 
 # =========================
@@ -96,56 +100,6 @@ def _json_default(o):
     if isinstance(o, (datetime, date)):
         return o.isoformat()
     return str(o)
-
-
-def emit_alert_throttled(
-    *,
-    conn,
-    symbol: str,
-    interval: str,
-    strategy: str,
-    reason: str,
-    open_time,
-    price,
-    info,
-    throttle_minutes: int = 15,
-):
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT 1
-            FROM strategy_events
-            WHERE symbol=%s AND interval=%s AND strategy=%s
-              AND event_type='ALERT' AND reason=%s
-              AND created_at >= now() - (%s || ' minutes')::interval
-            LIMIT 1
-            """,
-            (symbol, interval, strategy, reason, throttle_minutes),
-        )
-        if cur.fetchone() is not None:
-            return
-
-    emit_strategy_event_with_conn(
-        conn=conn,
-        event_type="ALERT",
-        reason=reason,
-        price=price,
-        candle_open_time=open_time,
-        info=info,
-        symbol=symbol,
-        interval=interval,
-        strategy=strategy,
-    )
-
-
-# =========================
-# DB
-# =========================
-
-def get_db_conn():
-    return psycopg2.connect(
-        host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASS
-    )
 
 # =========================
 # EVENTS
@@ -245,6 +199,7 @@ def emit_blocked(*, reason: str, decision: str | None, price: float | None, cand
         "LIVE_ENTRY_NOT_ATTEMPTED",
         "LIVE_EXIT_NOT_ATTEMPTED",
         "LIVE_ENTRY_NOT_FILLED",
+        "POSITION_OPEN_NO_EXIT",
     }
     et = "BLOCKED" if hard_block else "SKIP"
     emit_strategy_event(
@@ -275,91 +230,6 @@ def heartbeat(info: dict):
     conn.commit()
     cur.close()
     conn.close()
-
-# =========================
-# REGIME GATE (RSI-style, using bot_control)
-# =========================
-
-def regime_allows(strategy_name: str, symbol: str, interval: str, bc):
-    """
-    Returns: (allow: bool, meta: dict)
-    DRY_RUN: always allow=True but meta includes would_block
-    """
-    if not getattr(bc, "regime_enabled", False):
-        return True, {"enabled": False}
-
-    r = get_latest_regime(symbol, interval)
-    if not r:
-        return True, {"enabled": True, "reason": "no_regime"}  # fail-open
-
-    ts = r.get("ts")
-    if ts is None:
-        return True, {"enabled": True, "reason": "regime_ts_null"}
-
-    now = datetime.now(timezone.utc)
-    age = (now - ts).total_seconds()
-    if age > REGIME_MAX_AGE_SECONDS:
-        return True, {"enabled": True, "reason": f"regime_stale age={age:.0f}s", "age_s": age, "regime": r.get("regime"), "ts": ts}
-
-    regime = r.get("regime")
-
-    # v1 policy: BBRANGE blocked in TREND_UP / TREND_DOWN / SHOCK
-    would_block = False
-    why = "ok"
-    if strategy_name in ("RSI", "BBRANGE"):
-        if regime in ("TREND_UP", "TREND_DOWN", "SHOCK"):
-            would_block = True
-            why = f"{strategy_name} blocked in {regime}"
-
-    if getattr(bc, "regime_mode", "DRY_RUN") == "DRY_RUN":
-        return True, {"enabled": True, "mode": "DRY_RUN", "would_block": would_block, "why": why, **r, "age_s": age}
-
-    allow = not would_block
-    return allow, {"enabled": True, "mode": "ENFORCE", "would_block": would_block, "why": why, **r, "age_s": age}
-
-
-def log_regime_gate_event(symbol: str, interval: str, strategy: str, decision: str, allow: bool, rmeta: dict, extra_meta: dict = None):
-    """
-    Log only when:
-    - ENFORCE blocks (allow=False)
-    - or DRY_RUN and would_block=True
-    """
-    if not rmeta:
-        return
-
-    try:
-        mode = rmeta.get("mode")
-        would_block = rmeta.get("would_block", False)
-
-        meta = {}
-        meta["rmeta"] = rmeta if isinstance(rmeta, dict) else {"value": str(rmeta)}
-        if extra_meta:
-            meta["extra"] = extra_meta
-
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO regime_gate_events
-              (symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
-            VALUES
-              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb);
-            """,
-            (
-                symbol, interval, strategy, decision,
-                bool(allow),
-                rmeta.get("regime"),
-                mode,
-                bool(would_block) if would_block is not None else None,
-                rmeta.get("why"),
-                json.dumps(meta, default=_json_default),
-            ),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception:
-        logging.exception("regime_gate_events insert failed")
 
 # =========================
 # BOT CONTROL MODE (per interval)
@@ -415,45 +285,83 @@ def get_open_position():
     conn.close()
     return row
 
-def open_position(side: str, qty: float, entry_price: float, candle_open_time) -> bool:
+
+def attach_entry_order_id(pos_id: int, order_id: str, client_order_id: str) -> None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE positions
+        SET entry_order_id = COALESCE(entry_order_id, %s),
+            entry_client_order_id = COALESCE(entry_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (str(order_id), (str(client_order_id) if client_order_id else None), int(pos_id)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def attach_exit_order_id(pos_id: int, order_id: str, client_order_id: str) -> None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE positions
+        SET exit_order_id = COALESCE(exit_order_id, %s),
+            exit_client_order_id = COALESCE(exit_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (str(order_id), (str(client_order_id) if client_order_id else None), int(pos_id)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str) -> int | None:
+    # SPOT => tylko LONG
     if str(side).upper() != "LONG":
-        return False
+        return None
 
     conn = get_db_conn()
     cur = conn.cursor()
 
     cur.execute(
         """
-        SELECT 1 FROM positions
+        SELECT id FROM positions
         WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+        ORDER BY entry_time DESC
+        LIMIT 1
         """,
         (SYMBOL, STRATEGY_NAME, INTERVAL),
     )
-    if cur.fetchone():
+    row = cur.fetchone()
+    if row:
+        pos_id = int(row[0])
         cur.close()
         conn.close()
-        return False
+        logging.info("BBRANGE: open_position skipped – already OPEN pos_id=%s.", pos_id)
+        return None
 
     cur.execute(
         """
-        INSERT INTO positions(symbol, strategy, interval, status, side, qty, entry_price, entry_time)
-        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now())
+        INSERT INTO positions(
+          symbol, strategy, interval, status, side, qty, entry_price, entry_time, entry_client_order_id
+        )
+        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
+        RETURNING id;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, "LONG", float(qty), float(entry_price)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, "LONG", float(qty), float(entry_price), entry_client_order_id),
     )
+    pos_id = int(cur.fetchone()[0])
     conn.commit()
     cur.close()
     conn.close()
 
-    emit_strategy_event(
-        event_type="POSITION_OPENED",
-        decision="BUY",
-        reason="OK",
-        price=float(entry_price),
-        candle_open_time=candle_open_time,
-        info={"side": "LONG", "qty": float(qty), "entry_price": float(entry_price)},
-    )
-    return True
+    logging.info("BBRANGE: position OPENED pos_id=%s LONG qty=%.8f entry=%.2f", pos_id, float(qty), float(entry_price))
+    return pos_id
 
 
 def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
@@ -647,10 +555,9 @@ def insert_simulated_order(
     conn.close()
     return inserted
 
-def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, candle_open_time) -> str:
-    raw = f"{symbol}|{strategy}|{interval}|{side}|{candle_open_time.isoformat()}"
-    h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
-    return f"{symbol[:6]}-{strategy[:6]}-{interval}-{side}-{h}"[:36]
+
+def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, candle_open_time, *, pos_id: int, tag: str) -> str:
+    return build_live_client_order_id(symbol, pos_id, tag)
 
 
 def execute_and_record(
@@ -756,10 +663,87 @@ def execute_and_record(
             "client_order_id": None,
             "resp": None,
         }
+    
+    side_u = str(side).upper()
 
-    client_order_id = make_client_order_id(
-        cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time
-    )
+    pos_id = None
+    client_order_id = None
+
+    if not is_exit:
+        # ENTRY: utwórz pozycję aby mieć pos_id -> potem CID zawiera pos_id
+        pos_id = open_position(
+            side="LONG",
+            qty=float(qty_btc),
+            entry_price=float(price),
+            entry_client_order_id="PENDING",
+        )
+        if pos_id is None:
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "ALREADY_OPEN",
+                "client_order_id": None,
+                "resp": None,
+            }
+
+        client_order_id = make_client_order_id(
+            cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="E"
+        )
+
+        # zapisz entry_client_order_id
+        try:
+            conn2 = get_db_conn()
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "UPDATE positions SET entry_client_order_id=%s WHERE id=%s",
+                (client_order_id, int(pos_id)),
+            )
+            conn2.commit()
+            cur2.close()
+            conn2.close()
+        except Exception:
+            logging.exception("BBRANGE: failed to set entry_client_order_id pos_id=%s", pos_id)
+
+    else:
+        # EXIT: użyj istniejącej OPEN pozycji
+        open_row = get_open_position()
+        pos_id = int(open_row[0]) if open_row else None
+        if not pos_id:
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=side,
+                reason="EXIT_NO_OPEN_POSITION",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={"is_exit": True},
+            )
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "EXIT_NO_OPEN_POSITION",
+                "client_order_id": None,
+                "resp": None,
+            }
+
+        client_order_id = make_client_order_id(
+            cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="X"
+        )
+
+        # zapisz exit_client_order_id
+        try:
+            conn2 = get_db_conn()
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "UPDATE positions SET exit_client_order_id=%s WHERE id=%s",
+                (client_order_id, int(pos_id)),
+            )
+            conn2.commit()
+            cur2.close()
+            conn2.close()
+        except Exception:
+            logging.exception("BBRANGE: failed to set exit_client_order_id pos_id=%s", pos_id)
 
     resp = place_live_order(
         client,
@@ -828,6 +812,16 @@ def execute_and_record(
             "resp": raw,
         },
     )
+
+    order_id = raw.get("orderId")
+
+    if order_id and pos_id:
+        if is_exit:
+            attach_exit_order_id(int(pos_id), str(order_id), client_order_id)
+        else:
+            attach_entry_order_id(int(pos_id), str(order_id), client_order_id)
+    else:
+        logging.error("BBRANGE: LIVE ACK missing orderId pos_id=%s is_exit=%s resp=%s", pos_id, bool(is_exit), raw)
 
     return {
         "ledger_ok": True,
@@ -1006,10 +1000,17 @@ def get_last_closed_candle():
     return row
 
 # =========================
-# RUNTIME SNAPSHOT (RSI-style)
+# RUNTIME SNAPSHOT 
 # =========================
 
 def get_runtime_snapshot(price: float, open_time):
+    """
+    Jedno miejsce prawdy dla runtime:
+    - bot_control
+    - regime gate (ENTRY gate)
+    - permissions (LIVE order send)
+    - heartbeat meta
+    """
     bc = read_bot_control(SYMBOL, STRATEGY_NAME, INTERVAL)
 
     cfg_effective = replace(
@@ -1021,13 +1022,37 @@ def get_runtime_snapshot(price: float, open_time):
 
     panic = (os.environ.get("PANIC_DISABLE_TRADING", "0") == "1")
 
-    allow_gate_entry, rmeta_gate = regime_allows(STRATEGY_NAME, SYMBOL, INTERVAL, bc)
+    gate = decide_regime_gate(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        decision="ENTRY_CHECK",
+        regime_enabled=bc.regime_enabled,
+        regime_mode=bc.regime_mode,
+    )
+
+    allow_gate_entry = bool(gate.allow)
+
+    rmeta_gate = {
+        "enabled": bool(bc.regime_enabled),
+        "mode": bc.regime_mode,
+        "regime": gate.regime,
+        "would_block": bool(gate.would_block) if gate.would_block is not None else None,
+        "why": gate.why,
+        "meta": gate.meta,
+    }
 
     allowed_orders_entry, allow_meta_entry = can_trade(
-        cfg_effective, regime_allows_trade=allow_gate_entry, is_exit=False, panic_disable_trading=panic
+        cfg_effective,
+        regime_allows_trade=allow_gate_entry,
+        is_exit=False,
+        panic_disable_trading=panic,
     )
     allowed_orders_exit, allow_meta_exit = can_trade(
-        cfg_effective, regime_allows_trade=True, is_exit=True, panic_disable_trading=panic
+        cfg_effective,
+        regime_allows_trade=True,
+        is_exit=True,
+        panic_disable_trading=panic,
     )
 
     hb = {
@@ -1043,9 +1068,6 @@ def get_runtime_snapshot(price: float, open_time):
         "regime": (rmeta_gate or {}).get("regime"),
         "regime_would_block": (rmeta_gate or {}).get("would_block"),
         "regime_why": (rmeta_gate or {}).get("why"),
-        "regime_reason": (rmeta_gate or {}).get("reason"),
-        "regime_ts": str((rmeta_gate or {}).get("ts")),
-        "regime_age_s": (rmeta_gate or {}).get("age_s"),
 
         "allow_entry_gate": bool(allow_gate_entry),
         "allow_live_orders_entry": bool(allowed_orders_entry),
@@ -1121,24 +1143,23 @@ def run_strategy(row):
         rsi_val = float(rsi_14)
 
         snap = get_runtime_snapshot(price=price, open_time=open_time)
+        bc = snap["bc"]
         # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
-        log_regime_gate_event(
+        emit_regime_gate_event(
             symbol=SYMBOL,
             interval=INTERVAL,
             strategy=STRATEGY_NAME,
             decision="TICK",
-            allow=snap["allow_gate_entry"],
-            rmeta=snap["rmeta_gate"],
-            extra_meta={
-                "price": float(price),
-                "ema_21": float(ema_val) if ema_21 is not None else None,
-                "rsi_14": float(rsi_val) if rsi_14 is not None else None,
-                "open_time": str(open_time),
-                "note": "baseline per candle",
-                "stage": "BASELINE",
-            },
+            d=decide_regime_gate(
+                symbol=SYMBOL,
+                interval=INTERVAL,
+                strategy=STRATEGY_NAME,
+                decision="TICK",
+                regime_enabled=bc.regime_enabled,
+                regime_mode=bc.regime_mode,
+            ),
         )
-        bc = snap["bc"]
+        
         cfg_effective = snap["cfg_effective"]
         time_exit_enabled = True
         max_pos_minutes = int(MAX_POSITION_MINUTES)
@@ -1149,7 +1170,7 @@ def run_strategy(row):
             **snap["heartbeat"],
             "ema_21": float(ema_val),
             "rsi_14": float(rsi_val),
-            "has_position": bool(pos),
+            "has_position": bool(pos is not None),
             "pos_side": (str(pos[1]).upper() if pos else None),
             "pos_qty": (float(pos[2]) if pos else None),
             "pos_entry_price": (float(pos[3]) if pos else None),
@@ -1358,32 +1379,33 @@ def run_strategy(row):
 
             conn = get_db_conn()
             try:
-                # Always emit positions shadow telemetry (throttled)
-                emit_alert_throttled(
-                    conn=conn,
-                    symbol=SYMBOL,
-                    interval=INTERVAL,
-                    strategy=STRATEGY_NAME,
-                    reason="DAILY_MAX_LOSS_POSITIONS_SHADOW",
-                    open_time=open_time,
-                    price=price,
-                    info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
-                )
+                if should_emit_daily_loss_shadow(strategy=STRATEGY_NAME):
+                    # Always emit positions shadow telemetry (throttled)
+                    emit_alert_throttled(
+                        conn=conn,
+                        symbol=SYMBOL,
+                        interval=INTERVAL,
+                        strategy=STRATEGY_NAME,
+                        reason="DAILY_MAX_LOSS_POSITIONS_SHADOW",
+                        open_time=open_time,
+                        price=price,
+                        info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                    )
 
                 # Legacy sim-ledger shadow: LIVE only (optional)
-                if cfg_effective.trading_mode == "LIVE":
-                    daily_pct = compute_daily_pnl_pct(symbol=SYMBOL, interval=INTERVAL, current_price=price)
-                    if daily_pct <= -DAILY_MAX_LOSS_PCT:
-                        emit_alert_throttled(
-                            conn=conn,
-                            symbol=SYMBOL,
-                            interval=INTERVAL,
-                            strategy=STRATEGY_NAME,
-                            reason="DAILY_MAX_LOSS_SHADOW",
-                            open_time=open_time,
-                            price=price,
-                            info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)},
-                        )
+                #if cfg_effective.trading_mode == "LIVE":
+                #    daily_pct = compute_daily_pnl_pct(symbol=SYMBOL, interval=INTERVAL, current_price=price)
+                #    if daily_pct <= -DAILY_MAX_LOSS_PCT:
+                #        emit_alert_throttled(
+                #            conn=conn,
+                #            symbol=SYMBOL,
+                #            interval=INTERVAL,
+                #            strategy=STRATEGY_NAME,
+                #            reason="DAILY_MAX_LOSS_SHADOW",
+                #            open_time=open_time,
+                #            price=price,
+                #            info={"daily_pct": float(daily_pct), "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                #        )
             finally:
                 conn.close()
 
@@ -1486,36 +1508,30 @@ def run_strategy(row):
             return
 
         # REGIME gate (ENTRY only) — standard: ENTRY_CHECK
-        log_regime_gate_event(
+        gate_entry = decide_regime_gate(
             symbol=SYMBOL,
             interval=INTERVAL,
             strategy=STRATEGY_NAME,
             decision="ENTRY_CHECK",
-            allow=snap["allow_gate_entry"],
-            rmeta=snap["rmeta_gate"],
-            extra_meta={
-                "stage": "ENTRY",
-                "side": decision,  # "BUY"
-                "price": float(price),
-                "ema_21": float(ema_val),
-                "rsi_14": float(rsi_val),
-                "trend": trend,
-                "bb_lower": float(bb_lower),
-                "bb_mid": float(bb_mid),
-                "bb_upper": float(bb_upper),
-                "bb_width_pct": float(bb_width_pct),
-                "open_time": str(open_time),
-                "reason": reason,
-            },
+            regime_enabled=bc.regime_enabled,
+            regime_mode=bc.regime_mode,
         )
 
-        if not snap["allow_gate_entry"]:
+        emit_regime_gate_event(
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            strategy=STRATEGY_NAME,
+            decision="ENTRY_CHECK",
+            d=gate_entry,
+        )
+
+        if not gate_entry.allow:
             emit_blocked(
                 reason="REGIME_BLOCK",
                 decision=decision,
                 price=price,
                 candle_open_time=open_time,
-                info={"rmeta": snap["rmeta_gate"]},
+                info={"why": gate_entry.why, "regime": gate_entry.regime, "meta": gate_entry.meta},
             )
             return
 
@@ -1589,18 +1605,17 @@ def run_strategy(row):
             )
             return
 
-        opened = open_position("LONG", qty_btc, price, open_time)
-        if not opened:
-            emit_strategy_event(
-                event_type="ERROR",
-                decision="BUY",
-                reason="DESYNC_POSITION_NOT_OPENED",
-                price=price,
-                candle_open_time=open_time,
-                info={},
-            )
-            set_mode("HALT", reason="DESYNC: order recorded but position not opened")
-            return
+        # Position OPEN is created inside execute_and_record() (SSOT).
+        emit_strategy_event(
+            event_type="POSITION_OPENED",
+            decision="BUY",
+            reason="SSOT_EXECUTE_AND_RECORD",
+            price=price,
+            candle_open_time=open_time,
+            info={"qty_btc": float(qty_btc)},
+        )
+        return
+
     finally:
         emit_strategy_event(
             event_type="RUN_END",
@@ -1627,12 +1642,38 @@ def main_loop():
     conn = get_db_conn()
     try:
         seed_default_params_from_env(conn)
+        last_ingest_ts = 0.0
     finally:
         conn.close()
 
     while True:
         loop_start = time.perf_counter()
         try:
+            # --- Binance fills ingest (LIVE ONLY) ---
+            # co 60s: pobierz myTrades i zasil binance_order_fills + wyceń fee w USDC przez BNBUSDC candles
+            if binance_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
+                n_trades, n_priced = ingest_my_trades(
+                    client=client,
+                    symbols=[SYMBOL],
+                    db_host=DB_HOST,
+                    db_port=DB_PORT,
+                    db_name=DB_NAME,
+                    db_user=DB_USER,
+                    db_pass=DB_PASS,
+                    lookback_ms_default=7 * 24 * 3600 * 1000,
+                )
+                last_ingest_ts = time.time()
+
+                emit_strategy_event(
+                    event_type="INGEST",
+                    decision=None,
+                    reason="BINANCE_MYTRADES",
+                    price=None,
+                    candle_open_time=None,
+                    info={"symbol": SYMBOL, "n_trades": int(n_trades), "n_fee_priced": int(n_priced)},
+                )
+            else:
+                pass
             load_runtime_params()
 
             rows = fetch_klines(limit=200)

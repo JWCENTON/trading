@@ -26,7 +26,7 @@ if (!API_BASE_URL) {
 
 export const api = axios.create({ baseURL: API_BASE_URL });
 
-export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPER_TREND";
+export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPERTREND";
 
 export type SymbolPair = string;
 
@@ -167,11 +167,86 @@ export interface SafetyStatus {
   panic_disable_trading?: string | null;
 }
 
-
-export async function getSafetyStatus() {
-  return (await api.get<SafetyStatus>("/safety/status")).data;
+export interface OpsPositionOpen {
+  id: number;
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  side: string;
+  entry_time: string;
+  entry_price: number;
+  qty: number;
+  age_seconds: number;
 }
 
+export interface OpsPositionsOpenResponse {
+  total: number;
+  items: OpsPositionOpen[];
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface OpsLiveAttemptRow {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  reason: string;
+  count: number;
+  first_at: string;
+  last_at: string;
+}
+
+export interface OpsLiveAttemptsResponse {
+  window_minutes: number;
+  total: number;
+  items: OpsLiveAttemptRow[];
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface OpsBotControlRow {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  enabled: boolean;
+  live_orders_enabled: boolean;
+  regime_enabled: boolean;
+  regime_mode: string | null;
+  updated_at: string;
+}
+
+export interface OpsBotControlResponse {
+  total: number;
+  items: OpsBotControlRow[];
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface BotsActiveRow {
+  symbol: string;
+  strategy: Strategy;
+  interval: string;
+  last_seen: string;
+  info: any;
+}
+
+export interface BotsActiveResponse {
+  ttl_seconds: number;
+  total: number;
+  items: BotsActiveRow[];
+  error_type?: string;
+  error?: string;
+}
+
+export interface OpsEnvironmentResponse {
+  environment: string;
+  trading_mode: string;
+  db_name: string;
+  quote_asset: string;
+}
 
 export interface RegimePoint {
   symbol: string;
@@ -183,6 +258,40 @@ export interface RegimePoint {
   trend_strength_pct?: number | null;
   atr_pct?: number | null;
   shock_z?: number | null;
+}
+
+export async function getSafetyStatus() {
+  return (await api.get<SafetyStatus>("/safety/status")).data;
+}
+
+export async function getOpsPositionsOpen() {
+  return (await api.get<OpsPositionsOpenResponse>("/ops/positions/open")).data;
+}
+
+export async function getOpsLiveAttempts(minutes = 120) {
+  return (
+    await api.get<OpsLiveAttemptsResponse>("/ops/live-attempts", { params: { minutes } })
+  ).data;
+}
+
+export async function getOpsBotControl() {
+  return (await api.get<OpsBotControlResponse>("/ops/bot-control")).data;
+}
+
+export async function getBotsActive(ttlSeconds = 600) {
+  return (
+    await api.get<BotsActiveResponse>("/bots/active", { params: { ttl_seconds: ttlSeconds } })
+  ).data;
+}
+
+export async function getOpsEnvironment() {
+  return (await api.get<OpsEnvironmentResponse>("/ops/environment")).data;
+}
+
+export function envBool(v: string | null | undefined): boolean {
+  if (!v) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
 export async function getRegimeLatest(symbol: SymbolPair = makeSymbol("BTC"), interval="1m") {
@@ -208,7 +317,7 @@ export const ALL_STRATEGIES: Strategy[] = [
   "RSI",
   "TREND",
   "BBRANGE",
-  "SUPER_TREND",
+  "SUPERTREND",
 ];
 
 export async function getAccountSummary() {
