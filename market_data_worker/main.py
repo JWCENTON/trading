@@ -3,18 +3,13 @@ import time
 import logging
 from datetime import datetime, timezone
 import psycopg2
+from common.db import get_db_conn
 from psycopg2.extras import execute_batch
 from binance.client import Client
 
 from common.schema import ensure_schema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-DB_HOST = os.environ.get("DB_HOST", "db")
-DB_PORT = int(os.environ.get("DB_PORT", "5432"))
-DB_NAME = os.environ.get("DB_NAME", "trading")
-DB_USER = os.environ.get("DB_USER", "botuser")
-DB_PASS = os.environ.get("DB_PASS", "botpass")
 
 API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
@@ -30,11 +25,6 @@ MD_BACKFILL_CANDLES = int(os.environ.get("MD_BACKFILL_CANDLES", "500"))  # per s
 MD_LAG_TOLERANCE_SECONDS = int(os.environ.get("MD_LAG_TOLERANCE_SECONDS", "120"))
 
 client = Client(api_key=API_KEY, api_secret=API_SECRET)
-
-def get_db_conn():
-    return psycopg2.connect(
-        host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASS
-    )
 
 def parse_list(s: str):
     return [x.strip().upper() for x in s.split(",") if x.strip()]

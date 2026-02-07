@@ -1,12 +1,28 @@
 import os
 import time
+import json
 import logging
 import requests
-from datetime import datetime, timezone
-
+from datetime import datetime, timezone, date
+from pathlib import Path
+from common.reconcile_positions import reconcile_positions
 from common.db import get_db_conn
+from binance.client import Client
+from common.runtime import RuntimeConfig
+
+cfg = RuntimeConfig.from_env()
+API_KEY = os.environ.get("BINANCE_API_KEY")
+API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] automation-runner: %(message)s")
+client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
+last_reconcile_ts = 0.0
+last_ssot_watchdog_ts = 0.0
+
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    return str(o)
 
 
 def q1(cur, sql, params=None):
@@ -43,6 +59,53 @@ def disable_live_orders(cur, reason: str):
         SET live_orders_enabled=false, reason=%s, updated_at=now()
         WHERE live_orders_enabled=true;
     """, (reason,))
+
+
+def run_ssot_watchdog(conn):
+    """
+    Definition of DONE enforcement:
+      - no OPEN position without entry_order_id older than 60s
+      - no CLOSED position without exit_order_id (ONLY within window)
+    """
+    window_h = int(os.getenv("SSOT_WATCHDOG_WINDOW_HOURS", "48"))
+    logging.info("ssot_watchdog: window_h=%s", window_h)
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, symbol, strategy, interval, entry_time, entry_client_order_id
+            FROM positions
+            WHERE status='OPEN'
+              AND entry_order_id IS NULL
+              AND entry_time < now() - interval '60 seconds'
+            LIMIT 50;
+        """)
+        bad_open = cur.fetchall()
+
+        cur.execute("""
+            SELECT id, symbol, strategy, interval, exit_time, exit_client_order_id
+            FROM positions
+            WHERE status='CLOSED'
+              AND exit_time IS NOT NULL
+              AND exit_order_id IS NULL
+              AND exit_time >= now() - (%s || ' hours')::interval
+            LIMIT 50;
+        """, (str(window_h),))
+        bad_closed = cur.fetchall()
+
+        if not bad_open and not bad_closed:
+            return
+
+        details = {"bad_open": bad_open, "bad_closed": bad_closed}
+        cur.execute("""
+            INSERT INTO watchdog_events(symbol, interval, strategy, severity, event, details)
+            VALUES (%s,%s,%s,%s,%s,%s::jsonb)
+        """, ("*", None, None, "CRIT", "SSOT_MISSING_ORDER_ID", json.dumps(details, default=_json_default)))
+
+        reason = "FAILSAFE: SSOT missing order_id (positions not fully attached)"
+        set_panic(cur, True, reason)
+        disable_live_orders(cur, reason)
+
+    conn.commit()
 
 
 def now_utc_hhmm():
@@ -150,7 +213,231 @@ def run_regime_watchdog(conn):
     conn.commit()
 
 
+def run_promo_allocator(conn):
+    """
+    LIVE: apply promotions->allocator (DB-only), idempotent by interval.
+    Requires:
+      - v_promoted_latest view exists
+      - scripts/020_promo_allocator_apply.sql exists in image at /app/scripts/
+    """
+    if os.getenv("PROMO_ALLOC_ENABLED", "0") != "1":
+        return
+
+    interval_s = int(os.getenv("PROMO_ALLOC_INTERVAL_SECONDS", "60"))
+    policy_name = os.getenv("PROMO_ALLOC_POLICY_NAME", "default")
+    min_trades = int(os.getenv("PROMO_ALLOC_MIN_TRADES", "5"))
+
+    now = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='promo_alloc_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now - last_ts < interval_s:
+            return
+
+        path = "/app/scripts/020_promo_allocator_apply.sql"
+        logging.info("promo_alloc: applying policy=%s min_trades=%s sql=%s", policy_name, min_trades, path)
+
+        sql = Path(path).read_text(encoding="utf-8")
+
+        # run in a dedicated transaction inside SQL file
+        # We pass psql-like vars by simple replace of :'var' is not available here, so we do safe literal inject.
+        # policy_name is identifier-like string, min_trades is int.
+        sql = sql.replace(":'policy_name'", "'" + policy_name.replace("'", "''") + "'")
+        sql = sql.replace("(:'min_trades')::int", str(int(min_trades)))
+
+        cur.execute(sql)
+
+        upsert_kv(cur, "promo_alloc_last_ts_s", str(now))
+
+    conn.commit()
+    logging.info("promo_alloc: done")
+
+
+
+# --- PROMOTIONS: publish from PAPER to LIVE (v1) ---
+import json
+import hashlib
+
+def get_kv(cur, key: str):
+    cur.execute("SELECT value FROM automation_kv WHERE key=%s", (key,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+def set_kv(cur, key: str, value: str):
+    cur.execute("""
+        INSERT INTO automation_kv(key, value, updated_at)
+        VALUES (%s, %s, now())
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at;
+    """, (key, value))
+
+def _sha256_canon(payload: dict) -> str:
+    canon = json.dumps(payload, sort_keys=True, separators=(",",":")).encode("utf-8")
+    return hashlib.sha256(canon).hexdigest()
+
+def publish_promotions(conn):
+    """
+    PAPER -> LIVE publisher
+    Primary: v_ranking_v1 status='CANDIDATE'
+    Fallback: v_bot_scoreboard_sim_10d TOP by net_sum (min trades)
+    """
+    if os.getenv("PROMOTIONS_ENABLED", "0") != "1":
+        return False
+
+    live_api_base = (os.getenv("LIVE_API_BASE", "") or "").strip()
+    if not live_api_base:
+        logging.error("promotions: LIVE_API_BASE not set; skipping")
+        return False
+
+    interval_s = int(os.getenv("PROMOTIONS_INTERVAL_SECONDS", "300"))
+    top_k = int(os.getenv("PROMOTIONS_TOP_K", "20"))
+    min_trades = int(os.getenv("PROMOTIONS_MIN_TRADES", "20"))
+    elig_min_trades = int(os.getenv("PROMOTIONS_ELIG_MIN_TRADES", "50"))
+    elig_min_pf = float(os.getenv("PROMOTIONS_ELIG_MIN_PF", "1.05"))
+    elig_require_pos_net = os.getenv("PROMOTIONS_ELIG_REQUIRE_POS_NET", "1") == "1"
+
+    window_name = os.getenv("PROMOTIONS_WINDOW_NAME", "10d")
+    policy_version = os.getenv("PROMOTIONS_POLICY_VERSION", "paper_rank_v1")
+
+    now = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = get_kv(cur, "promotions_last_ts_s")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now - last_ts < interval_s:
+            return False
+
+        # Primary: CANDIDATE from ranking
+        cur.execute("""
+            WITH r AS (
+              SELECT symbol, interval, strategy
+              FROM v_ranking_v1
+              WHERE status='CANDIDATE'
+            ),
+            m AS (
+              SELECT symbol, interval, strategy, n, net_sum, win_rate, profit_factor
+              FROM v_bot_scoreboard_sim_10d
+            )
+            SELECT
+              r.symbol, r.interval, r.strategy,
+              COALESCE(m.net_sum, 0::numeric) AS paper_score,
+              COALESCE(m.n, 0::bigint)        AS n_trades,
+              m.win_rate,
+              m.net_sum,
+              m.profit_factor
+            FROM r
+              LEFT JOIN m USING (symbol, interval, strategy)
+              WHERE COALESCE(m.n,0) >= %s
+                AND COALESCE(m.net_sum,0::numeric) > 0::numeric
+                AND COALESCE(m.profit_factor,0::numeric) >= 1.10
+              ORDER BY COALESCE(m.net_sum, 0::numeric) DESC
+            LIMIT %s;
+        """, (min_trades, top_k))
+        rows = cur.fetchall()
+
+        mode = "CANDIDATE"
+        if not rows:
+            # Fallback: TOP scoreboard by net_sum (even if RED), to keep pipeline moving
+            cur.execute("""
+                SELECT
+                  symbol, interval, strategy,
+                  net_sum AS paper_score,
+                  n       AS n_trades,
+                  win_rate,
+                  net_sum,
+                  profit_factor
+                FROM v_bot_scoreboard_sim_10d
+                WHERE n >= %s
+                ORDER BY net_sum DESC
+                LIMIT %s;
+            """, (min_trades, top_k))
+            rows = cur.fetchall()
+            mode = "FALLBACK_TOP_NETSUM"
+
+        if not rows:
+            logging.info("promotions: no rows to publish (mode=%s)", mode)
+            set_kv(cur, "promotions_last_ts_s", str(now))
+            conn.commit()
+            return False
+
+        rows_payload = []
+        for (symbol, interval, strategy, paper_score, n_trades, win_rate, net_sum, profit_factor) in rows:
+            pf = float(profit_factor) if profit_factor is not None else None
+            n_int = int(n_trades) if n_trades is not None else 0
+            net = float(net_sum) if net_sum is not None else 0.0
+
+            eligible = True
+            reasons = []
+            if n_int < elig_min_trades:
+                eligible = False
+                reasons.append(f"n<{elig_min_trades}")
+            if pf is None or pf < elig_min_pf:
+                eligible = False
+                reasons.append(f"pf<{elig_min_pf}")
+            if elig_require_pos_net and net <= 0:
+                eligible = False
+                reasons.append("net_sum<=0")
+
+            elig_reason = "OK" if eligible else ";".join(reasons)
+            rows_payload.append({
+                "symbol": symbol,
+                "interval": interval,
+                "strategy": strategy,
+                "paper_score": float(paper_score) if paper_score is not None else 0.0,
+                "n_trades": int(n_trades) if n_trades is not None else 0,
+                "win_rate": float(win_rate) if win_rate is not None else None,
+                "net_sum": float(net_sum) if net_sum is not None else None,
+                "eligible_live": eligible,
+                "elig_reason": elig_reason,
+                "meta": {
+                    "publisher": "paper_automation_runner",
+                    "mode": mode,
+                    "profit_factor": pf,
+                    "elig_gate": {
+                        "min_trades": elig_min_trades,
+                        "min_pf": elig_min_pf,
+                        "require_pos_net": elig_require_pos_net,
+                }}
+            })
+
+        payload = {
+            "policy_version": policy_version,
+            "window_name": window_name,
+            "source_ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
+            "rows": rows_payload,
+        }
+        payload_hash = _sha256_canon(payload)
+        payload["hash"] = payload_hash
+
+        last_hash = get_kv(cur, "promotions_last_hash")
+        if last_hash == payload_hash:
+            logging.info("promotions: idempotent (same hash), skipping POST (mode=%s hash=%s)", mode, payload_hash[:12])
+            set_kv(cur, "promotions_last_ts_s", str(now))
+            conn.commit()
+            return False
+
+        url = live_api_base.rstrip("/") + "/internal/promotions/upsert"
+        try:
+            r = requests.post(url, json=payload, timeout=10)
+            r.raise_for_status()
+            j = r.json()
+            logging.info("promotions: POST ok (mode=%s) inserted=%s hash=%s",
+                         mode, j.get("inserted"), payload_hash[:12])
+        except Exception as e:
+            logging.exception("promotions: POST failed url=%s err=%r", url, e)
+            conn.rollback()
+            return False
+
+        set_kv(cur, "promotions_last_ts_s", str(now))
+        set_kv(cur, "promotions_last_hash", payload_hash)
+        conn.commit()
+        return True
+
+# --- /PROMOTIONS ---
+
 def main():
+    global last_reconcile_ts, last_ssot_watchdog_ts
     if os.getenv("AUTOMATION_ENABLED", "0") != "1":
         logging.info("AUTOMATION_ENABLED!=1; exiting")
         return
@@ -172,6 +459,7 @@ def main():
     logging.info("started (mode=%s, db=%s, tick_s=%s)", mode, dbname, tick_s)
 
     while True:
+        conn = None
         try:
             conn = get_db_conn()
             conn.autocommit = False
@@ -179,6 +467,15 @@ def main():
             now = time.time()
 
             run_daily_report(conn)
+
+            # PAPER only: publish promotions to LIVE
+            if cfg.trading_mode != "LIVE":
+                publish_promotions(conn)
+
+            # LIVE: apply allocator (ONLY when automation is not DISABLE_ONLY)
+            if cfg.trading_mode == "LIVE" and mode != "DISABLE_ONLY":
+                run_promo_allocator(conn)
+
             logging.info("tick ok")
 
             if now - last_ip >= ip_int:
@@ -188,10 +485,32 @@ def main():
             if now - last_rg >= rg_int:
                 run_regime_watchdog(conn)
                 last_rg = now
+                now = time.time()
 
-            conn.close()
+            # Reconcile (co 60s) — only meaningful in LIVE
+            if cfg.trading_mode == "LIVE" and (now - last_reconcile_ts >= 60):
+                try:
+                    reconcile_positions(conn, client, min_age_s=60)
+                except Exception:
+                    logging.exception("reconcile_positions failed")
+                last_reconcile_ts = now
+
+            # SSOT watchdog (co 30s)
+            if cfg.trading_mode == "LIVE" and (now - last_ssot_watchdog_ts >= 30):
+                try:
+                    run_ssot_watchdog(conn)
+                except Exception:
+                    logging.exception("run_ssot_watchdog failed")
+                last_ssot_watchdog_ts = now
+
         except Exception as e:
             logging.exception("tick failed: %s", str(e))
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
 
         time.sleep(tick_s)
 

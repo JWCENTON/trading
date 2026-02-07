@@ -7,6 +7,9 @@ import pandas as pd
 from common.schema import ensure_schema
 from common.db import get_db_conn
 from common.regime import detect_regime
+from common.daily_loss import compute_daily_loss_pct_positions
+from common.alerts import emit_alert_throttled
+from common.daily_loss import should_emit_daily_loss_shadow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -14,6 +17,10 @@ SYMBOLS = os.environ.get("REGIME_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT")
 
 raw = os.environ.get("REGIME_INTERVALS", "1m")
 INTERVALS = [x.strip() for x in raw.split(",") if x.strip()]
+
+SENTINEL_STRATEGY = os.environ.get("DAILY_LOSS_SENTINEL_STRATEGY", "RISK").upper()
+RAW_STRATS = os.environ.get("DAILY_LOSS_SENTINEL_STRATEGIES", "RSI,SUPERTREND,BBRANGE,TREND")
+SENTINEL_STRATEGIES = [s.strip().upper() for s in RAW_STRATS.split(",") if s.strip()]
 
 LOOKBACK = int(os.environ.get("REGIME_LOOKBACK", "200"))
 EMA_FAST = int(os.environ.get("REGIME_TREND_EMA_FAST", "21"))
@@ -172,6 +179,24 @@ def write_regime(symbol: str, interval: str, ts, payload: dict, lookback: int):
     conn.close()
 
 
+def get_close_price(symbol: str, interval: str, ts: pd.Timestamp):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT close
+        FROM candles
+        WHERE symbol=%s AND interval=%s AND open_time=%s
+        LIMIT 1
+        """,
+        (symbol, interval, ts.to_pydatetime()),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return float(row[0]) if row and row[0] is not None else None
+
+
 def main():
     ensure_schema()
     symbols = [s.strip() for s in SYMBOLS.split(",") if s.strip()]
@@ -199,6 +224,31 @@ def main():
                             (now_utc - ts_target).total_seconds(), REGIME_MAX_AGE_SECONDS
                         )
                         continue
+
+                    # === DAILY LOSS POSITIONS SHADOW (Opcja A: sentinel only) ===
+                    if should_emit_daily_loss_shadow(strategy=SENTINEL_STRATEGY):
+                        price = get_close_price(sym, interval, ts_target)
+                        if price is not None:
+                            conn = get_db_conn()
+                            try:
+                                for strat in SENTINEL_STRATEGIES:
+                                    payload = compute_daily_loss_pct_positions(
+                                        sym, interval, strat,
+                                        base_usdc=float(os.environ.get("DAILY_MAX_LOSS_BASE_USDC", "100")),
+                                    )
+                                    emit_alert_throttled(
+                                        conn=conn,
+                                        symbol=sym,
+                                        interval=interval,
+                                        strategy=SENTINEL_STRATEGY,  # zapisuje się jako RISK w strategy_events
+                                        reason="DAILY_MAX_LOSS_POSITIONS_SHADOW",
+                                        open_time=ts_target.to_pydatetime(),
+                                        price=float(price),
+                                        info={**payload, "source_strategy": strat},
+                                        throttle_minutes=15,
+                                    )
+                            finally:
+                                conn.close()
 
                     last_ts = get_last_regime_ts(sym, interval)
                     if last_ts is None:

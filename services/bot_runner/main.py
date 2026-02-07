@@ -34,7 +34,7 @@ STRATEGY_CMD = {
   "RSI": ["python", "-u", "/app/bot/main.py"],
   "BBRANGE": ["python", "-u", "/app/bot_bbrange/main.py"],  
   "TREND": ["python", "-u", "/app/bot_trend/main.py"], 
-  "SUPER_TREND": ["python", "-u", "/app/bot_supertrend/main.py"],
+  "SUPERTREND": ["python", "-u", "/app/bot_supertrend/main.py"],
 }
 
 @dataclass(frozen=True)
@@ -137,13 +137,16 @@ def build_env(row: dict) -> dict:
     env["REGIME_MODE"] = (row.get("regime_mode") or "DRY_RUN")
 
     return env
-
+    
 
 def start_bot(row: dict) -> subprocess.Popen:
-    strategy = row["strategy"]
+    strategy = row["strategy"].replace("_","").upper()
+
     cmd = STRATEGY_CMD.get(strategy)
     if not cmd:
-        raise RuntimeError(f"Unknown strategy={strategy}. Add to STRATEGY_CMD.")
+        raise RuntimeError(
+            f"Unknown strategy={strategy}). Add to STRATEGY_CMD."
+        )
 
     env = build_env(row)
 
