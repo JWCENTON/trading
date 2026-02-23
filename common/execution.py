@@ -4,19 +4,58 @@ import time
 import logging
 from binance.exceptions import BinanceAPIException
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
+import hashlib
+import re
 
+_CID_RE = re.compile(r"[^A-Za-z0-9\-_]")
 
 def build_live_client_order_id(symbol: str, pos_id: int, leg: str) -> str:
     """
-    Binance SPOT limit: 36 chars.
-    Canon: ORC|L|{symbol}|P{pos_id}|{E|X}
+    Binance SPOT newClientOrderId: ^[a-zA-Z0-9-_]{1,36}$
+    Deterministic + short.
+    Format: ORC-L-{SYMBOL}-P{pos}-{E|X}-{h6}
     """
     sym = str(symbol).upper()
-    leg_u = str(leg).upper()[:1]  # "E" or "X"
-    cid = f"ORC|L|{sym}|P{int(pos_id)}|{leg_u}"
-    if len(cid) <= 36:
-        return cid
-    return f"ORC|L|P{int(pos_id)}|{leg_u}"[:36]
+    leg_u = str(leg).upper()[:1]  # E / X
+
+    base = f"ORC-L-{sym}-P{int(pos_id)}-{leg_u}"
+    base = _CID_RE.sub("-", base)  # safety, should already be ok
+
+    # ensure <= 36 with deterministic hash suffix
+    if len(base) <= 36:
+        return base
+
+    h6 = hashlib.sha1(base.encode("utf-8")).hexdigest()[:6]
+    # keep front, append -h6
+    keep = 36 - (1 + len(h6))  # "-"+h6
+    return f"{base[:keep]}-{h6}"
+
+
+def _attach_order_to_position(conn, *, position_id: int, leg: str, client_order_id: str, order_id: str):
+    """
+    Attach on ACK (deterministic SSOT binding).
+    No commit here — caller owns transaction.
+    """
+    leg_u = str(leg).upper()
+    if leg_u in ("ENTRY", "E"):
+        sql = """
+            UPDATE positions
+            SET entry_client_order_id = COALESCE(entry_client_order_id, %s),
+                entry_order_id        = COALESCE(entry_order_id, %s)
+            WHERE id = %s;
+        """
+    elif leg_u in ("EXIT", "X"):
+        sql = """
+            UPDATE positions
+            SET exit_client_order_id = COALESCE(exit_client_order_id, %s),
+                exit_order_id         = COALESCE(exit_order_id, %s)
+            WHERE id = %s;
+        """
+    else:
+        raise ValueError(f"Invalid leg={leg} (expected ENTRY/EXIT)")
+
+    with conn.cursor() as cur:
+        cur.execute(sql, (str(client_order_id), str(order_id) if order_id is not None else None, int(position_id)))
 
 
 def _safe_float(x, default=0.0):
@@ -275,6 +314,10 @@ def place_live_order(
     live_max_notional: float,
     client_order_id: str = None,
     skip_balance_precheck: bool = False,
+    # --- SSOT binding (optional but required for SSOT-managed LIVE) ---
+    db_conn=None,
+    position_id: int | None = None,
+    leg: str | None = None,
 ):
     # --- HARD SAFETY: quote asset ---
     if not symbol.endswith(quote_asset.upper()):
@@ -298,9 +341,13 @@ def place_live_order(
         logging.warning("LIVE ORDER BLOCKED (LIVE_ORDERS_ENABLED=0) symbol=%s side=%s qty=%.8f", symbol, side, qty)
         return _blocked("LIVE_ORDERS_DISABLED", symbol=symbol, side=side, qty=float(qty))
 
-    # --- idempotency ---
+    # --- idempotency / SSOT binding ---
     if client_order_id is None:
-        client_order_id = str(uuid.uuid4())
+        if trading_mode == "LIVE" and position_id is not None and leg is not None:
+            leg_char = "E" if str(leg).upper().startswith("E") else "X"
+            client_order_id = build_live_client_order_id(symbol, int(position_id), leg_char)
+        else:
+            client_order_id = str(uuid.uuid4())
 
     # --- exchange filters ---
     step_size, min_qty, min_notional = _get_symbol_filters(client, symbol)
@@ -388,6 +435,16 @@ def place_live_order(
             logging.error("LIVE ORDER REJECTED (-2010 insufficient balance): %s", e)
             return _blocked("BINANCE_REJECTED_2010", code=getattr(e, "code", None), msg=getattr(e, "message", str(e)))
         raise
+
+    # --- attach on ACK (deterministic) ---
+    if db_conn is not None and position_id is not None and leg is not None:
+        _attach_order_to_position(
+            db_conn,
+            position_id=int(position_id),
+            leg=str(leg),
+            client_order_id=str(client_order_id),
+            order_id=(resp or {}).get("orderId"),
+        )
 
     logging.warning(
         "LIVE ORDER ACK symbol=%s side=%s orderId=%s status=%s",

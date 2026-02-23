@@ -236,15 +236,16 @@ def run_promo_allocator(conn):
             return
 
         path = "/app/scripts/020_promo_allocator_apply.sql"
-        logging.info("promo_alloc: applying policy=%s min_trades=%s sql=%s", policy_name, min_trades, path)
+        apply_bot_control = 0 if cfg.trading_mode == "LIVE" else 1
+
+        logging.info("promo_alloc: applying policy=%s min_trades=%s sql=%s apply_bot_control=%s",
+                    policy_name, min_trades, path, apply_bot_control)
 
         sql = Path(path).read_text(encoding="utf-8")
 
-        # run in a dedicated transaction inside SQL file
-        # We pass psql-like vars by simple replace of :'var' is not available here, so we do safe literal inject.
-        # policy_name is identifier-like string, min_trades is int.
         sql = sql.replace(":'policy_name'", "'" + policy_name.replace("'", "''") + "'")
         sql = sql.replace("(:'min_trades')::int", str(int(min_trades)))
+        sql = sql.replace(":'apply_bot_control'", str(int(apply_bot_control)))
 
         cur.execute(sql)
 
@@ -442,21 +443,21 @@ def main():
         logging.info("AUTOMATION_ENABLED!=1; exiting")
         return
 
-    mode = os.getenv("AUTOMATION_MODE", "DISABLE_ONLY")
-    if mode != "DISABLE_ONLY":
-        logging.error("Refusing to start: AUTOMATION_MODE must be DISABLE_ONLY")
+    mode = os.getenv("AUTOMATION_MODE", "DISABLE_ONLY").strip().upper()
+    if mode not in ("DISABLE_ONLY", "ACTIVE"):
+        logging.error("Refusing to start: unsupported AUTOMATION_MODE=%s", mode)
         return
+    
+    tick_s = int(os.environ.get("AUTOMATION_TICK_SECONDS", "60"))
+    dbname = os.environ.get("DB_NAME", "")
+
+    logging.info("automation-runner: started (mode=%s, db=%s, tick_s=%s)", mode, dbname, tick_s)
 
     ip_int = int(os.getenv("IP_CHECK_INTERVAL_SECONDS", "60"))
     rg_int = int(os.getenv("REGIME_WATCH_INTERVAL_SECONDS", "60"))
 
     last_ip = 0.0
     last_rg = 0.0
-
-    tick_s = int(os.environ.get("AUTOMATION_TICK_SECONDS", "60"))
-    dbname = os.environ.get("DB_NAME", "")
-
-    logging.info("started (mode=%s, db=%s, tick_s=%s)", mode, dbname, tick_s)
 
     while True:
         conn = None
