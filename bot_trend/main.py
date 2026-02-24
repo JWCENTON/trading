@@ -836,6 +836,46 @@ def insert_simulated_order(
     return inserted
 
 
+def ssot_apply_positions_paper(
+    *,
+    side: str,
+    price: float,
+    qty_btc: float,
+    candle_open_time,
+    is_exit: bool,
+) -> dict:
+    """
+    PAPER SSOT:
+    - ENTRY -> open_position()
+    - EXIT  -> close_position()
+    Zwraca meta do diagnostyki.
+    """
+    side_u = str(side).upper()
+
+    if not is_exit:
+        pos_side = "LONG" if side_u == "BUY" else "SHORT"
+
+        pos_id = open_position(
+            side=str(pos_side),
+            qty=float(qty_btc),
+            entry_price=float(price),
+            open_time=candle_open_time,
+            entry_client_order_id=None,
+        )
+        if pos_id is None:
+            return {"paper_pos_action": "ENTRY_SKIPPED_ALREADY_OPEN", "paper_pos_id": None}
+
+        return {"paper_pos_action": "ENTRY_OPENED", "paper_pos_id": int(pos_id)}
+
+    # EXIT
+    pos = get_open_position()
+    if not pos:
+        return {"paper_pos_action": "EXIT_SKIPPED_NO_OPEN", "paper_pos_id": None}
+
+    close_position(exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time)
+    return {"paper_pos_action": "EXIT_CLOSED", "paper_pos_id": int(pos[0])}
+
+
 def execute_and_record(
     side: str,
     price: float,
@@ -893,15 +933,54 @@ def execute_and_record(
         info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
     )
 
-    # 2) LIVE AFTER ledger
+    # 2) PAPER SSOT: update positions even in PAPER (Variant A)
     if cfg_used.trading_mode != "LIVE":
+        meta = ssot_apply_positions_paper(
+            side=side,
+            price=float(price),
+            qty_btc=float(qty_btc),
+            candle_open_time=candle_open_time,
+            is_exit=bool(is_exit),
+        )
+
+        emit_strategy_event(
+            event_type="SSOT_PAPER_APPLY",
+            decision=side,
+            reason="OK",
+            price=price,
+            candle_open_time=candle_open_time,
+            info={"is_exit": bool(is_exit), **(meta or {})},
+        )
+
+        # jeśli to był EXIT i nie było OPEN -> nie blokuj ledger (ledger już jest), tylko audyt
+        if meta.get("paper_pos_action") == "EXIT_SKIPPED_NO_OPEN":
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "EXIT_NO_OPEN_POSITION",
+                "client_order_id": None,
+                "resp": meta,
+            }
+
+        # jeśli ENTRY i już była OPEN -> traktuj jako "ALREADY_OPEN" (ledger zostaje)
+        if meta.get("paper_pos_action") == "ENTRY_SKIPPED_ALREADY_OPEN":
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "ALREADY_OPEN",
+                "client_order_id": None,
+                "resp": meta,
+            }
+
         return {
             "ledger_ok": True,
             "live_attempted": False,
-            "live_ok": True,  # PAPER traktujemy jako wykonane
+            "live_ok": True,
             "blocked_reason": None,
             "client_order_id": None,
-            "resp": None,
+            "resp": meta,
         }
 
     if not allow_live_orders:

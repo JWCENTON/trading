@@ -134,6 +134,28 @@ def load_open_symbols(conn) -> Set[str]:
         return {r[0] for r in cur.fetchall()}
 
 
+def load_promoted_candidates_latest(conn) -> Dict[BotKey, dict]:
+    """
+    Latest promoted_candidates row per (symbol, interval, strategy).
+    Provides eligible_live + elig_reason for allocator observability / gating.
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (symbol, interval, strategy)
+                symbol, interval, strategy,
+                eligible_live, elig_reason,
+                policy_version, published_at, source_ts,
+                meta
+            FROM promoted_candidates
+            ORDER BY symbol, interval, strategy, published_at DESC
+        """)
+        out: Dict[BotKey, dict] = {}
+        for r in cur.fetchall():
+            bk = BotKey(r["symbol"], r["interval"], r["strategy"])
+            out[bk] = dict(r)
+        return out
+    
+
 def get_panic(conn) -> dict:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT panic_enabled, reason, updated_at FROM panic_state WHERE id = true")
@@ -600,9 +622,10 @@ def set_entries_and_regime(
             WHERE symbol=%s AND interval=%s AND strategy=%s
               AND enabled=true
               AND (
-                   live_orders_enabled IS DISTINCT FROM %s
-                   OR regime_mode IS DISTINCT FROM %s
-                   OR regime_enabled IS DISTINCT FROM true
+                  live_orders_enabled IS DISTINCT FROM %s
+                  OR regime_mode IS DISTINCT FROM %s
+                  OR regime_enabled IS DISTINCT FROM true
+                  OR reason IS DISTINCT FROM %s
               )
         """, (
             entries_enabled,
@@ -611,6 +634,7 @@ def set_entries_and_regime(
             bk.symbol, bk.interval, bk.strategy,
             entries_enabled,
             regime_mode,
+            reason,
         ))
         return cur.rowcount > 0
 
@@ -732,6 +756,7 @@ def allocator_pick(
     hb: Dict[BotKey, dict],
     candles: Dict[Tuple[str, str], dict],
     last_rg: Dict[BotKey, dict],
+    promoted: Dict[BotKey, dict],
     open_pos: Set[BotKey],
     open_sym_itv: Set[Tuple[str, str]],
     sym_exposure: Dict[str, Decimal],
@@ -752,6 +777,26 @@ def allocator_pick(
             continue
         if not bc.get("enabled", False):
             continue
+        
+        # HARD: promotion eligibility gate (paper_rank_v2 / promoted_candidates)
+        pr = promoted.get(bk)
+        if pr is not None:
+            if not bool(pr.get("eligible_live", False)):
+                # keep elig_reason for observability
+                elig_reason = (pr.get("elig_reason") or "").strip()
+                reject_reason[bk] = f"not_eligible:{elig_reason}" if elig_reason else "not_eligible"
+                continue
+        else:
+            # Optional: if you require promo for everyone, you can block here.
+            # For now we don't block when missing.
+            pass
+
+        # HARD: per-symbol exposure cap (across ALL OPEN positions) — eligibility gate
+        if SYMBOL_EXPOSURE_CAP > 0:
+            cur_exp = sym_exposure.get(bk.symbol, Decimal("0"))
+            if cur_exp >= SYMBOL_EXPOSURE_CAP:
+                reject_reason[bk] = "symbol_exposure_cap"
+                continue
 
         # HARD: block ONLY same (symbol, interval) that already has OPEN
         if (bk.symbol, bk.interval) in open_sym_itv:
@@ -759,12 +804,7 @@ def allocator_pick(
             if COOLDOWN_HAS_OPEN_MIN > 0 and had_recent_has_open(conn, bk, COOLDOWN_HAS_OPEN_MIN):
                 reject_reason[bk] = "cooldown_after_has_open"
                 continue
-            # HARD: per-symbol exposure cap (across all OPEN positions)
-            if SYMBOL_EXPOSURE_CAP > 0:
-                cur_exp = sym_exposure.get(bk.symbol, Decimal("0"))
-                if cur_exp >= SYMBOL_EXPOSURE_CAP:
-                    reject_reason[bk] = "symbol_exposure_cap"
-                    continue
+
             reject_reason[bk] = "symbol_interval_has_open"
             continue
 
@@ -865,6 +905,7 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
     hb = load_heartbeat(conn)
     candles = load_candles_latest(conn)
     last_rg = load_last_regime_gate(conn, window_minutes=REGIME_LOOKBACK_MIN)
+    promoted = load_promoted_candidates_latest(conn)
 
     pref = preferred_strategy_by_symbol(last_rg)
 
@@ -907,6 +948,7 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             desired, rr = allocator_pick(
                 conn=conn,
                 bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
+                promoted=promoted,
                 open_pos=open_pos, open_sym_itv=open_sym_itv,
                 sym_exposure=sym_exposure,
                 max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
@@ -920,6 +962,7 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
                 extra, rr = allocator_pick(
                     conn=conn,
                     bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
+                    promoted=promoted,
                     open_pos=open_pos, open_sym_itv=open_sym_itv,
                     sym_exposure=sym_exposure,
                     max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
@@ -959,6 +1002,7 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
         desired, rr = allocator_pick(
             conn=conn,
             bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
+            promoted=promoted,
             open_pos=open_pos, open_sym_itv=open_sym_itv,
             sym_exposure=sym_exposure,
             max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
@@ -976,6 +1020,28 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             continue
         if not row.get("enabled", False):
             continue
+
+        pr = promoted.get(bk)
+        if pr is not None and not bool(pr.get("eligible_live", False)):
+            detail = (pr.get("elig_reason") or "").strip()
+            reason = f"ORC_ALLOC_A: not eligible ({detail}) (entries OFF, DRY_RUN)" if detail else \
+                    "ORC_ALLOC_A: not eligible (entries OFF, DRY_RUN)"
+            set_entries_and_regime(conn, bk, entries_enabled=False, regime_mode="DRY_RUN", reason=reason)
+            n_off += 1
+            continue
+
+        # HARD: per-symbol exposure cap (across ALL OPEN positions) — enforced at apply stage
+        if SYMBOL_EXPOSURE_CAP > 0:
+            cur_exp = sym_exposure.get(bk.symbol, Decimal("0"))
+            if cur_exp >= SYMBOL_EXPOSURE_CAP:
+                set_entries_and_regime(
+                    conn, bk,
+                    entries_enabled=False,
+                    regime_mode="DRY_RUN",
+                    reason="ORC_ALLOC_A: symbol exposure cap (entries OFF, DRY_RUN)"
+                )
+                n_off += 1
+                continue
 
         if bk in open_pos:
             set_entries_and_regime(
@@ -1009,7 +1075,13 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
                 log.info("[alloc] entries ON + ENFORCE %s", bk)
         else:
             rr = reject_reason.get(bk)
-            if rr == "per_symbol_interval_cap" or rr == "sticky_per_symbol_interval_cap" or rr == "topup_per_symbol_cap":
+
+            if rr and rr.startswith("not_eligible:"):
+                detail = rr.split(":", 1)[1].strip()
+                reason = f"ORC_ALLOC_A: not eligible ({detail}) (entries OFF, DRY_RUN)"
+            elif rr == "not_eligible":
+                reason = "ORC_ALLOC_A: not eligible (entries OFF, DRY_RUN)"
+            elif rr == "per_symbol_interval_cap" or rr == "sticky_per_symbol_interval_cap" or rr == "topup_per_symbol_cap":
                 reason = "ORC_ALLOC_A: per_symbol_interval_cap (entries OFF, DRY_RUN)"
             elif rr == "max_picks_reached":
                 reason = "ORC_ALLOC_A: max_picks_reached (entries OFF, DRY_RUN)"
@@ -1032,6 +1104,13 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             if changed:
                 log.info("[alloc] entries OFF + DRY_RUN %s", bk)
 
+    n_enabled_universe = sum(1 for bk, row in bc_all.items() if universe_filter(bk) and row.get("enabled", False))
+    n_promo = sum(1 for bk in promoted.keys() if universe_filter(bk))
+    n_elig = sum(1 for bk, pr in promoted.items() if universe_filter(bk) and bool(pr.get("eligible_live", False)))
+
+    log.info("[alloc] universe_enabled=%d promoted=%d eligible=%d desired=%d",
+             n_enabled_universe, n_promo, n_elig, len(desired))
+    
     log.info("[alloc] applied desired=%d universe_seen_on=%d universe_seen_off=%d", len(desired), n_on, n_off)
 
 # -------------------------
