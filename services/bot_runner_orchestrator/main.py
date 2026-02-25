@@ -69,7 +69,7 @@ def load_orc_cfg(conn) -> dict:
         "unrealized_in_risk": True,
         "exposure_max_quote": Decimal("25"),
         "daily_max_loss_quote": None,  # Decimal("2.5") recommended for LIVE micro; None disables this check
-        "policy_version": os.getenv("BOT_VERSION", "orc_v1"),
+        "policy_version": "orc_v1",
         "actions_enabled": False,
     }
 
@@ -178,6 +178,62 @@ def had_recent_has_open(conn, bk: BotKey, minutes: int) -> bool:
             LIMIT 1
         """, (bk.symbol, bk.interval, bk.strategy, str(int(minutes))))
         return cur.fetchone() is not None
+
+
+def insert_orc_decision(conn, bk: BotKey, action: str, new_value: Optional[str], reason: str, meta: dict) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO orchestrator_decisions(symbol, interval, strategy, action, new_value, reason, meta)
+            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)
+        """, (bk.symbol, bk.interval, bk.strategy, action, new_value, reason, json.dumps(meta)))
+
+
+def load_v2_best(conn) -> List[dict]:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT
+              symbol, interval, strategy,
+              is_fresh, eligible_by_regime, n_open_symbol_interval,
+              COALESCE(is_profitable_3d,false) AS is_profitable_3d,
+              n_trades_3d, net_sum_3d, profit_factor_3d, win_rate_3d
+            FROM v_orc_best_per_symbol_interval_v2
+        """)
+        return cur.fetchall()
+    
+
+def load_orc_v2_cfg(conn) -> dict:
+    defaults = {
+        "mode": "DRY_RUN",            # DRY_RUN | ENFORCE
+        "max_picks": 8,
+        "min_live_hours": 48,
+        "min_off_hours": 24,
+        "require_profitable": True,   # na start
+        "step_days": 3,               # ladder: 3 dni na start
+        "step_usdc": Decimal("5"),
+    }
+    key_map = {
+        "orc_v2_mode": ("mode", str),
+        "orc_v2_max_picks": ("max_picks", int),
+        "orc_v2_min_live_hours": ("min_live_hours", int),
+        "orc_v2_min_off_hours": ("min_off_hours", int),
+        "orc_v2_step_days": ("step_days", int),
+        "orc_v2_step_usdc": ("step_usdc", Decimal),
+        "orc_v2_require_profitable": ("require_profitable", lambda v: str(v).lower() in ("1","true","yes","y","on")),
+    }
+
+    cfg = dict(defaults)
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT key, value FROM automation_kv WHERE key LIKE 'orc_v2_%'")
+        for r in cur.fetchall():
+            k, v = r["key"], r["value"]
+            if k in key_map:
+                out_key, cast = key_map[k]
+                try:
+                    cfg[out_key] = cast(v)
+                except Exception:
+                    log.warning("Bad v2 cfg %s=%r; keeping %r", k, v, cfg[out_key])
+    cfg["mode"] = (cfg["mode"] or "DRY_RUN").upper()
+    return cfg
 
 
 def load_open_symbol_exposure(conn) -> Dict[str, Decimal]:
@@ -890,6 +946,9 @@ def allocator_pick(
 
 
 def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
+    # HARD GUARD: Phase A must never run when v2 policy active
+    if (kv_get(conn, "orc_policy_version") or "").strip() == "v2_profit_first":
+        return
     if not effective_actions_enabled:
         return
 
@@ -1209,12 +1268,222 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
             reason_detail=blocker_detail,
             meta={"policy_version": cfg.get("policy_version"), "actions_enabled": effective_actions_enabled, "tick_id": tick_id},
         )
-    # ---- ALLOCATOR (Phase A) ----
+    # ---- ALLOCATOR / POLICY ----
     panic_enabled = bool(panic.get("panic_enabled"))
 
-    if effective_actions_enabled and (not panic_enabled) and TRADING_MODE == "LIVE":
-        if os.getenv("ORC_ALLOC_A_ENABLED", "0") == "1":
-            run_allocator_phase_a(conn, effective_actions_enabled)
+    # policy switch (from automation_kv)
+    policy = (kv_get(conn, "orc_policy_version") or "").strip() or str(cfg.get("policy_version") or "orc_v1")
+    policy = policy.strip()
+
+    if (not panic_enabled) and TRADING_MODE == "LIVE":
+        # v2 runs even in REPORT_ONLY (writes decisions only). ENFORCE still needs effective_actions_enabled.
+        if policy == "v2_profit_first":
+            v2cfg = load_orc_v2_cfg(conn)
+
+            # safety: ENFORCE requires actions_enabled
+            if v2cfg.get("mode") == "ENFORCE" and not effective_actions_enabled:
+                log.warning("[v2] mode=ENFORCE but actions disabled -> forcing DRY_RUN")
+                v2cfg["mode"] = "DRY_RUN"
+
+            run_orc_v2_profit_first(conn, v2cfg)
+        else:
+            # legacy Phase A allocator (only when actions enabled)
+            if effective_actions_enabled and os.getenv("ORC_ALLOC_A_ENABLED", "0") == "1":
+                run_allocator_phase_a(conn, effective_actions_enabled)
+
+
+def v2_block_reason(row: dict) -> str:
+    if not bool(row["is_fresh"]):
+        return "STALE_GATE"
+    if not bool(row["eligible_by_regime"]):
+        return "REGIME_BLOCK"
+    if int(row["n_open_symbol_interval"] or 0) > 0:
+        return "OPEN_LOCK"
+    if not bool(row["is_profitable_3d"]):
+        return "NOT_PROFITABLE"
+    return "OK"
+
+
+def _v2_apply_bot_control(
+    conn,
+    bk: BotKey,
+    *,
+    entries_enabled: bool,
+    regime_mode: str,
+    reason: str,
+) -> bool:
+    """
+    Updates bot_control AND timestamps:
+      - enabling entries: set live_since=now() if was previously disabled
+      - disabling entries: set last_disabled_at=now() if was previously enabled
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE bot_control
+            SET
+              live_orders_enabled = %(loe)s,
+              regime_enabled = true,
+              regime_mode = %(rmode)s,
+              updated_at = now(),
+              reason = %(reason)s,
+
+              live_since = CASE
+                WHEN %(loe)s = true AND COALESCE(live_orders_enabled,false) = false THEN now()
+                ELSE live_since
+              END,
+
+              last_disabled_at = CASE
+                WHEN %(loe)s = false AND COALESCE(live_orders_enabled,false) = true THEN now()
+                ELSE last_disabled_at
+              END
+            WHERE symbol=%(symbol)s AND interval=%(interval)s AND strategy=%(strategy)s
+              AND enabled = true
+              AND (
+                   live_orders_enabled IS DISTINCT FROM %(loe)s
+                OR regime_mode IS DISTINCT FROM %(rmode)s
+                OR regime_enabled IS DISTINCT FROM true
+                OR reason IS DISTINCT FROM %(reason)s
+              )
+        """, {
+            "symbol": bk.symbol,
+            "interval": bk.interval,
+            "strategy": bk.strategy,
+            "loe": bool(entries_enabled),
+            "rmode": regime_mode,
+            "reason": reason,
+        })
+        return cur.rowcount > 0
+
+
+def apply_v2_enforce(conn, pick_set: Set[Tuple[str, str, str]], *, v2cfg: dict) -> None:
+    """
+    ENFORCE:
+      - picked slots => entries ON + regime ENFORCE
+      - non-picked slots => entries OFF + regime DRY_RUN
+
+    Cooldowns:
+      - min_live_hours: do not disable if current live period shorter than this
+      - min_off_hours:  do not enable if bot was disabled too recently
+    """
+    min_live_h = int(v2cfg.get("min_live_hours") or 0)
+    min_off_h = int(v2cfg.get("min_off_hours") or 0)
+
+    # Load current state for universe
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT symbol, interval, strategy,
+                   enabled, live_orders_enabled, regime_mode,
+                   live_since, last_disabled_at
+            FROM bot_control
+        """)
+        rows = cur.fetchall()
+
+    now = utc_now()
+
+    n_on = 0
+    n_off = 0
+    n_skip = 0
+
+    for r in rows:
+        bk = BotKey(r["symbol"], r["interval"], r["strategy"])
+        if not universe_filter(bk):
+            continue
+        if not bool(r.get("enabled", False)):
+            continue
+
+        currently_on = bool(r.get("live_orders_enabled", False))
+        live_since = r.get("live_since")
+        last_disabled_at = r.get("last_disabled_at")
+
+        want_on = (bk.symbol, bk.interval, bk.strategy) in pick_set
+
+        # cooldown: prevent flapping
+        if want_on:
+            if min_off_h > 0 and last_disabled_at is not None:
+                off_age_h = (now - last_disabled_at).total_seconds() / 3600.0
+                if off_age_h < float(min_off_h):
+                    n_skip += 1
+                    continue
+        else:
+            if min_live_h > 0 and currently_on and live_since is not None:
+                live_age_h = (now - live_since).total_seconds() / 3600.0
+                if live_age_h < float(min_live_h):
+                    n_skip += 1
+                    continue
+
+        if want_on:
+            changed = _v2_apply_bot_control(
+                conn, bk,
+                entries_enabled=True,
+                regime_mode="ENFORCE",
+                reason="ORC_V2: picked (entries ON, ENFORCE)"
+            )
+            if changed:
+                n_on += 1
+        else:
+            changed = _v2_apply_bot_control(
+                conn, bk,
+                entries_enabled=False,
+                regime_mode="DRY_RUN",
+                reason="ORC_V2: not picked (entries OFF, DRY_RUN)"
+            )
+            if changed:
+                n_off += 1
+
+    log.info("[v2] ENFORCE applied: on=%d off=%d skipped_by_cooldown=%d", n_on, n_off, n_skip)
+
+
+def run_orc_v2_profit_first(conn, v2cfg: dict) -> None:
+    if kv_get(conn, "orc_v2_mode") is None:
+        return
+    mode = v2cfg["mode"]  # DRY_RUN | ENFORCE
+    max_picks = int(v2cfg["max_picks"])
+
+    rows = load_v2_best(conn)
+
+    # 1) pick set
+    elig = []
+    for r in rows:
+        if v2_block_reason(r) != "OK":
+            continue
+        if v2cfg.get("require_profitable", True) and not bool(r["is_profitable_3d"]):
+            continue
+        elig.append(r)
+
+    elig.sort(key=lambda r: (
+        -(float(r["profit_factor_3d"]) if r["profit_factor_3d"] is not None else -1.0),
+        -(float(r["net_sum_3d"]) if r["net_sum_3d"] is not None else -1e18),
+        -(int(r["n_trades_3d"]) if r["n_trades_3d"] is not None else 0),
+        str(r["strategy"]),
+    ))
+    picks = elig[:max_picks]
+    pick_set = {(r["symbol"], r["interval"], r["strategy"]) for r in picks}
+
+    # 2) decisions log for all best_per rows
+    for r in rows:
+        bk = BotKey(r["symbol"], r["interval"], r["strategy"])
+        base_meta = {
+            "policy": "v2_profit_first",
+            "mode": mode,
+            "is_fresh": bool(r["is_fresh"]),
+            "eligible_by_regime": bool(r["eligible_by_regime"]),
+            "n_open_symbol_interval": int(r["n_open_symbol_interval"] or 0),
+            "is_profitable_3d": bool(r["is_profitable_3d"]),
+            "n_trades_3d": int(r["n_trades_3d"] or 0) if r["n_trades_3d"] is not None else None,
+            "net_sum_3d": str(r["net_sum_3d"]) if r["net_sum_3d"] is not None else None,
+            "profit_factor_3d": str(r["profit_factor_3d"]) if r["profit_factor_3d"] is not None else None,
+            "win_rate_3d": str(r["win_rate_3d"]) if r["win_rate_3d"] is not None else None,
+        }
+
+        if (bk.symbol, bk.interval, bk.strategy) in pick_set:
+            insert_orc_decision(conn, bk, "V2_PROPOSE_ENABLE_LIVE", "true", "PROFITABLE_3D_PICK", base_meta)
+        else:
+            reason = v2_block_reason(r)
+            insert_orc_decision(conn, bk, "V2_BLOCK", None, reason, base_meta)
+
+    # 3) ENFORCE apply (opcjonalnie, na razie nie)
+    if mode == "ENFORCE":
+        apply_v2_enforce(conn, pick_set, v2cfg=v2cfg)
 
 
 def main():
