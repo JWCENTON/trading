@@ -2,6 +2,7 @@
 import json
 import logging
 
+
 def _wd(conn, symbol, interval, strategy, severity, event, details: dict):
     with conn.cursor() as cur:
         cur.execute(
@@ -11,7 +12,6 @@ def _wd(conn, symbol, interval, strategy, severity, event, details: dict):
             """,
             (symbol, interval, strategy, severity, event, json.dumps(details)),
         )
-    conn.commit()
 
 
 def reconcile_positions(conn, client, *, min_age_s: int = 60, limit: int = 200) -> None:

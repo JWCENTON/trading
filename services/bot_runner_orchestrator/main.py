@@ -4,13 +4,12 @@ import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
+from collections import defaultdict
 from common.db import get_db_conn
 from typing import Dict, Tuple, Any, Optional, List, Set
 from datetime import datetime, timezone, timedelta
-
 import psycopg2
 import psycopg2.extras
-
 
 # -------------------------
 # Logging
@@ -23,7 +22,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 UNIVERSE_SYMBOLS = {"BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC"}
-UNIVERSE_STRATS = {"RSI", "SUPERTREND"}
+UNIVERSE_STRATS = {"RSI", "SUPERTREND", "TREND", "BBRANGE"}
 UNIVERSE_INTERVALS = tuple(
     x.strip() for x in os.getenv("ORC_ALLOC_INTERVALS", "1m").split(",") if x.strip()
 )
@@ -31,12 +30,15 @@ UNIVERSE_INTERVALS = tuple(
 TRADING_MODE = os.getenv("TRADING_MODE", "").upper()
 
 MAX_PICKS = int(os.getenv("ORC_ALLOC_MAX_PICKS", "4"))
+MAX_PER_SYMBOL = int(os.getenv("ORC_ALLOC_MAX_PER_SYMBOL", "1"))
 HYSTERESIS_MIN = int(os.getenv("ORC_ALLOC_HYSTERESIS_MIN", "10"))
 REGIME_LOOKBACK_MIN = int(os.getenv("ORC_ALLOC_REGIME_LOOKBACK_MIN", "30"))
 
 CANDLES_MAX_LAG_S = int(os.getenv("ORC_ALLOC_CANDLES_MAX_LAG_S", "120"))  # 2x 1m default
 HB_MAX_LAG_S = int(os.getenv("ORC_ALLOC_HB_MAX_LAG_S", "60"))             # reasonable default
-
+SYMBOL_EXPOSURE_CAP = Decimal(os.getenv("ORC_ALLOC_SYMBOL_EXPOSURE_CAP", "0"))
+COOLDOWN_HAS_OPEN_MIN = int(os.getenv("ORC_ALLOC_COOLDOWN_HAS_OPEN_MIN", "0"))
+EXPOSURE_PRICE_SOURCE = (os.getenv("ORC_ALLOC_EXPOSURE_PRICE_SOURCE", "LAST_CLOSE") or "LAST_CLOSE").upper()
 
 # -------------------------
 # Types
@@ -132,6 +134,28 @@ def load_open_symbols(conn) -> Set[str]:
         return {r[0] for r in cur.fetchall()}
 
 
+def load_promoted_candidates_latest(conn) -> Dict[BotKey, dict]:
+    """
+    Latest promoted_candidates row per (symbol, interval, strategy).
+    Provides eligible_live + elig_reason for allocator observability / gating.
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (symbol, interval, strategy)
+                symbol, interval, strategy,
+                eligible_live, elig_reason,
+                policy_version, published_at, source_ts,
+                meta
+            FROM promoted_candidates
+            ORDER BY symbol, interval, strategy, published_at DESC
+        """)
+        out: Dict[BotKey, dict] = {}
+        for r in cur.fetchall():
+            bk = BotKey(r["symbol"], r["interval"], r["strategy"])
+            out[bk] = dict(r)
+        return out
+    
+
 def get_panic(conn) -> dict:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT panic_enabled, reason, updated_at FROM panic_state WHERE id = true")
@@ -139,6 +163,72 @@ def get_panic(conn) -> dict:
         if not row:
             return {"panic_enabled": False, "reason": None, "updated_at": None}
         return dict(row)
+
+
+def had_recent_has_open(conn, bk: BotKey, minutes: int) -> bool:
+    if minutes <= 0:
+        return False
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT 1
+            FROM bot_control_audit
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+              AND changed_at >= now() - (%s || ' minutes')::interval
+              AND (new_row->>'reason') ILIKE 'ORC_ALLOC_A: has OPEN%%'
+            LIMIT 1
+        """, (bk.symbol, bk.interval, bk.strategy, str(int(minutes))))
+        return cur.fetchone() is not None
+
+
+def load_open_symbol_exposure(conn) -> Dict[str, Decimal]:
+    """
+    Sums exposure per symbol across ALL OPEN positions.
+    Exposure is abs(qty * price) in quote (USDC).
+    Price source:
+      - LAST_CLOSE: uses candles last_close for that (symbol, interval) if present, else entry_price
+      - ENTRY_PRICE: always entry_price
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT symbol, interval, qty, entry_price
+            FROM positions
+            WHERE status='OPEN'
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        return {}
+
+    # build (symbol, interval) -> last_close
+    last_close: Dict[Tuple[str, str], Decimal] = {}
+    if EXPOSURE_PRICE_SOURCE == "LAST_CLOSE":
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT c.symbol, c.interval,
+                       (ARRAY_AGG(c.close ORDER BY c.open_time DESC))[1] AS last_close
+                FROM candles c
+                GROUP BY 1,2
+            """)
+            for r in cur.fetchall():
+                if r["last_close"] is None:
+                    continue
+                last_close[(r["symbol"], r["interval"])] = Decimal(str(r["last_close"]))
+
+    out: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+
+    for r in rows:
+        sym = r["symbol"]
+        itv = r["interval"]
+        qty = Decimal(str(r["qty"])) if r["qty"] is not None else Decimal("0")
+        entry = Decimal(str(r["entry_price"])) if r["entry_price"] is not None else Decimal("0")
+
+        px = entry
+        if EXPOSURE_PRICE_SOURCE == "LAST_CLOSE":
+            px = last_close.get((sym, itv), entry)
+
+        out[sym] += abs(qty * px)
+
+    return dict(out)
 
 
 def load_bot_control(conn) -> Dict[BotKey, dict]:
@@ -301,6 +391,17 @@ def universe_filter(bk: BotKey) -> bool:
         bk.strategy in UNIVERSE_STRATS
     )
 
+
+def load_open_symbol_intervals(conn) -> Set[Tuple[str, str]]:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT symbol, interval
+            FROM positions
+            WHERE status='OPEN'
+        """)
+        return {(r[0], r[1]) for r in cur.fetchall()}
+
+
 def rank_key(bk: BotKey):
     # deterministic: SUPERTREND first, then RSI; BTC>ETH>SOL>BNB
     strat_rank = 0 if bk.strategy == "SUPERTREND" else 1
@@ -311,11 +412,14 @@ def rank_key(bk: BotKey):
 def preferred_strategy_for_regime(regime: Optional[str]) -> str:
     r = (regime or "").upper()
     if r.startswith("TREND"):
-        return "SUPERTREND"
+        # trend regime: prefer trend-following
+        return "TREND" if "TREND" in UNIVERSE_STRATS else "SUPERTREND"
     if r.startswith("RANGE"):
-        return "RSI"
+        # range regime: prefer mean reversion / bands
+        return "BBRANGE" if "BBRANGE" in UNIVERSE_STRATS else "RSI"
     # fallback
     return "SUPERTREND"
+
 
 def preferred_strategy_by_symbol(last_rg: Dict[BotKey, dict]) -> Dict[Tuple[str, str], str]:
     """
@@ -518,9 +622,10 @@ def set_entries_and_regime(
             WHERE symbol=%s AND interval=%s AND strategy=%s
               AND enabled=true
               AND (
-                   live_orders_enabled IS DISTINCT FROM %s
-                   OR regime_mode IS DISTINCT FROM %s
-                   OR regime_enabled IS DISTINCT FROM true
+                  live_orders_enabled IS DISTINCT FROM %s
+                  OR regime_mode IS DISTINCT FROM %s
+                  OR regime_enabled IS DISTINCT FROM true
+                  OR reason IS DISTINCT FROM %s
               )
         """, (
             entries_enabled,
@@ -529,6 +634,7 @@ def set_entries_and_regime(
             bk.symbol, bk.interval, bk.strategy,
             entries_enabled,
             regime_mode,
+            reason,
         ))
         return cur.rowcount > 0
 
@@ -642,76 +748,145 @@ def disable_live_orders(conn, bk: BotKey, reason: str) -> bool:
         })
         return cur.rowcount > 0
 
+
 def allocator_pick(
     *,
+    conn,
     bot_control: Dict[BotKey, dict],
     hb: Dict[BotKey, dict],
     candles: Dict[Tuple[str, str], dict],
     last_rg: Dict[BotKey, dict],
+    promoted: Dict[BotKey, dict],
     open_pos: Set[BotKey],
-    open_symbols: Set[str],
-) -> List[BotKey]:
+    open_sym_itv: Set[Tuple[str, str]],
+    sym_exposure: Dict[str, Decimal],
+    max_picks: int = MAX_PICKS,
+    max_per_symbol: int = MAX_PER_SYMBOL,
+) -> Tuple[List[BotKey], Dict[BotKey, str]]:
+    """
+    Returns:
+      - desired picks (len <= max_picks)
+      - reject_reason map for observability (why not picked)
+    """
     pref = preferred_strategy_by_symbol(last_rg)
     candidates: List[BotKey] = []
+    reject_reason: Dict[BotKey, str] = {}
 
     for bk, bc in bot_control.items():
         if not universe_filter(bk):
             continue
         if not bc.get("enabled", False):
             continue
+        
+        # HARD: promotion eligibility gate (paper_rank_v2 / promoted_candidates)
+        pr = promoted.get(bk)
+        if pr is not None:
+            if not bool(pr.get("eligible_live", False)):
+                # keep elig_reason for observability
+                elig_reason = (pr.get("elig_reason") or "").strip()
+                reject_reason[bk] = f"not_eligible:{elig_reason}" if elig_reason else "not_eligible"
+                continue
+        else:
+            # Optional: if you require promo for everyone, you can block here.
+            # For now we don't block when missing.
+            pass
 
-        # HARD: one strategy per (symbol, interval) (no hybrid in this phase) + regime preference
-        if bk.strategy != pref.get((bk.symbol, bk.interval), "SUPERTREND"):
-            continue
+        # HARD: per-symbol exposure cap (across ALL OPEN positions) — eligibility gate
+        if SYMBOL_EXPOSURE_CAP > 0:
+            cur_exp = sym_exposure.get(bk.symbol, Decimal("0"))
+            if cur_exp >= SYMBOL_EXPOSURE_CAP:
+                reject_reason[bk] = "symbol_exposure_cap"
+                continue
 
-        # HARD: 1 position per symbol (global, across intervals/strategies)
-        if bk.symbol in open_symbols:
+        # HARD: block ONLY same (symbol, interval) that already has OPEN
+        if (bk.symbol, bk.interval) in open_sym_itv:
+            # HARD: cooldown after "has OPEN" to reduce flapping
+            if COOLDOWN_HAS_OPEN_MIN > 0 and had_recent_has_open(conn, bk, COOLDOWN_HAS_OPEN_MIN):
+                reject_reason[bk] = "cooldown_after_has_open"
+                continue
+
+            reject_reason[bk] = "symbol_interval_has_open"
             continue
 
         if bk in open_pos:
+            reject_reason[bk] = "bot_has_open"
             continue
 
         hb_row = hb.get(bk)
         if not hb_row:
+            reject_reason[bk] = "no_heartbeat"
             continue
         hb_lag = hb_row.get("hb_lag_s")
         if hb_lag is None or hb_lag > HB_MAX_LAG_S:
+            reject_reason[bk] = "hb_stale"
             continue
 
         c_row = candles.get((bk.symbol, bk.interval))
         if not c_row:
+            reject_reason[bk] = "no_candles"
             continue
         c_lag = c_row.get("candles_lag_s")
         if c_lag is None or c_lag > CANDLES_MAX_LAG_S:
+            reject_reason[bk] = "candles_stale"
             continue
 
         rg = last_rg.get(bk)
         if not rg:
+            reject_reason[bk] = "no_regime_gate"
             continue
         if not bool(rg.get("allow", False)):
+            reject_reason[bk] = "regime_disallow"
             continue
         if bool(rg.get("would_block", False)):
+            reject_reason[bk] = "regime_would_block"
             continue
 
         candidates.append(bk)
 
-    # deterministic order: interval first (1m before 5m), then BTC>ETH>SOL>BNB
+    # ranking: prefer per (symbol, interval) by regime preference, then stable tiebreak
     itv_rank = {"1m": 0, "5m": 1}
     sym_rank = {"BTCUSDC": 0, "ETHUSDC": 1, "SOLUSDC": 2, "BNBUSDC": 3}
-    candidates.sort(key=lambda x: (itv_rank.get(x.interval, 9), sym_rank.get(x.symbol, 9), x.strategy))
 
-    # EXTRA safety: dedupe by symbol (global) so we never pick both 1m and 5m on same symbol
+    # Strategy tie-break (when NOT preferred for regime)
+    strat_rank_fallback = {
+        "TREND": 0,
+        "SUPERTREND": 1,
+        "BBRANGE": 2,
+        "RSI": 3,
+    }
+
+    def candidate_rank(bk: BotKey):
+        preferred = pref.get((bk.symbol, bk.interval), "SUPERTREND")
+        is_preferred = 0 if bk.strategy == preferred else 1
+        return (
+            itv_rank.get(bk.interval, 9),
+            sym_rank.get(bk.symbol, 9),
+            is_preferred,
+            strat_rank_fallback.get(bk.strategy, 9),
+            bk.strategy,
+        )
+
+    candidates.sort(key=candidate_rank)
+
+    # NEW: cap per (symbol, interval) (entry-enabled)
     out: List[BotKey] = []
-    seen_sym: Set[str] = set()
+    per_key: Dict[Tuple[str, str], int] = {}
+
     for bk in candidates:
-        if bk.symbol in seen_sym:
-            continue
-        out.append(bk)
-        seen_sym.add(bk.symbol)
-        if len(out) >= MAX_PICKS:
+        if len(out) >= max_picks:
             break
 
-    return out
+        key = (bk.symbol, bk.interval)
+        cnt = per_key.get(key, 0)
+
+        if cnt >= max_per_symbol:
+            reject_reason[bk] = "per_symbol_interval_cap"
+            continue
+
+        out.append(bk)
+        per_key[key] = cnt + 1
+
+    return out, reject_reason
 
 
 def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
@@ -723,65 +898,99 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
 
     bc_all = load_bot_control(conn)
     open_pos = load_open_pos_flags(conn)
-    open_symbols = load_open_symbols(conn)   # <--- DODAJ TO
+    open_sym_itv = load_open_symbol_intervals(conn)      # NOWE dla allocator-a
+    sym_exposure = load_open_symbol_exposure(conn)
 
     # zawsze przygotuj dane do pickowania (tanie i proste)
     hb = load_heartbeat(conn)
     candles = load_candles_latest(conn)
     last_rg = load_last_regime_gate(conn, window_minutes=REGIME_LOOKBACK_MIN)
+    promoted = load_promoted_candidates_latest(conn)
 
     pref = preferred_strategy_by_symbol(last_rg)
-    kept_symbols: Set[str] = set()
+
+    # NEW: cap per symbol for "entry-enabled"
+    max_per_symbol = MAX_PER_SYMBOL
+    per_sym_itv: Dict[Tuple[str, str], int] = {}
 
     desired: List[BotKey] = []
+    reject_reason: Dict[BotKey, str] = {}
 
     if last_ts and (now - last_ts) < timedelta(minutes=HYSTERESIS_MIN):
-        keep = []
+        keep: List[BotKey] = []
         for bk in sticky:
             row = bc_all.get(bk)
             if not row or not row.get("enabled", False):
+                reject_reason[bk] = "sticky_disabled"
                 continue
             if not universe_filter(bk):
+                reject_reason[bk] = "sticky_out_of_universe"
                 continue
             if bk in open_pos:
+                reject_reason[bk] = "sticky_bot_has_open"
                 continue
-            # HARD: one strategy per symbol + regime-based preference
-            if bk.strategy != pref.get((bk.symbol, bk.interval), "SUPERTREND"):
+            if (bk.symbol, bk.interval) in open_sym_itv:
+                reject_reason[bk] = "sticky_symbol_interval_has_open"
                 continue
-            if bk.symbol in kept_symbols:
+
+            k = (bk.symbol, bk.interval)
+            cnt = per_sym_itv.get(k, 0)
+            if cnt >= max_per_symbol:
+                reject_reason[bk] = "sticky_per_symbol_interval_cap"
                 continue
-            kept_symbols.add(bk.symbol)
-            # (opcjonalnie) jak chcesz twardo: sticky też nie trzyma symbolu z open gdziekolwiek
-            if bk.symbol in open_symbols:
-                continue
+
             keep.append(bk)
+            per_sym_itv[k] = cnt + 1
 
         desired = keep[:MAX_PICKS]
 
         if not desired:
-            desired = allocator_pick(
+            desired, rr = allocator_pick(
+                conn=conn,
                 bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
-                open_pos=open_pos, open_symbols=open_symbols
+                promoted=promoted,
+                open_pos=open_pos, open_sym_itv=open_sym_itv,
+                sym_exposure=sym_exposure,
+                max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
             )
+            reject_reason.update(rr)
             save_last_pick(conn, desired)
             log.info("[alloc] sticky empty -> repick: %s", desired)
         else:
             # TOP-UP: jeśli sticky ma mniej niż MAX_PICKS, dobierz resztę z aktualnych kandydatów
             if len(desired) < MAX_PICKS:
-                extra = allocator_pick(
+                extra, rr = allocator_pick(
+                    conn=conn,
                     bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
-                    open_pos=open_pos, open_symbols=open_symbols
+                    promoted=promoted,
+                    open_pos=open_pos, open_sym_itv=open_sym_itv,
+                    sym_exposure=sym_exposure,
+                    max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
                 )
+                reject_reason.update(rr)
+
                 desired_set = set(desired)
+
+                # rebuild per_sym from current desired
+                per_sym_itv = {}
+                for x in desired:
+                    k = (x.symbol, x.interval)
+                    per_sym_itv[k] = per_sym_itv.get(k, 0) + 1
+
                 for bk in extra:
                     if bk in desired_set:
                         continue
-                    # twardo: nadal bez hybrydy (1 symbol) — allocator_pick i tak dedupuje,
-                    # ale tu też trzymamy barierę.
-                    if any(x.symbol == bk.symbol for x in desired):
+                    
+                    k = (bk.symbol, bk.interval)
+                    cnt = per_sym_itv.get(k, 0)
+                    if cnt >= max_per_symbol:
+                        reject_reason[bk] = "topup_per_symbol_cap"
                         continue
+
                     desired.append(bk)
                     desired_set.add(bk)
+                    per_sym_itv[k] = cnt + 1
+
                     if len(desired) >= MAX_PICKS:
                         break
 
@@ -790,10 +999,15 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             else:
                 log.info("[alloc] sticky keep (%sm): %s", HYSTERESIS_MIN, desired)
     else:
-        desired = allocator_pick(
+        desired, rr = allocator_pick(
+            conn=conn,
             bot_control=bc_all, hb=hb, candles=candles, last_rg=last_rg,
-            open_pos=open_pos, open_symbols=open_symbols       # <--- DODAJ
+            promoted=promoted,
+            open_pos=open_pos, open_sym_itv=open_sym_itv,
+            sym_exposure=sym_exposure,
+            max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
         )
+        reject_reason.update(rr)
         save_last_pick(conn, desired)
         log.info("[alloc] new pick: %s", desired)
 
@@ -807,6 +1021,28 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
         if not row.get("enabled", False):
             continue
 
+        pr = promoted.get(bk)
+        if pr is not None and not bool(pr.get("eligible_live", False)):
+            detail = (pr.get("elig_reason") or "").strip()
+            reason = f"ORC_ALLOC_A: not eligible ({detail}) (entries OFF, DRY_RUN)" if detail else \
+                    "ORC_ALLOC_A: not eligible (entries OFF, DRY_RUN)"
+            set_entries_and_regime(conn, bk, entries_enabled=False, regime_mode="DRY_RUN", reason=reason)
+            n_off += 1
+            continue
+
+        # HARD: per-symbol exposure cap (across ALL OPEN positions) — enforced at apply stage
+        if SYMBOL_EXPOSURE_CAP > 0:
+            cur_exp = sym_exposure.get(bk.symbol, Decimal("0"))
+            if cur_exp >= SYMBOL_EXPOSURE_CAP:
+                set_entries_and_regime(
+                    conn, bk,
+                    entries_enabled=False,
+                    regime_mode="DRY_RUN",
+                    reason="ORC_ALLOC_A: symbol exposure cap (entries OFF, DRY_RUN)"
+                )
+                n_off += 1
+                continue
+
         if bk in open_pos:
             set_entries_and_regime(
                 conn, bk,
@@ -817,12 +1053,12 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             n_off += 1
             continue
 
-        if bk.symbol in open_symbols:
+        if (bk.symbol, bk.interval) in open_sym_itv:
             set_entries_and_regime(
                 conn, bk,
                 entries_enabled=False,
                 regime_mode="DRY_RUN",
-                reason="ORC_ALLOC_A: symbol has OPEN (entries OFF, DRY_RUN)"
+                reason="ORC_ALLOC_A: symbol+interval has OPEN (entries OFF, DRY_RUN)"
             )
             n_off += 1
             continue
@@ -838,16 +1074,43 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             if changed:
                 log.info("[alloc] entries ON + ENFORCE %s", bk)
         else:
+            rr = reject_reason.get(bk)
+
+            if rr and rr.startswith("not_eligible:"):
+                detail = rr.split(":", 1)[1].strip()
+                reason = f"ORC_ALLOC_A: not eligible ({detail}) (entries OFF, DRY_RUN)"
+            elif rr == "not_eligible":
+                reason = "ORC_ALLOC_A: not eligible (entries OFF, DRY_RUN)"
+            elif rr == "per_symbol_interval_cap" or rr == "sticky_per_symbol_interval_cap" or rr == "topup_per_symbol_cap":
+                reason = "ORC_ALLOC_A: per_symbol_interval_cap (entries OFF, DRY_RUN)"
+            elif rr == "max_picks_reached":
+                reason = "ORC_ALLOC_A: max_picks_reached (entries OFF, DRY_RUN)"
+            elif rr == "symbol_interval_has_open" or rr == "sticky_symbol_interval_has_open":
+                reason = "ORC_ALLOC_A: symbol+interval has OPEN (entries OFF, DRY_RUN)"
+            elif rr == "symbol_exposure_cap":
+                reason = "ORC_ALLOC_A: symbol exposure cap (entries OFF, DRY_RUN)"
+            elif rr == "cooldown_after_has_open":
+                reason = "ORC_ALLOC_A: cooldown after has OPEN (entries OFF, DRY_RUN)"
+            else:
+                reason = "ORC_ALLOC_A: not picked (entries OFF, DRY_RUN)"
+
             changed = set_entries_and_regime(
                 conn, bk,
                 entries_enabled=False,
                 regime_mode="DRY_RUN",
-                reason="ORC_ALLOC_A: not picked (entries OFF, DRY_RUN)"
+                reason=reason
             )
             n_off += 1
             if changed:
                 log.info("[alloc] entries OFF + DRY_RUN %s", bk)
 
+    n_enabled_universe = sum(1 for bk, row in bc_all.items() if universe_filter(bk) and row.get("enabled", False))
+    n_promo = sum(1 for bk in promoted.keys() if universe_filter(bk))
+    n_elig = sum(1 for bk, pr in promoted.items() if universe_filter(bk) and bool(pr.get("eligible_live", False)))
+
+    log.info("[alloc] universe_enabled=%d promoted=%d eligible=%d desired=%d",
+             n_enabled_universe, n_promo, n_elig, len(desired))
+    
     log.info("[alloc] applied desired=%d universe_seen_on=%d universe_seen_off=%d", len(desired), n_on, n_off)
 
 # -------------------------

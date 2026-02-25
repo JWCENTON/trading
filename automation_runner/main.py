@@ -61,6 +61,18 @@ def disable_live_orders(cur, reason: str):
     """, (reason,))
 
 
+def _is_regime_panic_reason(reason: str) -> bool:
+    return bool(reason) and reason.startswith("FAILSAFE: stale market_regime")
+
+
+def _get_int_kv(cur, key: str, default: int = 0) -> int:
+    v = q1(cur, "SELECT value FROM automation_kv WHERE key=%s;", (key,))
+    try:
+        return int(v)
+    except Exception:
+        return default
+    
+
 def run_ssot_watchdog(conn):
     """
     Definition of DONE enforcement:
@@ -183,34 +195,70 @@ def run_regime_watchdog(conn):
     if os.getenv("REGIME_WATCHDOG_ENABLED", "0") != "1":
         return
 
+    # Trigger thresholds
     max_1m = int(os.getenv("REGIME_LAG_MAX_1M_SECONDS", "420"))
     max_5m = int(os.getenv("REGIME_LAG_MAX_5M_SECONDS", "1200"))
 
+    # Clear behaviour (histereza)
+    clear_good_ticks = int(os.getenv("REGIME_PANIC_CLEAR_GOOD_TICKS", "3"))
+    clear_1m = int(os.getenv("REGIME_LAG_CLEAR_1M_SECONDS", str(max(60, max_1m // 2))))
+    clear_5m = int(os.getenv("REGIME_LAG_CLEAR_5M_SECONDS", str(max(180, max_5m // 2))))
+
     with conn.cursor() as cur:
+        # IMPORTANT: staleness = freshness of pipeline, so use created_at not ts
         cur.execute("""
-            SELECT interval, EXTRACT(EPOCH FROM (now() - MAX(ts)))::int AS lag_s
+            SELECT interval, EXTRACT(EPOCH FROM (now() - MAX(created_at)))::int AS lag_s
             FROM market_regime
             GROUP BY interval;
         """)
         rows = cur.fetchall()
 
         bad = []
-        for interval, lag_s in rows:
-            if interval == "1m" and lag_s > max_1m:
-                bad.append((interval, lag_s, max_1m))
-            if interval == "5m" and lag_s > max_5m:
-                bad.append((interval, lag_s, max_5m))
+        good_for_clear = True  # becomes false if any interval violates clear thresholds
 
-        if not bad:
+        for interval, lag_s in rows:
+            if interval == "1m":
+                if lag_s > max_1m:
+                    bad.append((interval, lag_s, max_1m))
+                if lag_s > clear_1m:
+                    good_for_clear = False
+            elif interval == "5m":
+                if lag_s > max_5m:
+                    bad.append((interval, lag_s, max_5m))
+                if lag_s > clear_5m:
+                    good_for_clear = False
+
+        # If stale -> engage panic (latch)
+        if bad:
+            msg = "FAILSAFE: stale market_regime " + ", ".join([f"{i} lag={ls}s>{mx}s" for i, ls, mx in bad])
+            logging.error("regime_watchdog: %s", msg)
+
+            set_panic(cur, True, msg)
+            disable_live_orders(cur, msg)
+
+            # reset clear counter whenever we are bad
+            upsert_kv(cur, "regime_panic_good_ticks", "0")
+            conn.commit()
             return
 
-        msg = "FAILSAFE: stale market_regime " + ", ".join([f"{i} lag={ls}s>{mx}s" for i, ls, mx in bad])
-        logging.error("regime_watchdog: %s", msg)
+        # Not bad: maybe clear panic if the reason matches regime stale
+        panic_enabled = q1(cur, "SELECT panic_enabled FROM panic_state WHERE id=true;")
+        reason = q1(cur, "SELECT reason FROM panic_state WHERE id=true;")
 
-        set_panic(cur, True, msg)
-        disable_live_orders(cur, msg)
+        if panic_enabled and _is_regime_panic_reason(str(reason or "")):
+            if good_for_clear:
+                ticks = _get_int_kv(cur, "regime_panic_good_ticks", 0) + 1
+            else:
+                ticks = 0
 
-    conn.commit()
+            upsert_kv(cur, "regime_panic_good_ticks", str(ticks))
+
+            if ticks >= clear_good_ticks:
+                logging.warning("regime_watchdog: auto-clearing panic after %s good ticks", ticks)
+                set_panic(cur, False, "AUTO-CLEARED: regime freshness OK")
+                upsert_kv(cur, "regime_panic_good_ticks", "0")
+
+        conn.commit()
 
 
 def run_promo_allocator(conn):
@@ -236,15 +284,16 @@ def run_promo_allocator(conn):
             return
 
         path = "/app/scripts/020_promo_allocator_apply.sql"
-        logging.info("promo_alloc: applying policy=%s min_trades=%s sql=%s", policy_name, min_trades, path)
+        apply_bot_control = 0 if cfg.trading_mode == "LIVE" else 1
+
+        logging.info("promo_alloc: applying policy=%s min_trades=%s sql=%s apply_bot_control=%s",
+                    policy_name, min_trades, path, apply_bot_control)
 
         sql = Path(path).read_text(encoding="utf-8")
 
-        # run in a dedicated transaction inside SQL file
-        # We pass psql-like vars by simple replace of :'var' is not available here, so we do safe literal inject.
-        # policy_name is identifier-like string, min_trades is int.
         sql = sql.replace(":'policy_name'", "'" + policy_name.replace("'", "''") + "'")
         sql = sql.replace("(:'min_trades')::int", str(int(min_trades)))
+        sql = sql.replace(":'apply_bot_control'", str(int(apply_bot_control)))
 
         cur.execute(sql)
 
@@ -442,21 +491,21 @@ def main():
         logging.info("AUTOMATION_ENABLED!=1; exiting")
         return
 
-    mode = os.getenv("AUTOMATION_MODE", "DISABLE_ONLY")
-    if mode != "DISABLE_ONLY":
-        logging.error("Refusing to start: AUTOMATION_MODE must be DISABLE_ONLY")
+    mode = os.getenv("AUTOMATION_MODE", "DISABLE_ONLY").strip().upper()
+    if mode not in ("DISABLE_ONLY", "ACTIVE"):
+        logging.error("Refusing to start: unsupported AUTOMATION_MODE=%s", mode)
         return
+    
+    tick_s = int(os.environ.get("AUTOMATION_TICK_SECONDS", "60"))
+    dbname = os.environ.get("DB_NAME", "")
+
+    logging.info("automation-runner: started (mode=%s, db=%s, tick_s=%s)", mode, dbname, tick_s)
 
     ip_int = int(os.getenv("IP_CHECK_INTERVAL_SECONDS", "60"))
     rg_int = int(os.getenv("REGIME_WATCH_INTERVAL_SECONDS", "60"))
 
     last_ip = 0.0
     last_rg = 0.0
-
-    tick_s = int(os.environ.get("AUTOMATION_TICK_SECONDS", "60"))
-    dbname = os.environ.get("DB_NAME", "")
-
-    logging.info("started (mode=%s, db=%s, tick_s=%s)", mode, dbname, tick_s)
 
     while True:
         conn = None

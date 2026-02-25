@@ -320,7 +320,31 @@ def attach_exit_order_id(pos_id: int, order_id: str, client_order_id: str) -> No
     conn.close()
 
 
-def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str) -> int | None:
+def attach_entry_order_id_with_conn(cur, pos_id: int, order_id: str | None, client_order_id: str | None) -> None:
+    cur.execute(
+        """
+        UPDATE positions
+        SET entry_order_id = COALESCE(entry_order_id, %s),
+            entry_client_order_id = COALESCE(entry_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (str(order_id) if order_id else None, (str(client_order_id) if client_order_id else None), int(pos_id)),
+    )
+
+
+def attach_exit_order_id_with_conn(cur, pos_id: int, order_id: str | None, client_order_id: str | None) -> None:
+    cur.execute(
+        """
+        UPDATE positions
+        SET exit_order_id = COALESCE(exit_order_id, %s),
+            exit_client_order_id = COALESCE(exit_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (str(order_id) if order_id else None, (str(client_order_id) if client_order_id else None), int(pos_id)),
+    )
+
+
+def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str | None) -> int | None:
     # SPOT => tylko LONG
     if str(side).upper() != "LONG":
         return None
@@ -353,7 +377,8 @@ def open_position(side: str, qty: float, entry_price: float, entry_client_order_
         VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
         RETURNING id;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, "LONG", float(qty), float(entry_price), entry_client_order_id),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price),
+         (str(entry_client_order_id) if entry_client_order_id else None)),
     )
     pos_id = int(cur.fetchone()[0])
     conn.commit()
@@ -675,7 +700,7 @@ def execute_and_record(
             side="LONG",
             qty=float(qty_btc),
             entry_price=float(price),
-            entry_client_order_id="PENDING",
+            entry_client_order_id=None,
         )
         if pos_id is None:
             return {
@@ -690,20 +715,22 @@ def execute_and_record(
         client_order_id = make_client_order_id(
             cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="E"
         )
-
-        # zapisz entry_client_order_id
+        # --- DB: pre-attach client_order_id (single-conn) ---
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
         try:
-            conn2 = get_db_conn()
-            cur2 = conn2.cursor()
-            cur2.execute(
-                "UPDATE positions SET entry_client_order_id=%s WHERE id=%s",
-                (client_order_id, int(pos_id)),
-            )
-            conn2.commit()
-            cur2.close()
-            conn2.close()
+            if pos_id:
+                if is_exit:
+                    attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+                else:
+                    attach_entry_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            conn_exec.commit()
         except Exception:
-            logging.exception("BBRANGE: failed to set entry_client_order_id pos_id=%s", pos_id)
+            conn_exec.rollback()
+            logging.exception("BBRANGE: pre-attach client_order_id failed pos_id=%s", pos_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
 
     else:
         # EXIT: użyj istniejącej OPEN pozycji
@@ -730,20 +757,22 @@ def execute_and_record(
         client_order_id = make_client_order_id(
             cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="X"
         )
-
-        # zapisz exit_client_order_id
+        # --- DB: pre-attach client_order_id (single-conn) ---
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
         try:
-            conn2 = get_db_conn()
-            cur2 = conn2.cursor()
-            cur2.execute(
-                "UPDATE positions SET exit_client_order_id=%s WHERE id=%s",
-                (client_order_id, int(pos_id)),
-            )
-            conn2.commit()
-            cur2.close()
-            conn2.close()
+            if pos_id:
+                if is_exit:
+                    attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+                else:
+                    attach_entry_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            conn_exec.commit()
         except Exception:
-            logging.exception("BBRANGE: failed to set exit_client_order_id pos_id=%s", pos_id)
+            conn_exec.rollback()
+            logging.exception("BBRANGE: pre-attach client_order_id failed pos_id=%s", pos_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
 
     resp = place_live_order(
         client,
@@ -815,11 +844,21 @@ def execute_and_record(
 
     order_id = raw.get("orderId")
 
-    if order_id and pos_id:
-        if is_exit:
-            attach_exit_order_id(int(pos_id), str(order_id), client_order_id)
-        else:
-            attach_entry_order_id(int(pos_id), str(order_id), client_order_id)
+    if pos_id:
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
+        try:
+            if is_exit:
+                attach_exit_order_id_with_conn(cur_exec, int(pos_id), str(order_id) if order_id else None, client_order_id)
+            else:
+                attach_entry_order_id_with_conn(cur_exec, int(pos_id), str(order_id) if order_id else None, client_order_id)
+            conn_exec.commit()
+        except Exception:
+            conn_exec.rollback()
+            logging.exception("BBRANGE: attach order ids failed pos_id=%s is_exit=%s order_id=%s", pos_id, bool(is_exit), order_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
     else:
         logging.error("BBRANGE: LIVE ACK missing orderId pos_id=%s is_exit=%s resp=%s", pos_id, bool(is_exit), raw)
 
@@ -1252,7 +1291,7 @@ def run_strategy(row):
                 reason = f"BBRANGE TAKE PROFIT LONG intrabar high={high_price:.2f} >= tp={tp_level:.2f}"
                 res = execute_and_record(
                     side="SELL",
-                    price=tp_level if cfg_effective.trading_mode == "PAPER" else price,
+                    price=price,
                     qty_btc=qty_f,
                     reason=reason,
                     candle_open_time=open_time,
@@ -1264,7 +1303,7 @@ def run_strategy(row):
                     ema_21=ema_val,
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(exit_price=(tp_level if cfg_effective.trading_mode == "PAPER" else price), reason="TAKE_PROFIT", candle_open_time=open_time)
+                    close_position(exit_price=price, reason="TAKE_PROFIT", candle_open_time=open_time)
                 else:
                     emit_blocked(
                         reason="EXIT_BLOCKED",
@@ -1291,7 +1330,7 @@ def run_strategy(row):
                     ema_21=ema_val,
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(exit_price=(sl_level if cfg_effective.trading_mode == "PAPER" else price), reason="STOP_LOSS", candle_open_time=open_time)
+                    close_position(exit_price=price, reason="STOP_LOSS", candle_open_time=open_time)
                 else:
                     emit_blocked(
                         reason="EXIT_BLOCKED",

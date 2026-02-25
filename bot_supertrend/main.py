@@ -134,7 +134,6 @@ def compute_qty_from_notional_safe(
             min_notional_buffer_pct=min_notional_buffer_pct,
         )
 
-_SYMBOL_FILTERS_CACHE = None
 
 def _get_symbol_filters():
     global _SYMBOL_FILTERS_CACHE
@@ -168,6 +167,46 @@ def make_client_order_id(symbol: str, strategy: str, interval: str, side: str, c
     return build_live_client_order_id(symbol, pos_id, tag)
 
 
+def set_entry_client_order_id(pos_id: int, client_order_id: str) -> None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE positions
+        SET entry_client_order_id =
+            CASE
+              WHEN entry_client_order_id IS NULL OR entry_client_order_id = '' OR entry_client_order_id = 'PENDING'
+                THEN %s
+              ELSE entry_client_order_id
+            END
+        WHERE id = %s
+        """,
+        (str(client_order_id), int(pos_id)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def set_exit_client_order_id(pos_id: int, client_order_id: str) -> None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE positions
+        SET exit_client_order_id =
+            CASE
+              WHEN exit_client_order_id IS NULL OR exit_client_order_id = '' OR exit_client_order_id = 'PENDING'
+                THEN %s
+              ELSE exit_client_order_id
+            END
+        WHERE id = %s
+        """,
+        (str(client_order_id), int(pos_id)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 # =========================
 # Telemetry (strategy_events)
 # =========================
@@ -266,7 +305,7 @@ def heartbeat(info: dict):
         ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info, default=_json_default)),
     )
     conn.commit()
     cur.close()
@@ -442,7 +481,7 @@ def attach_exit_order_id(pos_id: int, order_id: str, client_order_id: str) -> No
     conn.close()
 
 
-def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str) -> int | None:
+def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str | None) -> int | None:
     # SPOT-only: LONG only
     if str(side).upper() != "LONG":
         return None
@@ -469,12 +508,13 @@ def open_position(side: str, qty: float, entry_price: float, entry_client_order_
     cur.execute(
         """
         INSERT INTO positions(
-            symbol, strategy, interval, status, side, qty, entry_price, entry_time, entry_client_order_id
+          symbol, strategy, interval, status, side, qty, entry_price, entry_time, entry_client_order_id
         )
         VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
         RETURNING id;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, "LONG", float(qty), float(entry_price), entry_client_order_id),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price),
+         (str(entry_client_order_id) if entry_client_order_id else None)),
     )
     pos_id = int(cur.fetchone()[0])
     conn.commit()
@@ -802,7 +842,7 @@ def execute_and_record(
             side="LONG",
             qty=float(qty_btc),
             entry_price=float(price),
-            entry_client_order_id="PENDING",
+            entry_client_order_id=None,
         )
         if pos_id is None:
             return {
@@ -817,17 +857,7 @@ def execute_and_record(
         client_order_id = make_client_order_id(
             cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag="E"
         )
-
-        # zapisz entry_client_order_id od razu
-        try:
-            conn2 = get_db_conn()
-            cur2 = conn2.cursor()
-            cur2.execute("UPDATE positions SET entry_client_order_id=%s WHERE id=%s", (client_order_id, int(pos_id)))
-            conn2.commit()
-            cur2.close()
-            conn2.close()
-        except Exception:
-            logging.exception("SUPERTREND: failed to set entry_client_order_id pos_id=%s", pos_id)
+        set_entry_client_order_id(int(pos_id), client_order_id)
 
     else:
         # EXIT: użyj istniejącej OPEN pozycji
@@ -854,31 +884,34 @@ def execute_and_record(
         client_order_id = make_client_order_id(
             cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag="X"
         )
+        set_exit_client_order_id(int(pos_id), client_order_id)
 
-        # zapisz exit_client_order_id od razu
+    # Use single DB transaction for deterministic SSOT binding on ACK
+    conn_exec = get_db_conn()
+    try:
+        resp = place_live_order(
+            client,
+            cfg_used.symbol,
+            side_u,
+            qty_btc,
+            trading_mode=cfg_used.trading_mode,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
+            quote_asset=cfg_used.quote_asset,
+            client_order_id=client_order_id,
+            panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
+            live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+            skip_balance_precheck=is_exit,
+            # --- NEW: deterministic attach on ACK ---
+            db_conn=conn_exec,
+            position_id=int(pos_id) if pos_id is not None else None,
+            leg=("EXIT" if is_exit else "ENTRY"),
+        )
+        conn_exec.commit()
+    finally:
         try:
-            conn2 = get_db_conn()
-            cur2 = conn2.cursor()
-            cur2.execute("UPDATE positions SET exit_client_order_id=%s WHERE id=%s", (client_order_id, int(pos_id)))
-            conn2.commit()
-            cur2.close()
-            conn2.close()
+            conn_exec.close()
         except Exception:
-            logging.exception("SUPERTREND: failed to set exit_client_order_id pos_id=%s", pos_id)
-
-    resp = place_live_order(
-        client,
-        cfg_used.symbol,
-        side,
-        qty_btc,
-        trading_mode=cfg_used.trading_mode,
-        live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
-        quote_asset=cfg_used.quote_asset,
-        client_order_id=client_order_id,
-        panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
-        live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
-        skip_balance_precheck=is_exit,
-    )
+            pass
 
     if not resp or not resp.get("ok"):
         emit_strategy_event(
@@ -934,12 +967,7 @@ def execute_and_record(
         },
     )
     order_id = raw.get("orderId")
-    if order_id and pos_id:
-        if is_exit:
-            attach_exit_order_id(int(pos_id), str(order_id), client_order_id)
-        else:
-            attach_entry_order_id(int(pos_id), str(order_id), client_order_id)
-    else:
+    if not order_id:
         logging.error("SUPERTREND: LIVE ACK missing orderId pos_id=%s is_exit=%s resp=%s", pos_id, bool(is_exit), raw)
 
     return {

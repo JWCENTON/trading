@@ -52,12 +52,28 @@ def ensure_schema():
         """
     )
 
+    # RSI SSOT: allow 1 ENTRY + 1 EXIT per candle (guarded by is_exit)
+    cur.execute("ALTER TABLE simulated_orders ADD COLUMN IF NOT EXISTS is_exit boolean NOT NULL DEFAULT false;")
+
     cur.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS ux_sim_orders_one_per_candle
         ON simulated_orders(symbol, interval, strategy, candle_open_time);
         """
     )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_sim_orders_one_per_candle_isexit
+        ON simulated_orders(symbol, interval, strategy, candle_open_time, is_exit);
+        """
+    )
+
+    # RSI SSOT execution identifiers (LIVE/PAPER)
+    cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_order_id text;")
+    cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_order_id text;")
+    cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_client_order_id text;")
+    cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS exit_client_order_id text;")
 
     cur.execute(
         """
@@ -70,6 +86,18 @@ def ensure_schema():
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE(symbol, strategy, param_name)
         );
+        """
+    )
+
+    # RSI runtime params are per (symbol,strategy,interval)
+    cur.execute("ALTER TABLE strategy_params ADD COLUMN IF NOT EXISTS interval text NOT NULL DEFAULT '1m';")
+
+    # keep old UNIQUE(symbol,strategy,param_name) for backward compatibility,
+    # but add the new canonical unique index including interval
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_strategy_params_sym_strat_int_name
+        ON strategy_params(symbol, strategy, interval, param_name);
         """
     )
 

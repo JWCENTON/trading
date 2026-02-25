@@ -422,16 +422,51 @@ def execute_and_record(
         info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
     )
 
-    # 2) LIVE AFTER ledger reservation
+    # 2) PAPER: also write SSOT positions (hard truth), but do not send exchange orders
     if cfg_used.trading_mode != "LIVE":
+        paper_res = ssot_apply_positions_paper(
+            side=side,
+            price=float(price),
+            qty_btc=float(qty_btc),
+            candle_open_time=candle_open_time,
+            is_exit=bool(is_exit),
+            cfg_used=cfg_used,
+            reason_text=str(reason or ""),
+        )
+
+        if not paper_res.get("ok", False):
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=side,
+                reason=paper_res.get("blocked_reason") or "PAPER_POSITIONS_FAILED",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={
+                    "is_exit": bool(is_exit),
+                    "qty_btc": float(qty_btc),
+                    "reason_text": reason,
+                    "paper_res": paper_res,
+                },
+            )
+            return {
+                "ledger_ok": False,
+                "live_attempted": False,
+                "live_ok": True,
+                "blocked_reason": paper_res.get("blocked_reason") or "PAPER_POSITIONS_FAILED",
+                "client_order_id": paper_res.get("client_order_id"),
+                "resp": None,
+            }
+
         return {
             "ledger_ok": True,
             "live_attempted": False,
             "live_ok": True,  # PAPER traktujemy jako wykonane
             "blocked_reason": None,
-            "client_order_id": None,
+            "client_order_id": paper_res.get("client_order_id"),
             "resp": None,
         }
+
+    # 3) LIVE AFTER ledger reservation
 
     if not allow_live_orders:
         logging.warning(
@@ -477,7 +512,7 @@ def execute_and_record(
             side=str(pos_side),
             qty=float(qty_btc),
             entry_price=float(price),
-            entry_client_order_id="PENDING",
+            entry_client_order_id=None,
         )
         if pos_id is None:
             return {
@@ -492,24 +527,21 @@ def execute_and_record(
         client_order_id = make_client_order_id(
             cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="E"
         )
-
-        # ustaw entry_client_order_id
+        # --- DB: pre-attach client_order_id (single-conn) ---
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
         try:
-            conn2 = get_db_conn()
-            cur2 = conn2.cursor()
-            cur2.execute(
-                """
-                UPDATE positions
-                SET entry_client_order_id = %s
-                WHERE id = %s
-                """,
-                (client_order_id, int(pos_id)),
-            )
-            conn2.commit()
-            cur2.close()
-            conn2.close()
+            if not is_exit and pos_id:
+                attach_entry_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            if is_exit and pos_id:
+                attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            conn_exec.commit()
         except Exception:
-            logging.exception("RSI: failed to set entry_client_order_id pos_id=%s", pos_id)
+            conn_exec.rollback()
+            logging.exception("RSI: pre-attach client_order_id failed pos_id=%s", pos_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
 
     else:
         # EXIT: użyj istniejącej OPEN pozycji
@@ -537,25 +569,21 @@ def execute_and_record(
         client_order_id = make_client_order_id(
             cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="X"
         )
-
-        # ustaw exit_client_order_id (NIE entry_client_order_id)
-        if pos_id:
-            try:
-                conn2 = get_db_conn()
-                cur2 = conn2.cursor()
-                cur2.execute(
-                    """
-                    UPDATE positions
-                    SET exit_client_order_id = %s
-                    WHERE id = %s
-                    """,
-                    (client_order_id, int(pos_id)),
-                )
-                conn2.commit()
-                cur2.close()
-                conn2.close()
-            except Exception:
-                logging.exception("RSI: failed to set exit_client_order_id pos_id=%s", pos_id)
+        # --- DB: pre-attach client_order_id (single-conn) ---
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
+        try:
+            if not is_exit and pos_id:
+                attach_entry_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            if is_exit and pos_id:
+                attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            conn_exec.commit()
+        except Exception:
+            conn_exec.rollback()
+            logging.exception("RSI: pre-attach client_order_id failed pos_id=%s", pos_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
 
     resp = place_live_order(
         client,
@@ -582,26 +610,14 @@ def execute_and_record(
             reason="LIVE_ORDER_FAILED",
             price=price,
             candle_open_time=candle_open_time,
-            info={"is_exit": bool(is_exit), "client_order_id": client_order_id, "resp": (resp or {}).get("resp")},
+            info={
+                "is_exit": bool(is_exit),
+                "pos_id": int(pos_id) if pos_id else None,
+                "client_order_id": client_order_id,
+                "resp": (resp or {}).get("resp"),
+            },
         )
-        # rollback SSOT: order failed -> close position immediately
-        try:
-            connr = get_db_conn()
-            curr = connr.cursor()
-            curr.execute(
-                """
-                UPDATE positions
-                SET status='CLOSED', exit_time=now(), exit_reason=%s
-                WHERE id=%s AND status='OPEN'
-                """,
-                ("LIVE_ORDER_FAILED_BEFORE_ACK", int(pos_id)),
-            )
-            connr.commit()
-            curr.close()
-            connr.close()
-        except Exception:
-            logging.exception("RSI: rollback position failed pos_id=%s", pos_id)
-
+        # NIE zamykaj pozycji w DB na ślepo (zostaw OPEN, reconciliation/ingest to ogarnie)
         return {
             "ledger_ok": True,
             "live_attempted": True,
@@ -614,11 +630,21 @@ def execute_and_record(
     raw = (resp or {}).get("resp") or {}
     order_id = raw.get("orderId")
 
-    if order_id and pos_id:
-        if is_exit:
-            attach_exit_order_id(int(pos_id), str(order_id), client_order_id)
-        else:
-            attach_entry_order_id(int(pos_id), str(order_id), client_order_id)
+    if pos_id:
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
+        try:
+            if is_exit:
+                attach_exit_order_id_with_conn(cur_exec, int(pos_id), str(order_id) if order_id else None, client_order_id)
+            else:
+                attach_entry_order_id_with_conn(cur_exec, int(pos_id), str(order_id) if order_id else None, client_order_id)
+            conn_exec.commit()
+        except Exception:
+            conn_exec.rollback()
+            logging.exception("RSI: attach order ids failed pos_id=%s is_exit=%s order_id=%s", pos_id, bool(is_exit), order_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
     else:
         logging.error("RSI: LIVE ACK missing orderId pos_id=%s is_exit=%s resp=%s", pos_id, bool(is_exit), raw)
 
@@ -1266,7 +1292,31 @@ def attach_exit_order_id(pos_id: int, order_id: str, client_order_id: str) -> No
     conn.close()
 
 
-def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str) -> int | None:
+def attach_entry_order_id_with_conn(cur, pos_id: int, order_id: str | None, client_order_id: str | None) -> None:
+    cur.execute(
+        """
+        UPDATE positions
+        SET entry_order_id = COALESCE(entry_order_id, %s),
+            entry_client_order_id = COALESCE(entry_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (str(order_id) if order_id else None, (str(client_order_id) if client_order_id else None), int(pos_id)),
+    )
+
+
+def attach_exit_order_id_with_conn(cur, pos_id: int, order_id: str | None, client_order_id: str | None) -> None:
+    cur.execute(
+        """
+        UPDATE positions
+        SET exit_order_id = COALESCE(exit_order_id, %s),
+            exit_client_order_id = COALESCE(exit_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (str(order_id) if order_id else None, (str(client_order_id) if client_order_id else None), int(pos_id)),
+    )
+
+
+def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str | None) -> int | None:
     conn = get_db_conn()
     cur = conn.cursor()
 
@@ -1295,7 +1345,8 @@ def open_position(side: str, qty: float, entry_price: float, entry_client_order_
         VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
         RETURNING id;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price), entry_client_order_id),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price),
+         (str(entry_client_order_id) if entry_client_order_id else None)),
     )
     pos_id = int(cur.fetchone()[0])
     conn.commit()
@@ -1328,6 +1379,96 @@ def close_position(exit_price: float, reason: str) -> bool:
     else:
         logging.info("RSI: close_position skipped – no OPEN position.")
     return closed
+
+
+def ssot_apply_positions_paper(
+    *,
+    side: str,
+    price: float,
+    qty_btc: float,
+    candle_open_time,
+    is_exit: bool,
+    cfg_used: RuntimeConfig,
+    reason_text: str,
+) -> dict:
+    """
+    PAPER mode: mirror LIVE SSOT behavior into `positions` (hard truth),
+    but without sending a real exchange order.
+    """
+    pos_id = None
+    client_order_id = None
+
+    if not is_exit:
+        # ENTRY
+        side_u = str(side).upper()
+        pos_side = "LONG" if side_u == "BUY" else "SHORT"
+
+        pos_id = open_position(
+            side=str(pos_side),
+            qty=float(qty_btc),
+            entry_price=float(price),
+            entry_client_order_id=None,
+        )
+        if pos_id is None:
+            return {"ok": False, "blocked_reason": "ALREADY_OPEN", "pos_id": None, "client_order_id": None}
+
+        client_order_id = make_client_order_id(
+            cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag="E"
+        )
+
+        # attach entry_client_order_id (order_id remains NULL in PAPER)
+        conn_exec = get_db_conn()
+        cur_exec = conn_exec.cursor()
+        try:
+            attach_entry_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+            conn_exec.commit()
+        except Exception:
+            conn_exec.rollback()
+            logging.exception("PAPER: attach entry_client_order_id failed pos_id=%s", pos_id)
+        finally:
+            cur_exec.close()
+            conn_exec.close()
+
+        return {"ok": True, "blocked_reason": None, "pos_id": int(pos_id), "client_order_id": client_order_id}
+
+    # EXIT
+    open_row = get_open_position()
+    pos_id = int(open_row[0]) if open_row else None
+    if not pos_id:
+        return {"ok": False, "blocked_reason": "EXIT_NO_OPEN_POSITION", "pos_id": None, "client_order_id": None}
+
+    client_order_id = make_client_order_id(
+        cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag="X"
+    )
+
+    # 1) attach exit_client_order_id (order_id remains NULL in PAPER)
+    conn_exec = get_db_conn()
+    cur_exec = conn_exec.cursor()
+    try:
+        attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
+
+        # 2) close position (this is the hard-truth close for PAPER)
+        cur_exec.execute(
+            """
+            UPDATE positions
+            SET status='CLOSED',
+                exit_price=%s,
+                exit_time=now(),
+                exit_reason=%s
+            WHERE id=%s AND status='OPEN'
+            """,
+            (float(price), str(reason_text or "PAPER_EXIT"), int(pos_id)),
+        )
+        conn_exec.commit()
+    except Exception:
+        conn_exec.rollback()
+        logging.exception("PAPER: close position failed pos_id=%s", pos_id)
+        return {"ok": False, "blocked_reason": "PAPER_CLOSE_FAILED", "pos_id": int(pos_id), "client_order_id": client_order_id}
+    finally:
+        cur_exec.close()
+        conn_exec.close()
+
+    return {"ok": True, "blocked_reason": None, "pos_id": int(pos_id), "client_order_id": client_order_id}
 
 
 def seed_default_params_from_env(conn):
@@ -1941,8 +2082,9 @@ def run_strategy(row, prev_row=None):
                     is_exit=True,
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(exit_price=price, reason="PANIC")
-                    pos = None
+                    if cfg_effective.trading_mode == "LIVE":
+                        close_position(exit_price=price, reason="PANIC")
+                        pos = None
                 else:
                     emit_blocked(
                         reason="EXIT_BLOCKED",
@@ -1986,7 +2128,7 @@ def run_strategy(row, prev_row=None):
 
                 # TP intrabar
                 if TAKE_PROFIT_PCT > 0 and high_price >= tp_level:
-                    exec_px = tp_level if cfg_effective.trading_mode == "PAPER" else price
+                    exec_px = price
                     reason = f"RSI TAKE PROFIT LONG intrabar high={high_price:.2f} >= tp={tp_level:.2f}"
                     res = execute_exit_safe(
                         exit_side="SELL",
@@ -2000,7 +2142,8 @@ def run_strategy(row, prev_row=None):
                         exit_kind="TAKE_PROFIT",
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=exec_px, reason="TAKE_PROFIT")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=exec_px, reason="TAKE_PROFIT")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
@@ -2014,12 +2157,13 @@ def run_strategy(row, prev_row=None):
 
                 # SL intrabar
                 if STOP_LOSS_PCT > 0 and low_price <= sl_level:
-                    exec_px = sl_level if cfg_effective.trading_mode == "PAPER" else price
+                    exec_px = price
                     reason = f"RSI STOP LOSS LONG intrabar low={low_price:.2f} <= sl={sl_level:.2f}"
                     res = execute_and_record("SELL", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
                         allow_meta=snap["allow_meta_exit"], is_exit=True,)
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=exec_px, reason="STOP_LOSS")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=exec_px, reason="STOP_LOSS")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
@@ -2038,7 +2182,7 @@ def run_strategy(row, prev_row=None):
 
                 # TP intrabar
                 if TAKE_PROFIT_PCT > 0 and low_price <= tp_level:
-                    exec_px = tp_level
+                    exec_px = price
                     reason = f"RSI TAKE PROFIT SHORT intrabar low={low_price:.2f} <= tp={tp_level:.2f}"
                     res = execute_exit_safe(
                         exit_side="BUY",
@@ -2052,7 +2196,8 @@ def run_strategy(row, prev_row=None):
                         exit_kind="TAKE_PROFIT",
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=exec_px, reason="TAKE_PROFIT_SHORT")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=exec_px, reason="TAKE_PROFIT_SHORT")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
@@ -2066,12 +2211,13 @@ def run_strategy(row, prev_row=None):
 
                 # SL intrabar
                 if STOP_LOSS_PCT > 0 and high_price >= sl_level:
-                    exec_px = sl_level
+                    exec_px = price
                     reason = f"RSI STOP LOSS SHORT intrabar high={high_price:.2f} >= sl={sl_level:.2f}"
                     res = execute_and_record("BUY", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
                         allow_meta=snap["allow_meta_exit"], is_exit=True,)
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=exec_px, reason="STOP_LOSS_SHORT")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=exec_px, reason="STOP_LOSS_SHORT")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
@@ -2103,7 +2249,8 @@ def run_strategy(row, prev_row=None):
                             exit_kind="BE_PROTECT",
                         )
                         if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                            close_position(exit_price=price, reason="BE_PROTECT")
+                            if cfg_effective.trading_mode == "LIVE":
+                                close_position(exit_price=price, reason="BE_PROTECT")
                         else:
                             emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
                         return
@@ -2124,7 +2271,8 @@ def run_strategy(row, prev_row=None):
                             exit_kind="BE_PROTECT",
                         )
                         if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                            close_position(exit_price=price, reason="BE_PROTECT")
+                            if cfg_effective.trading_mode == "LIVE":
+                                close_position(exit_price=price, reason="BE_PROTECT")
                         else:
                             emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
                         return
@@ -2159,7 +2307,8 @@ def run_strategy(row, prev_row=None):
                         exit_kind="RSI_SOFT_EXIT",
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=price, reason="RSI_SOFT_EXIT")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=price, reason="RSI_SOFT_EXIT")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
@@ -2198,7 +2347,8 @@ def run_strategy(row, prev_row=None):
                         exit_kind="RSI_SOFT_EXIT",
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=price, reason="RSI_SOFT_EXIT")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=price, reason="RSI_SOFT_EXIT")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",
@@ -2242,7 +2392,8 @@ def run_strategy(row, prev_row=None):
                         exit_kind="TIME_EXIT",
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=price, reason="TIME_EXIT")
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=price, reason="TIME_EXIT")
                     else:
                         emit_blocked(
                             reason="EXIT_BLOCKED",

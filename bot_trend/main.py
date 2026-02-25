@@ -7,7 +7,6 @@ import hashlib
 import pandas as pd
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
-from common.execution import place_live_exit_maker_then_market
 from common.flags import binance_mytrades_enabled
 from common.schema import ensure_schema
 from dataclasses import replace
@@ -417,7 +416,7 @@ def open_position(side: str, qty: float, entry_price: float, open_time, *, entry
         VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
         RETURNING id;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price), entry_client_order_id),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price), (str(entry_client_order_id) if entry_client_order_id else None)),
     )
     row = cur.fetchone()
     conn.commit()
@@ -499,6 +498,48 @@ def attach_exit_order(pos_id: int, *, exit_order_id: str | int | None, exit_clie
         WHERE id=%s
         """,
         (exit_order_id, exit_client_order_id, int(pos_id)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def set_entry_client_order_id(pos_id: int, client_order_id: str) -> None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE positions
+        SET entry_client_order_id =
+            CASE
+              WHEN entry_client_order_id IS NULL OR entry_client_order_id = '' OR entry_client_order_id = 'PENDING'
+                THEN %s
+              ELSE entry_client_order_id
+            END
+        WHERE id = %s
+        """,
+        (str(client_order_id), int(pos_id)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def set_exit_client_order_id(pos_id: int, client_order_id: str) -> None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE positions
+        SET exit_client_order_id =
+            CASE
+              WHEN exit_client_order_id IS NULL OR exit_client_order_id = '' OR exit_client_order_id = 'PENDING'
+                THEN %s
+              ELSE exit_client_order_id
+            END
+        WHERE id = %s
+        """,
+        (str(client_order_id), int(pos_id)),
     )
     conn.commit()
     cur.close()
@@ -795,6 +836,46 @@ def insert_simulated_order(
     return inserted
 
 
+def ssot_apply_positions_paper(
+    *,
+    side: str,
+    price: float,
+    qty_btc: float,
+    candle_open_time,
+    is_exit: bool,
+) -> dict:
+    """
+    PAPER SSOT:
+    - ENTRY -> open_position()
+    - EXIT  -> close_position()
+    Zwraca meta do diagnostyki.
+    """
+    side_u = str(side).upper()
+
+    if not is_exit:
+        pos_side = "LONG" if side_u == "BUY" else "SHORT"
+
+        pos_id = open_position(
+            side=str(pos_side),
+            qty=float(qty_btc),
+            entry_price=float(price),
+            open_time=candle_open_time,
+            entry_client_order_id=None,
+        )
+        if pos_id is None:
+            return {"paper_pos_action": "ENTRY_SKIPPED_ALREADY_OPEN", "paper_pos_id": None}
+
+        return {"paper_pos_action": "ENTRY_OPENED", "paper_pos_id": int(pos_id)}
+
+    # EXIT
+    pos = get_open_position()
+    if not pos:
+        return {"paper_pos_action": "EXIT_SKIPPED_NO_OPEN", "paper_pos_id": None}
+
+    close_position(exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time)
+    return {"paper_pos_action": "EXIT_CLOSED", "paper_pos_id": int(pos[0])}
+
+
 def execute_and_record(
     side: str,
     price: float,
@@ -852,15 +933,54 @@ def execute_and_record(
         info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
     )
 
-    # 2) LIVE AFTER ledger
+    # 2) PAPER SSOT: update positions even in PAPER (Variant A)
     if cfg_used.trading_mode != "LIVE":
+        meta = ssot_apply_positions_paper(
+            side=side,
+            price=float(price),
+            qty_btc=float(qty_btc),
+            candle_open_time=candle_open_time,
+            is_exit=bool(is_exit),
+        )
+
+        emit_strategy_event(
+            event_type="SSOT_PAPER_APPLY",
+            decision=side,
+            reason="OK",
+            price=price,
+            candle_open_time=candle_open_time,
+            info={"is_exit": bool(is_exit), **(meta or {})},
+        )
+
+        # jeśli to był EXIT i nie było OPEN -> nie blokuj ledger (ledger już jest), tylko audyt
+        if meta.get("paper_pos_action") == "EXIT_SKIPPED_NO_OPEN":
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "EXIT_NO_OPEN_POSITION",
+                "client_order_id": None,
+                "resp": meta,
+            }
+
+        # jeśli ENTRY i już była OPEN -> traktuj jako "ALREADY_OPEN" (ledger zostaje)
+        if meta.get("paper_pos_action") == "ENTRY_SKIPPED_ALREADY_OPEN":
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "ALREADY_OPEN",
+                "client_order_id": None,
+                "resp": meta,
+            }
+
         return {
             "ledger_ok": True,
             "live_attempted": False,
-            "live_ok": True,  # PAPER traktujemy jako wykonane
+            "live_ok": True,
             "blocked_reason": None,
             "client_order_id": None,
-            "resp": None,
+            "resp": meta,
         }
 
     if not allow_live_orders:
@@ -905,7 +1025,7 @@ def execute_and_record(
             qty=float(qty_btc),
             entry_price=float(price),
             open_time=candle_open_time,
-            entry_client_order_id="PENDING",
+            entry_client_order_id=None,
         )
         if pos_id_new is None:
             return {
@@ -940,19 +1060,35 @@ def execute_and_record(
         cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag=tag
     )
 
-    resp = place_live_order(
-        client,
-        cfg_used.symbol,
-        side,
-        qty_btc,
-        trading_mode=cfg_used.trading_mode,
-        live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
-        quote_asset=cfg_used.quote_asset,
-        client_order_id=client_order_id,
-        panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
-        live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
-        skip_balance_precheck=is_exit,
-    )
+    if is_exit:
+        set_exit_client_order_id(int(pos_id), client_order_id)
+    else:
+        set_entry_client_order_id(int(pos_id), client_order_id)
+
+    conn_exec = get_db_conn()
+    try:
+        resp = place_live_order(
+            client,
+            cfg_used.symbol,
+            side_u,
+            qty_btc,
+            trading_mode=cfg_used.trading_mode,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
+            quote_asset=cfg_used.quote_asset,
+            client_order_id=client_order_id,
+            panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
+            live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+            skip_balance_precheck=is_exit,
+            db_conn=conn_exec,
+            position_id=int(pos_id) if pos_id is not None else None,
+            leg=("EXIT" if is_exit else "ENTRY"),
+        )
+        conn_exec.commit()
+    finally:
+        try:
+            conn_exec.close()
+        except Exception:
+            pass
 
     if not resp or not resp.get("ok"):
         emit_strategy_event(
@@ -980,13 +1116,12 @@ def execute_and_record(
         }
 
     raw = (resp or {}).get("resp") or {}
-    order_id = raw.get("orderId")
-
-    # attach order ids
-    if is_exit:
-        attach_exit_order(int(pos_id), exit_order_id=order_id, exit_client_order_id=client_order_id)
-    else:
-        attach_entry_order(int(pos_id), entry_order_id=order_id, entry_client_order_id=client_order_id)
+    status_raw = str(raw.get("status", "")).upper()
+    executed_raw = raw.get("executedQty")
+    try:
+        executed_f = float(executed_raw) if executed_raw is not None else 0.0
+    except Exception:
+        executed_f = 0.0
 
     # compute live_ok safely
     live_ok = resp.get("live_ok")
@@ -1010,8 +1145,8 @@ def execute_and_record(
             "is_exit": bool(is_exit),
             "client_order_id": client_order_id,
             "live_ok": live_ok,
-            "status": resp.get("status"),
-            "executed_qty": resp.get("executed_qty"),
+            "status": status_raw,
+            "executed_qty": executed_f,
             "resp": raw,
         },
     )
@@ -1119,68 +1254,6 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
         return 0.0
 
     return (equity_now - equity_start_today) / equity_start_today * 100.0
-
-
-def size_qty_from_notional(symbol: str, target_notional: float, price: float, min_notional_buffer_pct: float):
-    """
-    Zwraca: (qty, meta)
-    Meta pod event SIZING: step, min_qty, min_notional, notional, target_notional, buffer.
-    Wymaga filtrów LOT_SIZE/MIN_NOTIONAL z Binance.
-    """
-    info = client.get_symbol_info(symbol)
-    if not info:
-        raise RuntimeError(f"Symbol info not found for {symbol}")
-
-    step = None
-    min_qty = None
-    min_notional = None
-
-    for f in info.get("filters", []):
-        if f.get("filterType") == "LOT_SIZE":
-            step = float(f["stepSize"])
-            min_qty = float(f["minQty"])
-        if f.get("filterType") in ("MIN_NOTIONAL", "NOTIONAL"):
-            # Binance bywa różny zależnie od rynku / wersji
-            mn = f.get("minNotional") or f.get("notional") or f.get("min_notional")
-            if mn is not None:
-                min_notional = float(mn)
-
-    if step is None or min_qty is None:
-        raise RuntimeError(f"LOT_SIZE filter missing for {symbol}")
-    if min_notional is None:
-        # konserwatywnie: jeśli brak, nie blokuj, ale loguj min_notional=null
-        min_notional = 0.0
-
-    target = float(target_notional)
-    px = float(price)
-
-    raw_qty = target / px if px > 0 else 0.0
-
-    # dopasowanie do step
-    steps = int(raw_qty / step)
-    qty = steps * step
-
-    # enforce min_qty
-    if qty < min_qty:
-        qty = 0.0
-
-    notional = qty * px
-    min_required = min_notional * (1.0 + float(min_notional_buffer_pct))
-
-    meta = {
-        "px": px,
-        "qty": float(qty),
-        "step": str(step),
-        "min_qty": float(min_qty),
-        "notional": float(notional),
-        "min_notional": float(min_notional),
-        "target_notional": float(target),
-        "min_notional_buffer_pct": float(min_notional_buffer_pct),
-        "min_required_notional": float(min_required),
-    }
-
-    ok = (qty > 0.0) and (notional >= min_required)
-    return ok, qty, meta
 
 
 def run_trend_strategy():
