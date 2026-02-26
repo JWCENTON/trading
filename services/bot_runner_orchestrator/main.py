@@ -210,12 +210,14 @@ def load_orc_v2_cfg(conn) -> dict:
         "require_profitable": True,   # na start
         "step_days": 3,               # ladder: 3 dni na start
         "step_usdc": Decimal("5"),
+        "min_trades_3d": 5,
     }
     key_map = {
         "orc_v2_mode": ("mode", str),
         "orc_v2_max_picks": ("max_picks", int),
         "orc_v2_min_live_hours": ("min_live_hours", int),
         "orc_v2_min_off_hours": ("min_off_hours", int),
+        "orc_v2_min_trades_3d": ("min_trades_3d", int),
         "orc_v2_step_days": ("step_days", int),
         "orc_v2_step_usdc": ("step_usdc", Decimal),
         "orc_v2_require_profitable": ("require_profitable", lambda v: str(v).lower() in ("1","true","yes","y","on")),
@@ -223,7 +225,14 @@ def load_orc_v2_cfg(conn) -> dict:
 
     cfg = dict(defaults)
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT key, value FROM automation_kv WHERE key LIKE 'orc_v2_%'")
+        cur.execute("""
+            SELECT key, value
+            FROM automation_kv
+            WHERE key IN (
+              'orc_v2_mode','orc_v2_max_picks','orc_v2_min_live_hours','orc_v2_min_off_hours',
+              'orc_v2_min_trades_3d','orc_v2_step_days','orc_v2_step_usdc','orc_v2_require_profitable'
+            )
+        """)
         for r in cur.fetchall():
             k, v = r["key"], r["value"]
             if k in key_map:
@@ -337,6 +346,46 @@ def load_candles_latest(conn) -> Dict[Tuple[str, str], dict]:
         return out
 
 
+def v2_decision_fingerprint(action: str, reason: str, meta: dict) -> str:
+    # stabilny fingerprint bez pól, które zmieniają się często
+    stable = dict(meta or {})
+    # nic tu nie usuwam, bo u Ciebie meta jest stabilne per tick; jak dodasz timestamp, usuń go tutaj
+    payload = {"action": action, "reason": reason, "meta": stable}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def v2_should_write_decision(conn, bk: BotKey, fp: str) -> bool:
+    key = f"orc_v2_last_fp:{bk.symbol}:{bk.interval}:{bk.strategy}"
+    prev = kv_get(conn, key)
+    if prev == fp:
+        return False
+    kv_set(conn, key, fp)
+    return True
+
+
+def v2_meets_min_trades(row: dict, min_trades: int) -> bool:
+    n = row.get("n_trades_3d")
+    if n is None:
+        return False
+    try:
+        return int(n) >= int(min_trades)
+    except Exception:
+        return False
+    
+
+def v2_has_profit_metrics(row: dict) -> bool:
+    """
+    True only when 3d profitability metrics are actually present (not NULL).
+    This prevents bootstrap slots (NULL metrics) from being treated as profitable picks.
+    """
+    return (
+        row.get("n_trades_3d") is not None
+        and row.get("net_sum_3d") is not None
+        and row.get("profit_factor_3d") is not None
+        and row.get("win_rate_3d") is not None
+    )
+
+
 def load_open_positions(conn) -> Dict[BotKey, dict]:
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
@@ -393,6 +442,15 @@ def load_open_pos_flags(conn) -> Set[BotKey]:
         for r in cur.fetchall():
             out.add(BotKey(r["symbol"], r["interval"], r["strategy"]))
         return out
+
+
+def load_v5_picks(conn) -> Set[Tuple[str, str, str]]:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT symbol, interval, strategy
+            FROM v_orc_picks_v5
+        """)
+        return {(r[0], r[1], r[2]) for r in cur.fetchall()}
 
 
 def load_last_regime_gate(conn, window_minutes: int) -> Dict[BotKey, dict]:
@@ -1285,7 +1343,7 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
                 log.warning("[v2] mode=ENFORCE but actions disabled -> forcing DRY_RUN")
                 v2cfg["mode"] = "DRY_RUN"
 
-            run_orc_v2_profit_first(conn, v2cfg)
+            run_orc_v2_profit_first(conn, v2cfg, effective_actions_enabled=effective_actions_enabled, tick_id=tick_id)
         else:
             # legacy Phase A allocator (only when actions enabled)
             if effective_actions_enabled and os.getenv("ORC_ALLOC_A_ENABLED", "0") == "1":
@@ -1293,14 +1351,25 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
 
 
 def v2_block_reason(row: dict) -> str:
-    if not bool(row["is_fresh"]):
+    if not bool(row.get("is_fresh")):
         return "STALE_GATE"
-    if not bool(row["eligible_by_regime"]):
+    if not bool(row.get("eligible_by_regime")):
         return "REGIME_BLOCK"
-    if int(row["n_open_symbol_interval"] or 0) > 0:
+    if int(row.get("n_open_symbol_interval") or 0) > 0:
         return "OPEN_LOCK"
-    if not bool(row["is_profitable_3d"]):
+
+    # kluczowe: bootstrap (NULL metryki) => NO_METRICS_3D
+    if not v2_has_profit_metrics(row):
+        return "NO_METRICS_3D"
+
+    # NEW: min trades gate (threshold from cfg will be injected into row meta in runner)
+    min_trades = int(row.get("_min_trades_3d") or 0)
+    if min_trades > 0 and not v2_meets_min_trades(row, min_trades):
+        return "MIN_TRADES_3D"
+
+    if not bool(row.get("is_profitable_3d")):
         return "NOT_PROFITABLE"
+
     return "OK"
 
 
@@ -1431,33 +1500,30 @@ def apply_v2_enforce(conn, pick_set: Set[Tuple[str, str, str]], *, v2cfg: dict) 
                 n_off += 1
 
     log.info("[v2] ENFORCE applied: on=%d off=%d skipped_by_cooldown=%d", n_on, n_off, n_skip)
+        
 
-
-def run_orc_v2_profit_first(conn, v2cfg: dict) -> None:
+def run_orc_v2_profit_first(conn, v2cfg: dict, *, effective_actions_enabled: bool, tick_id: Optional[str] = None) -> None:
     if kv_get(conn, "orc_v2_mode") is None:
         return
-    mode = v2cfg["mode"]  # DRY_RUN | ENFORCE
-    max_picks = int(v2cfg["max_picks"])
+
+    mode = (v2cfg.get("mode") or "DRY_RUN").upper()  # DRY_RUN | ENFORCE
+    max_picks = int(v2cfg.get("max_picks") or 8)
+
+    # HARD GUARD: never ENFORCE when actions are disabled
+    if mode == "ENFORCE" and not effective_actions_enabled:
+        log.warning("[v2] ENFORCE requested but actions disabled -> forcing DRY_RUN")
+        mode = "DRY_RUN"
 
     rows = load_v2_best(conn)
+    require_profitable = bool(v2cfg.get("require_profitable", True))
+    min_trades_3d = int(v2cfg.get("min_trades_3d") or 0)
 
-    # 1) pick set
-    elig = []
-    for r in rows:
-        if v2_block_reason(r) != "OK":
-            continue
-        if v2cfg.get("require_profitable", True) and not bool(r["is_profitable_3d"]):
-            continue
-        elig.append(r)
+    # 1) pick set (DB is SSOT)
+    pick_set = load_v5_picks(conn)
 
-    elig.sort(key=lambda r: (
-        -(float(r["profit_factor_3d"]) if r["profit_factor_3d"] is not None else -1.0),
-        -(float(r["net_sum_3d"]) if r["net_sum_3d"] is not None else -1e18),
-        -(int(r["n_trades_3d"]) if r["n_trades_3d"] is not None else 0),
-        str(r["strategy"]),
-    ))
-    picks = elig[:max_picks]
-    pick_set = {(r["symbol"], r["interval"], r["strategy"]) for r in picks}
+    # optional: enforce max_picks safety here too (even though view already limits)
+    if len(pick_set) > max_picks:
+        pick_set = set(list(sorted(pick_set))[:max_picks])
 
     # 2) decisions log for all best_per rows
     for r in rows:
@@ -1465,23 +1531,77 @@ def run_orc_v2_profit_first(conn, v2cfg: dict) -> None:
         base_meta = {
             "policy": "v2_profit_first",
             "mode": mode,
+            "tick_id": tick_id,
+
             "is_fresh": bool(r["is_fresh"]),
             "eligible_by_regime": bool(r["eligible_by_regime"]),
             "n_open_symbol_interval": int(r["n_open_symbol_interval"] or 0),
+
             "is_profitable_3d": bool(r["is_profitable_3d"]),
             "n_trades_3d": int(r["n_trades_3d"] or 0) if r["n_trades_3d"] is not None else None,
             "net_sum_3d": str(r["net_sum_3d"]) if r["net_sum_3d"] is not None else None,
             "profit_factor_3d": str(r["profit_factor_3d"]) if r["profit_factor_3d"] is not None else None,
             "win_rate_3d": str(r["win_rate_3d"]) if r["win_rate_3d"] is not None else None,
+
+            "min_trades_3d": min_trades_3d,
         }
 
-        if (bk.symbol, bk.interval, bk.strategy) in pick_set:
-            insert_orc_decision(conn, bk, "V2_PROPOSE_ENABLE_LIVE", "true", "PROFITABLE_3D_PICK", base_meta)
+        has_metrics = v2_has_profit_metrics(r)
+        base_meta["has_profit_metrics_3d"] = has_metrics
+        meets_trades = (min_trades_3d <= 0) or v2_meets_min_trades(r, min_trades_3d)
+        base_meta["meets_min_trades_3d"] = bool(meets_trades)
+
+        # inject for v2_block_reason()
+        r["_min_trades_3d"] = min_trades_3d
+
+        is_picked = (bk.symbol, bk.interval, bk.strategy) in pick_set
+
+        if is_picked:
+            if require_profitable:
+                if not has_metrics:
+                    fp = v2_decision_fingerprint("V2_BLOCK", "NO_METRICS_3D", base_meta)
+                    if v2_should_write_decision(conn, bk, fp):
+                        insert_orc_decision(conn, bk, "V2_BLOCK", None, "NO_METRICS_3D", base_meta)
+                    continue
+
+                if not meets_trades:
+                    fp = v2_decision_fingerprint("V2_BLOCK", "MIN_TRADES_3D", base_meta)
+                    if v2_should_write_decision(conn, bk, fp):
+                        insert_orc_decision(conn, bk, "V2_BLOCK", None, "MIN_TRADES_3D", base_meta)
+                    continue
+
+                if not bool(r.get("is_profitable_3d")):
+                    fp = v2_decision_fingerprint("V2_BLOCK", "NOT_PROFITABLE", base_meta)
+                    if v2_should_write_decision(conn, bk, fp):
+                        insert_orc_decision(conn, bk, "V2_BLOCK", None, "NOT_PROFITABLE", base_meta)
+                    continue
+
+            fp = v2_decision_fingerprint("V2_PROPOSE_ENABLE_LIVE", "PROFITABLE_3D_PICK", base_meta)
+            if v2_should_write_decision(conn, bk, fp):
+                insert_orc_decision(conn, bk, "V2_PROPOSE_ENABLE_LIVE", "true", "PROFITABLE_3D_PICK", base_meta)
         else:
             reason = v2_block_reason(r)
-            insert_orc_decision(conn, bk, "V2_BLOCK", None, reason, base_meta)
+            fp = v2_decision_fingerprint("V2_BLOCK", reason, base_meta)
+            if v2_should_write_decision(conn, bk, fp):
+                insert_orc_decision(conn, bk, "V2_BLOCK", None, reason, base_meta)
 
-    # 3) ENFORCE apply (opcjonalnie, na razie nie)
+    # tighten pick_set in ENFORCE when require_profitable
+    if mode == "ENFORCE" and require_profitable:
+        allowed: Set[Tuple[str, str, str]] = set()
+        for r in rows:
+            key = (r["symbol"], r["interval"], r["strategy"])
+            if key not in pick_set:
+                continue
+            if not v2_has_profit_metrics(r):
+                continue
+            if min_trades_3d > 0 and not v2_meets_min_trades(r, min_trades_3d):
+                continue
+            if not bool(r.get("is_profitable_3d")):
+                continue
+            allowed.add(key)
+        pick_set = allowed
+
+    # 3) ENFORCE apply
     if mode == "ENFORCE":
         apply_v2_enforce(conn, pick_set, v2cfg=v2cfg)
 
