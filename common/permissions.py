@@ -1,7 +1,49 @@
 # common/permissions.py
 from .runtime import RuntimeConfig
 from common.db import get_db_conn
+from dataclasses import dataclass
+from typing import Optional
+import psycopg2.extras
 
+
+@dataclass
+class RuntimePerms:
+    panic_enabled: bool
+    live_orders_enabled: bool
+    regime_enabled: bool
+    regime_mode: str
+    reason: Optional[str] = None
+
+def load_runtime_perms(conn, *, symbol: str, interval: str, strategy: str) -> RuntimePerms:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT panic_enabled FROM panic_state WHERE id=true;")
+        p = cur.fetchone()
+        panic_enabled = bool(p["panic_enabled"]) if p else False
+
+        cur.execute("""
+            SELECT live_orders_enabled, regime_enabled, regime_mode, reason
+            FROM bot_control
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+        """, (symbol, interval, strategy))
+        r = cur.fetchone()
+        if not r:
+            # safest default: no live
+            return RuntimePerms(
+                panic_enabled=panic_enabled,
+                live_orders_enabled=False,
+                regime_enabled=False,
+                regime_mode="DRY_RUN",
+                reason="missing bot_control row",
+            )
+
+        return RuntimePerms(
+            panic_enabled=panic_enabled,
+            live_orders_enabled=bool(r["live_orders_enabled"]),
+            regime_enabled=bool(r["regime_enabled"]),
+            regime_mode=(r["regime_mode"] or "DRY_RUN"),
+            reason=r.get("reason"),
+        )
+    
 
 def can_trade(
     cfg: RuntimeConfig,

@@ -444,7 +444,7 @@ def load_open_pos_flags(conn) -> Set[BotKey]:
         return out
 
 
-def load_v5_picks(conn) -> Set[Tuple[str, str, str]]:
+def load_pick_set_ssot(conn) -> Set[Tuple[str, str, str]]:
     with conn.cursor() as cur:
         cur.execute("""
             SELECT symbol, interval, strategy
@@ -1519,7 +1519,7 @@ def run_orc_v2_profit_first(conn, v2cfg: dict, *, effective_actions_enabled: boo
     min_trades_3d = int(v2cfg.get("min_trades_3d") or 0)
 
     # 1) pick set (DB is SSOT)
-    pick_set = load_v5_picks(conn)
+    pick_set = load_pick_set_ssot(conn)
 
     # optional: enforce max_picks safety here too (even though view already limits)
     if len(pick_set) > max_picks:

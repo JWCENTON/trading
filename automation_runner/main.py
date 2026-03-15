@@ -31,6 +31,15 @@ def q1(cur, sql, params=None):
     return row[0] if row else None
 
 
+def _is_primary_writer_v5(cur) -> bool:
+    """
+    Single-writer lock to prevent bot_control flapping.
+    Require: automation_kv.orc_writer_primary == 'V5'
+    """
+    v = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_writer_primary';")
+    return (str(v or "").strip().upper() == "V5")
+
+
 def exec_sql(cur, sql, params=None):
     cur.execute(sql, params or ())
 
@@ -72,6 +81,131 @@ def _get_int_kv(cur, key: str, default: int = 0) -> int:
     except Exception:
         return default
     
+    
+def run_orc_v5_apply(conn):
+    """
+    LIVE: apply v_orc_picks_v5 -> bot_control (DB-only), idempotent + throttled.
+    Single writer of bot_control under V5 to avoid flapping and debug hell.
+    """
+
+    # Hard enable (env) + soft enable (kv) to avoid accidental activation
+    if os.getenv("ORC_V5_APPLY_ENABLED", "0") != "1":
+        return
+
+    interval_s_env = int(os.getenv("ORC_V5_APPLY_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        # Optional KV overrides (if present)
+        kv_enabled = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_enabled';")
+        if kv_enabled is not None and str(kv_enabled).strip() not in ("1", "true", "TRUE", "yes", "on"):
+            return
+        
+        # HARD SAFETY: single writer lock
+        if not _is_primary_writer_v5(cur):
+            logging.warning("orc_v5_apply: skip (orc_writer_primary != V5)")
+            return
+
+        kv_interval = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_interval_s';")
+        interval_s = interval_s_env
+        if kv_interval is not None:
+            try:
+                interval_s = int(kv_interval)
+            except Exception:
+                interval_s = interval_s_env
+
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        # Safety: only LIVE + ACTIVE automation
+        # (caller already checks, but keep it here to prevent accidental misuse)
+        if cfg.trading_mode != "LIVE":
+            return
+
+        sql = """
+        WITH universe AS (
+          SELECT symbol, interval, strategy
+          FROM bot_control
+          WHERE enabled = true
+            AND symbol IN ('BTCUSDC','ETHUSDC','SOLUSDC','BNBUSDC')
+            AND interval IN ('1m','5m')
+            AND strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
+        ),
+        picks AS (
+          SELECT symbol, interval, strategy
+          FROM v_orc_picks_v5
+        ),
+        desired AS (
+          SELECT u.*,
+                 (p.symbol IS NOT NULL) AS want_on
+          FROM universe u
+          LEFT JOIN picks p
+            ON p.symbol=u.symbol AND p.interval=u.interval AND p.strategy=u.strategy
+        ),
+        applied AS (
+          UPDATE bot_control bc
+          SET
+            live_orders_enabled = d.want_on,
+            regime_enabled = true,
+            regime_mode = CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END,
+            updated_at = now(),
+            reason = CASE WHEN d.want_on
+                          THEN 'ORC_V5: picked (entries ON, ENFORCE)'
+                          ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
+                     END,
+            live_since = CASE
+              WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
+              ELSE bc.live_since
+            END,
+            last_disabled_at = CASE
+              WHEN d.want_on = false AND COALESCE(bc.live_orders_enabled,false) = true THEN now()
+              ELSE bc.last_disabled_at
+            END
+          FROM desired d
+          WHERE bc.symbol=d.symbol AND bc.interval=d.interval AND bc.strategy=d.strategy
+            AND (
+              bc.live_orders_enabled IS DISTINCT FROM d.want_on
+              OR bc.regime_mode IS DISTINCT FROM (CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END)
+              OR bc.regime_enabled IS DISTINCT FROM true
+              OR bc.reason IS DISTINCT FROM (CASE WHEN d.want_on
+                                THEN 'ORC_V5: picked (entries ON, ENFORCE)'
+                                ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
+                           END)
+            )
+          RETURNING d.want_on
+        )
+        SELECT
+          (SELECT COUNT(*) FROM picks)                         AS desired_on,
+          (SELECT COUNT(*) FROM universe)                      AS universe_n,
+          (SELECT COUNT(*) FROM applied)                       AS touched,
+          (SELECT COUNT(*) FROM applied WHERE want_on)         AS touched_on,
+          (SELECT COUNT(*) FROM applied WHERE NOT want_on)     AS touched_off,
+          (SELECT md5(string_agg(symbol||'|'||interval||'|'||strategy, ',' ORDER BY symbol, interval, strategy)) FROM picks) AS picks_hash;
+        """
+
+        cur.execute(sql)
+        row = cur.fetchone()
+        desired_on, universe_n, touched, touched_on, touched_off, picks_hash = row
+
+        stats = {
+            "desired_on": int(desired_on or 0),
+            "universe_n": int(universe_n or 0),
+            "touched": int(touched or 0),
+            "touched_on": int(touched_on or 0),
+            "touched_off": int(touched_off or 0),
+            "picks_hash": str(picks_hash or ""),
+            "applied_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
+        }
+
+        upsert_kv(cur, "orc_v5_apply_mode", "automation_runner")
+        upsert_kv(cur, "orc_v5_apply_last_ts_s", str(now_ts))
+        upsert_kv(cur, "orc_v5_apply_last_stats_json", json.dumps(stats, sort_keys=True))
+
+    conn.commit()
+    logging.info("orc_v5_apply: %s", stats)
+
 
 def run_ssot_watchdog(conn):
     """
@@ -524,6 +658,9 @@ def main():
             # LIVE: apply allocator (ONLY when automation is not DISABLE_ONLY)
             if cfg.trading_mode == "LIVE" and mode != "DISABLE_ONLY":
                 run_promo_allocator(conn)
+
+            if cfg.trading_mode == "LIVE" and mode != "DISABLE_ONLY":
+                run_orc_v5_apply(conn)
 
             logging.info("tick ok")
 
