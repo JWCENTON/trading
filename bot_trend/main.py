@@ -24,6 +24,9 @@ from common.daily_loss import compute_daily_loss_pct_positions, should_block_dai
 from common.binance_ingest_trades import ingest_my_trades
 from common.db import get_db_conn
 from common.execution import build_live_client_order_id
+from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
+from common.position_path import load_position_path_snapshot
+from common.exit_guards.guarded_profit import evaluate_guarded_profit
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,6 +95,13 @@ EMA_SLOPE_MIN_PCT = float(os.environ.get("EMA_SLOPE_MIN_PCT", "0.0000"))  # 0.00
 EARLY_EXIT_MINUTES = int(os.environ.get("EARLY_EXIT_MINUTES", "30"))
 EARLY_EXIT_MAX_LOSS_PCT = float(os.environ.get("EARLY_EXIT_MAX_LOSS_PCT", "0.25"))  # cut losers earlier
 MIN_PROFIT_TO_KEEP_PCT = float(os.environ.get("MIN_PROFIT_TO_KEEP_PCT", "0.05"))  # if timeout and profit too small -> exit
+
+GUARDED_PROFIT_ENABLED = os.environ.get("GUARDED_PROFIT_ENABLED", "0") == "1"
+GUARDED_MIN_AGE_MINUTES = int(os.environ.get("GUARDED_MIN_AGE_MINUTES", "10"))
+GUARDED_MFE_ARM_090_ABS = float(os.environ.get("GUARDED_MFE_ARM_090_ABS", "0.90"))
+GUARDED_FLOOR_090_ABS = float(os.environ.get("GUARDED_FLOOR_090_ABS", "0.70"))
+GUARDED_MFE_ARM_110_ABS = float(os.environ.get("GUARDED_MFE_ARM_110_ABS", "1.10"))
+GUARDED_FLOOR_110_ABS = float(os.environ.get("GUARDED_FLOOR_110_ABS", "1.00"))
 
 ORDER_NOTIONAL_USDC = float(os.environ.get("ORDER_NOTIONAL_USDC", "6"))
 MIN_NOTIONAL_BUFFER_PCT = float(os.environ.get("MIN_NOTIONAL_BUFFER_PCT", "0.05"))
@@ -554,6 +564,8 @@ def seed_default_params_from_env(conn):
     global TREND_BUFFER, TREND_FILTER_PCT, ENTRY_BUFFER_PCT
     global ORDER_QTY_BTC, MAX_DIST_FROM_EMA_FAST_PCT
     global ORDER_NOTIONAL_USDC, MIN_NOTIONAL_BUFFER_PCT
+    global GUARDED_PROFIT_ENABLED, GUARDED_MIN_AGE_MINUTES
+    global GUARDED_MFE_ARM_090_ABS, GUARDED_FLOOR_090_ABS, GUARDED_MFE_ARM_110_ABS, GUARDED_FLOOR_110_ABS
 
     cur = conn.cursor()
     cur.execute(
@@ -587,7 +599,14 @@ def seed_default_params_from_env(conn):
         "MIN_PROFIT_TO_KEEP_PCT": float(MIN_PROFIT_TO_KEEP_PCT),
         "ORDER_NOTIONAL_USDC": float(ORDER_NOTIONAL_USDC),
         "MIN_NOTIONAL_BUFFER_PCT": float(MIN_NOTIONAL_BUFFER_PCT),
+        **guarded_profit_defaults_map(),
     }
+    defaults["GUARDED_PROFIT_ENABLED"] = 1.0 if GUARDED_PROFIT_ENABLED else 0.0
+    defaults["GUARDED_MIN_AGE_MINUTES"] = float(GUARDED_MIN_AGE_MINUTES)
+    defaults["GUARDED_MFE_ARM_090_ABS"] = float(GUARDED_MFE_ARM_090_ABS)
+    defaults["GUARDED_FLOOR_090_ABS"] = float(GUARDED_FLOOR_090_ABS)
+    defaults["GUARDED_MFE_ARM_110_ABS"] = float(GUARDED_MFE_ARM_110_ABS)
+    defaults["GUARDED_FLOOR_110_ABS"] = float(GUARDED_FLOOR_110_ABS)
 
     inserted_any = False
 
@@ -638,7 +657,11 @@ def load_runtime_params():
     global TREND_FILTER_PCT, ENTRY_BUFFER_PCT, EMA_FAST, EMA_SLOW
     global ORDER_QTY_BTC, MAX_DIST_FROM_EMA_FAST_PCT
     global ALLOW_SHORT, EARLY_EXIT_MINUTES, EARLY_EXIT_MAX_LOSS_PCT, MIN_PROFIT_TO_KEEP_PCT
+    global GUARDED_PROFIT_ENABLED, GUARDED_MIN_AGE_MINUTES
+    global GUARDED_MFE_ARM_090_ABS, GUARDED_FLOOR_090_ABS, GUARDED_MFE_ARM_110_ABS, GUARDED_FLOOR_110_ABS
     global ORDER_NOTIONAL_USDC, MIN_NOTIONAL_BUFFER_PCT
+    global GUARDED_PROFIT_ENABLED, GUARDED_MIN_AGE_MINUTES
+    global GUARDED_MFE_ARM_090_ABS, GUARDED_FLOOR_090_ABS, GUARDED_MFE_ARM_110_ABS, GUARDED_FLOOR_110_ABS
 
     conn = get_db_conn()
     cur = conn.cursor()
@@ -715,6 +738,14 @@ def load_runtime_params():
     if "MIN_PROFIT_TO_KEEP_PCT" in params:
         MIN_PROFIT_TO_KEEP_PCT = clamp(params["MIN_PROFIT_TO_KEEP_PCT"], 0.0, 5.0)
 
+    guarded_cfg = parse_guarded_profit_config(params)
+    GUARDED_PROFIT_ENABLED = guarded_cfg.enabled
+    GUARDED_MIN_AGE_MINUTES = guarded_cfg.min_age_minutes
+    GUARDED_MFE_ARM_090_ABS = guarded_cfg.mfe_arm_090_abs
+    GUARDED_FLOOR_090_ABS = guarded_cfg.floor_090_abs
+    GUARDED_MFE_ARM_110_ABS = guarded_cfg.mfe_arm_110_abs
+    GUARDED_FLOOR_110_ABS = guarded_cfg.floor_110_abs
+
     if "ORDER_NOTIONAL_USDC" in params:
         ORDER_NOTIONAL_USDC = clamp(params["ORDER_NOTIONAL_USDC"], 1.0, 10000.0)
 
@@ -735,7 +766,9 @@ def load_runtime_params():
         "STOP_LOSS_PCT=%.2f|TAKE_PROFIT_PCT=%.2f|MAX_POSITION_MINUTES=%d|"
         "DAILY_MAX_LOSS_PCT=%.2f|RSI_OVERSOLD=%.1f|RSI_OVERBOUGHT=%.1f|"
         "ORDER_QTY_BTC=%.8f|ORDER_NOTIONAL_USDC=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f|MAX_DIST_FROM_EMA_FAST_PCT=%.2f|"
-        "ALLOW_SHORT=%s|EARLY_EXIT_MINUTES=%d|EARLY_EXIT_MAX_LOSS_PCT=%.2f|MIN_PROFIT_TO_KEEP_PCT=%.2f",
+        "ALLOW_SHORT=%s|EARLY_EXIT_MINUTES=%d|EARLY_EXIT_MAX_LOSS_PCT=%.2f|MIN_PROFIT_TO_KEEP_PCT=%.2f|"
+        "GUARDED_PROFIT_ENABLED=%s|GUARDED_MIN_AGE_MINUTES=%d|GUARDED_MFE_ARM_090_ABS=%.4f|"
+        "GUARDED_FLOOR_090_ABS=%.4f|GUARDED_MFE_ARM_110_ABS=%.4f|GUARDED_FLOOR_110_ABS=%.4f",
         SYMBOL,
         STRATEGY_NAME,
         EMA_FAST,
@@ -757,6 +790,12 @@ def load_runtime_params():
         EARLY_EXIT_MINUTES,
         EARLY_EXIT_MAX_LOSS_PCT,
         MIN_PROFIT_TO_KEEP_PCT,
+        GUARDED_PROFIT_ENABLED,
+        GUARDED_MIN_AGE_MINUTES,
+        GUARDED_MFE_ARM_090_ABS,
+        GUARDED_FLOOR_090_ABS,
+        GUARDED_MFE_ARM_110_ABS,
+        GUARDED_FLOOR_110_ABS,
     )
 
 
@@ -1556,6 +1595,92 @@ def run_trend_strategy():
                     close_position(exit_price=price, reason="STOP_LOSS_SHORT", open_time=open_time)
                     return
                 
+            # --- GUARDED PROFIT: shared decision layer, local TREND execution ---
+            if pos_side == "LONG" and pos_entry_time is not None and GUARDED_PROFIT_ENABLED:
+                if pos_entry_time.tzinfo is None:
+                    pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+
+                age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+                path = load_position_path_snapshot(
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    entry_time=pos_entry_time,
+                    asof_open_time=open_time,
+                    entry_price=pos_entry_price,
+                )
+                guarded_cfg = parse_guarded_profit_config({
+                    "GUARDED_PROFIT_ENABLED": 1.0 if GUARDED_PROFIT_ENABLED else 0.0,
+                    "GUARDED_MIN_AGE_MINUTES": float(GUARDED_MIN_AGE_MINUTES),
+                    "GUARDED_MFE_ARM_090_ABS": float(GUARDED_MFE_ARM_090_ABS),
+                    "GUARDED_FLOOR_090_ABS": float(GUARDED_FLOOR_090_ABS),
+                    "GUARDED_MFE_ARM_110_ABS": float(GUARDED_MFE_ARM_110_ABS),
+                    "GUARDED_FLOOR_110_ABS": float(GUARDED_FLOOR_110_ABS),
+                })
+                guarded_decision = evaluate_guarded_profit(
+                    side=pos_side,
+                    age_minutes=age_minutes,
+                    entry_price=pos_entry_price,
+                    path=path,
+                    config=guarded_cfg,
+                )
+                if guarded_decision.triggered:
+                    reason_guarded = (
+                        f"TREND GUARDED LONG bucket={guarded_decision.guard_bucket} "
+                        f"mfe_abs={guarded_decision.mfe_abs:.4f} current_move_abs={guarded_decision.current_move_abs:.4f} "
+                        f"floor_abs={guarded_decision.floor_abs:.4f} age={guarded_decision.age_minutes:.1f}m"
+                    )
+                    emit_strategy_event(
+                        event_type="EXIT_SIGNAL",
+                        decision="SELL",
+                        reason="GUARDED_PROFIT_LONG",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "guard_bucket": guarded_decision.guard_bucket,
+                            "mfe_abs": float(guarded_decision.mfe_abs or 0.0),
+                            "floor_abs": float(guarded_decision.floor_abs or 0.0),
+                            "current_move_abs": float(guarded_decision.current_move_abs or 0.0),
+                            "age_minutes": float(guarded_decision.age_minutes),
+                            "bars_seen": int(path.bars_seen) if path is not None else 0,
+                        },
+                    )
+                    emit_regime_gate_event(
+                        symbol=SYMBOL,
+                        interval=INTERVAL,
+                        strategy=STRATEGY_NAME,
+                        decision="TICK",
+                        d=decide_regime_gate(
+                            symbol=SYMBOL,
+                            interval=INTERVAL,
+                            strategy=STRATEGY_NAME,
+                            decision="TICK",
+                            regime_enabled=bc.regime_enabled,
+                            regime_mode=bc.regime_mode,
+                        ),
+                    )
+                    res = execute_and_record(
+                        side="SELL",
+                        price=price,
+                        qty_btc=pos_qty,
+                        reason=reason_guarded,
+                        candle_open_time=open_time,
+                        cfg_used=cfg_effective,
+                        rsi_14=rsi_14,
+                        ema_21=ema_21,
+                        allow_live_orders=snap["allowed_orders_exit"],
+                        allow_meta=snap["allow_meta_exit"],
+                        is_exit=True,
+                        pos_id=int(pos[0]),
+                    )
+                    if not res["ledger_ok"]:
+                        logging.info("TREND: guarded exit blocked by DB guard -> skipping close.")
+                        return
+                    if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
+                        logging.info("TREND: guarded exit suppressed/failed -> not closing position.")
+                        return
+                    close_position(exit_price=price, reason="GUARDED_PROFIT_LONG", open_time=open_time)
+                    return
+
             # --- EARLY EXIT: cut losers earlier than TIMEOUT/SL to make TIMEOUT non-negative on average ---
             if EARLY_EXIT_MINUTES > 0 and pos_entry_time is not None:
                 if pos_entry_time.tzinfo is None:

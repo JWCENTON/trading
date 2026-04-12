@@ -363,16 +363,16 @@ def compute_z_score(wins: int, losses: int) -> Optional[float]:
     return (p_hat - p0) / denom
 
 
-def load_current_params(symbol: str, strategy: str) -> Dict[str, float]:
+def load_current_params(symbol: str, strategy: str, interval: str) -> Dict[str, float]:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """
         SELECT param_name, param_value
         FROM strategy_params
-        WHERE symbol = %s AND strategy = %s
+        WHERE symbol = %s AND strategy = %s AND interval = %s
         """,
-        (symbol, strategy),
+        (symbol, strategy, interval),
     )
     rows = cur.fetchall()
     cur.close()
@@ -516,11 +516,11 @@ def normalize_strategy_name(s: str) -> str:
     return x
 
 
-def upsert_strategy_params(symbol: str, strategy: str, params: Dict[str, float], source: str = "AI"):
+def upsert_strategy_params(symbol: str, strategy: str, interval: str, params: Dict[str, float], source: str = "AI"):
     if source == "AI" and not ALLOW_AI_DB_WRITES:
         logging.warning(
-            "AI tuner: blocked DB write (ENVIRONMENT=%s TRADING_MODE=%s AI_AUTO_APPLY=%s) for %s %s params=%s",
-            ENVIRONMENT, TRADING_MODE, AI_AUTO_APPLY, symbol, strategy, list(params.keys())
+            "AI tuner: blocked DB write (ENVIRONMENT=%s TRADING_MODE=%s AI_AUTO_APPLY=%s) for %s %s %s params=%s",
+            ENVIRONMENT, TRADING_MODE, AI_AUTO_APPLY, symbol, strategy, interval, list(params.keys())
         )
         return
     conn = get_conn()
@@ -530,31 +530,31 @@ def upsert_strategy_params(symbol: str, strategy: str, params: Dict[str, float],
         cur.execute(
             """
             SELECT param_value FROM strategy_params
-            WHERE symbol = %s AND strategy = %s AND param_name = %s
+            WHERE symbol = %s AND strategy = %s AND interval = %s AND param_name = %s
             """,
-            (symbol, strategy, name),
+            (symbol, strategy, interval, name),
         )
         row = cur.fetchone()
         old_value = float(row[0]) if row else None
 
         cur.execute(
             """
-            INSERT INTO strategy_params (symbol, strategy, param_name, param_value)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (symbol, strategy, param_name)
+            INSERT INTO strategy_params (symbol, strategy, interval, param_name, param_value)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, strategy, interval, param_name)
             DO UPDATE SET param_value = EXCLUDED.param_value,
                           updated_at = now()
             """,
-            (symbol, strategy, name, float(value)),
+            (symbol, strategy, interval, name, float(value)),
         )
 
         cur.execute(
             """
             INSERT INTO strategy_params_history (
-                symbol, strategy, param_name, old_value, new_value, source
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+                symbol, strategy, interval, param_name, old_value, new_value, source
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (symbol, strategy, name, old_value, float(value), source),
+            (symbol, strategy, interval, name, old_value, float(value), source),
         )
 
     conn.commit()
@@ -646,7 +646,7 @@ def run_ai_tuning_for_pair(symbol: str, strategy: str, interval: str):
         )
         return
 
-    baseline_params = load_current_params(symbol, strategy)
+    baseline_params = load_current_params(symbol, strategy, interval)
     prompt = build_ai_prompt(symbol, strategy, interval, metrics, losing_trades)
 
     try:
@@ -694,7 +694,7 @@ def run_ai_tuning_for_pair(symbol: str, strategy: str, interval: str):
         "AI tuner: applying params for %s %s: %s (baseline=%s, raw_ai=%s)",
         symbol, strategy, final_params, baseline_params, filtered_params,
     )
-    upsert_strategy_params(symbol, strategy, final_params, source="AI")
+    upsert_strategy_params(symbol, strategy, interval, final_params, source="AI")
 
 
 def ai_auto_tuner_loop():
