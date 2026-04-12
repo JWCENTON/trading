@@ -248,6 +248,68 @@ export interface OpsEnvironmentResponse {
   quote_asset: string;
 }
 
+export interface UiOrcDashboardRow {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  picked_via: string;
+
+  enabled: boolean | null;
+  live_orders_enabled: boolean | null;
+  regime_enabled: boolean | null;
+  regime_mode: string | null;
+  bot_reason: string | null;
+  bot_updated_at: string | null;
+
+  target_notional_usdc: number | null;
+  capital_reason: string | null;
+  capital_last_checked: string | null;
+
+  base_order_size: number | null;
+  additional_usdc: number | null;
+  adjusted_order_size: number | null;
+  closed_trades_last3: number;
+  wins_last3: number;
+  last_trade_was_loss: number;
+
+  n_signal_15m: number;
+  last_signal_ts: string | null;
+  n_buy_24h: number;
+  n_runs_24h: number;
+  n_filter_block_24h: number;
+  filter_block_rate_24h: number;
+  n_trades_3d: number;
+  net_sum_3d: number;
+  profit_factor_3d: number;
+  last_exit_ts_3d: string | null;
+  last_ts_24h: string | null;
+
+  eligible_pick_v5: boolean;
+  eligible_bootstrap_v5: boolean;
+  eligible_signal_v5: boolean;
+  eligible_activity_v5: boolean;
+  eligible_softfill_v5: boolean;
+
+  blocked_reason: string | null;
+  blocked_at: string | null;
+}
+
+export interface UiOrcDashboardResponse {
+  total: number;
+  items: UiOrcDashboardRow[];
+  available_sources?: {
+    v_orc_picks_v5: boolean;
+    v_orc_candidates_v5c: boolean;
+    v_order_sizing_v1: boolean;
+    bot_control: boolean;
+    strategy_events: boolean;
+    slot_capital_policy: boolean;
+  };
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
 export interface RegimePoint {
   symbol: string;
   interval: string;
@@ -286,6 +348,10 @@ export async function getBotsActive(ttlSeconds = 600) {
 
 export async function getOpsEnvironment() {
   return (await api.get<OpsEnvironmentResponse>("/ops/environment")).data;
+}
+
+export async function getUiOrcDashboard() {
+  return (await api.get<UiOrcDashboardResponse>("/ui/orc-dashboard")).data;
 }
 
 export function envBool(v: string | null | undefined): boolean {

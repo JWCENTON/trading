@@ -17,6 +17,9 @@ import {
   type OpsPositionsOpenResponse,
   type OpsLiveAttemptsResponse,
   type BotsActiveResponse,
+  type UiOrcDashboardResponse,
+  type UiOrcDashboardRow,
+  getUiOrcDashboard,
   getOpsEnvironment,
   getOpsBotControl,
   getOpsPositionsOpen,
@@ -411,7 +414,7 @@ const ALL_INTERVALS = ["1m", "5m"] as const;
 type Interval = typeof ALL_INTERVALS[number];
 
 function App() {
-  const [activeTab, setActiveTab] = useState<"HOME" | "BOT" | "OPS">("HOME");
+  const [activeTab, setActiveTab] = useState<"HOME" | "ORC" | "BOT" | "OPS">("HOME");
 
   const [symbol, setSymbol] = useState<SymbolPair>(makeSymbol("BTC"));
   const [strategy, setStrategy] = useState<Strategy>("RSI");
@@ -459,6 +462,7 @@ function App() {
   const [opsAttempts, setOpsAttempts] = useState<OpsLiveAttemptsResponse | null>(null);
   const [botsActive, setBotsActive] = useState<BotsActiveResponse | null>(null);
   const [opsMinutes, setOpsMinutes] = useState(180);
+  const [orcDashboard, setOrcDashboard] = useState<UiOrcDashboardResponse | null>(null);
 
   function handleOrdersPrev() {
     setOrdersPageNum((p) => Math.max(1, p - 1));
@@ -506,6 +510,18 @@ function App() {
         setSafety(saf);
 
         return; // ważne: nie ładuj reszty dashboardu
+      }
+
+      if (activeTab === "ORC") {
+        const [orc, saf] = await Promise.all([
+          getUiOrcDashboard(),
+          getSafetyStatus(),
+        ]);
+
+        setOrcDashboard(orc);
+        setSafety(saf);
+
+        return;
       }
 
       const pnlPromises: Promise<PnLSummary>[] = [];
@@ -636,7 +652,7 @@ function App() {
     const t = window.setInterval(() => loadData(), 60_000);
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, currentPage, currentOrdersPage, strategy, interval]);
+  }, [activeTab, symbol, currentPage, currentOrdersPage, strategy, interval, opsMinutes]);
 
   const pageStartIndex = (currentPage - 1) * TRADES_PAGE_SIZE;
   const ordersRowStartIndex = (currentOrdersPage - 1) * ORDERS_PAGE_SIZE;
@@ -722,6 +738,10 @@ function App() {
           <h1 style={{ fontSize: "24px", margin: 0 }}>
             {activeTab === "HOME"
               ? "📊 Trading Bots – Home"
+              : activeTab === "ORC"
+              ? "🎯 ORC Dashboard (truth-only)"
+              : activeTab === "OPS"
+              ? "🛠️ OPS Dashboard"
               : `🧠 ${symbol} Bot Dashboard (${strategy})`}
           </h1>
           <div
@@ -745,6 +765,19 @@ function App() {
               }}
             >
               HOME
+            </button>
+            <button
+              onClick={() => setActiveTab("ORC")}
+              style={{
+                padding: "6px 14px",
+                fontSize: 13,
+                border: "none",
+                background: activeTab === "ORC" ? "#f59e0b" : "transparent",
+                color: activeTab === "ORC" ? "#02110a" : "#e5e7eb",
+                cursor: "pointer",
+              }}
+            >
+              ORC
             </button>
             <button
               onClick={() => setActiveTab("BOT")}
@@ -1196,6 +1229,219 @@ function App() {
                         );
                       })
                     ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {!loading && activeTab === "ORC" && (
+        <>
+          <div
+            style={{
+              background: "#111827",
+              padding: "16px",
+              borderRadius: 12,
+              marginBottom: 24,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+            }}
+          >
+            <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
+              Truth sources
+            </h2>
+
+            {orcDashboard?.available_sources ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {Object.entries(orcDashboard.available_sources).map(([k, v]) => (
+                  <span
+                    key={k}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 999,
+                      border: "1px solid #1f2937",
+                      background: v ? "#064e3b" : "#7c2d12",
+                      color: "#e5e7eb",
+                      fontSize: 12,
+                    }}
+                  >
+                    {k}: {v ? "YES" : "NO"}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div style={{ opacity: 0.7, fontSize: 13 }}>No source metadata.</div>
+            )}
+          </div>
+
+          <div
+            style={{
+              background: "#020617",
+              padding: "16px",
+              borderRadius: 12,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.7)",
+              marginBottom: 24,
+            }}
+          >
+            <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
+              ORC picks — truth only
+            </h2>
+
+            <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
+              Total picks: {orcDashboard?.total ?? 0}
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 13,
+                }}
+              >
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: "1px solid #1f2937" }}>
+                    <th style={{ padding: "6px 8px" }}>Symbol</th>
+                    <th style={{ padding: "6px 8px" }}>Interval</th>
+                    <th style={{ padding: "6px 8px" }}>Strategy</th>
+                    <th style={{ padding: "6px 8px" }}>Tier</th>
+                    <th style={{ padding: "6px 8px" }}>Enabled</th>
+                    <th style={{ padding: "6px 8px" }}>Live orders</th>
+                    <th style={{ padding: "6px 8px" }}>Regime mode</th>
+                    <th style={{ padding: "6px 8px" }}>Target</th>
+                    <th style={{ padding: "6px 8px" }}>Sizing</th>
+                    <th style={{ padding: "6px 8px" }}>3W / loss</th>
+                    <th style={{ padding: "6px 8px" }}>Signals 15m</th>
+                    <th style={{ padding: "6px 8px" }}>Buy 24h</th>
+                    <th style={{ padding: "6px 8px" }}>PF 3d</th>
+                    <th style={{ padding: "6px 8px" }}>Net 3d</th>
+                    <th style={{ padding: "6px 8px" }}>Blocked</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(orcDashboard?.items ?? []).map((row: UiOrcDashboardRow) => (
+                    <tr
+                      key={`${row.symbol}-${row.interval}-${row.strategy}`}
+                      style={{ borderBottom: "1px solid #111827" }}
+                    >
+                      <td style={{ padding: "6px 8px" }}>{row.symbol}</td>
+                      <td style={{ padding: "6px 8px" }}>{row.interval}</td>
+                      <td style={{ padding: "6px 8px" }}>{row.strategy}</td>
+                      <td style={{ padding: "6px 8px" }}>{row.picked_via}</td>
+                      <td style={{ padding: "6px 8px", color: row.enabled ? "#22c55e" : "#ef4444" }}>
+                        {row.enabled === null ? "-" : row.enabled ? "ON" : "OFF"}
+                      </td>
+                      <td
+                        style={{
+                          padding: "6px 8px",
+                          color: row.live_orders_enabled ? "#22c55e" : "#f59e0b",
+                        }}
+                      >
+                        {row.live_orders_enabled === null ? "-" : row.live_orders_enabled ? "ON" : "OFF"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.regime_mode ?? "-"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.target_notional_usdc !== null
+                          ? row.target_notional_usdc.toFixed(2)
+                          : "-"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.adjusted_order_size !== null
+                          ? `${row.base_order_size?.toFixed(2) ?? "-"} + ${row.additional_usdc?.toFixed(2) ?? "0.00"} = ${row.adjusted_order_size.toFixed(2)}`
+                          : "-"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.wins_last3}/{row.closed_trades_last3}
+                        {row.last_trade_was_loss ? " | LOSS" : ""}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>{row.n_signal_15m}</td>
+                      <td style={{ padding: "6px 8px" }}>{row.n_buy_24h}</td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.profit_factor_3d.toFixed(2)}
+                      </td>
+                      <td
+                        style={{
+                          padding: "6px 8px",
+                          color: row.net_sum_3d >= 0 ? "#22c55e" : "#ef4444",
+                        }}
+                      >
+                        {row.net_sum_3d.toFixed(6)}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.blocked_reason ?? "-"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div
+            style={{
+              background: "#111827",
+              padding: "16px",
+              borderRadius: 12,
+              marginBottom: 24,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+            }}
+          >
+            <h2 style={{ fontSize: "18px", marginBottom: 8 }}>
+              ORC explainability
+            </h2>
+
+            <div style={{ overflowX: "auto" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 13,
+                }}
+              >
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: "1px solid #1f2937" }}>
+                    <th style={{ padding: "6px 8px" }}>Slot</th>
+                    <th style={{ padding: "6px 8px" }}>Tier flags</th>
+                    <th style={{ padding: "6px 8px" }}>Bot reason</th>
+                    <th style={{ padding: "6px 8px" }}>Last signal</th>
+                    <th style={{ padding: "6px 8px" }}>Last exit</th>
+                    <th style={{ padding: "6px 8px" }}>Last activity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(orcDashboard?.items ?? []).map((row: UiOrcDashboardRow) => (
+                    <tr
+                      key={`ex-${row.symbol}-${row.interval}-${row.strategy}`}
+                      style={{ borderBottom: "1px solid #111827" }}
+                    >
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.symbol} / {row.interval} / {row.strategy}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {[
+                          row.eligible_pick_v5 ? "T1" : null,
+                          row.eligible_bootstrap_v5 ? "T2" : null,
+                          row.eligible_signal_v5 ? "T3" : null,
+                          row.eligible_activity_v5 ? "T4" : null,
+                          row.eligible_softfill_v5 ? "T5" : null,
+                        ]
+                          .filter(Boolean)
+                          .join(", ") || "-"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>{row.bot_reason ?? "-"}</td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.last_signal_ts ? formatDate(row.last_signal_ts) : "-"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.last_exit_ts_3d ? formatDate(row.last_exit_ts_3d) : "-"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>
+                        {row.last_ts_24h ? formatDate(row.last_ts_24h) : "-"}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
