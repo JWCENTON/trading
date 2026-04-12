@@ -92,8 +92,9 @@ def ensure_schema():
     # RSI runtime params are per (symbol,strategy,interval)
     cur.execute("ALTER TABLE strategy_params ADD COLUMN IF NOT EXISTS interval text NOT NULL DEFAULT '1m';")
 
-    # keep old UNIQUE(symbol,strategy,param_name) for backward compatibility,
-    # but add the new canonical unique index including interval
+    # canonical uniqueness is per (symbol, strategy, interval, param_name);
+    # drop legacy constraint if it still exists from older installs
+    cur.execute("ALTER TABLE strategy_params DROP CONSTRAINT IF EXISTS strategy_params_symbol_strategy_param_name_key;")
     cur.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS ux_strategy_params_sym_strat_int_name
@@ -107,12 +108,20 @@ def ensure_schema():
             id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             strategy TEXT NOT NULL,
+            interval TEXT NOT NULL DEFAULT '1m',
             param_name TEXT NOT NULL,
             old_value NUMERIC,
             new_value NUMERIC NOT NULL,
             changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             source TEXT NOT NULL
         );
+        """
+    )
+    cur.execute("ALTER TABLE strategy_params_history ADD COLUMN IF NOT EXISTS interval text NOT NULL DEFAULT '1m';")
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_strategy_params_history_lookup
+        ON strategy_params_history(symbol, strategy, interval, param_name, changed_at DESC);
         """
     )
 
