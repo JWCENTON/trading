@@ -1679,6 +1679,297 @@ def ops_environment():
         "db_name": DB_NAME,
         "quote_asset": QUOTE_ASSET,
     }
+
+@app.get("/ui/orc-dashboard")
+def ui_orc_dashboard():
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute(
+                """
+                SELECT
+                  to_regclass('public.v_orc_picks_v5')::text,
+                  to_regclass('public.v_orc_candidates_v5c')::text,
+                  to_regclass('public.v_order_sizing_v1')::text,
+                  to_regclass('public.bot_control')::text,
+                  to_regclass('public.strategy_events')::text,
+                  to_regclass('public.slot_capital_policy')::text
+                """
+            )
+            reg = cur.fetchone()
+
+            has_v_orc_picks_v5 = reg[0] is not None
+            has_v_orc_candidates_v5c = reg[1] is not None
+            has_v_order_sizing_v1 = reg[2] is not None
+            has_bot_control = reg[3] is not None
+            has_strategy_events = reg[4] is not None
+            has_slot_capital_policy = reg[5] is not None
+
+            required_missing = []
+            if not has_v_orc_picks_v5:
+                required_missing.append("v_orc_picks_v5")
+            if not has_v_orc_candidates_v5c:
+                required_missing.append("v_orc_candidates_v5c")
+
+            if required_missing:
+                return {
+                    "total": 0,
+                    "items": [],
+                    "error_type": "MissingRequiredRelations",
+                    "error": f"Missing required truth sources: {', '.join(required_missing)}",
+                    "available_sources": {
+                        "v_orc_picks_v5": has_v_orc_picks_v5,
+                        "v_orc_candidates_v5c": has_v_orc_candidates_v5c,
+                        "v_order_sizing_v1": has_v_order_sizing_v1,
+                        "bot_control": has_bot_control,
+                        "strategy_events": has_strategy_events,
+                        "slot_capital_policy": has_slot_capital_policy,
+                    },
+                }
+
+            latest_blocked_cte = ""
+            latest_blocked_join = ""
+            latest_blocked_cols = """
+                  NULL::text AS blocked_reason,
+                  NULL::timestamptz AS blocked_at
+            """
+            if has_strategy_events:
+                latest_blocked_cte = """
+                WITH latest_blocked AS (
+                  SELECT
+                    x.symbol,
+                    x.interval,
+                    x.strategy,
+                    x.reason AS blocked_reason,
+                    x.created_at AS blocked_at
+                  FROM (
+                    SELECT
+                      se.symbol,
+                      se.interval,
+                      se.strategy,
+                      se.reason,
+                      se.created_at,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY se.symbol, se.interval, se.strategy
+                        ORDER BY se.created_at DESC
+                      ) AS rn
+                    FROM strategy_events se
+                    WHERE se.event_type = 'BLOCKED'
+                      AND se.created_at >= NOW() - INTERVAL '24 hours'
+                  ) x
+                  WHERE x.rn = 1
+                )
+                """
+                latest_blocked_join = """
+                LEFT JOIN latest_blocked lb
+                  ON lb.symbol = p.symbol
+                 AND lb.interval = p.interval
+                 AND lb.strategy = p.strategy
+                """
+                latest_blocked_cols = """
+                  lb.blocked_reason,
+                  lb.blocked_at
+                """
+
+            bot_control_join = ""
+            bot_control_cols = """
+                  NULL::boolean AS enabled,
+                  NULL::boolean AS live_orders_enabled,
+                  NULL::boolean AS regime_enabled,
+                  NULL::text AS regime_mode,
+                  NULL::text AS bot_reason,
+                  NULL::timestamptz AS bot_updated_at
+            """
+            if has_bot_control:
+                bot_control_join = """
+                LEFT JOIN bot_control bc
+                  ON bc.symbol = p.symbol
+                 AND bc.interval = p.interval
+                 AND bc.strategy = p.strategy
+                """
+                bot_control_cols = """
+                  bc.enabled,
+                  bc.live_orders_enabled,
+                  bc.regime_enabled,
+                  bc.regime_mode,
+                  bc.reason AS bot_reason,
+                  bc.updated_at AS bot_updated_at
+                """
+
+            sizing_join = ""
+            sizing_cols = """
+                  NULL::numeric AS base_order_size,
+                  NULL::numeric AS additional_usdc,
+                  NULL::numeric AS adjusted_order_size,
+                  NULL::bigint AS closed_trades_last3,
+                  NULL::bigint AS wins_last3,
+                  NULL::int AS last_trade_was_loss
+            """
+            if has_v_order_sizing_v1:
+                sizing_join = """
+                LEFT JOIN v_order_sizing_v1 os
+                  ON os.symbol = p.symbol
+                 AND os.interval = p.interval
+                 AND os.strategy = p.strategy
+                """
+                sizing_cols = """
+                  os.base_order_size,
+                  os.additional_usdc,
+                  os.adjusted_order_size,
+                  os.closed_trades_last3,
+                  os.wins_last3,
+                  os.last_trade_was_loss
+                """
+
+            capital_join = ""
+            capital_cols = """
+                  NULL::numeric AS target_notional_usdc,
+                  NULL::text AS capital_reason,
+                  NULL::timestamptz AS capital_last_checked
+            """
+            if has_slot_capital_policy:
+                capital_join = """
+                LEFT JOIN slot_capital_policy scp
+                  ON scp.symbol = p.symbol
+                 AND scp.interval = p.interval
+                 AND scp.strategy = p.strategy
+                """
+                capital_cols = """
+                  scp.target_notional_usdc,
+                  scp.reason AS capital_reason,
+                  scp.last_checked AS capital_last_checked
+                """
+
+            sql = f"""
+                {latest_blocked_cte}
+                SELECT
+                  p.symbol,
+                  p.interval,
+                  p.strategy,
+                  CASE
+                    WHEN c.eligible_pick_v5 THEN 'TIER1_PROFITABILITY'
+                    WHEN c.eligible_bootstrap_v5 THEN 'TIER2_BOOTSTRAP'
+                    WHEN c.eligible_signal_v5 THEN 'TIER3_SIGNAL'
+                    WHEN c.eligible_activity_v5 THEN 'TIER4_ACTIVITY'
+                    WHEN c.eligible_softfill_v5 THEN 'TIER5_SOFTFILL'
+                    ELSE 'NO_PATH'
+                  END AS picked_via,
+
+                  {bot_control_cols},
+
+                  {capital_cols},
+
+                  {sizing_cols},
+
+                  c.n_signal_15m,
+                  c.last_signal_ts,
+                  c.n_buy_24h,
+                  c.n_runs_24h,
+                  c.n_filter_block_24h,
+                  c.filter_block_rate_24h,
+                  c.n_trades_3d,
+                  c.net_sum_3d,
+                  c.profit_factor_3d,
+                  c.last_exit_ts_3d,
+                  c.last_ts_24h,
+
+                  c.eligible_pick_v5,
+                  c.eligible_bootstrap_v5,
+                  c.eligible_signal_v5,
+                  c.eligible_activity_v5,
+                  c.eligible_softfill_v5,
+
+                  {latest_blocked_cols}
+
+                FROM v_orc_picks_v5 p
+                JOIN v_orc_candidates_v5c c
+                  ON c.symbol = p.symbol
+                 AND c.interval = p.interval
+                 AND c.strategy = p.strategy
+
+                {bot_control_join}
+                {capital_join}
+                {sizing_join}
+                {latest_blocked_join}
+
+                ORDER BY
+                  p.symbol,
+                  p.interval,
+                  p.strategy
+            """
+
+            cur.execute(sql)
+            rows = cur.fetchall()
+
+        items = []
+        for r in rows:
+            items.append({
+                "symbol": r[0],
+                "interval": r[1],
+                "strategy": r[2],
+                "picked_via": r[3],
+
+                "enabled": r[4],
+                "live_orders_enabled": r[5],
+                "regime_enabled": r[6],
+                "regime_mode": r[7],
+                "bot_reason": r[8],
+                "bot_updated_at": r[9],
+
+                "target_notional_usdc": float(r[10]) if r[10] is not None else None,
+                "capital_reason": r[11],
+                "capital_last_checked": r[12],
+
+                "base_order_size": float(r[13]) if r[13] is not None else None,
+                "additional_usdc": float(r[14]) if r[14] is not None else None,
+                "adjusted_order_size": float(r[15]) if r[15] is not None else None,
+                "closed_trades_last3": int(r[16]) if r[16] is not None else 0,
+                "wins_last3": int(r[17]) if r[17] is not None else 0,
+                "last_trade_was_loss": int(r[18]) if r[18] is not None else 0,
+
+                "n_signal_15m": int(r[19]) if r[19] is not None else 0,
+                "last_signal_ts": r[20],
+                "n_buy_24h": int(r[21]) if r[21] is not None else 0,
+                "n_runs_24h": int(r[22]) if r[22] is not None else 0,
+                "n_filter_block_24h": int(r[23]) if r[23] is not None else 0,
+                "filter_block_rate_24h": float(r[24]) if r[24] is not None else 0.0,
+                "n_trades_3d": int(r[25]) if r[25] is not None else 0,
+                "net_sum_3d": float(r[26]) if r[26] is not None else 0.0,
+                "profit_factor_3d": float(r[27]) if r[27] is not None else 0.0,
+                "last_exit_ts_3d": r[28],
+                "last_ts_24h": r[29],
+
+                "eligible_pick_v5": bool(r[30]),
+                "eligible_bootstrap_v5": bool(r[31]),
+                "eligible_signal_v5": bool(r[32]),
+                "eligible_activity_v5": bool(r[33]),
+                "eligible_softfill_v5": bool(r[34]),
+
+                "blocked_reason": r[35],
+                "blocked_at": r[36],
+            })
+
+        return jsonable_encoder({
+            "total": len(items),
+            "items": items,
+            "available_sources": {
+                "v_orc_picks_v5": has_v_orc_picks_v5,
+                "v_orc_candidates_v5c": has_v_orc_candidates_v5c,
+                "v_order_sizing_v1": has_v_order_sizing_v1,
+                "bot_control": has_bot_control,
+                "strategy_events": has_strategy_events,
+                "slot_capital_policy": has_slot_capital_policy,
+            },
+        })
+
+    except Exception as e:
+        return {
+            "total": 0,
+            "items": [],
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "note": "ui/orc-dashboard failed",
+        }
+
 # --- INTERNAL: promotions upsert (v1) ---
 
 # --- INTERNAL: promotions upsert (v1) ---
