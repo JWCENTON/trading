@@ -168,6 +168,50 @@ def ensure_schema():
 
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS panic_state (
+          id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id = TRUE),
+          panic_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+          reason TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        INSERT INTO panic_state (id, panic_enabled, reason)
+        VALUES (TRUE, FALSE, 'bootstrap')
+        ON CONFLICT (id) DO NOTHING;
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ui_audit_log (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          actor TEXT NOT NULL,
+          actor_role TEXT,
+          action TEXT NOT NULL,
+          target_type TEXT NOT NULL,
+          target_key TEXT NOT NULL,
+          before_json JSONB,
+          after_json JSONB,
+          source TEXT,
+          note TEXT
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_ui_audit_log_created_at
+          ON ui_audit_log(created_at DESC);
+        """
+    )
+
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS bot_control (
         symbol TEXT NOT NULL,
         strategy TEXT NOT NULL,

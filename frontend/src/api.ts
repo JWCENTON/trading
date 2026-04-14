@@ -27,16 +27,14 @@ if (!API_BASE_URL) {
 export const api = axios.create({ baseURL: API_BASE_URL });
 
 export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPERTREND";
-
 export type SymbolPair = string;
-
 export const BASE_ASSETS = ["BTC", "ETH", "SOL", "BNB"] as const;
 export type BaseAsset = typeof BASE_ASSETS[number];
+export const ALL_STRATEGIES: Strategy[] = ["RSI", "TREND", "BBRANGE", "SUPERTREND"];
 
 export function makeSymbol(base: BaseAsset): SymbolPair {
   return `${base}${QUOTE_ASSET}`;
 }
-
 
 export interface CandleSummary {
   symbol: string;
@@ -45,11 +43,9 @@ export interface CandleSummary {
   close: number;
   ema_21: number | null;
   rsi_14: number | null;
-
-  // 🔹 Dodatkowe pola, żeby frontend mógł pokazać SuperTrend
   atr_14?: number | null;
   supertrend?: number | null;
-  supertrend_direction?: number | null; // 1 = UP, -1 = DOWN
+  supertrend_direction?: number | null;
 }
 
 export interface SimulatedOrder {
@@ -123,7 +119,6 @@ export interface AccountSummary {
   balances: AssetBalance[];
 }
 
-/** 🔹 Metryki strategii dla (symbol, interval, strategy) */
 export interface StrategyMetrics {
   symbol: string;
   interval: string;
@@ -159,11 +154,10 @@ export interface WatchdogEventPage {
   items: WatchdogEvent[];
 }
 
-
 export interface SafetyStatus {
   environment?: string | null;
   trading_mode?: string | null;
-  live_orders_enabled?: string | null; // env jest string
+  live_orders_enabled?: string | null;
   panic_disable_trading?: string | null;
 }
 
@@ -253,25 +247,21 @@ export interface UiOrcDashboardRow {
   interval: string;
   strategy: Strategy;
   picked_via: string;
-
   enabled: boolean | null;
   live_orders_enabled: boolean | null;
   regime_enabled: boolean | null;
   regime_mode: string | null;
   bot_reason: string | null;
   bot_updated_at: string | null;
-
   target_notional_usdc: number | null;
   capital_reason: string | null;
   capital_last_checked: string | null;
-
   base_order_size: number | null;
   additional_usdc: number | null;
   adjusted_order_size: number | null;
   closed_trades_last3: number;
   wins_last3: number;
   last_trade_was_loss: number;
-
   n_signal_15m: number;
   last_signal_ts: string | null;
   n_buy_24h: number;
@@ -283,13 +273,11 @@ export interface UiOrcDashboardRow {
   profit_factor_3d: number;
   last_exit_ts_3d: string | null;
   last_ts_24h: string | null;
-
   eligible_pick_v5: boolean;
   eligible_bootstrap_v5: boolean;
   eligible_signal_v5: boolean;
   eligible_activity_v5: boolean;
   eligible_softfill_v5: boolean;
-
   blocked_reason: string | null;
   blocked_at: string | null;
 }
@@ -320,6 +308,191 @@ export interface RegimePoint {
   trend_strength_pct?: number | null;
   atr_pct?: number | null;
   shock_z?: number | null;
+}
+
+export interface UiLiveSummary {
+  environment: string;
+  trading_mode: string;
+  panic: {
+    enabled: boolean;
+    reason: string;
+    updated_at: string | null;
+  };
+  slot_counts: {
+    total: number;
+    enabled: number;
+    live_orders_enabled: number;
+    regime_enabled: number;
+    enforce: number;
+    effective_live: number;
+  };
+  open_positions: {
+    count: number;
+    market_value_usdc: number;
+    unrealized_pnl_usdc: number;
+  };
+  heartbeats: {
+    latest_at: string | null;
+    total: number;
+    fresh: number;
+    stale: number;
+  };
+  market_data: {
+    latest_mark_price_at: string | null;
+  };
+  bot_control: {
+    last_updated_at: string | null;
+  };
+  snapshot_at: string;
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface UiOpenPosition {
+  id: number;
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  side: string;
+  entry_time: string;
+  entry_price: number | null;
+  qty: number | null;
+  age_seconds: number;
+  current_price: number | null;
+  market_value: number | null;
+  unrealized_pnl_usdc: number | null;
+  unrealized_pnl_pct: number | null;
+  mark_open_time: string | null;
+}
+
+export interface UiOpenPositionsResponse {
+  total: number;
+  items: UiOpenPosition[];
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface UiRecentClosedPosition {
+  id: number;
+  exit_time: string;
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  side: string;
+  entry_time: string;
+  entry_price: number | null;
+  exit_price: number | null;
+  qty: number | null;
+  pnl_usdc: number;
+  pnl_pct: number | null;
+  exit_reason: string | null;
+  win_loss: "WIN" | "LOSS" | "FLAT";
+}
+
+export interface UiRecentClosedResponse {
+  limit: number;
+  total: number;
+  items: UiRecentClosedPosition[];
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+
+export interface UiSlotRow {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  enabled: boolean;
+  live_orders_enabled: boolean;
+  regime_enabled: boolean;
+  regime_mode: string | null;
+  reason: string | null;
+  updated_at: string | null;
+  open_position: {
+    exists: boolean;
+    id: number | null;
+    side: string | null;
+    entry_time: string | null;
+  };
+  heartbeat: {
+    last_seen: string | null;
+    stale: boolean;
+  };
+  last_event: {
+    at: string | null;
+    event_type: string | null;
+    decision: string | null;
+    reason: string | null;
+  };
+}
+
+export interface UiSlotsResponse {
+  total: number;
+  items: UiSlotRow[];
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface UiHealthResponse {
+  api: {
+    ok: boolean;
+    environment: string;
+    trading_mode: string;
+    snapshot_at: string;
+  };
+  db: {
+    ok: boolean;
+    now: string | null;
+  };
+  bot_heartbeats: {
+    latest_at: string | null;
+    total: number;
+    fresh: number;
+    stale: number;
+  };
+  market_data: {
+    latest_candle_close_at: string | null;
+    tracked_pairs: number;
+  };
+  orchestrator: {
+    latest_event_at: string | null;
+    events_last_15m: number;
+  };
+  panic_state: {
+    enabled: boolean;
+    updated_at: string | null;
+  };
+  error_type?: string;
+  error?: string;
+  note?: string;
+}
+
+export interface UiSlotControlPayload {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  enabled?: boolean;
+  live_orders_enabled?: boolean;
+  reason?: string;
+}
+
+export interface UiRegimeControlPayload {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  regime_enabled: boolean;
+  regime_mode: string;
+  reason?: string;
+}
+export interface UiControlResponse {
+  ok: boolean;
+  message: string;
+  applied_at: string;
+  new_state: Record<string, unknown>;
 }
 
 export async function getSafetyStatus() {
@@ -354,14 +527,47 @@ export async function getUiOrcDashboard() {
   return (await api.get<UiOrcDashboardResponse>("/ui/orc-dashboard")).data;
 }
 
+export async function getUiLiveSummary() {
+  return (await api.get<UiLiveSummary>("/ui/live-summary")).data;
+}
+
+export async function getUiOpenPositions() {
+  return (await api.get<UiOpenPositionsResponse>("/ui/open-positions")).data;
+}
+
+export async function getUiRecentClosed(limit = 10) {
+  return (await api.get<UiRecentClosedResponse>("/ui/recent-closed", { params: { limit } })).data;
+}
+
+export async function updatePanicState(enabled: boolean, reason: string) {
+  return (await api.post<UiControlResponse>("/ui/control/panic", { enabled, reason })).data;
+}
+
+
+export async function getUiSlots() {
+  return (await api.get<UiSlotsResponse>("/ui/slots")).data;
+}
+
+export async function getUiHealth() {
+  return (await api.get<UiHealthResponse>("/ui/health")).data;
+}
+
+export async function updateSlotControl(payload: UiSlotControlPayload) {
+  return (await api.post<UiControlResponse>("/ui/control/slot", payload)).data;
+}
+
+export async function updateRegimeControl(payload: UiRegimeControlPayload) {
+  return (await api.post<UiControlResponse>("/ui/control/regime", payload)).data;
+}
+
 export function envBool(v: string | null | undefined): boolean {
   if (!v) return false;
   const s = String(v).trim().toLowerCase();
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-export async function getRegimeLatest(symbol: SymbolPair = makeSymbol("BTC"), interval="1m") {
-  return (await api.get<RegimePoint>("/regime/latest", { params: { symbol, interval }})).data;
+export async function getRegimeLatest(symbol: SymbolPair = makeSymbol("BTC"), interval = "1m") {
+  return (await api.get<RegimePoint>("/regime/latest", { params: { symbol, interval } })).data;
 }
 
 export async function getWatchdogEvents(
@@ -369,7 +575,7 @@ export async function getWatchdogEvents(
   interval = "1m",
   strategy: Strategy = "RSI",
   limit = 50,
-  offset = 0
+  offset = 0,
 ) {
   return (
     await api.get<WatchdogEventPage>("/watchdog/events", {
@@ -378,22 +584,11 @@ export async function getWatchdogEvents(
   ).data;
 }
 
-// (opcjonalnie, przyda się w App.tsx)
-export const ALL_STRATEGIES: Strategy[] = [
-  "RSI",
-  "TREND",
-  "BBRANGE",
-  "SUPERTREND",
-];
-
 export async function getAccountSummary() {
   return (await api.get<AccountSummary>("/account/summary")).data;
 }
 
-export async function getSummary(
-  symbol: SymbolPair = makeSymbol("BTC"),
-  interval = "1m"
-) {
+export async function getSummary(symbol: SymbolPair = makeSymbol("BTC"), interval = "1m") {
   return (
     await api.get<CandleSummary>("/candles/summary", {
       params: { symbol, interval },
@@ -406,7 +601,7 @@ export async function getOrders(
   page = 1,
   pageSize = 50,
   interval = "1m",
-  strategy: Strategy = "RSI"
+  strategy: Strategy = "RSI",
 ) {
   const offset = (page - 1) * pageSize;
   return (
@@ -419,7 +614,7 @@ export async function getOrders(
 export async function getPnL(
   symbol: SymbolPair = makeSymbol("BTC"),
   interval = "1m",
-  strategy: Strategy = "RSI"
+  strategy: Strategy = "RSI",
 ) {
   return (
     await api.get<PnLSummary>("/simulated/pnl", {
@@ -434,7 +629,7 @@ export async function getRoundtrips(
   pageSize = 50,
   losersOnly = true,
   interval = "1m",
-  strategy: Strategy = "RSI"
+  strategy: Strategy = "RSI",
 ) {
   const offset = (page - 1) * pageSize;
   return (
@@ -451,11 +646,10 @@ export async function getRoundtrips(
   ).data;
 }
 
-/** 🔹 API do pobrania metryk (winrate, DD, Sharpe, Z-score...) */
 export async function getMetrics(
   symbol: SymbolPair = makeSymbol("BTC"),
   interval = "1m",
-  strategy: Strategy = "RSI"
+  strategy: Strategy = "RSI",
 ) {
   return (
     await api.get<StrategyMetrics>("/simulated/metrics", {
@@ -464,9 +658,7 @@ export async function getMetrics(
   ).data;
 }
 
-export async function analyzeStrategyWithAI(
-  prompt: string
-): Promise<string> {
+export async function analyzeStrategyWithAI(prompt: string): Promise<string> {
   try {
     const res = await api.post<AIAnalyzeResponse>("/ai/analyze-strategy", {
       prompt,
@@ -474,11 +666,7 @@ export async function analyzeStrategyWithAI(
     return res.data.analysis;
   } catch (err: any) {
     if (err.response) {
-      throw new Error(
-        `AI analyze error: ${err.response.status} ${JSON.stringify(
-          err.response.data
-        )}`
-      );
+      throw new Error(`AI analyze error: ${err.response.status} ${JSON.stringify(err.response.data)}`);
     }
     throw err;
   }
