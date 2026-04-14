@@ -4,57 +4,66 @@ interface HealthPanelProps {
   health: UiHealthResponse | null;
 }
 
-function fmtDate(value: string | null | undefined) {
+function formatDateTime(value: string | null | undefined) {
   if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return new Date(value).toLocaleString();
 }
 
 export function HealthPanel({ health }: HealthPanelProps) {
+  const cards = [
+    {
+      title: 'API',
+      value: health?.api.ok ? 'OK' : 'N/A',
+      tone: health?.api.ok ? 'positive' : 'neutral',
+      meta: health ? `${health.api.environment} / ${health.api.trading_mode}` : '—',
+    },
+    {
+      title: 'DB',
+      value: health?.db.ok ? 'OK' : 'N/A',
+      tone: health?.db.ok ? 'positive' : 'neutral',
+      meta: formatDateTime(health?.db.now),
+    },
+    {
+      title: 'Heartbeats',
+      value: health ? `${health.bot_heartbeats.fresh} fresh / ${health.bot_heartbeats.stale} stale` : '—',
+      tone: (health?.bot_heartbeats.stale ?? 0) > 0 ? 'negative' : 'positive',
+      meta: `Latest: ${formatDateTime(health?.bot_heartbeats.latest_at)}`,
+    },
+    {
+      title: 'Market data',
+      value: health ? String(health.market_data.tracked_pairs) : '—',
+      tone: 'neutral',
+      meta: `Latest: ${formatDateTime(health?.market_data.latest_candle_close_at)}`,
+    },
+    {
+      title: 'Orchestrator',
+      value: health ? String(health.orchestrator.events_last_15m) : '—',
+      tone: 'neutral',
+      meta: `Latest: ${formatDateTime(health?.orchestrator.latest_event_at)}`,
+    },
+    {
+      title: 'Panic state',
+      value: health?.panic_state.enabled ? 'ON' : 'OFF',
+      tone: health?.panic_state.enabled ? 'negative' : 'positive',
+      meta: `Updated: ${formatDateTime(health?.panic_state.updated_at)}`,
+    },
+  ];
+
   return (
     <section className="panel">
       <div className="panel-header">
-        <h2>System health</h2>
-        <span className="panel-meta">Truth-only</span>
+        <h2>Health overview</h2>
+        <span className="panel-meta">Operator checks</span>
       </div>
-      {!health ? (
-        <div className="empty-state">No health snapshot loaded yet.</div>
-      ) : (
-        <div className="status-grid">
-          <div className={`status-card ${health.api.ok ? 'positive' : 'negative'}`}>
-            <span className="status-label">API</span>
-            <span className="status-value">{health.api.ok ? 'OK' : 'FAIL'}</span>
-          </div>
-          <div className={`status-card ${health.db.ok ? 'positive' : 'negative'}`}>
-            <span className="status-label">DB</span>
-            <span className="status-value">{health.db.ok ? 'OK' : 'FAIL'}</span>
-          </div>
-          <div className="status-card neutral">
-            <span className="status-label">Heartbeats</span>
-            <span className="status-value">{health.bot_heartbeats.fresh} fresh / {health.bot_heartbeats.stale} stale</span>
-          </div>
-          <div className="status-card neutral">
-            <span className="status-label">Market data</span>
-            <span className="status-value">{health.market_data.tracked_pairs} pairs</span>
-          </div>
-          <div className="status-card neutral">
-            <span className="status-label">Orchestrator</span>
-            <span className="status-value">{health.orchestrator.events_last_15m} events / 15m</span>
-          </div>
-          <div className={`status-card ${health.panic_state.enabled ? 'negative' : 'positive'}`}>
-            <span className="status-label">Panic state</span>
-            <span className="status-value">{health.panic_state.enabled ? 'ON' : 'OFF'}</span>
-          </div>
-          <div className="status-card neutral">
-            <span className="status-label">Latest heartbeat</span>
-            <span className="status-value">{fmtDate(health.bot_heartbeats.latest_at)}</span>
-          </div>
-          <div className="status-card neutral">
-            <span className="status-label">Latest candle</span>
-            <span className="status-value">{fmtDate(health.market_data.latest_candle_close_at)}</span>
-          </div>
-        </div>
-      )}
+      <div className="health-grid">
+        {cards.map((card) => (
+          <article key={card.title} className="health-card">
+            <span className="status-label">{card.title}</span>
+            <strong className={`status-value ${card.tone}`}>{card.value}</strong>
+            <span className="status-meta">{card.meta}</span>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

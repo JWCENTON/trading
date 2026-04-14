@@ -10,23 +10,23 @@ interface AppShellProps {
   children: ReactNode;
 }
 
-const tabs: Array<{ key: AppTab; label: string }> = [
-  { key: 'live', label: 'Live' },
-  { key: 'slots', label: 'Slots' },
-  { key: 'health', label: 'Health' },
-  { key: 'advanced', label: 'Advanced' },
+const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
+  { key: 'live', label: 'Live', shortLabel: 'Live' },
+  { key: 'slots', label: 'Slots', shortLabel: 'Slots' },
+  { key: 'health', label: 'Health', shortLabel: 'Health' },
+  { key: 'advanced', label: 'Advanced', shortLabel: 'Adv' },
 ];
 
 export function AppShell({ title, subtitle, activeTab, onTabChange, children }: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
-        <div>
+        <div className="app-brand-wrap">
           <div className="app-brand">TRADING UI</div>
-          <div className="app-brand-subtitle">Operator Dark</div>
+          <div className="app-brand-subtitle">Operator Dark • manual refresh first</div>
         </div>
 
-        <nav className="app-nav">
+        <nav className="app-nav" aria-label="Primary navigation">
           {tabs.map((tab) => (
             <button
               key={tab.key}
@@ -34,7 +34,8 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children }: 
               className={`nav-button ${activeTab === tab.key ? 'active' : ''}`}
               onClick={() => onTabChange(tab.key)}
             >
-              {tab.label}
+              <span className="nav-button-label nav-button-label--full">{tab.label}</span>
+              <span className="nav-button-label nav-button-label--short">{tab.shortLabel}</span>
             </button>
           ))}
         </nav>
