@@ -311,3 +311,58 @@ td {
     grid-template-columns: 1fr;
   }
 }
+
+
+@media (max-width: 900px) {
+  .app-sidebar {
+    padding: 14px;
+    gap: 14px;
+  }
+
+  .app-nav {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .nav-button {
+    width: auto;
+    min-width: 120px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .panel-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-header h1 {
+    font-size: 24px;
+  }
+
+  .status-card,
+  .panel,
+  .health-card {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .button-row {
+    flex-direction: column;
+  }
+
+  .button-row .action-button,
+  .button-row button {
+    width: 100%;
+  }
+
+  th,
+  td {
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+}

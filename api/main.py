@@ -390,6 +390,8 @@ def ensure_ui_audit_table(cur):
 
 def log_ui_action(cur, *, actor: str, actor_role: Optional[str], action: str, target_type: str, target_key: str, before_json: Optional[dict], after_json: Optional[dict], source: Optional[str], note: Optional[str]):
     ensure_ui_audit_table(cur)
+    before_payload = json.dumps(jsonable_encoder(before_json)) if before_json is not None else None
+    after_payload = json.dumps(jsonable_encoder(after_json)) if after_json is not None else None
     cur.execute(
         """
         INSERT INTO ui_audit_log (
@@ -403,8 +405,8 @@ def log_ui_action(cur, *, actor: str, actor_role: Optional[str], action: str, ta
             action,
             target_type,
             target_key,
-            json.dumps(before_json) if before_json is not None else None,
-            json.dumps(after_json) if after_json is not None else None,
+            before_payload,
+            after_payload,
             source,
             note,
         ),
