@@ -6,7 +6,7 @@ from typing import List, Optional, Dict
 import psycopg2
 from psycopg2.errors import UndefinedTable
 from fastapi.encoders import jsonable_encoder
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from binance.client import Client
@@ -323,6 +323,101 @@ class RegimePoint(BaseModel):
     trend_strength_pct: Optional[float] = None
     atr_pct: Optional[float] = None
     shock_z: Optional[float] = None
+
+
+class UIPanicControlRequest(BaseModel):
+    enabled: bool
+    reason: Optional[str] = None
+
+
+class UIControlResponse(BaseModel):
+    ok: bool
+    message: str
+    applied_at: datetime
+    new_state: Dict
+
+
+class UISlotControlRequest(BaseModel):
+    symbol: str
+    interval: str
+    strategy: str
+    enabled: Optional[bool] = None
+    live_orders_enabled: Optional[bool] = None
+    reason: Optional[str] = None
+
+
+class UIRegimeControlRequest(BaseModel):
+    symbol: str
+    interval: str
+    strategy: str
+    regime_enabled: bool
+    regime_mode: str
+    reason: Optional[str] = None
+
+
+def _safe_float(value):
+    return float(value) if value is not None else None
+
+
+def _safe_int(value, default=0):
+    return int(value) if value is not None else default
+
+
+def _normalize_regime_mode(value: Optional[str]) -> str:
+    mode = str(value or "DRY_RUN").strip().upper()
+    return mode if mode in {"DRY_RUN", "ENFORCE"} else "DRY_RUN"
+
+
+def ensure_ui_audit_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ui_audit_log (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          actor TEXT NOT NULL,
+          actor_role TEXT,
+          action TEXT NOT NULL,
+          target_type TEXT NOT NULL,
+          target_key TEXT NOT NULL,
+          before_json JSONB,
+          after_json JSONB,
+          source TEXT,
+          note TEXT
+        );
+        """
+    )
+
+
+def log_ui_action(cur, *, actor: str, actor_role: Optional[str], action: str, target_type: str, target_key: str, before_json: Optional[dict], after_json: Optional[dict], source: Optional[str], note: Optional[str]):
+    ensure_ui_audit_table(cur)
+    cur.execute(
+        """
+        INSERT INTO ui_audit_log (
+          actor, actor_role, action, target_type, target_key, before_json, after_json, source, note
+        )
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+        """,
+        (
+            actor,
+            actor_role,
+            action,
+            target_type,
+            target_key,
+            json.dumps(before_json) if before_json is not None else None,
+            json.dumps(after_json) if after_json is not None else None,
+            source,
+            note,
+        ),
+    )
+
+
+def get_request_actor(request: Optional[Request]) -> tuple[str, Optional[str], str]:
+    if request is None:
+        return ("local-admin", "admin", "api")
+    actor = request.headers.get("X-Operator-Actor") or request.headers.get("X-User") or "local-admin"
+    role = request.headers.get("X-Operator-Role") or "admin"
+    source = request.headers.get("X-Request-Source") or "api"
+    return actor, role, source
 
 
 def compute_max_drawdown(equity_curve: List[float]) -> float:
@@ -1679,6 +1774,709 @@ def ops_environment():
         "db_name": DB_NAME,
         "quote_asset": QUOTE_ASSET,
     }
+
+@app.get("/ui/live-summary")
+def ui_live_summary():
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+                WITH panic AS (
+                  SELECT panic_enabled, reason, updated_at
+                  FROM panic_state
+                  WHERE id = true
+                ),
+                open_pos AS (
+                  SELECT
+                    p.id,
+                    p.symbol,
+                    p.interval,
+                    p.strategy,
+                    p.side,
+                    p.qty::double precision AS qty,
+                    p.entry_price::double precision AS entry_price,
+                    lc.close_price::double precision AS current_price
+                  FROM positions p
+                  LEFT JOIN LATERAL (
+                    SELECT c.close AS close_price
+                    FROM candles c
+                    WHERE c.symbol = p.symbol
+                      AND c.interval = p.interval
+                    ORDER BY c.open_time DESC
+                    LIMIT 1
+                  ) lc ON TRUE
+                  WHERE p.status = 'OPEN'
+                ),
+                open_agg AS (
+                  SELECT
+                    COUNT(*) AS open_positions_count,
+                    COALESCE(SUM(COALESCE(current_price, entry_price) * qty), 0)::double precision AS open_market_value,
+                    COALESCE(SUM(
+                      CASE
+                        WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                          THEN (entry_price - COALESCE(current_price, entry_price)) * qty
+                        ELSE (COALESCE(current_price, entry_price) - entry_price) * qty
+                      END
+                    ), 0)::double precision AS open_unrealized_pnl_usdc
+                  FROM open_pos
+                ),
+                bc AS (
+                  SELECT
+                    COUNT(*) AS slots_total,
+                    COUNT(*) FILTER (WHERE enabled) AS enabled_count,
+                    COUNT(*) FILTER (WHERE live_orders_enabled) AS live_orders_enabled_count,
+                    COUNT(*) FILTER (WHERE regime_enabled) AS regime_enabled_count,
+                    COUNT(*) FILTER (WHERE regime_mode = 'ENFORCE') AS enforce_count,
+                    COUNT(*) FILTER (WHERE enabled AND live_orders_enabled AND regime_enabled AND regime_mode = 'ENFORCE') AS effective_live_count,
+                    MAX(updated_at) AS last_bot_control_update
+                  FROM bot_control
+                ),
+                hb AS (
+                  SELECT
+                    COUNT(*) AS heartbeat_total,
+                    COUNT(*) FILTER (WHERE last_seen >= now() - INTERVAL '10 minutes') AS heartbeat_fresh_count,
+                    COUNT(*) FILTER (WHERE last_seen < now() - INTERVAL '10 minutes') AS heartbeat_stale_count,
+                    MAX(last_seen) AS latest_heartbeat_at
+                  FROM bot_heartbeat
+                ),
+                candle_freshness AS (
+                  SELECT MAX(close_time) AS latest_mark_price_at
+                  FROM candles
+                )
+                SELECT
+                  %s AS environment,
+                  %s AS trading_mode,
+                  COALESCE((SELECT panic_enabled FROM panic), false) AS panic_enabled,
+                  COALESCE((SELECT reason FROM panic), '') AS panic_reason,
+                  (SELECT updated_at FROM panic) AS panic_updated_at,
+                  COALESCE((SELECT slots_total FROM bc), 0),
+                  COALESCE((SELECT enabled_count FROM bc), 0),
+                  COALESCE((SELECT live_orders_enabled_count FROM bc), 0),
+                  COALESCE((SELECT regime_enabled_count FROM bc), 0),
+                  COALESCE((SELECT enforce_count FROM bc), 0),
+                  COALESCE((SELECT effective_live_count FROM bc), 0),
+                  COALESCE((SELECT open_positions_count FROM open_agg), 0),
+                  COALESCE((SELECT open_market_value FROM open_agg), 0),
+                  COALESCE((SELECT open_unrealized_pnl_usdc FROM open_agg), 0),
+                  (SELECT latest_heartbeat_at FROM hb),
+                  COALESCE((SELECT heartbeat_total FROM hb), 0),
+                  COALESCE((SELECT heartbeat_fresh_count FROM hb), 0),
+                  COALESCE((SELECT heartbeat_stale_count FROM hb), 0),
+                  (SELECT latest_mark_price_at FROM candle_freshness),
+                  (SELECT last_bot_control_update FROM bc),
+                  now() AS snapshot_at
+            """, (ENVIRONMENT, TRADING_MODE))
+            r = cur.fetchone()
+
+        return jsonable_encoder({
+            "environment": r[0],
+            "trading_mode": r[1],
+            "panic": {
+                "enabled": bool(r[2]),
+                "reason": r[3],
+                "updated_at": r[4],
+            },
+            "slot_counts": {
+                "total": _safe_int(r[5]),
+                "enabled": _safe_int(r[6]),
+                "live_orders_enabled": _safe_int(r[7]),
+                "regime_enabled": _safe_int(r[8]),
+                "enforce": _safe_int(r[9]),
+                "effective_live": _safe_int(r[10]),
+            },
+            "open_positions": {
+                "count": _safe_int(r[11]),
+                "market_value_usdc": _safe_float(r[12]) or 0.0,
+                "unrealized_pnl_usdc": _safe_float(r[13]) or 0.0,
+            },
+            "heartbeats": {
+                "latest_at": r[14],
+                "total": _safe_int(r[15]),
+                "fresh": _safe_int(r[16]),
+                "stale": _safe_int(r[17]),
+            },
+            "market_data": {
+                "latest_mark_price_at": r[18],
+            },
+            "bot_control": {
+                "last_updated_at": r[19],
+            },
+            "snapshot_at": r[20],
+        })
+
+    except Exception as e:
+        return {
+            "environment": ENVIRONMENT,
+            "trading_mode": TRADING_MODE,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "note": "ui/live-summary failed",
+        }
+
+
+@app.get("/ui/open-positions")
+def ui_open_positions():
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+              SELECT
+                p.id,
+                p.symbol,
+                p.interval,
+                p.strategy,
+                p.side,
+                p.entry_time,
+                p.entry_price::double precision AS entry_price,
+                p.qty::double precision AS qty,
+                EXTRACT(EPOCH FROM (now() - p.entry_time))::double precision AS age_seconds,
+                lc.close_price::double precision AS current_price,
+                (COALESCE(lc.close_price, p.entry_price) * p.qty)::double precision AS market_value,
+                CASE
+                  WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                    THEN ((p.entry_price - COALESCE(lc.close_price, p.entry_price)) * p.qty)::double precision
+                  ELSE ((COALESCE(lc.close_price, p.entry_price) - p.entry_price) * p.qty)::double precision
+                END AS unrealized_pnl_usdc,
+                CASE
+                  WHEN p.entry_price IS NULL OR p.entry_price = 0 THEN NULL
+                  WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                    THEN (((p.entry_price - COALESCE(lc.close_price, p.entry_price)) / p.entry_price) * 100.0)::double precision
+                  ELSE (((COALESCE(lc.close_price, p.entry_price) - p.entry_price) / p.entry_price) * 100.0)::double precision
+                END AS unrealized_pnl_pct,
+                lc.mark_open_time
+              FROM positions p
+              LEFT JOIN LATERAL (
+                SELECT
+                  c.close AS close_price,
+                  c.open_time AS mark_open_time
+                FROM candles c
+                WHERE c.symbol = p.symbol
+                  AND c.interval = p.interval
+                ORDER BY c.open_time DESC
+                LIMIT 1
+              ) lc ON TRUE
+              WHERE p.status = 'OPEN'
+              ORDER BY p.entry_time ASC
+            """)
+            rows = cur.fetchall()
+
+        items = []
+        for r in rows:
+            items.append({
+                "id": r[0],
+                "symbol": r[1],
+                "interval": r[2],
+                "strategy": r[3],
+                "side": r[4],
+                "entry_time": r[5],
+                "entry_price": _safe_float(r[6]),
+                "qty": _safe_float(r[7]),
+                "age_seconds": _safe_float(r[8]) or 0.0,
+                "current_price": _safe_float(r[9]),
+                "market_value": _safe_float(r[10]),
+                "unrealized_pnl_usdc": _safe_float(r[11]),
+                "unrealized_pnl_pct": _safe_float(r[12]),
+                "mark_open_time": r[13],
+            })
+
+        return jsonable_encoder({
+            "total": len(items),
+            "items": items,
+        })
+
+    except Exception as e:
+        return {
+            "total": 0,
+            "items": [],
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "note": "ui/open-positions failed",
+        }
+
+
+@app.get("/ui/recent-closed")
+def ui_recent_closed(limit: int = Query(default=10, ge=1, le=100)):
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+              SELECT
+                id,
+                exit_time,
+                symbol,
+                interval,
+                strategy,
+                side,
+                entry_time,
+                entry_price::double precision AS entry_price,
+                exit_price::double precision AS exit_price,
+                qty::double precision AS qty,
+                CASE
+                  WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                    THEN ((entry_price - exit_price) * qty)::double precision
+                  ELSE ((exit_price - entry_price) * qty)::double precision
+                END AS pnl_usdc,
+                CASE
+                  WHEN entry_price IS NULL OR entry_price = 0 THEN NULL
+                  WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                    THEN (((entry_price - exit_price) / entry_price) * 100.0)::double precision
+                  ELSE (((exit_price - entry_price) / entry_price) * 100.0)::double precision
+                END AS pnl_pct,
+                exit_reason
+              FROM positions
+              WHERE status = 'CLOSED'
+                AND exit_time IS NOT NULL
+              ORDER BY exit_time DESC
+              LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+
+        items = []
+        for r in rows:
+            pnl_usdc = _safe_float(r[10]) or 0.0
+            items.append({
+                "id": r[0],
+                "exit_time": r[1],
+                "symbol": r[2],
+                "interval": r[3],
+                "strategy": r[4],
+                "side": r[5],
+                "entry_time": r[6],
+                "entry_price": _safe_float(r[7]),
+                "exit_price": _safe_float(r[8]),
+                "qty": _safe_float(r[9]),
+                "pnl_usdc": pnl_usdc,
+                "pnl_pct": _safe_float(r[11]),
+                "exit_reason": r[12],
+                "win_loss": "WIN" if pnl_usdc > 0 else "LOSS" if pnl_usdc < 0 else "FLAT",
+            })
+
+        return jsonable_encoder({
+            "limit": limit,
+            "total": len(items),
+            "items": items,
+        })
+
+    except Exception as e:
+        return {
+            "limit": limit,
+            "total": 0,
+            "items": [],
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "note": "ui/recent-closed failed",
+        }
+
+
+@app.post("/ui/control/panic", response_model=UIControlResponse)
+def ui_control_panic(req: UIPanicControlRequest, request: Request):
+    actor, actor_role, source = get_request_actor(request)
+    applied_at = datetime.now(timezone.utc)
+    with db_cursor() as (conn, cur):
+        cur.execute("""
+          CREATE TABLE IF NOT EXISTS panic_state (
+            id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id = TRUE),
+            panic_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            reason TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          );
+        """)
+        ensure_ui_audit_table(cur)
+        cur.execute("SELECT panic_enabled, reason, updated_at FROM panic_state WHERE id = TRUE")
+        before = cur.fetchone()
+        before_state = {
+            "enabled": bool(before[0]) if before else False,
+            "reason": before[1] if before else None,
+            "updated_at": before[2] if before else None,
+        }
+        cur.execute("""
+          INSERT INTO panic_state (id, panic_enabled, reason, updated_at)
+          VALUES (TRUE, %s, %s, %s)
+          ON CONFLICT (id)
+          DO UPDATE SET
+            panic_enabled = EXCLUDED.panic_enabled,
+            reason = EXCLUDED.reason,
+            updated_at = EXCLUDED.updated_at
+        """, (req.enabled, req.reason, applied_at))
+        after_state = {
+            "enabled": bool(req.enabled),
+            "reason": req.reason,
+            "updated_at": applied_at,
+        }
+        log_ui_action(
+            cur,
+            actor=actor,
+            actor_role=actor_role,
+            action="panic.update",
+            target_type="panic_state",
+            target_key="global",
+            before_json=before_state,
+            after_json=after_state,
+            source=source,
+            note=req.reason,
+        )
+        conn.commit()
+
+    return UIControlResponse(
+        ok=True,
+        message="panic state updated",
+        applied_at=applied_at,
+        new_state=after_state,
+    )
+
+
+
+@app.get("/ui/slots")
+def ui_slots():
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+              SELECT
+                bc.symbol,
+                bc.interval,
+                bc.strategy,
+                bc.enabled,
+                bc.live_orders_enabled,
+                bc.regime_enabled,
+                bc.regime_mode,
+                bc.reason,
+                bc.updated_at,
+                op.id AS open_position_id,
+                op.side AS open_position_side,
+                op.entry_time AS open_position_entry_time,
+                hb.last_seen,
+                CASE
+                  WHEN hb.last_seen IS NULL THEN TRUE
+                  WHEN hb.last_seen < now() - INTERVAL '10 minutes' THEN TRUE
+                  ELSE FALSE
+                END AS heartbeat_stale,
+                se.created_at AS last_event_at,
+                se.event_type AS last_event_type,
+                se.decision AS last_event_decision,
+                se.reason AS last_event_reason
+              FROM bot_control bc
+              LEFT JOIN LATERAL (
+                SELECT p.id, p.side, p.entry_time
+                FROM positions p
+                WHERE p.symbol = bc.symbol
+                  AND p.interval = bc.interval
+                  AND p.strategy = bc.strategy
+                  AND p.status = 'OPEN'
+                ORDER BY p.entry_time DESC
+                LIMIT 1
+              ) op ON TRUE
+              LEFT JOIN bot_heartbeat hb
+                ON hb.symbol = bc.symbol
+               AND hb.interval = bc.interval
+               AND hb.strategy = bc.strategy
+              LEFT JOIN LATERAL (
+                SELECT se.created_at, se.event_type, se.decision, se.reason
+                FROM strategy_events se
+                WHERE se.symbol = bc.symbol
+                  AND se.interval = bc.interval
+                  AND se.strategy = bc.strategy
+                ORDER BY se.created_at DESC
+                LIMIT 1
+              ) se ON TRUE
+              ORDER BY bc.symbol, bc.interval, bc.strategy
+            """)
+            rows = cur.fetchall()
+
+        items = []
+        for r in rows:
+            items.append({
+                "symbol": r[0],
+                "interval": r[1],
+                "strategy": r[2],
+                "enabled": bool(r[3]),
+                "live_orders_enabled": bool(r[4]),
+                "regime_enabled": bool(r[5]),
+                "regime_mode": r[6],
+                "reason": r[7],
+                "updated_at": r[8],
+                "open_position": {
+                    "exists": r[9] is not None,
+                    "id": _safe_int(r[9], default=None),
+                    "side": r[10],
+                    "entry_time": r[11],
+                },
+                "heartbeat": {
+                    "last_seen": r[12],
+                    "stale": bool(r[13]),
+                },
+                "last_event": {
+                    "at": r[14],
+                    "event_type": r[15],
+                    "decision": r[16],
+                    "reason": r[17],
+                },
+            })
+
+        return jsonable_encoder({
+            "total": len(items),
+            "items": items,
+        })
+
+    except Exception as e:
+        return {
+            "total": 0,
+            "items": [],
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "note": "ui/slots failed",
+        }
+
+
+@app.get("/ui/health")
+def ui_health():
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+              WITH db_now AS (
+                SELECT now() AS ts
+              ),
+              hb AS (
+                SELECT
+                  COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE last_seen >= now() - INTERVAL '10 minutes') AS fresh,
+                  COUNT(*) FILTER (WHERE last_seen < now() - INTERVAL '10 minutes') AS stale,
+                  MAX(last_seen) AS latest_at
+                FROM bot_heartbeat
+              ),
+              candles_agg AS (
+                SELECT
+                  MAX(close_time) AS latest_candle_close_at,
+                  COUNT(DISTINCT symbol || ':' || interval) AS tracked_pairs
+                FROM candles
+              ),
+              orchestrator AS (
+                SELECT
+                  MAX(created_at) AS latest_event_at,
+                  COUNT(*) FILTER (WHERE created_at >= now() - INTERVAL '15 minutes') AS events_last_15m
+                FROM strategy_events
+              ),
+              panic AS (
+                SELECT panic_enabled, updated_at
+                FROM panic_state
+                WHERE id = TRUE
+              )
+              SELECT
+                (SELECT ts FROM db_now),
+                COALESCE((SELECT total FROM hb), 0),
+                COALESCE((SELECT fresh FROM hb), 0),
+                COALESCE((SELECT stale FROM hb), 0),
+                (SELECT latest_at FROM hb),
+                (SELECT latest_candle_close_at FROM candles_agg),
+                COALESCE((SELECT tracked_pairs FROM candles_agg), 0),
+                (SELECT latest_event_at FROM orchestrator),
+                COALESCE((SELECT events_last_15m FROM orchestrator), 0),
+                COALESCE((SELECT panic_enabled FROM panic), FALSE),
+                (SELECT updated_at FROM panic),
+                now() AS snapshot_at
+            """)
+            r = cur.fetchone()
+
+        return jsonable_encoder({
+            "api": {
+                "ok": True,
+                "environment": ENVIRONMENT,
+                "trading_mode": TRADING_MODE,
+                "snapshot_at": r[11],
+            },
+            "db": {
+                "ok": r[0] is not None,
+                "now": r[0],
+            },
+            "bot_heartbeats": {
+                "latest_at": r[4],
+                "total": _safe_int(r[1]),
+                "fresh": _safe_int(r[2]),
+                "stale": _safe_int(r[3]),
+            },
+            "market_data": {
+                "latest_candle_close_at": r[5],
+                "tracked_pairs": _safe_int(r[6]),
+            },
+            "orchestrator": {
+                "latest_event_at": r[7],
+                "events_last_15m": _safe_int(r[8]),
+            },
+            "panic_state": {
+                "enabled": bool(r[9]),
+                "updated_at": r[10],
+            },
+        })
+
+    except Exception as e:
+        return {
+            "api": {
+                "ok": False,
+                "environment": ENVIRONMENT,
+                "trading_mode": TRADING_MODE,
+                "snapshot_at": datetime.now(timezone.utc),
+            },
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "note": "ui/health failed",
+        }
+
+
+@app.post("/ui/control/slot", response_model=UIControlResponse)
+def ui_control_slot(req: UISlotControlRequest, request: Request):
+    if req.enabled is None and req.live_orders_enabled is None:
+        raise HTTPException(status_code=400, detail="enabled or live_orders_enabled must be provided")
+
+    actor, actor_role, source = get_request_actor(request)
+    applied_at = datetime.now(timezone.utc)
+    target_key = f"{req.symbol}:{req.interval}:{req.strategy}"
+    with db_cursor() as (conn, cur):
+        ensure_ui_audit_table(cur)
+        cur.execute(
+            """
+            SELECT enabled, live_orders_enabled, regime_enabled, regime_mode, reason, updated_at
+            FROM bot_control
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+            """,
+            (req.symbol, req.interval, req.strategy),
+        )
+        before = cur.fetchone()
+        before_state = {
+            "enabled": bool(before[0]) if before else True,
+            "live_orders_enabled": bool(before[1]) if before else False,
+            "regime_enabled": bool(before[2]) if before else False,
+            "regime_mode": before[3] if before else "DRY_RUN",
+            "reason": before[4] if before else None,
+            "updated_at": before[5] if before else None,
+        }
+        new_enabled = req.enabled if req.enabled is not None else before_state["enabled"]
+        new_live = req.live_orders_enabled if req.live_orders_enabled is not None else before_state["live_orders_enabled"]
+        note = req.reason or "slot control update"
+        cur.execute(
+            """
+            INSERT INTO bot_control (
+              symbol, strategy, interval, enabled, mode, reason, live_orders_enabled, regime_enabled, regime_mode, updated_at
+            )
+            VALUES (%s, %s, %s, %s, 'NORMAL', %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, strategy, interval)
+            DO UPDATE SET
+              enabled = EXCLUDED.enabled,
+              reason = EXCLUDED.reason,
+              live_orders_enabled = EXCLUDED.live_orders_enabled,
+              regime_enabled = COALESCE(bot_control.regime_enabled, EXCLUDED.regime_enabled),
+              regime_mode = COALESCE(bot_control.regime_mode, EXCLUDED.regime_mode),
+              updated_at = EXCLUDED.updated_at
+            """,
+            (
+                req.symbol,
+                req.strategy,
+                req.interval,
+                new_enabled,
+                note,
+                new_live,
+                before_state["regime_enabled"],
+                before_state["regime_mode"],
+                applied_at,
+            ),
+        )
+        after_state = {
+            "enabled": bool(new_enabled),
+            "live_orders_enabled": bool(new_live),
+            "regime_enabled": bool(before_state["regime_enabled"]),
+            "regime_mode": before_state["regime_mode"],
+            "reason": note,
+            "updated_at": applied_at,
+        }
+        log_ui_action(
+            cur,
+            actor=actor,
+            actor_role=actor_role,
+            action="slot.update",
+            target_type="bot_control",
+            target_key=target_key,
+            before_json=before_state,
+            after_json=after_state,
+            source=source,
+            note=note,
+        )
+        conn.commit()
+
+    return UIControlResponse(ok=True, message="slot updated", applied_at=applied_at, new_state=after_state)
+
+
+@app.post("/ui/control/regime", response_model=UIControlResponse)
+def ui_control_regime(req: UIRegimeControlRequest, request: Request):
+    actor, actor_role, source = get_request_actor(request)
+    applied_at = datetime.now(timezone.utc)
+    normalized_mode = _normalize_regime_mode(req.regime_mode)
+    target_key = f"{req.symbol}:{req.interval}:{req.strategy}"
+    with db_cursor() as (conn, cur):
+        ensure_ui_audit_table(cur)
+        cur.execute(
+            """
+            SELECT enabled, live_orders_enabled, regime_enabled, regime_mode, reason, updated_at
+            FROM bot_control
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+            """,
+            (req.symbol, req.interval, req.strategy),
+        )
+        before = cur.fetchone()
+        before_state = {
+            "enabled": bool(before[0]) if before else True,
+            "live_orders_enabled": bool(before[1]) if before else False,
+            "regime_enabled": bool(before[2]) if before else False,
+            "regime_mode": before[3] if before else "DRY_RUN",
+            "reason": before[4] if before else None,
+            "updated_at": before[5] if before else None,
+        }
+        note = req.reason or "regime control update"
+        cur.execute(
+            """
+            INSERT INTO bot_control (
+              symbol, strategy, interval, enabled, mode, reason, live_orders_enabled, regime_enabled, regime_mode, updated_at
+            )
+            VALUES (%s, %s, %s, %s, 'NORMAL', %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, strategy, interval)
+            DO UPDATE SET
+              enabled = COALESCE(bot_control.enabled, EXCLUDED.enabled),
+              reason = EXCLUDED.reason,
+              live_orders_enabled = COALESCE(bot_control.live_orders_enabled, EXCLUDED.live_orders_enabled),
+              regime_enabled = EXCLUDED.regime_enabled,
+              regime_mode = EXCLUDED.regime_mode,
+              updated_at = EXCLUDED.updated_at
+            """,
+            (
+                req.symbol,
+                req.strategy,
+                req.interval,
+                before_state["enabled"],
+                note,
+                before_state["live_orders_enabled"],
+                req.regime_enabled,
+                normalized_mode,
+                applied_at,
+            ),
+        )
+        after_state = {
+            "enabled": bool(before_state["enabled"]),
+            "live_orders_enabled": bool(before_state["live_orders_enabled"]),
+            "regime_enabled": bool(req.regime_enabled),
+            "regime_mode": normalized_mode,
+            "reason": note,
+            "updated_at": applied_at,
+        }
+        log_ui_action(
+            cur,
+            actor=actor,
+            actor_role=actor_role,
+            action="regime.update",
+            target_type="bot_control",
+            target_key=target_key,
+            before_json=before_state,
+            after_json=after_state,
+            source=source,
+            note=note,
+        )
+        conn.commit()
+
+    return UIControlResponse(ok=True, message="regime updated", applied_at=applied_at, new_state=after_state)
+
 
 @app.get("/ui/orc-dashboard")
 def ui_orc_dashboard():
