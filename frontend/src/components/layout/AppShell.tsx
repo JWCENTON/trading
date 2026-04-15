@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { UiEnvironment } from '../../api';
 
 export type AppTab = 'live' | 'slots' | 'health' | 'advanced';
 
@@ -8,6 +9,7 @@ interface AppShellProps {
   activeTab: AppTab;
   onTabChange: (tab: AppTab) => void;
   children: ReactNode;
+  environment?: UiEnvironment;
 }
 
 const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
@@ -17,13 +19,14 @@ const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
   { key: 'advanced', label: 'Advanced', shortLabel: 'Adv' },
 ];
 
-export function AppShell({ title, subtitle, activeTab, onTabChange, children }: AppShellProps) {
+export function AppShell({ title, subtitle, activeTab, onTabChange, children, environment }: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
         <div className="app-brand-wrap">
           <div className="app-brand">TRADING UI</div>
           <div className="app-brand-subtitle">Operator Dark • manual refresh first</div>
+          <div className="app-brand-env">{environment ? `ENV: ${environment}` : "ENV: —"}</div>
         </div>
 
         <nav className="app-nav" aria-label="Primary navigation">

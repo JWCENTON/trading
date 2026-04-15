@@ -1,21 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  getUiAccount,
+  getUiEnvironment,
   getUiHealth,
   getUiLiveSummary,
   getUiOpenPositions,
   getUiRecentClosed,
   getUiSlots,
+  getUiTrading24h,
+  setUiEnvironment,
   updatePanicState,
   updateRegimeControl,
   updateSlotControl,
+  type UiAccountSummary,
+  type UiEnvironment,
   type UiHealthResponse,
   type UiLiveSummary,
   type UiOpenPosition,
   type UiRecentClosedPosition,
   type UiSlotRow,
+  type UiTrading24hSummary,
 } from "./api";
 import { AppShell, type AppTab } from "./components/layout/AppShell";
 import { TopStatusBar } from "./components/live/TopStatusBar";
+import { EnvironmentSwitch } from "./components/live/EnvironmentSwitch";
+import { AccountSnapshotPanel } from "./components/live/AccountSnapshotPanel";
+import { Trading24hPanel } from "./components/live/Trading24hPanel";
 import { OpenPositionsTable } from "./components/live/OpenPositionsTable";
 import { RecentClosedTable } from "./components/live/RecentClosedTable";
 import { QuickActionsPanel } from "./components/live/QuickActionsPanel";
@@ -26,7 +36,10 @@ import "./App.css";
 
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("live");
+  const [environment, setEnvironment] = useState<UiEnvironment>(() => getUiEnvironment());
   const [summary, setSummary] = useState<UiLiveSummary | null>(null);
+  const [account, setAccount] = useState<UiAccountSummary | null>(null);
+  const [trading24h, setTrading24h] = useState<UiTrading24hSummary | null>(null);
   const [openPositions, setOpenPositions] = useState<UiOpenPosition[]>([]);
   const [recentClosed, setRecentClosed] = useState<UiRecentClosedPosition[]>([]);
   const [slots, setSlots] = useState<UiSlotRow[]>([]);
@@ -35,21 +48,25 @@ function App() {
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setUiEnvironment(environment);
+  }, [environment]);
+
   const loadLive = useCallback(async () => {
     setError(null);
     setLoading(true);
     try {
-      const [summaryRes, openRes, closedRes] = await Promise.all([
+      const [summaryRes, accountRes, trading24hRes, openRes, closedRes] = await Promise.all([
         getUiLiveSummary(),
+        getUiAccount(),
+        getUiTrading24h(),
         getUiOpenPositions(),
         getUiRecentClosed(10),
       ]);
 
-      if (summaryRes.error || openRes.error || closedRes.error) {
-        throw new Error(summaryRes.error || openRes.error || closedRes.error || "Unknown API error");
-      }
-
       setSummary(summaryRes);
+      setAccount(accountRes);
+      setTrading24h(trading24hRes);
       setOpenPositions(openRes.items);
       setRecentClosed(closedRes.items);
     } catch (err) {
@@ -58,7 +75,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [environment]);
 
   const loadSlots = useCallback(async () => {
     setError(null);
@@ -73,7 +90,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [environment]);
 
   const loadHealth = useCallback(async () => {
     setError(null);
@@ -88,7 +105,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [environment]);
 
   useEffect(() => {
     if (activeTab === "live") {
@@ -98,7 +115,7 @@ function App() {
     } else if (activeTab === "health") {
       void loadHealth();
     }
-  }, [activeTab, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, loadHealth, loadLive, loadSlots]);
 
   const handleTogglePanic = useCallback(async (enabled: boolean, reason: string) => {
     setActionBusy(true);
@@ -170,6 +187,7 @@ function App() {
       subtitle={subtitle}
       activeTab={activeTab}
       onTabChange={setActiveTab}
+      environment={environment}
     >
       <div className="page-grid">
         {error ? <div className="error-banner">API error: {error}</div> : null}
@@ -178,12 +196,35 @@ function App() {
         {loading && activeTab === "health" && !health ? <div className="panel">Ładowanie Health…</div> : null}
 
         {activeTab === "live" ? (
-          <>
+          <div className="live-home-stack">
             <TopStatusBar summary={summary} />
-            <QuickActionsPanel summary={summary} onRefresh={loadLive} onTogglePanic={handleTogglePanic} actionBusy={actionBusy} />
+
+            <div className="live-priority-grid">
+              <div className="live-priority-main">
+                <AccountSnapshotPanel account={account} />
+              </div>
+              <div className="live-priority-side">
+                <Trading24hPanel trading24h={trading24h} />
+              </div>
+            </div>
+
+            <div className="live-controls-grid">
+              <div className="live-controls-primary">
+                <EnvironmentSwitch environment={environment} onChange={setEnvironment} />
+              </div>
+              <div className="live-controls-secondary">
+                <QuickActionsPanel
+                  summary={summary}
+                  onRefresh={loadLive}
+                  onTogglePanic={handleTogglePanic}
+                  actionBusy={actionBusy}
+                />
+              </div>
+            </div>
+
             <OpenPositionsTable items={openPositions} />
             <RecentClosedTable items={recentClosed} />
-          </>
+          </div>
         ) : null}
 
         {activeTab === "slots" ? (

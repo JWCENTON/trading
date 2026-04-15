@@ -261,6 +261,23 @@ class AccountSummary(BaseModel):
     balances: List[AssetBalance]
 
 
+class UIAccountSummary(BaseModel):
+    total_account_value_usdc: float
+    quote_asset: str
+    assets: Dict[str, float]
+    asset_values_usdc: Dict[str, float]
+    updated_at: datetime
+
+
+class UITrading24hSummary(BaseModel):
+    closed_pnl_24h: float
+    trades_24h: int
+    wins_24h: int
+    losses_24h: int
+    win_rate_24h: float
+    updated_at: datetime
+
+
 class StrategyMetrics(BaseModel):
     symbol: str
     interval: str
@@ -1373,8 +1390,7 @@ def get_summary(
         )
 
 
-@app.get("/account/summary", response_model=AccountSummary)
-def get_account_summary():
+def _load_account_summary() -> AccountSummary:
     if binance_client is None:
         raise HTTPException(status_code=500, detail="Binance API keys not configured for API service")
 
@@ -1397,7 +1413,7 @@ def get_account_summary():
         prices_cache[symbol] = price
         return price
 
-    tracked_assets = {"BTC", "ETH", "BNB", "USDC", "SOL"}
+    tracked_assets = {"BTC", "ETH", "BNB", QUOTE_ASSET, "SOL"}
 
     total_usdt = 0.0
     result_balances: list[AssetBalance] = []
@@ -1416,7 +1432,7 @@ def get_account_summary():
         try:
             px = get_price_usdt(asset)
         except Exception:
-            px = 1.0
+            px = 1.0 if asset == QUOTE_ASSET else 0.0
 
         value_usdt = total * px
         total_usdt += value_usdt
@@ -1432,6 +1448,172 @@ def get_account_summary():
         )
 
     return AccountSummary(total_usdt=total_usdt, balances=result_balances)
+
+
+@app.get("/account/summary", response_model=AccountSummary)
+def get_account_summary():
+    return _load_account_summary()
+
+
+@app.get("/ui/account", response_model=UIAccountSummary)
+def ui_account_summary():
+    tracked_assets = [QUOTE_ASSET, "BTC", "ETH", "BNB", "SOL"]
+    assets = {asset: 0.0 for asset in tracked_assets}
+    asset_values_usdc = {asset: 0.0 for asset in tracked_assets}
+
+    # LIVE: real Binance balances
+    if binance_client is not None:
+        summary = _load_account_summary()
+
+        for balance in summary.balances:
+            if balance.asset not in assets:
+                continue
+            assets[balance.asset] = float(balance.total)
+            asset_values_usdc[balance.asset] = float(balance.total_usdt)
+
+        return UIAccountSummary(
+            total_account_value_usdc=float(summary.total_usdt),
+            quote_asset=QUOTE_ASSET,
+            assets=assets,
+            asset_values_usdc=asset_values_usdc,
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    # PAPER: synthetic account snapshot from DB
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+              WITH closed_realized AS (
+                SELECT
+                  COALESCE(SUM(
+                    CASE
+                      WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                        THEN (entry_price - exit_price) * qty
+                      ELSE (exit_price - entry_price) * qty
+                    END
+                  ), 0)::double precision AS realized_pnl
+                FROM positions
+                WHERE status = 'CLOSED'
+                  AND exit_price IS NOT NULL
+                  AND entry_price IS NOT NULL
+              ),
+              open_unrealized AS (
+                SELECT
+                  COALESCE(SUM(
+                    CASE
+                      WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                        THEN (p.entry_price - COALESCE(c.close, p.entry_price)) * p.qty
+                      ELSE (COALESCE(c.close, p.entry_price) - p.entry_price) * p.qty
+                    END
+                  ), 0)::double precision AS unrealized_pnl
+                FROM positions p
+                LEFT JOIN LATERAL (
+                  SELECT close
+                  FROM candles c
+                  WHERE c.symbol = p.symbol
+                    AND c.interval = p.interval
+                  ORDER BY c.open_time DESC
+                  LIMIT 1
+                ) c ON TRUE
+                WHERE p.status = 'OPEN'
+              )
+              SELECT
+                COALESCE((SELECT realized_pnl FROM closed_realized), 0),
+                COALESCE((SELECT unrealized_pnl FROM open_unrealized), 0)
+            """)
+            row = cur.fetchone()
+
+        realized_pnl = float(row[0] or 0.0)
+        unrealized_pnl = float(row[1] or 0.0)
+        total_usdc = float(PAPER_START_USDT + realized_pnl + unrealized_pnl)
+
+        assets[QUOTE_ASSET] = total_usdc
+        asset_values_usdc[QUOTE_ASSET] = total_usdc
+
+        return UIAccountSummary(
+            total_account_value_usdc=total_usdc,
+            quote_asset=QUOTE_ASSET,
+            assets=assets,
+            asset_values_usdc=asset_values_usdc,
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ui/account failed in PAPER mode: {e}")
+
+
+@app.get("/ui/trading-24h", response_model=UITrading24hSummary)
+def ui_trading_24h():
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute("""
+              SELECT
+                COALESCE(SUM(
+                  CASE
+                    WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                      THEN (entry_price - exit_price) * qty
+                    ELSE (exit_price - entry_price) * qty
+                  END
+                ), 0)::double precision AS closed_pnl_24h,
+                COUNT(*)::int AS trades_24h,
+                COALESCE(SUM(
+                  CASE
+                    WHEN (
+                      CASE
+                        WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                          THEN (entry_price - exit_price) * qty
+                        ELSE (exit_price - entry_price) * qty
+                      END
+                    ) > 0 THEN 1 ELSE 0
+                  END
+                ), 0)::int AS wins_24h,
+                COALESCE(SUM(
+                  CASE
+                    WHEN (
+                      CASE
+                        WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                          THEN (entry_price - exit_price) * qty
+                        ELSE (exit_price - entry_price) * qty
+                      END
+                    ) <= 0 THEN 1 ELSE 0
+                  END
+                ), 0)::int AS losses_24h,
+                COALESCE(
+                  ROUND(
+                    (
+                      100.0 * SUM(
+                        CASE
+                          WHEN (
+                            CASE
+                              WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                                THEN (entry_price - exit_price) * qty
+                              ELSE (exit_price - entry_price) * qty
+                            END
+                          ) > 0 THEN 1 ELSE 0
+                        END
+                      )::numeric / NULLIF(COUNT(*), 0)
+                    ),
+                    2
+                  ),
+                  0
+                )::double precision AS win_rate_24h
+              FROM positions
+              WHERE status = 'CLOSED'
+                AND exit_time IS NOT NULL
+                AND exit_time >= now() - INTERVAL '24 hours'
+            """)
+            row = cur.fetchone()
+
+        return UITrading24hSummary(
+            closed_pnl_24h=_safe_float(row[0]) or 0.0,
+            trades_24h=_safe_int(row[1]),
+            wins_24h=_safe_int(row[2]),
+            losses_24h=_safe_int(row[3]),
+            win_rate_24h=_safe_float(row[4]) or 0.0,
+            updated_at=datetime.now(timezone.utc),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ui/trading-24h failed: {e}")
 
 
 @app.on_event("startup")

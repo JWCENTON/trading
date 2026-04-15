@@ -89,11 +89,109 @@
   gap: 16px;
 }
 
+.live-home-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.live-priority-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.live-priority-main,
+.live-priority-side,
+.live-controls-primary,
+.live-controls-secondary {
+  min-width: 0;
+}
+
+.live-controls-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.35fr);
+  gap: 16px;
+  align-items: start;
+}
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
+
+.app-brand-env {
+  color: #60a5fa;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.environment-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.env-button {
+  background: #020617;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  min-height: 72px;
+  padding: 14px;
+  text-align: left;
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.env-button.active {
+  border-color: #3b82f6;
+  background: #172033;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
+.env-button-title {
+  color: #f8fafc;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.env-button-meta {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.account-total-card {
+  background: linear-gradient(180deg, rgba(11, 18, 32, 0.98) 0%, rgba(15, 23, 42, 0.98) 100%);
+  border: 1px solid #334155;
+  border-radius: 16px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.account-total-value {
+  color: #f8fafc;
+  font-size: clamp(26px, 4vw, 34px);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.account-grid,
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-asset-card .status-value {
+  font-size: 16px;
+}
+
 
 .status-card,
 .panel {
@@ -388,6 +486,16 @@ td {
   .health-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .account-grid,
+  .stats-grid,
+  .live-priority-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-controls-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -396,11 +504,11 @@ td {
   }
 
   .app-sidebar {
-    position: static;
+    position: relative;
     height: auto;
     border-right: none;
     border-bottom: 1px solid #1f2937;
-    padding: 12px 12px 10px;
+    padding: calc(72px + env(safe-area-inset-top, 0px)) 12px 10px;
     gap: 12px;
   }
 
@@ -408,8 +516,16 @@ td {
     display: flex;
     gap: 10px;
     overflow-x: auto;
-    padding-bottom: 2px;
+    padding: calc(6px + env(safe-area-inset-top, 0px)) 12px 6px;
     scrollbar-width: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    z-index: 60;
+    background: rgba(11, 18, 32, 0.96);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid #1f2937;
   }
 
   .app-nav::-webkit-scrollbar {
@@ -429,6 +545,16 @@ td {
 
   .stack-row--split {
     grid-template-columns: 1fr;
+  }
+
+  .page-header {
+    position: static;
+    top: auto;
+    z-index: auto;
+    background: transparent;
+    backdrop-filter: none;
+    padding-bottom: 0;
+    margin-bottom: 14px;
   }
 }
 
@@ -452,6 +578,12 @@ td {
 
   .button-row--stack-mobile .action-button {
     width: 100%;
+  }
+
+  .environment-switch,
+  .account-grid,
+  .stats-grid {
+    grid-template-columns: 1fr;
   }
 }
 

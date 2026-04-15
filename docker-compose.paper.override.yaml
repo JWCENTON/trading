@@ -10,6 +10,7 @@ services:
       API_BUILD: "paper-20260118-1"
 
   frontend:
+    profiles: ["legacy-paper-ui"]
     ports:
       - "3000:80"
 
