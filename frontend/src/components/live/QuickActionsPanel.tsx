@@ -1,20 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { UiLiveSummary } from '../../api';
 
 interface QuickActionsPanelProps {
   summary: UiLiveSummary | null;
   onRefresh: () => Promise<void> | void;
   onTogglePanic: (enabled: boolean, reason: string) => Promise<void> | void;
-  actionBusy?: boolean;
+  actionBusy: boolean;
 }
 
-export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, actionBusy = false }: QuickActionsPanelProps) {
-  const [reason, setReason] = useState('operator manual action');
-  const panicEnabled = summary?.panic.enabled ?? false;
-  const placeholder = useMemo(
-    () => (panicEnabled ? 'reason for disabling panic' : 'reason for enabling panic'),
-    [panicEnabled],
-  );
+export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, actionBusy }: QuickActionsPanelProps) {
+  const [reason, setReason] = useState('ui operator action');
 
   return (
     <section className="panel quick-actions-panel">
@@ -22,11 +17,19 @@ export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, actionBus
         <h2>Quick actions</h2>
         <span className="panel-meta">Manual-first</span>
       </div>
+
       <div className="quick-actions-grid">
-        <div className="button-row">
-          <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>
-            Refresh live
-          </button>
+        <div className="stack-row stack-row--split">
+          <div className="info-tile">
+            <span className="status-label">Current panic</span>
+            <strong className={`status-value ${summary?.panic.enabled ? 'negative' : 'positive'}`}>
+              {summary?.panic.enabled ? 'ON' : 'OFF'}
+            </strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">Current reason</span>
+            <strong className="status-value text-ellipsis">{summary?.panic.reason || '—'}</strong>
+          </div>
         </div>
 
         <div className="panic-block">
@@ -34,27 +37,21 @@ export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, actionBus
           <input
             id="panic-reason"
             value={reason}
-            placeholder={placeholder}
             onChange={(e) => setReason(e.target.value)}
+            placeholder="Podaj reason do audit loga"
           />
-          <div className="button-row">
-            <button
-              type="button"
-              className="action-button danger"
-              onClick={() => void onTogglePanic(true, reason || 'panic enabled from ui')}
-              disabled={actionBusy || panicEnabled}
-            >
-              Panic ON
-            </button>
-            <button
-              type="button"
-              className="action-button success"
-              onClick={() => void onTogglePanic(false, reason || 'panic disabled from ui')}
-              disabled={actionBusy || !panicEnabled}
-            >
-              Panic OFF
-            </button>
-          </div>
+        </div>
+
+        <div className="button-row button-row--stack-mobile">
+          <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>
+            Refresh live
+          </button>
+          <button type="button" className="action-button danger" onClick={() => void onTogglePanic(true, reason)} disabled={actionBusy}>
+            Panic ON
+          </button>
+          <button type="button" className="action-button success" onClick={() => void onTogglePanic(false, reason)} disabled={actionBusy}>
+            Panic OFF
+          </button>
         </div>
       </div>
     </section>

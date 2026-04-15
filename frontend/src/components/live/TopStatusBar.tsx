@@ -4,57 +4,84 @@ interface TopStatusBarProps {
   summary: UiLiveSummary | null;
 }
 
-function fmtNumber(value: number | null | undefined, digits = 2): string {
-  if (value == null || Number.isNaN(value)) return '—';
-  return Number(value).toFixed(digits);
+function formatNumber(value: number | null | undefined, digits = 4) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return value.toFixed(digits);
 }
 
-function fmtDate(value: string | null | undefined): string {
+function formatDateTime(value: string | null | undefined) {
   if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return new Date(value).toLocaleString();
 }
 
 export function TopStatusBar({ summary }: TopStatusBarProps) {
-  const panicClass = summary?.panic.enabled ? 'negative' : 'positive';
-  const pnl = summary?.open_positions.unrealized_pnl_usdc ?? null;
-  const pnlClass = pnl == null ? 'neutral' : pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
+  const statusCards = [
+    {
+      label: 'Panic',
+      value: summary?.panic.enabled ? 'ON' : 'OFF',
+      tone: summary?.panic.enabled ? 'negative' : 'positive',
+      meta: summary?.panic.reason || '—',
+    },
+    {
+      label: 'Environment',
+      value: summary ? `${summary.environment} / ${summary.trading_mode}` : '—',
+      tone: 'neutral',
+      meta: 'Runtime target',
+    },
+    {
+      label: 'Open Unrealized PnL',
+      value: summary ? `${formatNumber(summary.open_positions.unrealized_pnl_usdc)} USDC` : '—',
+      tone:
+        (summary?.open_positions.unrealized_pnl_usdc ?? 0) > 0
+          ? 'positive'
+          : (summary?.open_positions.unrealized_pnl_usdc ?? 0) < 0
+            ? 'negative'
+            : 'neutral',
+      meta: 'Truth from positions + candles',
+    },
+    {
+      label: 'Open Positions',
+      value: summary ? String(summary.open_positions.count) : '—',
+      tone: 'neutral',
+      meta: 'Currently open',
+    },
+    {
+      label: 'Effective Live',
+      value: summary ? `${summary.slot_counts.effective_live} / ${summary.slot_counts.total}` : '—',
+      tone: summary && summary.slot_counts.effective_live > 0 ? 'positive' : 'neutral',
+      meta: 'enabled + live_orders + regime ENFORCE',
+    },
+    {
+      label: 'Open Market Value',
+      value: summary ? `${formatNumber(summary.open_positions.market_value_usdc)} USDC` : '—',
+      tone: 'neutral',
+      meta: 'Mark value',
+    },
+    {
+      label: 'Heartbeats',
+      value: summary ? `${summary.heartbeats.fresh} fresh / ${summary.heartbeats.stale} stale` : '—',
+      tone: summary && summary.heartbeats.stale > 0 ? 'negative' : 'positive',
+      meta: `Latest: ${formatDateTime(summary?.heartbeats.latest_at)}`,
+    },
+    {
+      label: 'Last Refresh',
+      value: formatDateTime(summary?.snapshot_at),
+      tone: 'neutral',
+      meta: summary?.market_data.latest_mark_price_at
+        ? `Market data: ${formatDateTime(summary.market_data.latest_mark_price_at)}`
+        : 'Market data: —',
+    },
+  ];
 
   return (
     <section className="status-grid">
-      <div className={`status-card ${panicClass}`}>
-        <span className="status-label">Panic</span>
-        <span className="status-value">{summary ? (summary.panic.enabled ? 'ON' : 'OFF') : '—'}</span>
-      </div>
-      <div className="status-card neutral">
-        <span className="status-label">Environment</span>
-        <span className="status-value">{summary?.environment ?? '—'} / {summary?.trading_mode ?? '—'}</span>
-      </div>
-      <div className={`status-card ${pnlClass}`}>
-        <span className="status-label">Open Unrealized PnL</span>
-        <span className="status-value">{fmtNumber(pnl, 4)} USDC</span>
-      </div>
-      <div className="status-card neutral">
-        <span className="status-label">Open Positions</span>
-        <span className="status-value">{summary?.open_positions.count ?? '—'}</span>
-      </div>
-      <div className="status-card neutral">
-        <span className="status-label">Effective Live</span>
-        <span className="status-value">{summary?.slot_counts.effective_live ?? '—'} / {summary?.slot_counts.total ?? '—'}</span>
-      </div>
-      <div className="status-card neutral">
-        <span className="status-label">Open Market Value</span>
-        <span className="status-value">{fmtNumber(summary?.open_positions.market_value_usdc, 4)} USDC</span>
-      </div>
-      <div className="status-card neutral">
-        <span className="status-label">Heartbeats</span>
-        <span className="status-value">{summary?.heartbeats.fresh ?? '—'} fresh / {summary?.heartbeats.stale ?? '—'} stale</span>
-      </div>
-      <div className="status-card neutral">
-        <span className="status-label">Last Refresh</span>
-        <span className="status-value">{fmtDate(summary?.snapshot_at)}</span>
-      </div>
+      {statusCards.map((card) => (
+        <article key={card.label} className={`status-card ${card.tone}`}>
+          <span className="status-label">{card.label}</span>
+          <strong className="status-value">{card.value}</strong>
+          <span className="status-meta">{card.meta}</span>
+        </article>
+      ))}
     </section>
   );
 }

@@ -10,7 +10,16 @@ function getEnv(name: string): string | undefined {
   return window?.__ENV__?.[name];
 }
 
-export const API_BASE_URL =
+export type UiEnvironment = "LIVE" | "PAPER";
+
+export const LIVE_API_BASE_URL =
+  getEnv("VITE_API_BASE_URL_LIVE") ||
+  import.meta.env.VITE_API_BASE_URL_LIVE ||
+  "http://localhost:8001";
+
+export const PAPER_API_BASE_URL =
+  getEnv("VITE_API_BASE_URL_PAPER") ||
+  import.meta.env.VITE_API_BASE_URL_PAPER ||
   getEnv("VITE_API_BASE_URL") ||
   import.meta.env.VITE_API_BASE_URL ||
   "http://localhost:8000";
@@ -20,11 +29,30 @@ export const QUOTE_ASSET =
     import.meta.env.VITE_QUOTE_ASSET ||
     "USDC").toUpperCase();
 
-if (!API_BASE_URL) {
-  throw new Error("Missing API base URL (VITE_API_BASE_URL).");
+const UI_ENV_STORAGE_KEY = "trading-ui-environment";
+
+export function getUiEnvironment(): UiEnvironment {
+  const raw = typeof window !== "undefined" ? window.localStorage.getItem(UI_ENV_STORAGE_KEY) : null;
+  return raw === "PAPER" ? "PAPER" : "LIVE";
 }
 
-export const api = axios.create({ baseURL: API_BASE_URL });
+export function setUiEnvironment(env: UiEnvironment) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(UI_ENV_STORAGE_KEY, env);
+  }
+}
+
+export function getApiBaseUrlForEnvironment(env: UiEnvironment): string {
+  return env === "LIVE" ? LIVE_API_BASE_URL : PAPER_API_BASE_URL;
+}
+
+export function getCurrentApiBaseUrl(): string {
+  return getApiBaseUrlForEnvironment(getUiEnvironment());
+}
+
+function getApi() {
+  return axios.create({ baseURL: getCurrentApiBaseUrl() });
+}
 
 export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPERTREND";
 export type SymbolPair = string;
@@ -471,6 +499,23 @@ export interface UiHealthResponse {
   note?: string;
 }
 
+export interface UiAccountSummary {
+  total_account_value_usdc: number;
+  quote_asset: string;
+  assets: Record<string, number>;
+  asset_values_usdc: Record<string, number>;
+  updated_at: string;
+}
+
+export interface UiTrading24hSummary {
+  closed_pnl_24h: number;
+  trades_24h: number;
+  wins_24h: number;
+  losses_24h: number;
+  win_rate_24h: number;
+  updated_at: string;
+}
+
 export interface UiSlotControlPayload {
   symbol: string;
   interval: string;
@@ -496,68 +541,76 @@ export interface UiControlResponse {
 }
 
 export async function getSafetyStatus() {
-  return (await api.get<SafetyStatus>("/safety/status")).data;
+  return (await getApi().get<SafetyStatus>("/safety/status")).data;
 }
 
 export async function getOpsPositionsOpen() {
-  return (await api.get<OpsPositionsOpenResponse>("/ops/positions/open")).data;
+  return (await getApi().get<OpsPositionsOpenResponse>("/ops/positions/open")).data;
 }
 
 export async function getOpsLiveAttempts(minutes = 120) {
   return (
-    await api.get<OpsLiveAttemptsResponse>("/ops/live-attempts", { params: { minutes } })
+    await getApi().get<OpsLiveAttemptsResponse>("/ops/live-attempts", { params: { minutes } })
   ).data;
 }
 
 export async function getOpsBotControl() {
-  return (await api.get<OpsBotControlResponse>("/ops/bot-control")).data;
+  return (await getApi().get<OpsBotControlResponse>("/ops/bot-control")).data;
 }
 
 export async function getBotsActive(ttlSeconds = 600) {
   return (
-    await api.get<BotsActiveResponse>("/bots/active", { params: { ttl_seconds: ttlSeconds } })
+    await getApi().get<BotsActiveResponse>("/bots/active", { params: { ttl_seconds: ttlSeconds } })
   ).data;
 }
 
 export async function getOpsEnvironment() {
-  return (await api.get<OpsEnvironmentResponse>("/ops/environment")).data;
+  return (await getApi().get<OpsEnvironmentResponse>("/ops/environment")).data;
 }
 
 export async function getUiOrcDashboard() {
-  return (await api.get<UiOrcDashboardResponse>("/ui/orc-dashboard")).data;
+  return (await getApi().get<UiOrcDashboardResponse>("/ui/orc-dashboard")).data;
 }
 
 export async function getUiLiveSummary() {
-  return (await api.get<UiLiveSummary>("/ui/live-summary")).data;
+  return (await getApi().get<UiLiveSummary>("/ui/live-summary")).data;
+}
+
+export async function getUiAccount() {
+  return (await getApi().get<UiAccountSummary>("/ui/account")).data;
+}
+
+export async function getUiTrading24h() {
+  return (await getApi().get<UiTrading24hSummary>("/ui/trading-24h")).data;
 }
 
 export async function getUiOpenPositions() {
-  return (await api.get<UiOpenPositionsResponse>("/ui/open-positions")).data;
+  return (await getApi().get<UiOpenPositionsResponse>("/ui/open-positions")).data;
 }
 
 export async function getUiRecentClosed(limit = 10) {
-  return (await api.get<UiRecentClosedResponse>("/ui/recent-closed", { params: { limit } })).data;
+  return (await getApi().get<UiRecentClosedResponse>("/ui/recent-closed", { params: { limit } })).data;
 }
 
 export async function updatePanicState(enabled: boolean, reason: string) {
-  return (await api.post<UiControlResponse>("/ui/control/panic", { enabled, reason })).data;
+  return (await getApi().post<UiControlResponse>("/ui/control/panic", { enabled, reason })).data;
 }
 
 
 export async function getUiSlots() {
-  return (await api.get<UiSlotsResponse>("/ui/slots")).data;
+  return (await getApi().get<UiSlotsResponse>("/ui/slots")).data;
 }
 
 export async function getUiHealth() {
-  return (await api.get<UiHealthResponse>("/ui/health")).data;
+  return (await getApi().get<UiHealthResponse>("/ui/health")).data;
 }
 
 export async function updateSlotControl(payload: UiSlotControlPayload) {
-  return (await api.post<UiControlResponse>("/ui/control/slot", payload)).data;
+  return (await getApi().post<UiControlResponse>("/ui/control/slot", payload)).data;
 }
 
 export async function updateRegimeControl(payload: UiRegimeControlPayload) {
-  return (await api.post<UiControlResponse>("/ui/control/regime", payload)).data;
+  return (await getApi().post<UiControlResponse>("/ui/control/regime", payload)).data;
 }
 
 export function envBool(v: string | null | undefined): boolean {
@@ -567,7 +620,7 @@ export function envBool(v: string | null | undefined): boolean {
 }
 
 export async function getRegimeLatest(symbol: SymbolPair = makeSymbol("BTC"), interval = "1m") {
-  return (await api.get<RegimePoint>("/regime/latest", { params: { symbol, interval } })).data;
+  return (await getApi().get<RegimePoint>("/regime/latest", { params: { symbol, interval } })).data;
 }
 
 export async function getWatchdogEvents(
@@ -578,19 +631,19 @@ export async function getWatchdogEvents(
   offset = 0,
 ) {
   return (
-    await api.get<WatchdogEventPage>("/watchdog/events", {
+    await getApi().get<WatchdogEventPage>("/watchdog/events", {
       params: { symbol, interval, strategy, limit, offset },
     })
   ).data;
 }
 
 export async function getAccountSummary() {
-  return (await api.get<AccountSummary>("/account/summary")).data;
+  return (await getApi().get<AccountSummary>("/account/summary")).data;
 }
 
 export async function getSummary(symbol: SymbolPair = makeSymbol("BTC"), interval = "1m") {
   return (
-    await api.get<CandleSummary>("/candles/summary", {
+    await getApi().get<CandleSummary>("/candles/summary", {
       params: { symbol, interval },
     })
   ).data;
@@ -605,7 +658,7 @@ export async function getOrders(
 ) {
   const offset = (page - 1) * pageSize;
   return (
-    await api.get<SimulatedOrderPage>("/simulated/orders", {
+    await getApi().get<SimulatedOrderPage>("/simulated/orders", {
       params: { symbol, interval, limit: pageSize, offset, strategy },
     })
   ).data;
@@ -617,7 +670,7 @@ export async function getPnL(
   strategy: Strategy = "RSI",
 ) {
   return (
-    await api.get<PnLSummary>("/simulated/pnl", {
+    await getApi().get<PnLSummary>("/simulated/pnl", {
       params: { symbol, interval, strategy },
     })
   ).data;
@@ -633,7 +686,7 @@ export async function getRoundtrips(
 ) {
   const offset = (page - 1) * pageSize;
   return (
-    await api.get<RoundtripPage>("/simulated/roundtrips", {
+    await getApi().get<RoundtripPage>("/simulated/roundtrips", {
       params: {
         symbol,
         interval,
@@ -652,7 +705,7 @@ export async function getMetrics(
   strategy: Strategy = "RSI",
 ) {
   return (
-    await api.get<StrategyMetrics>("/simulated/metrics", {
+    await getApi().get<StrategyMetrics>("/simulated/metrics", {
       params: { symbol, interval, strategy },
     })
   ).data;
@@ -660,7 +713,7 @@ export async function getMetrics(
 
 export async function analyzeStrategyWithAI(prompt: string): Promise<string> {
   try {
-    const res = await api.post<AIAnalyzeResponse>("/ai/analyze-strategy", {
+    const res = await getApi().post<AIAnalyzeResponse>("/ai/analyze-strategy", {
       prompt,
     });
     return res.data.analysis;
