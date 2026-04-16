@@ -52,6 +52,54 @@ DEFAULT_SYMBOL = os.environ.get("DEFAULT_SYMBOL", sym("BTC"))
 
 ALL_STRATEGIES: list[str] = ["RSI", "TREND", "BBRANGE", "SUPERTREND"]
 
+# Uwaga: tu mają być tylko paramy, które realnie chcesz pozwolić AI zmieniać.
+ALLOWED_PARAMS: dict[str, set[str]] = {
+    "RSI": {
+        "RSI_OVERSOLD",
+        "RSI_OVERBOUGHT",
+        "STOP_LOSS_PCT",
+        "TAKE_PROFIT_PCT",
+        "MAX_POSITION_MINUTES",
+        "DAILY_MAX_LOSS_PCT",
+    },
+    "TREND": {
+        "STOP_LOSS_PCT",
+        "TAKE_PROFIT_PCT",
+        "MAX_POSITION_MINUTES",
+        "DAILY_MAX_LOSS_PCT",
+        "ENTRY_BUFFER_PCT",
+        "TREND_FILTER_PCT",
+    },
+    "BBRANGE": {
+        "STOP_LOSS_PCT",
+        "TAKE_PROFIT_PCT",
+        "MAX_POSITION_MINUTES",
+        "DAILY_MAX_LOSS_PCT",
+        "BB_PERIOD",
+        "BB_STD",
+        "MIN_BB_WIDTH_PCT",
+        "RSI_LONG_MAX",
+        "RSI_SHORT_MIN",
+        "RSI_BLOCK_EXTREME_LOW",
+        "RSI_BLOCK_EXTREME_HIGH",
+    },
+    "SUPERTREND": {
+        "ATR_PERIOD",
+        "ST_MULTIPLIER",
+        "STOP_LOSS_PCT",
+        "TAKE_PROFIT_PCT",
+        "MAX_POSITION_MINUTES",
+        "DAILY_MAX_LOSS_PCT",
+        "MIN_ATR_PCT",
+        "TREND_BUFFER",
+        "RSI_LONG_MAX",
+        "RSI_SHORT_MIN",
+        "RSI_BLOCK_EXTREME_LOW",
+        "RSI_BLOCK_EXTREME_HIGH",
+        "ORDER_QTY_BTC",
+    },
+}
+
 ALLOWED_ORIGINS = [
     # PAPER
     "http://192.168.101.10:3000",
@@ -2907,13 +2955,25 @@ class UIUserSettingsResponse(BaseModel):
     configured_min_entry_usdc: float
     system_min_entry_usdc: float
     effective_min_entry_usdc: float
+    base_runtime_notional_usdc: float
+    manual_entry_addon_usdc: float
+    three_win_boost_usdc: float
+    normal_entry_preview_usdc: float
+    boosted_entry_preview_usdc: float
     mode: str
     updated_at: datetime | None = None
 
 
 class UIUserSettingsUpdateRequest(BaseModel):
     min_entry_usdc: float | None = None
+    manual_entry_addon_usdc: float | None = None
+    three_win_boost_usdc: float | None = None
     mode: str | None = None
+
+
+class RestoreDefaultsResponse(BaseModel):
+    ok: bool
+    settings: UIUserSettingsResponse
 
 
 @app.get("/settings/user", response_model=UIUserSettingsResponse)
@@ -2929,11 +2989,26 @@ def put_settings_user(payload: UIUserSettingsUpdateRequest):
 
     if payload.min_entry_usdc is not None and payload.min_entry_usdc < 0:
         raise HTTPException(status_code=400, detail="min_entry_usdc must be >= 0")
+    if payload.manual_entry_addon_usdc is not None and payload.manual_entry_addon_usdc < 0:
+        raise HTTPException(status_code=400, detail="manual_entry_addon_usdc must be >= 0")
+    if payload.three_win_boost_usdc is not None and payload.three_win_boost_usdc < 0:
+        raise HTTPException(status_code=400, detail="three_win_boost_usdc must be >= 0")
 
     return UIUserSettingsResponse(**upsert_user_settings(
         min_entry_usdc=payload.min_entry_usdc,
+        manual_entry_addon_usdc=payload.manual_entry_addon_usdc,
+        three_win_boost_usdc=payload.three_win_boost_usdc,
         mode=mode,
     ))
+
+
+@app.post("/settings/user/restore-defaults", response_model=RestoreDefaultsResponse)
+def post_settings_user_restore_defaults():
+    settings = upsert_user_settings(
+        manual_entry_addon_usdc=0.0,
+        three_win_boost_usdc=10.0,
+    )
+    return RestoreDefaultsResponse(ok=True, settings=UIUserSettingsResponse(**settings))
 
 
 @app.get("/ui/advanced-summary", response_model=UIUserSettingsResponse)

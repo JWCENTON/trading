@@ -2714,25 +2714,35 @@ def run_strategy(row, prev_row=None):
             qty_btc = float(ORDER_QTY_BTC)
 
         settings_snapshot = get_user_settings_snapshot()
-        configured_min_entry_usdc = float(settings_snapshot["configured_min_entry_usdc"])
-        effective_min_entry_usdc = float(settings_snapshot["effective_min_entry_usdc"])
-        order_notional_usdc = float(notional_live if cfg_effective.trading_mode == "LIVE" else (float(qty_btc) * float(price)))
-        if order_notional_usdc < effective_min_entry_usdc:
-            emit_strategy_event(
-                event_type="BLOCKED",
-                decision=decision,
-                reason="MIN_ENTRY_NOTIONAL",
-                price=float(price),
-                candle_open_time=open_time,
-                info={
-                    "target_notional": order_notional_usdc,
-                    "min_required": effective_min_entry_usdc,
-                    "configured_min_entry_usdc": configured_min_entry_usdc,
-                    "effective_min_entry_usdc": effective_min_entry_usdc,
-                    "system_min_entry_usdc": SYSTEM_MIN_ENTRY_USDC,
-                },
+        manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
+        base_target_notional = float(ORDER_NOTIONAL_USDC)
+        final_target_notional = base_target_notional + manual_entry_addon_usdc
+
+        if cfg_effective.trading_mode == "LIVE" and manual_entry_addon_usdc > 0:
+            qty_btc, px_live, notional_live, step, min_qty, min_notional = compute_live_qty_from_notional(
+                client,
+                SYMBOL,
+                target_notional=float(final_target_notional),
+                quote_asset=QUOTE_ASSET,
+                min_notional_buffer_pct=float(MIN_NOTIONAL_BUFFER_PCT),
             )
-            return
+
+        order_notional_usdc = float(notional_live if cfg_effective.trading_mode == "LIVE" else (float(qty_btc) * float(price)))
+        emit_strategy_event(
+            event_type="SIZING",
+            decision=decision,
+            reason="FINAL_NOTIONAL",
+            price=float(price),
+            candle_open_time=open_time,
+            info={
+                "base_target_notional": base_target_notional,
+                "manual_entry_addon_usdc": manual_entry_addon_usdc,
+                "configured_three_win_boost_usdc": float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0),
+                "three_win_boost_active": base_target_notional > float(SYSTEM_MIN_ENTRY_USDC),
+                "final_target_notional": float(final_target_notional),
+                "order_notional": float(order_notional_usdc),
+            },
+        )
 
         qty_btc = float(qty_btc)
         if qty_btc <= 0:
