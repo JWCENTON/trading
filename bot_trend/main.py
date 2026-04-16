@@ -27,6 +27,7 @@ from common.execution import build_live_client_order_id
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
 from common.exit_guards.guarded_profit import evaluate_guarded_profit
+from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2107,6 +2108,27 @@ def run_trend_strategy():
             candle_open_time=open_time,
             info=sizing_info,
         )
+
+        settings_snapshot = get_user_settings_snapshot()
+        configured_min_entry_usdc = float(settings_snapshot["configured_min_entry_usdc"])
+        effective_min_entry_usdc = float(settings_snapshot["effective_min_entry_usdc"])
+        order_notional_usdc = float(qty_btc) * float(price)
+        if order_notional_usdc < effective_min_entry_usdc:
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=decision,
+                reason="MIN_ENTRY_NOTIONAL",
+                price=float(price),
+                candle_open_time=open_time,
+                info={
+                    "target_notional": order_notional_usdc,
+                    "min_required": effective_min_entry_usdc,
+                    "configured_min_entry_usdc": configured_min_entry_usdc,
+                    "effective_min_entry_usdc": effective_min_entry_usdc,
+                    "system_min_entry_usdc": SYSTEM_MIN_ENTRY_USDC,
+                },
+            )
+            return
 
         qty_btc = float(qty_btc)
         if qty_btc <= 0:

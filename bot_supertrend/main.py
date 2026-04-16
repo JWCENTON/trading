@@ -26,6 +26,7 @@ from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.execution import place_live_order
 from common.sizing import compute_qty_from_notional as common_compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
+from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 
 
 logging.basicConfig(
@@ -1759,6 +1760,27 @@ def run_strategy(latest, prev):
             candle_open_time=open_time,
             info=sizing_info,
         )
+
+        settings_snapshot = get_user_settings_snapshot()
+        configured_min_entry_usdc = float(settings_snapshot["configured_min_entry_usdc"])
+        effective_min_entry_usdc = float(settings_snapshot["effective_min_entry_usdc"])
+        order_notional_usdc = float(qty_btc) * float(price)
+        if order_notional_usdc < effective_min_entry_usdc:
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision="BUY",
+                reason="MIN_ENTRY_NOTIONAL",
+                price=float(price),
+                candle_open_time=open_time,
+                info={
+                    "target_notional": order_notional_usdc,
+                    "min_required": effective_min_entry_usdc,
+                    "configured_min_entry_usdc": configured_min_entry_usdc,
+                    "effective_min_entry_usdc": effective_min_entry_usdc,
+                    "system_min_entry_usdc": SYSTEM_MIN_ENTRY_USDC,
+                },
+            )
+            return
 
         # 1) ledger + live (if enabled)
         res = execute_and_record(

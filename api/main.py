@@ -1,3 +1,4 @@
+from common.user_settings import get_user_settings_snapshot, upsert_user_settings
 import os
 import math
 from datetime import datetime, timezone
@@ -41,7 +42,6 @@ INTERNAL_API_BASE = os.environ.get("INTERNAL_API_BASE", "http://127.0.0.1:8000")
 
 QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
 ALL_INTERVALS = (os.environ.get("ALL_INTERVALS","1m,5m")).split(",")
-
 def sym(base: str) -> str:
     return f"{base.upper()}{QUOTE_ASSET}"
 
@@ -57,60 +57,10 @@ ALLOWED_ORIGINS = [
     "http://192.168.101.10:3000",
     "http://localhost:3000",
 
-    # LIVE (jeśli chcesz, może zostać – nie szkodzi)
+    # LIVE
     "http://192.168.101.10:3001",
     "http://localhost:3001",
 ]
-
-# Uwaga: tu mają być tylko paramy, które realnie chcesz pozwolić AI zmieniać.
-ALLOWED_PARAMS: dict[str, set[str]] = {
-    "RSI": {
-        "RSI_OVERSOLD",
-        "RSI_OVERBOUGHT",
-        "STOP_LOSS_PCT",
-        "TAKE_PROFIT_PCT",
-        "MAX_POSITION_MINUTES",
-        "DAILY_MAX_LOSS_PCT",
-    },
-    "TREND": {
-        "STOP_LOSS_PCT",
-        "TAKE_PROFIT_PCT",
-        "MAX_POSITION_MINUTES",
-        "DAILY_MAX_LOSS_PCT",
-        "ENTRY_BUFFER_PCT",      # ułamek np. 0.002 = 0.2%
-        "TREND_FILTER_PCT",      # ułamek
-    },
-    "BBRANGE": {
-        "STOP_LOSS_PCT",
-        "TAKE_PROFIT_PCT",
-        "MAX_POSITION_MINUTES",
-        "DAILY_MAX_LOSS_PCT",
-        "BB_PERIOD",
-        "BB_STD",
-        "MIN_BB_WIDTH_PCT",      # ułamek np. 0.0025 = 0.25%
-        # (opcjonalnie) jeśli chcesz stroić te filtry:
-        "RSI_LONG_MAX",
-        "RSI_SHORT_MIN",
-        "RSI_BLOCK_EXTREME_LOW",
-        "RSI_BLOCK_EXTREME_HIGH",
-    },
-    "SUPERTREND": {
-        "ATR_PERIOD",
-        "ST_MULTIPLIER",
-        "STOP_LOSS_PCT",
-        "TAKE_PROFIT_PCT",
-        "MAX_POSITION_MINUTES",
-        "DAILY_MAX_LOSS_PCT",
-        "MIN_ATR_PCT",           # w Twoim workerze używasz "0.25" jako % (ale liczysz ATR% i porównujesz do 0.25)
-        "TREND_BUFFER",          # ułamek np. 0.001 = 0.1%
-        "RSI_LONG_MAX",
-        "RSI_SHORT_MIN",
-        "RSI_BLOCK_EXTREME_LOW",
-        "RSI_BLOCK_EXTREME_HIGH",
-        # jeśli używasz wersji workera z ORDER_QTY_BTC:
-        "ORDER_QTY_BTC",
-    },
-}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,7 +75,6 @@ AI_AUTO_APPLY = os.environ.get("AI_AUTO_APPLY", "false").lower() == "true"
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "").lower()
 TRADING_MODE = os.environ.get("TRADING_MODE", "").upper()
 
-# Twardy bezpiecznik: pozwalamy auto-zapis tylko w PAPER+PAPER.
 ALLOW_AI_DB_WRITES = (ENVIRONMENT == "paper" and TRADING_MODE == "PAPER" and AI_AUTO_APPLY)
 
 binance_client = (
@@ -144,7 +93,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def get_conn():
     return psycopg2.connect(
         host=DB_HOST,
@@ -153,7 +101,6 @@ def get_conn():
         user=DB_USER,
         password=DB_PASS,
     )
-
 
 class Candle(BaseModel):
     open_time: datetime
@@ -2955,6 +2902,45 @@ def ui_orc_dashboard():
 # --- INTERNAL: promotions upsert (v1) ---
 
 # --- INTERNAL: promotions upsert (v1) ---
+class UIUserSettingsResponse(BaseModel):
+    user_id: int | None = None
+    configured_min_entry_usdc: float
+    system_min_entry_usdc: float
+    effective_min_entry_usdc: float
+    mode: str
+    updated_at: datetime | None = None
+
+
+class UIUserSettingsUpdateRequest(BaseModel):
+    min_entry_usdc: float | None = None
+    mode: str | None = None
+
+
+@app.get("/settings/user", response_model=UIUserSettingsResponse)
+def get_settings_user():
+    return UIUserSettingsResponse(**get_user_settings_snapshot())
+
+
+@app.put("/settings/user", response_model=UIUserSettingsResponse)
+def put_settings_user(payload: UIUserSettingsUpdateRequest):
+    mode = payload.mode.upper() if payload.mode else None
+    if mode is not None and mode not in {"AUTO", "MANUAL"}:
+        raise HTTPException(status_code=400, detail="mode must be AUTO or MANUAL")
+
+    if payload.min_entry_usdc is not None and payload.min_entry_usdc < 0:
+        raise HTTPException(status_code=400, detail="min_entry_usdc must be >= 0")
+
+    return UIUserSettingsResponse(**upsert_user_settings(
+        min_entry_usdc=payload.min_entry_usdc,
+        mode=mode,
+    ))
+
+
+@app.get("/ui/advanced-summary", response_model=UIUserSettingsResponse)
+def get_ui_advanced_summary():
+    return UIUserSettingsResponse(**get_user_settings_snapshot())
+
+
 class PromotionRow(BaseModel):
     symbol: str
     interval: str

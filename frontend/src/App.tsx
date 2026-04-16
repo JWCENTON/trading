@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getUiAccount,
+  getUiAdvancedSummary,
+  getUserSettings,
   getUiEnvironment,
   getUiHealth,
   getUiLiveSummary,
@@ -10,6 +12,7 @@ import {
   getUiTrading24h,
   setUiEnvironment,
   updatePanicState,
+  updateUserSettings,
   updateRegimeControl,
   updateSlotControl,
   type UiAccountSummary,
@@ -20,6 +23,7 @@ import {
   type UiRecentClosedPosition,
   type UiSlotRow,
   type UiTrading24hSummary,
+  type UiUserSettings,
 } from "./api";
 import { AppShell, type AppTab } from "./components/layout/AppShell";
 import { TopStatusBar } from "./components/live/TopStatusBar";
@@ -44,6 +48,7 @@ function App() {
   const [recentClosed, setRecentClosed] = useState<UiRecentClosedPosition[]>([]);
   const [slots, setSlots] = useState<UiSlotRow[]>([]);
   const [health, setHealth] = useState<UiHealthResponse | null>(null);
+  const [settings, setSettings] = useState<UiUserSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,12 +61,13 @@ function App() {
     setError(null);
     setLoading(true);
     try {
-      const [summaryRes, accountRes, trading24hRes, openRes, closedRes] = await Promise.all([
+      const [summaryRes, accountRes, trading24hRes, openRes, closedRes, settingsRes] = await Promise.all([
         getUiLiveSummary(),
         getUiAccount(),
         getUiTrading24h(),
         getUiOpenPositions(),
         getUiRecentClosed(10),
+        getUserSettings(),
       ]);
 
       setSummary(summaryRes);
@@ -69,6 +75,7 @@ function App() {
       setTrading24h(trading24hRes);
       setOpenPositions(openRes.items);
       setRecentClosed(closedRes.items);
+      setSettings(settingsRes);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -84,6 +91,20 @@ function App() {
       const slotsRes = await getUiSlots();
       if (slotsRes.error) throw new Error(slotsRes.error);
       setSlots(slotsRes.items);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [environment]);
+
+  const loadAdvanced = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const settingsRes = await getUiAdvancedSummary();
+      setSettings(settingsRes);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -114,8 +135,10 @@ function App() {
       void loadSlots();
     } else if (activeTab === "health") {
       void loadHealth();
+    } else if (activeTab === "advanced") {
+      void loadAdvanced();
     }
-  }, [activeTab, environment, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, loadAdvanced, loadHealth, loadLive, loadSlots]);
 
   const handleTogglePanic = useCallback(async (enabled: boolean, reason: string) => {
     setActionBusy(true);
@@ -130,6 +153,21 @@ function App() {
       setActionBusy(false);
     }
   }, [loadHealth, loadLive]);
+
+  const handleSaveMinEntry = useCallback(async (value: number) => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      const nextSettings = await updateUserSettings({ min_entry_usdc: value });
+      setSettings(nextSettings);
+      await loadLive();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadLive]);
 
   const handleSlotUpdate = useCallback(async (payload: Parameters<typeof updateSlotControl>[0]) => {
     setActionBusy(true);
@@ -217,6 +255,8 @@ function App() {
                   summary={summary}
                   onRefresh={loadLive}
                   onTogglePanic={handleTogglePanic}
+                  onSaveMinEntry={handleSaveMinEntry}
+                  settings={settings}
                   actionBusy={actionBusy}
                 />
               </div>
@@ -261,11 +301,34 @@ function App() {
           <section className="panel advanced-placeholder">
             <div className="panel-header">
               <h2>Advanced</h2>
-              <span className="panel-meta">Next step</span>
+              <span className="panel-meta">Readonly v1</span>
             </div>
-            <p>
-              Tu przeniesiemy ORC, watchdog i cięższe debug/analysis views po dokończeniu operatorskiego v1.
-            </p>
+            <div className="quick-actions-grid">
+              <div className="stack-row stack-row--split">
+                <div className="info-tile">
+                  <span className="status-label">System min entry</span>
+                  <strong className="status-value">{settings?.system_min_entry_usdc ?? '-'}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Configured min entry</span>
+                  <strong className="status-value">{settings?.configured_min_entry_usdc ?? '-'}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Effective min entry</span>
+                  <strong className="status-value">{settings?.effective_min_entry_usdc ?? '-'}</strong>
+                </div>
+              </div>
+              <div className="stack-row stack-row--split">
+                <div className="info-tile">
+                  <span className="status-label">Mode</span>
+                  <strong className="status-value">{settings?.mode ?? '-'}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Updated at</span>
+                  <strong className="status-value text-ellipsis">{settings?.updated_at ?? '-'}</strong>
+                </div>
+              </div>
+            </div>
           </section>
         ) : null}
       </div>
