@@ -1,24 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { UiLiveSummary, UiUserSettings } from '../../api';
 
 interface QuickActionsPanelProps {
   summary: UiLiveSummary | null;
   onRefresh: () => Promise<void> | void;
   onTogglePanic: (enabled: boolean, reason: string) => Promise<void> | void;
-  onSaveMinEntry: (value: number) => Promise<void> | void;
   settings: UiUserSettings | null;
   actionBusy: boolean;
 }
 
-export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, onSaveMinEntry, settings, actionBusy }: QuickActionsPanelProps) {
+export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, settings, actionBusy }: QuickActionsPanelProps) {
   const [reason, setReason] = useState('ui operator action');
-  const [minEntryInput, setMinEntryInput] = useState('6');
-
-  useEffect(() => {
-    if (settings) {
-      setMinEntryInput(String(settings.configured_min_entry_usdc));
-    }
-  }, [settings]);
 
   return (
     <section className="panel quick-actions-panel">
@@ -51,38 +43,35 @@ export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, onSaveMin
           />
         </div>
 
-        <div className="panic-block">
-          <label htmlFor="min-entry-usdc">Min entry (USDC)</label>
-          <input
-            id="min-entry-usdc"
-            value={minEntryInput}
-            onChange={(e) => setMinEntryInput(e.target.value)}
-            inputMode="decimal"
-            placeholder="np. 100"
-          />
-          <div className="stack-row stack-row--split">
-            <div className="info-tile">
-              <span className="status-label">Configured</span>
-              <strong className="status-value">{settings?.configured_min_entry_usdc ?? '-'}</strong>
-            </div>
-            <div className="info-tile">
-              <span className="status-label">Effective</span>
-              <strong className="status-value">{settings?.effective_min_entry_usdc ?? '-'}</strong>
-            </div>
+        <div className="stack-row stack-row--split">
+          <div className="info-tile">
+            <span className="status-label">Base</span>
+            <strong className="status-value">{settings?.base_runtime_notional_usdc ?? '-'}</strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">Manual add-on</span>
+            <strong className="status-value">{settings?.manual_entry_addon_usdc ?? '-'}</strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">3-win boost</span>
+            <strong className="status-value">{settings?.three_win_boost_usdc ?? '-'}</strong>
+          </div>
+        </div>
+
+        <div className="stack-row stack-row--split">
+          <div className="info-tile">
+            <span className="status-label">Normal entry</span>
+            <strong className="status-value">{settings?.normal_entry_preview_usdc ?? '-'}</strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">Boosted entry</span>
+            <strong className="status-value">{settings?.boosted_entry_preview_usdc ?? '-'}</strong>
           </div>
         </div>
 
         <div className="button-row button-row--stack-mobile">
           <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>
             Refresh live
-          </button>
-          <button
-            type="button"
-            className="action-button"
-            onClick={() => void onSaveMinEntry(Number(minEntryInput || '0'))}
-            disabled={actionBusy}
-          >
-            Save min entry
           </button>
           <button type="button" className="action-button danger" onClick={() => void onTogglePanic(true, reason)} disabled={actionBusy}>
             Panic ON

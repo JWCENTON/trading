@@ -731,12 +731,19 @@ export interface UiUserSettings {
   configured_min_entry_usdc: number;
   system_min_entry_usdc: number;
   effective_min_entry_usdc: number;
+  base_runtime_notional_usdc: number;
+  manual_entry_addon_usdc: number;
+  three_win_boost_usdc: number;
+  normal_entry_preview_usdc: number;
+  boosted_entry_preview_usdc: number;
   mode: string;
   updated_at: string | null;
 }
 
 export interface UiUserSettingsUpdateRequest {
   min_entry_usdc?: number;
+  manual_entry_addon_usdc?: number;
+  three_win_boost_usdc?: number;
   mode?: string;
 }
 
@@ -752,5 +759,10 @@ export async function updateUserSettings(payload: UiUserSettingsUpdateRequest): 
 
 export async function getUiAdvancedSummary(): Promise<UiUserSettings> {
   const response = await getApi().get<UiUserSettings>("/ui/advanced-summary");
+  return response.data;
+}
+
+export async function restoreUserSettingsDefaults(): Promise<{ ok: boolean; settings: UiUserSettings }> {
+  const response = await getApi().post<{ ok: boolean; settings: UiUserSettings }>("/settings/user/restore-defaults");
   return response.data;
 }

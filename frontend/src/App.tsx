@@ -12,6 +12,7 @@ import {
   getUiTrading24h,
   setUiEnvironment,
   updatePanicState,
+  restoreUserSettingsDefaults,
   updateUserSettings,
   updateRegimeControl,
   updateSlotControl,
@@ -154,20 +155,38 @@ function App() {
     }
   }, [loadHealth, loadLive]);
 
-  const handleSaveMinEntry = useCallback(async (value: number) => {
+  const handleSaveAdvancedSettings = useCallback(async (manualEntryAddonUsdc: number, threeWinBoostUsdc: number) => {
     setActionBusy(true);
     setError(null);
     try {
-      const nextSettings = await updateUserSettings({ min_entry_usdc: value });
+      const nextSettings = await updateUserSettings({
+        manual_entry_addon_usdc: manualEntryAddonUsdc,
+        three_win_boost_usdc: threeWinBoostUsdc,
+      });
       setSettings(nextSettings);
-      await loadLive();
+      await Promise.all([loadAdvanced(), loadLive()]);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
     } finally {
       setActionBusy(false);
     }
-  }, [loadLive]);
+  }, [loadAdvanced, loadLive]);
+
+  const handleRestoreAdvancedDefaults = useCallback(async () => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      const response = await restoreUserSettingsDefaults();
+      setSettings(response.settings);
+      await Promise.all([loadAdvanced(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadAdvanced, loadLive]);
 
   const handleSlotUpdate = useCallback(async (payload: Parameters<typeof updateSlotControl>[0]) => {
     setActionBusy(true);
@@ -205,6 +224,16 @@ function App() {
       default: return "Live";
     }
   }, [activeTab]);
+
+  const [manualAddonInput, setManualAddonInput] = useState("0");
+  const [threeWinBoostInput, setThreeWinBoostInput] = useState("10");
+
+  useEffect(() => {
+    if (settings) {
+      setManualAddonInput(String(settings.manual_entry_addon_usdc ?? 0));
+      setThreeWinBoostInput(String(settings.three_win_boost_usdc ?? 10));
+    }
+  }, [settings]);
 
   const subtitle = useMemo(() => {
     if (activeTab === "advanced") {
@@ -255,7 +284,6 @@ function App() {
                   summary={summary}
                   onRefresh={loadLive}
                   onTogglePanic={handleTogglePanic}
-                  onSaveMinEntry={handleSaveMinEntry}
                   settings={settings}
                   actionBusy={actionBusy}
                 />
@@ -301,23 +329,46 @@ function App() {
           <section className="panel advanced-placeholder">
             <div className="panel-header">
               <h2>Advanced</h2>
-              <span className="panel-meta">Readonly v1</span>
+              <span className="panel-meta">Sizing controls</span>
             </div>
             <div className="quick-actions-grid">
               <div className="stack-row stack-row--split">
                 <div className="info-tile">
-                  <span className="status-label">System min entry</span>
-                  <strong className="status-value">{settings?.system_min_entry_usdc ?? '-'}</strong>
+                  <span className="status-label">Base runtime notional</span>
+                  <strong className="status-value">{settings?.base_runtime_notional_usdc ?? '-'}</strong>
                 </div>
                 <div className="info-tile">
-                  <span className="status-label">Configured min entry</span>
-                  <strong className="status-value">{settings?.configured_min_entry_usdc ?? '-'}</strong>
+                  <span className="status-label">Normal entry preview</span>
+                  <strong className="status-value">{settings?.normal_entry_preview_usdc ?? '-'}</strong>
                 </div>
                 <div className="info-tile">
-                  <span className="status-label">Effective min entry</span>
-                  <strong className="status-value">{settings?.effective_min_entry_usdc ?? '-'}</strong>
+                  <span className="status-label">Boosted entry preview</span>
+                  <strong className="status-value">{settings?.boosted_entry_preview_usdc ?? '-'}</strong>
                 </div>
               </div>
+
+              <div className="panic-block">
+                <label htmlFor="manual-addon-usdc">Manual add-on (USDC)</label>
+                <input
+                  id="manual-addon-usdc"
+                  value={manualAddonInput}
+                  onChange={(e) => setManualAddonInput(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="np. 10"
+                />
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="three-win-boost-usdc">3-win boost (USDC)</label>
+                <input
+                  id="three-win-boost-usdc"
+                  value={threeWinBoostInput}
+                  onChange={(e) => setThreeWinBoostInput(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="np. 10"
+                />
+              </div>
+
               <div className="stack-row stack-row--split">
                 <div className="info-tile">
                   <span className="status-label">Mode</span>
@@ -327,6 +378,26 @@ function App() {
                   <span className="status-label">Updated at</span>
                   <strong className="status-value text-ellipsis">{settings?.updated_at ?? '-'}</strong>
                 </div>
+              </div>
+
+              <div className="button-row button-row--stack-mobile">
+                <button
+                  className="action-button"
+                  onClick={() => void handleSaveAdvancedSettings(Number(manualAddonInput || '0'), Number(threeWinBoostInput || '0'))}
+                  disabled={actionBusy}
+                >
+                  Save advanced
+                </button>
+                <button
+                  className="action-button"
+                  onClick={() => void handleRestoreAdvancedDefaults()}
+                  disabled={actionBusy}
+                >
+                  Restore defaults
+                </button>
+                <button className="action-button" onClick={() => void loadAdvanced()} disabled={actionBusy}>
+                  Refresh advanced
+                </button>
               </div>
             </div>
           </section>
