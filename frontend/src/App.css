@@ -524,8 +524,9 @@ td {
     top: 0;
     z-index: 60;
     background: rgba(11, 18, 32, 0.96);
-    backdrop-filter: blur(10px);
+    backdrop-filter: blur(14px);
     border-bottom: 1px solid #1f2937;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   }
 
   .app-nav::-webkit-scrollbar {
@@ -537,6 +538,7 @@ td {
     min-width: 120px;
     flex: 0 0 auto;
     text-align: center;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .app-main {
