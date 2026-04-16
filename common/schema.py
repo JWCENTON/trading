@@ -187,6 +187,33 @@ def ensure_schema():
 
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS user_settings (
+          id BIGSERIAL PRIMARY KEY,
+          user_id BIGINT NULL,
+          min_entry_usdc NUMERIC(18,8) NOT NULL DEFAULT 6,
+          mode TEXT NOT NULL DEFAULT 'AUTO',
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_user_settings_user_id
+        ON user_settings ((COALESCE(user_id, -1)));
+        """
+    )
+
+    cur.execute(
+        """
+        INSERT INTO user_settings (user_id, min_entry_usdc, mode)
+        VALUES (NULL, 6, 'AUTO')
+        ON CONFLICT ((COALESCE(user_id, -1))) DO NOTHING;
+        """
+    )
+
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS ui_audit_log (
           id BIGSERIAL PRIMARY KEY,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

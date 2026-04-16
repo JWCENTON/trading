@@ -27,6 +27,7 @@ from common.execution import build_live_client_order_id
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
 from common.exit_guards.guarded_profit import evaluate_guarded_profit
+from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2106,6 +2107,37 @@ def run_trend_strategy():
             price=float(price),
             candle_open_time=open_time,
             info=sizing_info,
+        )
+
+        settings_snapshot = get_user_settings_snapshot()
+        manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
+        base_target_notional = float(LIVE_TARGET_NOTIONAL)
+        final_target_notional = base_target_notional + manual_entry_addon_usdc
+
+        if cfg_effective.trading_mode == "LIVE" and manual_entry_addon_usdc > 0:
+            qty_btc, sizing_info = compute_qty_from_notional(
+                client,
+                symbol=SYMBOL,
+                px=price,
+                target_notional=final_target_notional,
+                min_notional_buffer_pct=MIN_NOTIONAL_BUFFER_PCT,
+            )
+
+        order_notional_usdc = float(qty_btc) * float(price)
+        emit_strategy_event(
+            event_type="SIZING",
+            decision=decision,
+            reason="FINAL_NOTIONAL",
+            price=float(price),
+            candle_open_time=open_time,
+            info={
+                **sizing_info,
+                "base_target_notional": base_target_notional,
+                "manual_entry_addon_usdc": manual_entry_addon_usdc,
+                "configured_three_win_boost_usdc": float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0),
+                "three_win_boost_active": base_target_notional > float(SYSTEM_MIN_ENTRY_USDC),
+                "final_target_notional": float(final_target_notional),
+            },
         )
 
         qty_btc = float(qty_btc)

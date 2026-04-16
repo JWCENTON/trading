@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getUiAccount,
+  getUiAdvancedSummary,
+  getUserSettings,
   getUiEnvironment,
   getUiHealth,
   getUiLiveSummary,
@@ -10,6 +12,8 @@ import {
   getUiTrading24h,
   setUiEnvironment,
   updatePanicState,
+  restoreUserSettingsDefaults,
+  updateUserSettings,
   updateRegimeControl,
   updateSlotControl,
   type UiAccountSummary,
@@ -20,6 +24,7 @@ import {
   type UiRecentClosedPosition,
   type UiSlotRow,
   type UiTrading24hSummary,
+  type UiUserSettings,
 } from "./api";
 import { AppShell, type AppTab } from "./components/layout/AppShell";
 import { TopStatusBar } from "./components/live/TopStatusBar";
@@ -44,6 +49,7 @@ function App() {
   const [recentClosed, setRecentClosed] = useState<UiRecentClosedPosition[]>([]);
   const [slots, setSlots] = useState<UiSlotRow[]>([]);
   const [health, setHealth] = useState<UiHealthResponse | null>(null);
+  const [settings, setSettings] = useState<UiUserSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,12 +62,13 @@ function App() {
     setError(null);
     setLoading(true);
     try {
-      const [summaryRes, accountRes, trading24hRes, openRes, closedRes] = await Promise.all([
+      const [summaryRes, accountRes, trading24hRes, openRes, closedRes, settingsRes] = await Promise.all([
         getUiLiveSummary(),
         getUiAccount(),
         getUiTrading24h(),
         getUiOpenPositions(),
         getUiRecentClosed(10),
+        getUserSettings(),
       ]);
 
       setSummary(summaryRes);
@@ -69,6 +76,7 @@ function App() {
       setTrading24h(trading24hRes);
       setOpenPositions(openRes.items);
       setRecentClosed(closedRes.items);
+      setSettings(settingsRes);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -84,6 +92,20 @@ function App() {
       const slotsRes = await getUiSlots();
       if (slotsRes.error) throw new Error(slotsRes.error);
       setSlots(slotsRes.items);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [environment]);
+
+  const loadAdvanced = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const settingsRes = await getUiAdvancedSummary();
+      setSettings(settingsRes);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -114,8 +136,10 @@ function App() {
       void loadSlots();
     } else if (activeTab === "health") {
       void loadHealth();
+    } else if (activeTab === "advanced") {
+      void loadAdvanced();
     }
-  }, [activeTab, environment, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, loadAdvanced, loadHealth, loadLive, loadSlots]);
 
   const handleTogglePanic = useCallback(async (enabled: boolean, reason: string) => {
     setActionBusy(true);
@@ -130,6 +154,39 @@ function App() {
       setActionBusy(false);
     }
   }, [loadHealth, loadLive]);
+
+  const handleSaveAdvancedSettings = useCallback(async (manualEntryAddonUsdc: number, threeWinBoostUsdc: number) => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      const nextSettings = await updateUserSettings({
+        manual_entry_addon_usdc: manualEntryAddonUsdc,
+        three_win_boost_usdc: threeWinBoostUsdc,
+      });
+      setSettings(nextSettings);
+      await Promise.all([loadAdvanced(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadAdvanced, loadLive]);
+
+  const handleRestoreAdvancedDefaults = useCallback(async () => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      const response = await restoreUserSettingsDefaults();
+      setSettings(response.settings);
+      await Promise.all([loadAdvanced(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadAdvanced, loadLive]);
 
   const handleSlotUpdate = useCallback(async (payload: Parameters<typeof updateSlotControl>[0]) => {
     setActionBusy(true);
@@ -167,6 +224,16 @@ function App() {
       default: return "Live";
     }
   }, [activeTab]);
+
+  const [manualAddonInput, setManualAddonInput] = useState("0");
+  const [threeWinBoostInput, setThreeWinBoostInput] = useState("10");
+
+  useEffect(() => {
+    if (settings) {
+      setManualAddonInput(String(settings.manual_entry_addon_usdc ?? 0));
+      setThreeWinBoostInput(String(settings.three_win_boost_usdc ?? 10));
+    }
+  }, [settings]);
 
   const subtitle = useMemo(() => {
     if (activeTab === "advanced") {
@@ -217,6 +284,7 @@ function App() {
                   summary={summary}
                   onRefresh={loadLive}
                   onTogglePanic={handleTogglePanic}
+                  settings={settings}
                   actionBusy={actionBusy}
                 />
               </div>
@@ -261,11 +329,77 @@ function App() {
           <section className="panel advanced-placeholder">
             <div className="panel-header">
               <h2>Advanced</h2>
-              <span className="panel-meta">Next step</span>
+              <span className="panel-meta">Sizing controls</span>
             </div>
-            <p>
-              Tu przeniesiemy ORC, watchdog i cięższe debug/analysis views po dokończeniu operatorskiego v1.
-            </p>
+            <div className="quick-actions-grid">
+              <div className="stack-row stack-row--split">
+                <div className="info-tile">
+                  <span className="status-label">Base runtime notional</span>
+                  <strong className="status-value">{settings?.base_runtime_notional_usdc ?? '-'}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Normal entry preview</span>
+                  <strong className="status-value">{settings?.normal_entry_preview_usdc ?? '-'}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Boosted entry preview</span>
+                  <strong className="status-value">{settings?.boosted_entry_preview_usdc ?? '-'}</strong>
+                </div>
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="manual-addon-usdc">Manual add-on (USDC)</label>
+                <input
+                  id="manual-addon-usdc"
+                  value={manualAddonInput}
+                  onChange={(e) => setManualAddonInput(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="np. 10"
+                />
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="three-win-boost-usdc">3-win boost (USDC)</label>
+                <input
+                  id="three-win-boost-usdc"
+                  value={threeWinBoostInput}
+                  onChange={(e) => setThreeWinBoostInput(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="np. 10"
+                />
+              </div>
+
+              <div className="stack-row stack-row--split">
+                <div className="info-tile">
+                  <span className="status-label">Mode</span>
+                  <strong className="status-value">{settings?.mode ?? '-'}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Updated at</span>
+                  <strong className="status-value text-ellipsis">{settings?.updated_at ?? '-'}</strong>
+                </div>
+              </div>
+
+              <div className="button-row button-row--stack-mobile">
+                <button
+                  className="action-button"
+                  onClick={() => void handleSaveAdvancedSettings(Number(manualAddonInput || '0'), Number(threeWinBoostInput || '0'))}
+                  disabled={actionBusy}
+                >
+                  Save advanced
+                </button>
+                <button
+                  className="action-button"
+                  onClick={() => void handleRestoreAdvancedDefaults()}
+                  disabled={actionBusy}
+                >
+                  Restore defaults
+                </button>
+                <button className="action-button" onClick={() => void loadAdvanced()} disabled={actionBusy}>
+                  Refresh advanced
+                </button>
+              </div>
+            </div>
           </section>
         ) : null}
       </div>

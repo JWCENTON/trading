@@ -22,6 +22,7 @@ from common.bot_control import upsert_defaults, read as read_bot_control
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.db import get_db_conn
 from common.execution import build_live_client_order_id
+from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 
 SYMBOL = os.environ.get("SYMBOL", "BTCUSDC")
 
@@ -2711,6 +2712,37 @@ def run_strategy(row, prev_row=None):
             )
         else:
             qty_btc = float(ORDER_QTY_BTC)
+
+        settings_snapshot = get_user_settings_snapshot()
+        manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
+        base_target_notional = float(ORDER_NOTIONAL_USDC)
+        final_target_notional = base_target_notional + manual_entry_addon_usdc
+
+        if cfg_effective.trading_mode == "LIVE" and manual_entry_addon_usdc > 0:
+            qty_btc, px_live, notional_live, step, min_qty, min_notional = compute_live_qty_from_notional(
+                client,
+                SYMBOL,
+                target_notional=float(final_target_notional),
+                quote_asset=QUOTE_ASSET,
+                min_notional_buffer_pct=float(MIN_NOTIONAL_BUFFER_PCT),
+            )
+
+        order_notional_usdc = float(notional_live if cfg_effective.trading_mode == "LIVE" else (float(qty_btc) * float(price)))
+        emit_strategy_event(
+            event_type="SIZING",
+            decision=decision,
+            reason="FINAL_NOTIONAL",
+            price=float(price),
+            candle_open_time=open_time,
+            info={
+                "base_target_notional": base_target_notional,
+                "manual_entry_addon_usdc": manual_entry_addon_usdc,
+                "configured_three_win_boost_usdc": float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0),
+                "three_win_boost_active": base_target_notional > float(SYSTEM_MIN_ENTRY_USDC),
+                "final_target_notional": float(final_target_notional),
+                "order_notional": float(order_notional_usdc),
+            },
+        )
 
         qty_btc = float(qty_btc)
         if qty_btc <= 0:

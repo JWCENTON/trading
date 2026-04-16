@@ -17,7 +17,9 @@ services:
       retries: 20
 
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     restart: always
     depends_on:
       db:

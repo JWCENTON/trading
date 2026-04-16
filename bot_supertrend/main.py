@@ -26,6 +26,7 @@ from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.execution import place_live_order
 from common.sizing import compute_qty_from_notional as common_compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
+from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 
 
 logging.basicConfig(
@@ -1758,6 +1759,37 @@ def run_strategy(latest, prev):
             price=float(price),
             candle_open_time=open_time,
             info=sizing_info,
+        )
+
+        settings_snapshot = get_user_settings_snapshot()
+        manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
+        base_target_notional = float(LIVE_TARGET_NOTIONAL)
+        final_target_notional = base_target_notional + manual_entry_addon_usdc
+
+        if manual_entry_addon_usdc > 0:
+            qty_btc, sizing_info = compute_qty_from_notional_safe(
+                client,
+                symbol=SYMBOL,
+                px=price,
+                target_notional=final_target_notional,
+                min_notional_buffer_pct=MIN_NOTIONAL_BUFFER_PCT,
+            )
+
+        order_notional_usdc = float(qty_btc) * float(price)
+        emit_strategy_event(
+            event_type="SIZING",
+            decision="BUY",
+            reason="FINAL_NOTIONAL",
+            price=float(price),
+            candle_open_time=open_time,
+            info={
+                **sizing_info,
+                "base_target_notional": base_target_notional,
+                "manual_entry_addon_usdc": manual_entry_addon_usdc,
+                "configured_three_win_boost_usdc": float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0),
+                "three_win_boost_active": base_target_notional > float(SYSTEM_MIN_ENTRY_USDC),
+                "final_target_notional": float(final_target_notional),
+            },
         )
 
         # 1) ledger + live (if enabled)

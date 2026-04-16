@@ -1,14 +1,15 @@
 import { useState } from 'react';
-import type { UiLiveSummary } from '../../api';
+import type { UiLiveSummary, UiUserSettings } from '../../api';
 
 interface QuickActionsPanelProps {
   summary: UiLiveSummary | null;
   onRefresh: () => Promise<void> | void;
   onTogglePanic: (enabled: boolean, reason: string) => Promise<void> | void;
+  settings: UiUserSettings | null;
   actionBusy: boolean;
 }
 
-export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, actionBusy }: QuickActionsPanelProps) {
+export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, settings, actionBusy }: QuickActionsPanelProps) {
   const [reason, setReason] = useState('ui operator action');
 
   return (
@@ -40,6 +41,32 @@ export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, actionBus
             onChange={(e) => setReason(e.target.value)}
             placeholder="Podaj reason do audit loga"
           />
+        </div>
+
+        <div className="stack-row stack-row--split">
+          <div className="info-tile">
+            <span className="status-label">Base</span>
+            <strong className="status-value">{settings?.base_runtime_notional_usdc ?? '-'}</strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">Manual add-on</span>
+            <strong className="status-value">{settings?.manual_entry_addon_usdc ?? '-'}</strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">3-win boost</span>
+            <strong className="status-value">{settings?.three_win_boost_usdc ?? '-'}</strong>
+          </div>
+        </div>
+
+        <div className="stack-row stack-row--split">
+          <div className="info-tile">
+            <span className="status-label">Normal entry</span>
+            <strong className="status-value">{settings?.normal_entry_preview_usdc ?? '-'}</strong>
+          </div>
+          <div className="info-tile">
+            <span className="status-label">Boosted entry</span>
+            <strong className="status-value">{settings?.boosted_entry_preview_usdc ?? '-'}</strong>
+          </div>
         </div>
 
         <div className="button-row button-row--stack-mobile">
