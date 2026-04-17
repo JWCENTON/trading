@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { UiRegimeControlPayload, UiSlotControlPayload, UiSlotRow } from '../../api';
+import type { UiRegimeControlPayload, UiSlotAutoPayload, UiSlotControlPayload, UiSlotManualPayload, UiSlotRow } from '../../api';
 
 interface SlotActionsPanelProps {
   items: UiSlotRow[];
@@ -7,9 +7,11 @@ interface SlotActionsPanelProps {
   onRefresh: () => Promise<void> | void;
   onUpdateSlot: (payload: UiSlotControlPayload) => Promise<void> | void;
   onUpdateRegime: (payload: UiRegimeControlPayload) => Promise<void> | void;
+  onSetManual: (payload: UiSlotManualPayload) => Promise<void> | void;
+  onReturnAuto: (payload: UiSlotAutoPayload) => Promise<void> | void;
 }
 
-export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, onUpdateRegime }: SlotActionsPanelProps) {
+export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, onUpdateRegime, onSetManual, onReturnAuto }: SlotActionsPanelProps) {
   const [selectedKey, setSelectedKey] = useState('');
   const [reason, setReason] = useState('ui operator slot update');
 
@@ -52,17 +54,73 @@ export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, o
         </div>
 
         {selected ? (
-          <div className="selected-slot-summary">
-            <span className="status-label">Current</span>
-            <strong>
-              {selected.enabled ? 'ENABLED' : 'DISABLED'} • {selected.live_orders_enabled ? 'LIVE ON' : 'LIVE OFF'} • {selected.regime_mode || '—'}
-            </strong>
-            <span className="cell-subtext">{selected.reason || 'No reason'}</span>
-          </div>
+          <>
+            <div className="selected-slot-summary">
+              <span className="status-label">Current control</span>
+              <strong>
+                {(selected.control_mode || 'AUTO').toUpperCase()} • {(selected.control_source || 'ORC').toUpperCase()}
+              </strong>
+              <span className="cell-subtext">
+                {selected.enabled ? 'ENABLED' : 'DISABLED'} • {selected.live_orders_enabled ? 'LIVE ON' : 'LIVE OFF'} • {selected.regime_mode || '—'}
+              </span>
+              <span className="cell-subtext">{selected.manual_override_reason || selected.reason || 'No reason'}</span>
+            </div>
+
+            <div className="slot-actions-hint">
+              {(selected.control_mode || 'AUTO') === 'MANUAL'
+                ? 'Slot is locked in MANUAL. ORC should not overwrite this state.'
+                : 'Slot is in AUTO. ORC controls this slot until you explicitly switch it to MANUAL.'}
+            </div>
+          </>
         ) : null}
 
         <div className="button-row button-row--stack-mobile">
           <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>Refresh slots</button>
+          <button
+            type="button"
+            className={`action-button success ${selected?.control_mode === 'MANUAL' && selected?.enabled && selected?.live_orders_enabled && selected?.regime_mode === 'ENFORCE' ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onSetManual({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: true, live_orders_enabled: true, regime_enabled: true, regime_mode: 'ENFORCE', reason })}
+            aria-pressed={Boolean(selected?.control_mode === 'MANUAL' && selected?.enabled && selected?.live_orders_enabled && selected?.regime_mode === 'ENFORCE')}
+          >
+            Set MANUAL • Enable + Live ON + ENFORCE
+          </button>
+          <button
+            type="button"
+            className={`action-button ${selected?.control_mode === 'MANUAL' && selected?.enabled && !selected?.live_orders_enabled && selected?.regime_mode === 'DRY_RUN' ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onSetManual({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: true, live_orders_enabled: false, regime_enabled: true, regime_mode: 'DRY_RUN', reason })}
+            aria-pressed={Boolean(selected?.control_mode === 'MANUAL' && selected?.enabled && !selected?.live_orders_enabled && selected?.regime_mode === 'DRY_RUN')}
+          >
+            Set MANUAL • Enable + Live OFF + DRY_RUN
+          </button>
+          <button
+            type="button"
+            className={`action-button danger ${selected?.control_mode === 'MANUAL' && !selected?.enabled ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onSetManual({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: false, live_orders_enabled: false, regime_enabled: true, regime_mode: 'DRY_RUN', reason })}
+            aria-pressed={Boolean(selected?.control_mode === 'MANUAL' && !selected?.enabled)}
+          >
+            Set MANUAL • Disable slot
+          </button>
+          <button
+            type="button"
+            className={`action-button ${selected?.control_mode === 'AUTO' ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onReturnAuto({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, reason })}
+            aria-pressed={Boolean(selected?.control_mode === 'AUTO')}
+          >
+            Return to AUTO
+          </button>
+        </div>
+
+        <div className="selected-slot-summary">
+          <span className="status-label">Legacy direct controls</span>
+          <strong>Only use these for debugging.</strong>
+          <span className="cell-subtext">For normal operator flow, prefer the MANUAL / AUTO buttons above so the source of control stays explicit.</span>
+        </div>
+
+        <div className="button-row button-row--stack-mobile">
           <button
             type="button"
             className={`action-button success ${selected?.enabled && selected?.live_orders_enabled ? 'is-active' : ''}`}

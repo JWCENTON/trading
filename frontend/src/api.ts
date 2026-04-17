@@ -437,6 +437,10 @@ export interface UiSlotRow {
   live_orders_enabled: boolean;
   regime_enabled: boolean;
   regime_mode: string | null;
+  control_mode?: string | null;
+  control_source?: string | null;
+  manual_override_reason?: string | null;
+  manual_override_updated_at?: string | null;
   reason: string | null;
   updated_at: string | null;
   open_position: {
@@ -533,6 +537,24 @@ export interface UiRegimeControlPayload {
   regime_mode: string;
   reason?: string;
 }
+
+export interface UiSlotManualPayload {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  enabled: boolean;
+  live_orders_enabled: boolean;
+  regime_enabled?: boolean;
+  regime_mode: string;
+  reason?: string;
+}
+
+export interface UiSlotAutoPayload {
+  symbol: string;
+  interval: string;
+  strategy: Strategy;
+  reason?: string;
+}
 export interface UiControlResponse {
   ok: boolean;
   message: string;
@@ -611,6 +633,14 @@ export async function updateSlotControl(payload: UiSlotControlPayload) {
 
 export async function updateRegimeControl(payload: UiRegimeControlPayload) {
   return (await getApi().post<UiControlResponse>("/ui/control/regime", payload)).data;
+}
+
+export async function updateSlotManualControl(payload: UiSlotManualPayload) {
+  return (await getApi().post<UiControlResponse>("/ui/control/slot/manual", payload)).data;
+}
+
+export async function returnSlotToAuto(payload: UiSlotAutoPayload) {
+  return (await getApi().post<UiControlResponse>("/ui/control/slot/auto", payload)).data;
 }
 
 export function envBool(v: string | null | undefined): boolean {

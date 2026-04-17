@@ -255,6 +255,11 @@ def ensure_schema():
         """
         )
 
+    cur.execute("ALTER TABLE bot_control ADD COLUMN IF NOT EXISTS control_mode TEXT NOT NULL DEFAULT 'AUTO';")
+    cur.execute("ALTER TABLE bot_control ADD COLUMN IF NOT EXISTS control_source TEXT NOT NULL DEFAULT 'SYSTEM';")
+    cur.execute("ALTER TABLE bot_control ADD COLUMN IF NOT EXISTS manual_override_reason TEXT;")
+    cur.execute("ALTER TABLE bot_control ADD COLUMN IF NOT EXISTS manual_override_updated_at TIMESTAMPTZ;")
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS market_regime (

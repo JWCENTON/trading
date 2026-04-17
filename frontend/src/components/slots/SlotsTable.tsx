@@ -34,6 +34,8 @@ export function SlotsTable({ items }: SlotsTableProps) {
               </span>
             </div>
             <div className="mobile-kv-grid">
+              <div><span>Control</span><strong>{(item.control_mode || 'AUTO').toUpperCase()}</strong></div>
+              <div><span>Source</span><strong>{(item.control_source || 'ORC').toUpperCase()}</strong></div>
               <div><span>Enabled</span><strong className={boolTone(item.enabled)}>{String(item.enabled)}</strong></div>
               <div><span>Regime</span><strong>{item.regime_mode || '—'}</strong></div>
               <div><span>Regime on</span><strong className={boolTone(item.regime_enabled)}>{String(item.regime_enabled)}</strong></div>
@@ -41,7 +43,7 @@ export function SlotsTable({ items }: SlotsTableProps) {
               <div><span>Heartbeat</span><strong className={item.heartbeat.stale ? 'negative' : 'positive'}>{item.heartbeat.stale ? 'STALE' : 'FRESH'}</strong></div>
               <div><span>Last event</span><strong>{item.last_event.event_type || '—'}</strong></div>
             </div>
-            <div className="mobile-card-footer">{item.reason || 'No reason'} • {formatDateTime(item.last_event.at)}</div>
+            <div className="mobile-card-footer">{item.manual_override_reason || item.reason || 'No reason'} • {formatDateTime(item.manual_override_updated_at || item.last_event.at)}</div>
           </article>
         ))}
       </div>
@@ -53,6 +55,8 @@ export function SlotsTable({ items }: SlotsTableProps) {
               <th>Symbol</th>
               <th>Interval</th>
               <th>Strategy</th>
+              <th>Control mode</th>
+              <th>Control source</th>
               <th>Enabled</th>
               <th>Live orders</th>
               <th>Regime enabled</th>
@@ -68,6 +72,8 @@ export function SlotsTable({ items }: SlotsTableProps) {
                 <td>{item.symbol}</td>
                 <td>{item.interval}</td>
                 <td>{item.strategy}</td>
+                <td><span className={`pill ${(item.control_mode || 'AUTO') === 'MANUAL' ? 'positive' : 'neutral'}`}>{item.control_mode || 'AUTO'}</span></td>
+                <td><span className={`pill ${(item.control_source || 'ORC') === 'USER' ? 'positive' : 'neutral'}`}>{item.control_source || 'ORC'}</span></td>
                 <td><span className={`pill ${boolTone(item.enabled)}`}>{item.enabled ? 'ON' : 'OFF'}</span></td>
                 <td><span className={`pill ${boolTone(item.live_orders_enabled)}`}>{item.live_orders_enabled ? 'ON' : 'OFF'}</span></td>
                 <td><span className={`pill ${boolTone(item.regime_enabled)}`}>{item.regime_enabled ? 'ON' : 'OFF'}</span></td>
@@ -76,7 +82,7 @@ export function SlotsTable({ items }: SlotsTableProps) {
                 <td className={item.heartbeat.stale ? 'negative' : 'positive'}>{item.heartbeat.stale ? 'STALE' : 'FRESH'}</td>
                 <td>
                   <div>{item.last_event.event_type || '—'}</div>
-                  <div className="cell-subtext">{item.last_event.reason || item.reason || '—'}</div>
+                  <div className="cell-subtext">{item.manual_override_reason || item.last_event.reason || item.reason || '—'}</div>
                 </td>
               </tr>
             ))}

@@ -13,9 +13,11 @@ import {
   setUiEnvironment,
   updatePanicState,
   restoreUserSettingsDefaults,
+  returnSlotToAuto,
   updateUserSettings,
   updateRegimeControl,
   updateSlotControl,
+  updateSlotManualControl,
   type UiAccountSummary,
   type UiEnvironment,
   type UiHealthResponse,
@@ -226,6 +228,34 @@ function App() {
     }
   }, [loadLive, loadSlots]);
 
+  const handleSlotManualUpdate = useCallback(async (payload: Parameters<typeof updateSlotManualControl>[0]) => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      await updateSlotManualControl(payload);
+      await Promise.all([loadSlots(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadLive, loadSlots]);
+
+  const handleSlotReturnAuto = useCallback(async (payload: Parameters<typeof returnSlotToAuto>[0]) => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      await returnSlotToAuto(payload);
+      await Promise.all([loadSlots(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadLive, loadSlots]);
+
   const title = useMemo(() => {
     switch (activeTab) {
       case "slots": return "Slots";
@@ -312,6 +342,8 @@ function App() {
               onRefresh={loadSlots}
               onUpdateSlot={handleSlotUpdate}
               onUpdateRegime={handleRegimeUpdate}
+              onSetManual={handleSlotManualUpdate}
+              onReturnAuto={handleSlotReturnAuto}
             />
             <SlotsTable items={slots} />
           </>

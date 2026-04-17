@@ -367,6 +367,24 @@ class UIRegimeControlRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class UISlotManualControlRequest(BaseModel):
+    symbol: str
+    interval: str
+    strategy: str
+    enabled: bool
+    live_orders_enabled: bool
+    regime_enabled: bool = True
+    regime_mode: str
+    reason: Optional[str] = None
+
+
+class UISlotAutoControlRequest(BaseModel):
+    symbol: str
+    interval: str
+    strategy: str
+    reason: Optional[str] = None
+
+
 def _safe_float(value):
     return float(value) if value is not None else None
 
@@ -2317,6 +2335,10 @@ def ui_slots():
                 bc.regime_mode,
                 bc.reason,
                 bc.updated_at,
+                bc.control_mode,
+                bc.control_source,
+                bc.manual_override_reason,
+                bc.manual_override_updated_at,
                 op.id AS open_position_id,
                 op.side AS open_position_side,
                 op.entry_time AS open_position_entry_time,
@@ -2370,21 +2392,25 @@ def ui_slots():
                 "regime_mode": r[6],
                 "reason": r[7],
                 "updated_at": r[8],
+                "control_mode": r[9] or "AUTO",
+                "control_source": r[10] or "SYSTEM",
+                "manual_override_reason": r[11],
+                "manual_override_updated_at": r[12],
                 "open_position": {
-                    "exists": r[9] is not None,
-                    "id": _safe_int(r[9], default=None),
-                    "side": r[10],
-                    "entry_time": r[11],
+                    "exists": r[13] is not None,
+                    "id": _safe_int(r[13], default=None),
+                    "side": r[14],
+                    "entry_time": r[15],
                 },
                 "heartbeat": {
-                    "last_seen": r[12],
-                    "stale": bool(r[13]),
+                    "last_seen": r[16],
+                    "stale": bool(r[17]),
                 },
                 "last_event": {
-                    "at": r[14],
-                    "event_type": r[15],
-                    "decision": r[16],
-                    "reason": r[17],
+                    "at": r[18],
+                    "event_type": r[19],
+                    "decision": r[20],
+                    "reason": r[21],
                 },
             })
 
@@ -2577,6 +2603,197 @@ def ui_control_slot(req: UISlotControlRequest, request: Request):
         conn.commit()
 
     return UIControlResponse(ok=True, message="slot updated", applied_at=applied_at, new_state=after_state)
+
+
+@app.post("/ui/control/slot/manual", response_model=UIControlResponse)
+def ui_control_slot_manual(req: UISlotManualControlRequest, request: Request):
+    actor, actor_role, source = get_request_actor(request)
+    applied_at = datetime.now(timezone.utc)
+    normalized_mode = _normalize_regime_mode(req.regime_mode)
+    target_key = f"{req.symbol}:{req.interval}:{req.strategy}"
+    with db_cursor() as (conn, cur):
+        ensure_ui_audit_table(cur)
+        cur.execute(
+            """
+            SELECT enabled, live_orders_enabled, regime_enabled, regime_mode, reason, updated_at,
+                   control_mode, control_source, manual_override_reason, manual_override_updated_at
+            FROM bot_control
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+            """,
+            (req.symbol, req.interval, req.strategy),
+        )
+        before = cur.fetchone()
+        before_state = {
+            "enabled": bool(before[0]) if before else True,
+            "live_orders_enabled": bool(before[1]) if before else False,
+            "regime_enabled": bool(before[2]) if before else False,
+            "regime_mode": before[3] if before else "DRY_RUN",
+            "reason": before[4] if before else None,
+            "updated_at": before[5] if before else None,
+            "control_mode": before[6] if before and before[6] else "AUTO",
+            "control_source": before[7] if before and before[7] else "SYSTEM",
+            "manual_override_reason": before[8] if before else None,
+            "manual_override_updated_at": before[9] if before else None,
+        }
+        note = req.reason or "manual slot override"
+        cur.execute(
+            """
+            INSERT INTO bot_control (
+              symbol, strategy, interval, enabled, mode, reason, live_orders_enabled, regime_enabled, regime_mode,
+              updated_at, control_mode, control_source, manual_override_reason, manual_override_updated_at
+            )
+            VALUES (%s, %s, %s, %s, 'NORMAL', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, strategy, interval)
+            DO UPDATE SET
+              enabled = EXCLUDED.enabled,
+              reason = EXCLUDED.reason,
+              live_orders_enabled = EXCLUDED.live_orders_enabled,
+              regime_enabled = EXCLUDED.regime_enabled,
+              regime_mode = EXCLUDED.regime_mode,
+              updated_at = EXCLUDED.updated_at,
+              control_mode = EXCLUDED.control_mode,
+              control_source = EXCLUDED.control_source,
+              manual_override_reason = EXCLUDED.manual_override_reason,
+              manual_override_updated_at = EXCLUDED.manual_override_updated_at
+            """,
+            (
+                req.symbol,
+                req.strategy,
+                req.interval,
+                req.enabled,
+                note,
+                req.live_orders_enabled,
+                req.regime_enabled,
+                normalized_mode,
+                applied_at,
+                "MANUAL",
+                "USER",
+                note,
+                applied_at,
+            ),
+        )
+        after_state = {
+            "enabled": bool(req.enabled),
+            "live_orders_enabled": bool(req.live_orders_enabled),
+            "regime_enabled": bool(req.regime_enabled),
+            "regime_mode": normalized_mode,
+            "reason": note,
+            "updated_at": applied_at,
+            "control_mode": "MANUAL",
+            "control_source": "USER",
+            "manual_override_reason": note,
+            "manual_override_updated_at": applied_at,
+        }
+        log_ui_action(
+            cur,
+            actor=actor,
+            actor_role=actor_role,
+            action="slot.manual_override",
+            target_type="bot_control",
+            target_key=target_key,
+            before_json=before_state,
+            after_json=after_state,
+            source=source,
+            note=note,
+        )
+        conn.commit()
+
+    return UIControlResponse(ok=True, message="slot set to manual", applied_at=applied_at, new_state=after_state)
+
+
+@app.post("/ui/control/slot/auto", response_model=UIControlResponse)
+def ui_control_slot_auto(req: UISlotAutoControlRequest, request: Request):
+    actor, actor_role, source = get_request_actor(request)
+    applied_at = datetime.now(timezone.utc)
+    target_key = f"{req.symbol}:{req.interval}:{req.strategy}"
+    with db_cursor() as (conn, cur):
+        ensure_ui_audit_table(cur)
+        cur.execute(
+            """
+            SELECT enabled, live_orders_enabled, regime_enabled, regime_mode, reason, updated_at,
+                   control_mode, control_source, manual_override_reason, manual_override_updated_at
+            FROM bot_control
+            WHERE symbol=%s AND interval=%s AND strategy=%s
+            """,
+            (req.symbol, req.interval, req.strategy),
+        )
+        before = cur.fetchone()
+        before_state = {
+            "enabled": bool(before[0]) if before else True,
+            "live_orders_enabled": bool(before[1]) if before else False,
+            "regime_enabled": bool(before[2]) if before else False,
+            "regime_mode": before[3] if before else "DRY_RUN",
+            "reason": before[4] if before else None,
+            "updated_at": before[5] if before else None,
+            "control_mode": before[6] if before and before[6] else "AUTO",
+            "control_source": before[7] if before and before[7] else "SYSTEM",
+            "manual_override_reason": before[8] if before else None,
+            "manual_override_updated_at": before[9] if before else None,
+        }
+        note = req.reason or "slot returned to auto"
+        cur.execute(
+            """
+            INSERT INTO bot_control (
+              symbol, strategy, interval, enabled, mode, reason, live_orders_enabled, regime_enabled, regime_mode,
+              updated_at, control_mode, control_source, manual_override_reason, manual_override_updated_at
+            )
+            VALUES (%s, %s, %s, %s, 'NORMAL', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, strategy, interval)
+            DO UPDATE SET
+              enabled = COALESCE(bot_control.enabled, EXCLUDED.enabled),
+              reason = EXCLUDED.reason,
+              live_orders_enabled = COALESCE(bot_control.live_orders_enabled, EXCLUDED.live_orders_enabled),
+              regime_enabled = COALESCE(bot_control.regime_enabled, EXCLUDED.regime_enabled),
+              regime_mode = COALESCE(bot_control.regime_mode, EXCLUDED.regime_mode),
+              updated_at = EXCLUDED.updated_at,
+              control_mode = EXCLUDED.control_mode,
+              control_source = EXCLUDED.control_source,
+              manual_override_reason = EXCLUDED.manual_override_reason,
+              manual_override_updated_at = EXCLUDED.manual_override_updated_at
+            """,
+            (
+                req.symbol,
+                req.strategy,
+                req.interval,
+                before_state["enabled"],
+                note,
+                before_state["live_orders_enabled"],
+                before_state["regime_enabled"],
+                before_state["regime_mode"],
+                applied_at,
+                "AUTO",
+                "USER",
+                None,
+                None,
+            ),
+        )
+        after_state = {
+            "enabled": bool(before_state["enabled"]),
+            "live_orders_enabled": bool(before_state["live_orders_enabled"]),
+            "regime_enabled": bool(before_state["regime_enabled"]),
+            "regime_mode": before_state["regime_mode"],
+            "reason": note,
+            "updated_at": applied_at,
+            "control_mode": "AUTO",
+            "control_source": "ORC",
+            "manual_override_reason": None,
+            "manual_override_updated_at": None,
+        }
+        log_ui_action(
+            cur,
+            actor=actor,
+            actor_role=actor_role,
+            action="slot.return_to_auto",
+            target_type="bot_control",
+            target_key=target_key,
+            before_json=before_state,
+            after_json=after_state,
+            source=source,
+            note=note,
+        )
+        conn.commit()
+
+    return UIControlResponse(ok=True, message="slot returned to auto", applied_at=applied_at, new_state=after_state)
 
 
 @app.post("/ui/control/regime", response_model=UIControlResponse)

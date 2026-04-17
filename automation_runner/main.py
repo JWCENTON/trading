@@ -129,6 +129,7 @@ def run_orc_v5_apply(conn):
           SELECT symbol, interval, strategy
           FROM bot_control
           WHERE enabled = true
+            AND COALESCE(control_mode, 'AUTO') = 'AUTO'
             AND symbol IN ('BTCUSDC','ETHUSDC','SOLUSDC','BNBUSDC')
             AND interval IN ('1m','5m')
             AND strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
@@ -148,6 +149,10 @@ def run_orc_v5_apply(conn):
           UPDATE bot_control bc
           SET
             live_orders_enabled = d.want_on,
+            control_mode = 'AUTO',
+            control_source = 'ORC',
+            manual_override_reason = NULL,
+            manual_override_updated_at = NULL,
             regime_enabled = true,
             regime_mode = CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END,
             updated_at = now(),
@@ -165,8 +170,13 @@ def run_orc_v5_apply(conn):
             END
           FROM desired d
           WHERE bc.symbol=d.symbol AND bc.interval=d.interval AND bc.strategy=d.strategy
+            AND COALESCE(bc.control_mode, 'AUTO') = 'AUTO'
             AND (
               bc.live_orders_enabled IS DISTINCT FROM d.want_on
+              OR COALESCE(bc.control_mode, 'AUTO') IS DISTINCT FROM 'AUTO'
+              OR COALESCE(bc.control_source, 'ORC') IS DISTINCT FROM 'ORC'
+              OR bc.manual_override_reason IS NOT NULL
+              OR bc.manual_override_updated_at IS NOT NULL
               OR bc.regime_mode IS DISTINCT FROM (CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END)
               OR bc.regime_enabled IS DISTINCT FROM true
               OR bc.reason IS DISTINCT FROM (CASE WHEN d.want_on
