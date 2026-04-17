@@ -39,6 +39,11 @@ import { SlotActionsPanel } from "./components/slots/SlotActionsPanel";
 import { HealthPanel } from "./components/health/HealthPanel";
 import "./App.css";
 
+interface PanicConfirmState {
+  enabled: boolean;
+  reason: string;
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("live");
   const [environment, setEnvironment] = useState<UiEnvironment>(() => getUiEnvironment());
@@ -53,6 +58,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [panicConfirm, setPanicConfirm] = useState<PanicConfirmState | null>(null);
 
   useEffect(() => {
     setUiEnvironment(environment);
@@ -154,6 +160,10 @@ function App() {
       setActionBusy(false);
     }
   }, [loadHealth, loadLive]);
+
+  const handleRequestPanicToggle = useCallback((enabled: boolean, reason: string) => {
+    setPanicConfirm({ enabled, reason });
+  }, []);
 
   const handleSaveAdvancedSettings = useCallback(async (manualEntryAddonUsdc: number, threeWinBoostUsdc: number) => {
     setActionBusy(true);
@@ -264,7 +274,7 @@ function App() {
 
         {activeTab === "live" ? (
           <div className="live-home-stack">
-            <TopStatusBar summary={summary} />
+            <TopStatusBar summary={summary} onRefresh={loadLive} refreshBusy={loading || actionBusy} />
 
             <div className="live-priority-grid">
               <div className="live-priority-main">
@@ -282,8 +292,7 @@ function App() {
               <div className="live-controls-secondary">
                 <QuickActionsPanel
                   summary={summary}
-                  onRefresh={loadLive}
-                  onTogglePanic={handleTogglePanic}
+                  onTogglePanic={handleRequestPanicToggle}
                   settings={settings}
                   actionBusy={actionBusy}
                 />
@@ -323,6 +332,57 @@ function App() {
             </section>
             <HealthPanel health={health} />
           </>
+        ) : null}
+
+        {panicConfirm ? (
+          <div className="confirm-modal-backdrop" role="presentation">
+            <div
+              className="confirm-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="panic-confirm-title"
+            >
+              <div className="confirm-modal-header">
+                <h2 id="panic-confirm-title">Confirm panic change</h2>
+                <span className="panel-meta">Safety confirmation</span>
+              </div>
+
+              <div className="confirm-modal-body">
+                <p>
+                  {panicConfirm.enabled
+                    ? 'Are you sure you want to switch PANIC ON? This should immediately block trading actions for this runtime.'
+                    : 'Are you sure you want to switch PANIC OFF? Make sure the runtime is safe before re-enabling trading actions.'}
+                </p>
+
+                <div className="selected-slot-summary">
+                  <span className="status-label">Reason</span>
+                  <strong>{panicConfirm.reason || '—'}</strong>
+                </div>
+              </div>
+
+              <div className="button-row button-row--modal">
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={() => setPanicConfirm(null)}
+                  disabled={actionBusy}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={`action-button ${panicConfirm.enabled ? 'danger' : 'success'}`}
+                  onClick={async () => {
+                    await handleTogglePanic(panicConfirm.enabled, panicConfirm.reason);
+                    setPanicConfirm(null);
+                  }}
+                  disabled={actionBusy}
+                >
+                  {actionBusy ? 'Applying...' : panicConfirm.enabled ? 'Confirm PANIC ON' : 'Confirm PANIC OFF'}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {activeTab === "advanced" ? (

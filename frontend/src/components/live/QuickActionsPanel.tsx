@@ -3,13 +3,12 @@ import type { UiLiveSummary, UiUserSettings } from '../../api';
 
 interface QuickActionsPanelProps {
   summary: UiLiveSummary | null;
-  onRefresh: () => Promise<void> | void;
   onTogglePanic: (enabled: boolean, reason: string) => Promise<void> | void;
   settings: UiUserSettings | null;
   actionBusy: boolean;
 }
 
-export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, settings, actionBusy }: QuickActionsPanelProps) {
+export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy }: QuickActionsPanelProps) {
   const [reason, setReason] = useState('ui operator action');
 
   return (
@@ -70,13 +69,22 @@ export function QuickActionsPanel({ summary, onRefresh, onTogglePanic, settings,
         </div>
 
         <div className="button-row button-row--stack-mobile">
-          <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>
-            Refresh live
-          </button>
-          <button type="button" className="action-button danger" onClick={() => void onTogglePanic(true, reason)} disabled={actionBusy}>
+          <button
+            type="button"
+            className="action-button danger"
+            onClick={() => void onTogglePanic(true, reason)}
+            disabled={actionBusy}
+            aria-pressed={summary?.panic.enabled === true}
+          >
             Panic ON
           </button>
-          <button type="button" className="action-button success" onClick={() => void onTogglePanic(false, reason)} disabled={actionBusy}>
+          <button
+            type="button"
+            className="action-button success"
+            onClick={() => void onTogglePanic(false, reason)}
+            disabled={actionBusy}
+            aria-pressed={summary?.panic.enabled === false}
+          >
             Panic OFF
           </button>
         </div>

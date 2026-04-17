@@ -63,11 +63,51 @@ export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, o
 
         <div className="button-row button-row--stack-mobile">
           <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>Refresh slots</button>
-          <button type="button" className="action-button success" disabled={actionBusy || !selected} onClick={() => selected && void onUpdateSlot({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: true, live_orders_enabled: true, reason })}>Enable + Live ON</button>
-          <button type="button" className="action-button" disabled={actionBusy || !selected} onClick={() => selected && void onUpdateSlot({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: true, live_orders_enabled: false, reason })}>Enable + Live OFF</button>
-          <button type="button" className="action-button danger" disabled={actionBusy || !selected} onClick={() => selected && void onUpdateSlot({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: false, live_orders_enabled: false, reason })}>Disable slot</button>
-          <button type="button" className="action-button success" disabled={actionBusy || !selected} onClick={() => selected && void onUpdateRegime({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, regime_enabled: true, regime_mode: 'ENFORCE', reason })}>Regime ENFORCE</button>
-          <button type="button" className="action-button" disabled={actionBusy || !selected} onClick={() => selected && void onUpdateRegime({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, regime_enabled: true, regime_mode: 'DRY_RUN', reason })}>Regime DRY_RUN</button>
+          <button
+            type="button"
+            className={`action-button success ${selected?.enabled && selected?.live_orders_enabled ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onUpdateSlot({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: true, live_orders_enabled: true, reason })}
+            aria-pressed={Boolean(selected?.enabled && selected?.live_orders_enabled)}
+          >
+            Enable + Live ON
+          </button>
+          <button
+            type="button"
+            className={`action-button ${selected?.enabled && !selected?.live_orders_enabled ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onUpdateSlot({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: true, live_orders_enabled: false, reason })}
+            aria-pressed={Boolean(selected?.enabled && !selected?.live_orders_enabled)}
+          >
+            Enable + Live OFF
+          </button>
+          <button
+            type="button"
+            className={`action-button danger ${selected && !selected.enabled ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onUpdateSlot({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, enabled: false, live_orders_enabled: false, reason })}
+            aria-pressed={Boolean(selected && !selected.enabled)}
+          >
+            Disable slot
+          </button>
+          <button
+            type="button"
+            className={`action-button success ${selected?.regime_enabled && selected?.regime_mode === 'ENFORCE' ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onUpdateRegime({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, regime_enabled: true, regime_mode: 'ENFORCE', reason })}
+            aria-pressed={Boolean(selected?.regime_enabled && selected?.regime_mode === 'ENFORCE')}
+          >
+            Regime ENFORCE
+          </button>
+          <button
+            type="button"
+            className={`action-button ${selected?.regime_enabled && selected?.regime_mode === 'DRY_RUN' ? 'is-active' : ''}`}
+            disabled={actionBusy || !selected}
+            onClick={() => selected && void onUpdateRegime({ symbol: selected.symbol, interval: selected.interval, strategy: selected.strategy, regime_enabled: true, regime_mode: 'DRY_RUN', reason })}
+            aria-pressed={Boolean(selected?.regime_enabled && selected?.regime_mode === 'DRY_RUN')}
+          >
+            Regime DRY_RUN
+          </button>
         </div>
       </div>
     </section>

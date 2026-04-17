@@ -50,6 +50,7 @@
   color: #cbd5e1;
   min-height: 46px;
   font-weight: 600;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
 .nav-button.active {
@@ -145,6 +146,7 @@
   gap: 6px;
   width: 100%;
   min-width: 0;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
 .env-button.active {
@@ -319,6 +321,32 @@
   border: 1px solid #334155;
   color: #f8fafc;
   min-height: 42px;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.action-button:hover:not(:disabled),
+.nav-button:hover,
+.env-button:hover {
+  border-color: #475569;
+}
+
+.action-button:active:not(:disabled),
+.nav-button:active,
+.env-button:active {
+  transform: translateY(1px);
+}
+
+.action-button.is-active,
+.action-button[aria-pressed="true"] {
+  border-color: #3b82f6;
+  background: #172033;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
+.action-button--small {
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .action-button.success {
@@ -456,6 +484,48 @@ td {
   color: #fecaca;
   border-radius: 12px;
   padding: 12px 14px;
+}
+
+.status-card-actions {
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 120;
+}
+
+.confirm-modal {
+  width: min(520px, 100%);
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 18px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+}
+
+.confirm-modal-header,
+.confirm-modal-body {
+  display: grid;
+  gap: 10px;
+}
+
+.confirm-modal-header h2,
+.confirm-modal-body p {
+  margin: 0;
+}
+
+.button-row--modal {
+  justify-content: flex-end;
 }
 
 .health-grid {

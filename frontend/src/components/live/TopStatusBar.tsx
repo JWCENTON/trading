@@ -2,6 +2,8 @@ import type { UiLiveSummary } from '../../api';
 
 interface TopStatusBarProps {
   summary: UiLiveSummary | null;
+  onRefresh: () => Promise<void> | void;
+  refreshBusy: boolean;
 }
 
 function formatNumber(value: number | null | undefined, digits = 4) {
@@ -14,7 +16,7 @@ function formatDateTime(value: string | null | undefined) {
   return new Date(value).toLocaleString();
 }
 
-export function TopStatusBar({ summary }: TopStatusBarProps) {
+export function TopStatusBar({ summary, onRefresh, refreshBusy }: TopStatusBarProps) {
   const statusCards = [
     {
       label: 'Panic',
@@ -70,6 +72,7 @@ export function TopStatusBar({ summary }: TopStatusBarProps) {
       meta: summary?.market_data.latest_mark_price_at
         ? `Market data: ${formatDateTime(summary.market_data.latest_mark_price_at)}`
         : 'Market data: —',
+      action: true,
     },
   ];
 
@@ -80,6 +83,18 @@ export function TopStatusBar({ summary }: TopStatusBarProps) {
           <span className="status-label">{card.label}</span>
           <strong className="status-value">{card.value}</strong>
           <span className="status-meta">{card.meta}</span>
+          {card.action ? (
+            <div className="status-card-actions">
+              <button
+                type="button"
+                className="action-button action-button--small"
+                onClick={() => void onRefresh()}
+                disabled={refreshBusy}
+              >
+                {refreshBusy ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+          ) : null}
         </article>
       ))}
     </section>

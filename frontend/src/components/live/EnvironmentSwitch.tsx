@@ -18,6 +18,7 @@ export function EnvironmentSwitch({ environment, onChange }: EnvironmentSwitchPr
           type="button"
           className={`env-button ${environment === "LIVE" ? "active" : ""}`}
           onClick={() => onChange("LIVE")}
+          aria-pressed={environment === "LIVE"}
         >
           <span className="env-button-title">LIVE</span>
           <span className="env-button-meta">API :8001</span>
@@ -27,6 +28,7 @@ export function EnvironmentSwitch({ environment, onChange }: EnvironmentSwitchPr
           type="button"
           className={`env-button ${environment === "PAPER" ? "active" : ""}`}
           onClick={() => onChange("PAPER")}
+          aria-pressed={environment === "PAPER"}
         >
           <span className="env-button-title">PAPER</span>
           <span className="env-button-meta">API :8000</span>

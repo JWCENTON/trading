@@ -26,7 +26,7 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
         <div className="app-brand-wrap">
           <div className="app-brand">TRADING UI</div>
           <div className="app-brand-subtitle">Operator Dark • manual refresh first</div>
-          <div className="app-brand-env">{environment ? `ENV: ${environment}` : "ENV: —"}</div>
+          <div className="app-brand-env">{environment ? `ENV: ${environment}` : 'ENV: —'}</div>
         </div>
 
         <nav className="app-nav" aria-label="Primary navigation">
@@ -36,6 +36,7 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
               type="button"
               className={`nav-button ${activeTab === tab.key ? 'active' : ''}`}
               onClick={() => onTabChange(tab.key)}
+              aria-pressed={activeTab === tab.key}
             >
               <span className="nav-button-label nav-button-label--full">{tab.label}</span>
               <span className="nav-button-label nav-button-label--short">{tab.shortLabel}</span>
