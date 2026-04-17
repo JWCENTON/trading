@@ -7,6 +7,8 @@ from common.db import get_db_conn
 
 @dataclass(frozen=True)
 class PositionPathSnapshot:
+    max_high: float
+    min_low: float
     mfe_abs: float
     mae_abs: float
     current_close: float
@@ -76,6 +78,8 @@ def load_position_path_snapshot(
     last_open_time = row[4] if row else None
 
     return PositionPathSnapshot(
+        max_high=max_high,
+        min_low=min_low,
         mfe_abs=max_high - float(entry_price),
         mae_abs=min_low - float(entry_price),
         current_close=current_close,

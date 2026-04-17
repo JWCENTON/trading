@@ -27,6 +27,7 @@ from common.execution import build_live_client_order_id
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
 from common.exit_guards.guarded_profit import evaluate_guarded_profit
+from common.exit_guards.early_cut_adaptive import AdaptiveEarlyCutConfig, evaluate_adaptive_early_cut_long
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 
 logging.basicConfig(
@@ -96,6 +97,11 @@ EMA_SLOPE_MIN_PCT = float(os.environ.get("EMA_SLOPE_MIN_PCT", "0.0000"))  # 0.00
 EARLY_EXIT_MINUTES = int(os.environ.get("EARLY_EXIT_MINUTES", "30"))
 EARLY_EXIT_MAX_LOSS_PCT = float(os.environ.get("EARLY_EXIT_MAX_LOSS_PCT", "0.25"))  # cut losers earlier
 MIN_PROFIT_TO_KEEP_PCT = float(os.environ.get("MIN_PROFIT_TO_KEEP_PCT", "0.05"))  # if timeout and profit too small -> exit
+
+ADAPTIVE_EARLY_CUT_SHADOW_ENABLED = os.environ.get("ADAPTIVE_EARLY_CUT_SHADOW_ENABLED", "1") == "1"
+ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES = int(os.environ.get("ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES", "45"))
+ADAPTIVE_EARLY_CUT_ATR_MULT = float(os.environ.get("ADAPTIVE_EARLY_CUT_ATR_MULT", "1.0"))
+ADAPTIVE_EARLY_CUT_WEAK_MFE_ATR_MULT = float(os.environ.get("ADAPTIVE_EARLY_CUT_WEAK_MFE_ATR_MULT", "0.5"))
 
 GUARDED_PROFIT_ENABLED = os.environ.get("GUARDED_PROFIT_ENABLED", "0") == "1"
 GUARDED_MIN_AGE_MINUTES = int(os.environ.get("GUARDED_MIN_AGE_MINUTES", "10"))
@@ -768,6 +774,8 @@ def load_runtime_params():
         "DAILY_MAX_LOSS_PCT=%.2f|RSI_OVERSOLD=%.1f|RSI_OVERBOUGHT=%.1f|"
         "ORDER_QTY_BTC=%.8f|ORDER_NOTIONAL_USDC=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f|MAX_DIST_FROM_EMA_FAST_PCT=%.2f|"
         "ALLOW_SHORT=%s|EARLY_EXIT_MINUTES=%d|EARLY_EXIT_MAX_LOSS_PCT=%.2f|MIN_PROFIT_TO_KEEP_PCT=%.2f|"
+        "ADAPTIVE_EARLY_CUT_SHADOW_ENABLED=%s|ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES=%d|"
+        "ADAPTIVE_EARLY_CUT_ATR_MULT=%.2f|ADAPTIVE_EARLY_CUT_WEAK_MFE_ATR_MULT=%.2f|"
         "GUARDED_PROFIT_ENABLED=%s|GUARDED_MIN_AGE_MINUTES=%d|GUARDED_MFE_ARM_090_ABS=%.4f|"
         "GUARDED_FLOOR_090_ABS=%.4f|GUARDED_MFE_ARM_110_ABS=%.4f|GUARDED_FLOOR_110_ABS=%.4f",
         SYMBOL,
@@ -791,6 +799,10 @@ def load_runtime_params():
         EARLY_EXIT_MINUTES,
         EARLY_EXIT_MAX_LOSS_PCT,
         MIN_PROFIT_TO_KEEP_PCT,
+        ADAPTIVE_EARLY_CUT_SHADOW_ENABLED,
+        ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES,
+        ADAPTIVE_EARLY_CUT_ATR_MULT,
+        ADAPTIVE_EARLY_CUT_WEAK_MFE_ATR_MULT,
         GUARDED_PROFIT_ENABLED,
         GUARDED_MIN_AGE_MINUTES,
         GUARDED_MFE_ARM_090_ABS,
@@ -817,6 +829,63 @@ def get_latest_candles(limit: int):
     cur.close()
     conn.close()
     return rows
+
+
+def load_recent_atr_abs(
+    *,
+    symbol: str,
+    interval: str,
+    asof_open_time: datetime,
+    period: int = 14,
+) -> float | None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT high, low, close
+            FROM candles
+            WHERE symbol = %s
+              AND interval = %s
+              AND open_time <= %s
+            ORDER BY open_time DESC
+            LIMIT %s
+            """,
+            (symbol, interval, asof_open_time, period + 1),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows or len(rows) < period:
+        return None
+
+    rows = list(reversed(rows))
+    trs: list[float] = []
+    prev_close = None
+
+    for idx, row in enumerate(rows):
+        high = float(row[0])
+        low = float(row[1])
+        close = float(row[2])
+
+        if idx == 0 or prev_close is None:
+            tr = high - low
+        else:
+            tr = max(
+                high - low,
+                abs(high - prev_close),
+                abs(low - prev_close),
+            )
+        trs.append(tr)
+        prev_close = close
+
+    if len(trs) < period:
+        return None
+
+    recent = trs[-period:]
+    return sum(recent) / len(recent)
 
 
 def insert_simulated_order(
@@ -1681,6 +1750,91 @@ def run_trend_strategy():
                         return
                     close_position(exit_price=price, reason="GUARDED_PROFIT_LONG", open_time=open_time)
                     return
+
+            # --- ADAPTIVE EARLY CUT (SHADOW ONLY): telemetry, no real exit ---
+            if (
+                ADAPTIVE_EARLY_CUT_SHADOW_ENABLED
+                and pos_side == "LONG"
+                and pos_entry_time is not None
+            ):
+                if pos_entry_time.tzinfo is None:
+                    pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+
+                age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+                path = load_position_path_snapshot(
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    entry_time=pos_entry_time,
+                    asof_open_time=open_time,
+                    entry_price=pos_entry_price,
+                )
+                atr_abs = load_recent_atr_abs(
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    asof_open_time=open_time,
+                    period=14,
+                )
+                adaptive_cfg = AdaptiveEarlyCutConfig(
+                    enabled=ADAPTIVE_EARLY_CUT_SHADOW_ENABLED,
+                    min_age_minutes=ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES,
+                    atr_mult=ADAPTIVE_EARLY_CUT_ATR_MULT,
+                    weak_mfe_atr_mult=ADAPTIVE_EARLY_CUT_WEAK_MFE_ATR_MULT,
+                )
+                adaptive_decision = evaluate_adaptive_early_cut_long(
+                    age_minutes=age_minutes,
+                    entry_price=pos_entry_price,
+                    current_price=price,
+                    mfe_abs=path.mfe_abs,
+                    mae_abs=path.mae_abs,
+                    atr_abs=atr_abs,
+                    config=adaptive_cfg,
+                )
+                throttle_conn = get_db_conn()
+                try:
+                    should_emit_shadow = should_emit_throttled_event(
+                        conn=throttle_conn,
+                        symbol=SYMBOL,
+                        interval=INTERVAL,
+                        strategy=STRATEGY_NAME,
+                        event_type="SHADOW",
+                        reason="EARLY_CUT_ADAPTIVE_SHADOW",
+                        throttle_seconds=300,
+                    )
+                finally:
+                    throttle_conn.close()
+
+                if should_emit_shadow:
+                    emit_strategy_event(
+                        event_type="SHADOW",
+                        decision="SELL" if adaptive_decision.would_cut else "HOLD",
+                        reason="EARLY_CUT_ADAPTIVE_SHADOW",
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "symbol": SYMBOL,
+                            "interval": INTERVAL,
+                            "age_minutes": float(adaptive_decision.age_minutes),
+                            "entry_price": float(pos_entry_price),
+                            "current_price": float(price),
+                            "current_move_abs": float(adaptive_decision.current_move_abs),
+                            "current_move_pct": float(adaptive_decision.current_move_pct),
+                            "mfe_abs": float(adaptive_decision.mfe_abs),
+                            "mae_abs": float(adaptive_decision.mae_abs),
+                            "max_high": float(path.max_high),
+                            "min_low": float(path.min_low),
+                            "bars_seen": int(path.bars_seen),
+                            "atr_abs": float(adaptive_decision.atr_abs),
+                            "atr_pct": float(adaptive_decision.atr_pct),
+                            "adaptive_min_age_minutes": int(adaptive_decision.min_age_minutes),
+                            "adaptive_loss_abs": float(adaptive_decision.adaptive_loss_abs),
+                            "adaptive_loss_pct": float(adaptive_decision.adaptive_loss_pct),
+                            "weak_mfe_threshold_abs": float(adaptive_decision.weak_mfe_threshold_abs),
+                            "weak_trade": bool(adaptive_decision.weak_trade),
+                            "loss_breach": bool(adaptive_decision.loss_breach),
+                            "would_cut_adaptive": bool(adaptive_decision.would_cut),
+                            "reason_code": adaptive_decision.reason_code,
+                        },
+                    )
 
             # --- EARLY EXIT: cut losers earlier than TIMEOUT/SL to make TIMEOUT non-negative on average ---
             if EARLY_EXIT_MINUTES > 0 and pos_entry_time is not None:
