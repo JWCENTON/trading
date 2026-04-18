@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  getAuthMe,
+  login,
+  logout,
+  changePassword,
   getUiAccount,
   getUiAdvancedSummary,
   getUserSettings,
@@ -13,9 +17,12 @@ import {
   setUiEnvironment,
   updatePanicState,
   restoreUserSettingsDefaults,
+  returnSlotToAuto,
   updateUserSettings,
   updateRegimeControl,
   updateSlotControl,
+  updateSlotManualControl,
+  type AuthUser,
   type UiAccountSummary,
   type UiEnvironment,
   type UiHealthResponse,
@@ -39,6 +46,11 @@ import { SlotActionsPanel } from "./components/slots/SlotActionsPanel";
 import { HealthPanel } from "./components/health/HealthPanel";
 import "./App.css";
 
+interface PanicConfirmState {
+  enabled: boolean;
+  reason: string;
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("live");
   const [environment, setEnvironment] = useState<UiEnvironment>(() => getUiEnvironment());
@@ -53,10 +65,117 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [panicConfirm, setPanicConfirm] = useState<PanicConfirmState | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [loginUsername, setLoginUsername] = useState("admin");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
 
   useEffect(() => {
     setUiEnvironment(environment);
   }, [environment]);
+
+  const checkAuth = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      const me = await getAuthMe();
+      const isAuthenticated = Boolean(me.authenticated);
+      const nextUser = me.user ?? null;
+
+      setAuthenticated(isAuthenticated);
+      setCurrentUser(nextUser);
+
+      if (isAuthenticated && nextUser?.must_change_password) {
+        setActiveTab("security");
+      }
+    } catch (_err) {
+      setAuthenticated(false);
+      setCurrentUser(null);
+    } finally {
+      setAuthChecked(true);
+      setAuthBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkAuth();
+  }, [checkAuth, environment]);
+
+  const handleLogin = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      const result = await login({
+        username: loginUsername.trim(),
+        password: loginPassword,
+      });
+      setAuthenticated(Boolean(result.authenticated));
+      setCurrentUser(result.user ?? null);
+      setLoginPassword("");
+      await checkAuth();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      setAuthenticated(false);
+      setCurrentUser(null);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [checkAuth, loginPassword, loginUsername]);
+
+  const handleLogout = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      await logout();
+    } catch (_err) {
+      // ignore
+    } finally {
+      setAuthenticated(false);
+      setCurrentUser(null);
+      setSummary(null);
+      setAccount(null);
+      setTrading24h(null);
+      setOpenPositions([]);
+      setRecentClosed([]);
+      setSlots([]);
+      setHealth(null);
+      setSettings(null);
+      setAuthChecked(true);
+      setAuthBusy(false);
+    }
+  }, []);
+
+  const handleChangePassword = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      const forceChangeWasRequired = Boolean(currentUser?.must_change_password);
+
+      await changePassword({
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+
+      setOldPassword("");
+      setNewPassword("");
+      await checkAuth();
+
+      if (forceChangeWasRequired) {
+        setActiveTab("live");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [checkAuth, currentUser?.must_change_password, newPassword, oldPassword]);
 
   const loadLive = useCallback(async () => {
     setError(null);
@@ -130,6 +249,8 @@ function App() {
   }, [environment]);
 
   useEffect(() => {
+    if (!authChecked || !authenticated) return;
+
     if (activeTab === "live") {
       void loadLive();
     } else if (activeTab === "slots") {
@@ -139,7 +260,7 @@ function App() {
     } else if (activeTab === "advanced") {
       void loadAdvanced();
     }
-  }, [activeTab, environment, loadAdvanced, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, authChecked, authenticated, loadAdvanced, loadHealth, loadLive, loadSlots]);
 
   const handleTogglePanic = useCallback(async (enabled: boolean, reason: string) => {
     setActionBusy(true);
@@ -154,6 +275,10 @@ function App() {
       setActionBusy(false);
     }
   }, [loadHealth, loadLive]);
+
+  const handleRequestPanicToggle = useCallback((enabled: boolean, reason: string) => {
+    setPanicConfirm({ enabled, reason });
+  }, []);
 
   const handleSaveAdvancedSettings = useCallback(async (manualEntryAddonUsdc: number, threeWinBoostUsdc: number) => {
     setActionBusy(true);
@@ -216,11 +341,40 @@ function App() {
     }
   }, [loadLive, loadSlots]);
 
+  const handleSlotManualUpdate = useCallback(async (payload: Parameters<typeof updateSlotManualControl>[0]) => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      await updateSlotManualControl(payload);
+      await Promise.all([loadSlots(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadLive, loadSlots]);
+
+  const handleSlotReturnAuto = useCallback(async (payload: Parameters<typeof returnSlotToAuto>[0]) => {
+    setActionBusy(true);
+    setError(null);
+    try {
+      await returnSlotToAuto(payload);
+      await Promise.all([loadSlots(), loadLive()]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [loadLive, loadSlots]);
+
   const title = useMemo(() => {
     switch (activeTab) {
       case "slots": return "Slots";
       case "health": return "Health";
       case "advanced": return "Advanced";
+      case "security": return "Security";
       default: return "Live";
     }
   }, [activeTab]);
@@ -236,8 +390,11 @@ function App() {
   }, [settings]);
 
   const subtitle = useMemo(() => {
+    if (activeTab === "security") {
+      return "Hasło, sesja operatora i przyszłe security features jak recovery oraz 2FA.";
+    }
     if (activeTab === "advanced") {
-      return "Advanced zostawiamy jako strefę cięższych rzeczy. Na tym etapie migrujemy najpierw Live, Slots i Health.";
+      return "Advanced zostawiamy jako strefę cięższych rzeczy. Na tym etapie migrujemy najpierw Live, Slots, Health i Security.";
     }
     if (activeTab === "slots") {
       return "Operator slot control: enabled, live orders, regime gating, open position, heartbeat i last event.";
@@ -248,6 +405,56 @@ function App() {
     return "Manual refresh first. Truth-only operatorski widok oparty o panic_state, bot_control, positions, bot_heartbeat i candles.";
   }, [activeTab]);
 
+  if (!authChecked) {
+    return <div className="panel">Checking session...</div>;
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="page-grid">
+        <section className="panel quick-actions-panel" style={{ maxWidth: 420, margin: "40px auto" }}>
+          <div className="panel-header">
+            <h2>Login</h2>
+            <span className="panel-meta">{environment} environment</span>
+          </div>
+
+          {error ? <div className="error-banner">API error: {error}</div> : null}
+
+          <div style={{ display: "grid", gap: 12 }}>
+            <label>
+              <div>Username</div>
+              <input
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                autoComplete="username"
+              />
+            </label>
+
+            <label>
+              <div>Password</div>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+
+            <div className="button-row">
+              <button className="action-button" onClick={() => void handleLogin()} disabled={authBusy}>
+                {authBusy ? "Logging in..." : `Login to ${environment}`}
+              </button>
+            </div>
+
+            <div className="live-controls-primary">
+              <EnvironmentSwitch environment={environment} onChange={setEnvironment} />
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <AppShell
       title={title}
@@ -256,6 +463,15 @@ function App() {
       onTabChange={setActiveTab}
       environment={environment}
     >
+      <div className="button-row" style={{ marginBottom: 12 }}>
+        <span style={{ marginRight: 12 }}>
+          Logged in as <strong>{currentUser?.username}</strong> ({environment})
+        </span>
+        <button className="action-button secondary" onClick={() => void handleLogout()} disabled={authBusy}>
+          Logout
+        </button>
+      </div>
+
       <div className="page-grid">
         {error ? <div className="error-banner">API error: {error}</div> : null}
         {loading && activeTab === "live" && !summary ? <div className="panel">Ładowanie nowego panelu Live…</div> : null}
@@ -264,7 +480,7 @@ function App() {
 
         {activeTab === "live" ? (
           <div className="live-home-stack">
-            <TopStatusBar summary={summary} />
+            <TopStatusBar summary={summary} onRefresh={loadLive} refreshBusy={loading || actionBusy} />
 
             <div className="live-priority-grid">
               <div className="live-priority-main">
@@ -282,8 +498,7 @@ function App() {
               <div className="live-controls-secondary">
                 <QuickActionsPanel
                   summary={summary}
-                  onRefresh={loadLive}
-                  onTogglePanic={handleTogglePanic}
+                  onTogglePanic={handleRequestPanicToggle}
                   settings={settings}
                   actionBusy={actionBusy}
                 />
@@ -303,6 +518,8 @@ function App() {
               onRefresh={loadSlots}
               onUpdateSlot={handleSlotUpdate}
               onUpdateRegime={handleRegimeUpdate}
+              onSetManual={handleSlotManualUpdate}
+              onReturnAuto={handleSlotReturnAuto}
             />
             <SlotsTable items={slots} />
           </>
@@ -323,6 +540,126 @@ function App() {
             </section>
             <HealthPanel health={health} />
           </>
+        ) : null}
+
+        {activeTab === "security" ? (
+          <section className="panel advanced-placeholder">
+            <div className="panel-header">
+              <h2>Security</h2>
+              <span className="panel-meta">
+                {currentUser?.must_change_password ? "Password change required" : "Password & session"}
+              </span>
+            </div>
+
+            <div className="quick-actions-grid">
+              <div className="stack-row stack-row--split">
+                <div className="info-tile">
+                  <span className="status-label">Current user</span>
+                  <strong className="status-value">{currentUser?.username ?? "-"}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Role</span>
+                  <strong className="status-value">{currentUser?.is_admin ? "ADMIN" : "USER"}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Password state</span>
+                  <strong className="status-value">
+                    {currentUser?.must_change_password ? "CHANGE REQUIRED" : "OK"}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="security-old-password">Current password</label>
+                <input
+                  id="security-old-password"
+                  type="password"
+                  value={oldPassword}
+                  onChange={(e) => setOldPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="security-new-password">New password</label>
+                <input
+                  id="security-new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div className="button-row button-row--stack-mobile">
+                <button
+                  className="action-button"
+                  onClick={() => void handleChangePassword()}
+                  disabled={authBusy || !oldPassword || !newPassword}
+                >
+                  {authBusy ? "Updating..." : "Change password"}
+                </button>
+                <button
+                  className="action-button secondary"
+                  onClick={() => void handleLogout()}
+                  disabled={authBusy}
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {panicConfirm ? (
+          <div className="confirm-modal-backdrop" role="presentation">
+            <div
+              className="confirm-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="panic-confirm-title"
+            >
+              <div className="confirm-modal-header">
+                <h2 id="panic-confirm-title">Confirm panic change</h2>
+                <span className="panel-meta">Safety confirmation</span>
+              </div>
+
+              <div className="confirm-modal-body">
+                <p>
+                  {panicConfirm.enabled
+                    ? 'Are you sure you want to switch PANIC ON? This should immediately block trading actions for this runtime.'
+                    : 'Are you sure you want to switch PANIC OFF? Make sure the runtime is safe before re-enabling trading actions.'}
+                </p>
+
+                <div className="selected-slot-summary">
+                  <span className="status-label">Reason</span>
+                  <strong>{panicConfirm.reason || '—'}</strong>
+                </div>
+              </div>
+
+              <div className="button-row button-row--modal">
+                <button
+                  type="button"
+                  className="action-button"
+                  onClick={() => setPanicConfirm(null)}
+                  disabled={actionBusy}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={`action-button ${panicConfirm.enabled ? 'danger' : 'success'}`}
+                  onClick={async () => {
+                    await handleTogglePanic(panicConfirm.enabled, panicConfirm.reason);
+                    setPanicConfirm(null);
+                  }}
+                  disabled={actionBusy}
+                >
+                  {actionBusy ? 'Applying...' : panicConfirm.enabled ? 'Confirm PANIC ON' : 'Confirm PANIC OFF'}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {activeTab === "advanced" ? (
