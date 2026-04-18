@@ -25,6 +25,49 @@
   gap: 6px;
 }
 
+.app-brand-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nav-toggle {
+  display: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid #334155;
+  background: #111827;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.nav-toggle.active span:nth-child(1) {
+  transform: translateY(7px) rotate(45deg);
+}
+
+.nav-toggle.active span:nth-child(2) {
+  opacity: 0;
+}
+
+.nav-toggle.active span:nth-child(3) {
+  transform: translateY(-7px) rotate(-45deg);
+}
+
 .app-brand {
   color: #f8fafc;
   font-size: 18px;
@@ -574,40 +617,35 @@ td {
   }
 
   .app-sidebar {
-    position: relative;
+    position: sticky;
+    top: 0;
+    z-index: 80;
     height: auto;
     border-right: none;
     border-bottom: 1px solid #1f2937;
-    padding: calc(72px + env(safe-area-inset-top, 0px)) 12px 10px;
-    gap: 12px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    gap: 10px;
+    background: rgba(11, 18, 32, 0.96);
+    backdrop-filter: blur(14px);
+  }
+
+  .nav-toggle {
+    display: inline-flex;
   }
 
   .app-nav {
-    display: flex;
-    gap: 10px;
-    overflow-x: auto;
-    padding: calc(6px + env(safe-area-inset-top, 0px)) 12px 6px;
-    scrollbar-width: none;
-    position: fixed;
-    left: 0;
-    right: 0;
-    top: 0;
-    z-index: 60;
-    background: rgba(11, 18, 32, 0.96);
-    backdrop-filter: blur(14px);
-    border-bottom: 1px solid #1f2937;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    display: none;
+    gap: 8px;
   }
 
-  .app-nav::-webkit-scrollbar {
-    display: none;
+  .app-nav.open {
+    display: grid;
   }
 
   .nav-button {
-    width: auto;
-    min-width: 120px;
-    flex: 0 0 auto;
-    text-align: center;
+    width: 100%;
+    min-width: 0;
+    text-align: left;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -687,25 +725,12 @@ td {
   }
 
   .nav-button {
-    min-width: 92px;
     min-height: 42px;
     padding: 10px 12px;
   }
 }
 
 @media (max-width: 420px) {
-  .nav-button-label--full {
-    display: none;
-  }
-
-  .nav-button-label--short {
-    display: inline;
-  }
-
-  .nav-button {
-    min-width: 72px;
-  }
-
   .mobile-kv-grid {
     grid-template-columns: 1fr;
   }
