@@ -84,9 +84,16 @@ function App() {
     setAuthBusy(true);
     try {
       const me = await getAuthMe();
-      setAuthenticated(Boolean(me.authenticated));
-      setCurrentUser(me.user ?? null);
-    } catch (err) {
+      const isAuthenticated = Boolean(me.authenticated);
+      const nextUser = me.user ?? null;
+
+      setAuthenticated(isAuthenticated);
+      setCurrentUser(nextUser);
+
+      if (isAuthenticated && nextUser?.must_change_password) {
+        setActiveTab("security");
+      }
+    } catch (_err) {
       setAuthenticated(false);
       setCurrentUser(null);
     } finally {
@@ -148,6 +155,8 @@ function App() {
     setError(null);
     setAuthBusy(true);
     try {
+      const forceChangeWasRequired = Boolean(currentUser?.must_change_password);
+
       await changePassword({
         old_password: oldPassword,
         new_password: newPassword,
@@ -156,13 +165,17 @@ function App() {
       setOldPassword("");
       setNewPassword("");
       await checkAuth();
+
+      if (forceChangeWasRequired) {
+        setActiveTab("live");
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
     } finally {
       setAuthBusy(false);
     }
-  }, [checkAuth, newPassword, oldPassword]);
+  }, [checkAuth, currentUser?.must_change_password, newPassword, oldPassword]);
 
   const loadLive = useCallback(async () => {
     setError(null);
@@ -361,6 +374,7 @@ function App() {
       case "slots": return "Slots";
       case "health": return "Health";
       case "advanced": return "Advanced";
+      case "security": return "Security";
       default: return "Live";
     }
   }, [activeTab]);
@@ -376,8 +390,11 @@ function App() {
   }, [settings]);
 
   const subtitle = useMemo(() => {
+    if (activeTab === "security") {
+      return "Hasło, sesja operatora i przyszłe security features jak recovery oraz 2FA.";
+    }
     if (activeTab === "advanced") {
-      return "Advanced zostawiamy jako strefę cięższych rzeczy. Na tym etapie migrujemy najpierw Live, Slots i Health.";
+      return "Advanced zostawiamy jako strefę cięższych rzeczy. Na tym etapie migrujemy najpierw Live, Slots, Health i Security.";
     }
     if (activeTab === "slots") {
       return "Operator slot control: enabled, live orders, regime gating, open position, heartbeat i last event.";
@@ -455,47 +472,6 @@ function App() {
         </button>
       </div>
 
-      <div className="panel" style={{ marginBottom: 12 }}>
-        <div className="panel-header">
-          <h3>Security</h3>
-          <span className="panel-meta">
-            {currentUser?.must_change_password ? "Password change required" : "Session active"}
-          </span>
-        </div>
-
-        <div style={{ display: "grid", gap: 12, maxWidth: 420 }}>
-          <label>
-            <div>Current password</div>
-            <input
-              type="password"
-              value={oldPassword}
-              onChange={(e) => setOldPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-
-          <label>
-            <div>New password</div>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              autoComplete="new-password"
-            />
-          </label>
-
-          <div className="button-row">
-            <button
-              className="action-button"
-              onClick={() => void handleChangePassword()}
-              disabled={authBusy || !oldPassword || !newPassword}
-            >
-              {authBusy ? "Updating..." : "Change password"}
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div className="page-grid">
         {error ? <div className="error-banner">API error: {error}</div> : null}
         {loading && activeTab === "live" && !summary ? <div className="panel">Ładowanie nowego panelu Live…</div> : null}
@@ -564,6 +540,75 @@ function App() {
             </section>
             <HealthPanel health={health} />
           </>
+        ) : null}
+
+        {activeTab === "security" ? (
+          <section className="panel advanced-placeholder">
+            <div className="panel-header">
+              <h2>Security</h2>
+              <span className="panel-meta">
+                {currentUser?.must_change_password ? "Password change required" : "Password & session"}
+              </span>
+            </div>
+
+            <div className="quick-actions-grid">
+              <div className="stack-row stack-row--split">
+                <div className="info-tile">
+                  <span className="status-label">Current user</span>
+                  <strong className="status-value">{currentUser?.username ?? "-"}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Role</span>
+                  <strong className="status-value">{currentUser?.is_admin ? "ADMIN" : "USER"}</strong>
+                </div>
+                <div className="info-tile">
+                  <span className="status-label">Password state</span>
+                  <strong className="status-value">
+                    {currentUser?.must_change_password ? "CHANGE REQUIRED" : "OK"}
+                  </strong>
+                </div>
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="security-old-password">Current password</label>
+                <input
+                  id="security-old-password"
+                  type="password"
+                  value={oldPassword}
+                  onChange={(e) => setOldPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+
+              <div className="panic-block">
+                <label htmlFor="security-new-password">New password</label>
+                <input
+                  id="security-new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div className="button-row button-row--stack-mobile">
+                <button
+                  className="action-button"
+                  onClick={() => void handleChangePassword()}
+                  disabled={authBusy || !oldPassword || !newPassword}
+                >
+                  {authBusy ? "Updating..." : "Change password"}
+                </button>
+                <button
+                  className="action-button secondary"
+                  onClick={() => void handleLogout()}
+                  disabled={authBusy}
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </section>
         ) : null}
 
         {panicConfirm ? (

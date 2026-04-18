@@ -611,8 +611,23 @@ def publish_promotions(conn):
             return False
 
         url = live_api_base.rstrip("/") + "/internal/promotions/upsert"
+        internal_token = (os.getenv("INTERNAL_API_TOKEN", "") or "").strip()
+
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if internal_token:
+            headers["X-Internal-Token"] = internal_token
+
+        logging.info(
+            "promotions: POST url=%s token_present=%s token_len=%s",
+            url,
+            bool(internal_token),
+            len(internal_token),
+        )
+
         try:
-            r = requests.post(url, json=payload, timeout=10)
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
             r.raise_for_status()
             j = r.json()
             logging.info("promotions: POST ok (mode=%s) inserted=%s hash=%s",

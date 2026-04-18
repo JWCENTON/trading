@@ -726,12 +726,25 @@ def upsert_strategy_params(symbol: str, strategy: str, interval: str, params: Di
 def fetch_metrics_and_losers(symbol: str, strategy: str, interval: str):
     params = {"symbol": symbol, "interval": interval, "strategy": strategy}
 
-    m_resp = requests.get(f"{INTERNAL_API_BASE}/simulated/metrics", params=params, timeout=10)
+    internal_token = os.environ.get("INTERNAL_API_TOKEN")
+    headers = {"X-Internal-Token": internal_token} if internal_token else {}
+
+    m_resp = requests.get(
+        f"{INTERNAL_API_BASE}/simulated/metrics",
+        params=params,
+        headers=headers,
+        timeout=10,
+    )
     m_resp.raise_for_status()
     metrics = m_resp.json()
 
     rt_params = {**params, "losers_only": True, "limit": 20, "offset": 0}
-    r_resp = requests.get(f"{INTERNAL_API_BASE}/simulated/roundtrips", params=rt_params, timeout=10)
+    r_resp = requests.get(
+        f"{INTERNAL_API_BASE}/simulated/roundtrips",
+        params=rt_params,
+        headers=headers,
+        timeout=10,
+    )
     r_resp.raise_for_status()
     roundtrips_page = r_resp.json()
     losing_trades = roundtrips_page.get("items", [])
@@ -1098,6 +1111,27 @@ def require_admin(
     return user
 
 
+def require_auth_or_internal(
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    x_internal_token: Optional[str] = Header(default=None, alias="X-Internal-Token"),
+) -> CurrentUser | None:
+    user = get_current_user_from_session_token(session_token)
+    if user is not None:
+        request.state.current_user = user
+        return user
+
+    internal_token = os.environ.get("INTERNAL_API_TOKEN")
+    if internal_token and x_internal_token == internal_token:
+        request.state.current_user = None
+        return None
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="authentication required",
+    )
+
+
 @app.get("/health")
 def health():
     try:
@@ -1261,6 +1295,7 @@ def get_latest_candles(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     limit: int = Query(50, ge=1, le=500),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1284,7 +1319,7 @@ def get_latest_candles(
             )
             for row in rows
         ]
-
+    
 
 @app.get("/simulated/orders", response_model=SimulatedOrderPage)
 def get_simulated_orders(
@@ -1293,6 +1328,7 @@ def get_simulated_orders(
     limit: int = Query(50, ge=1, le=50),
     offset: int = Query(0, ge=0),
     strategy: str = Query("RSI"),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1343,6 +1379,7 @@ def get_simulated_trades(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1425,6 +1462,7 @@ def get_simulated_roundtrips(
     offset: int = Query(0, ge=0),
     losers_only: bool = Query(True),
     strategy: str = Query("RSI"),
+    user: CurrentUser | None = Depends(require_auth_or_internal),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1567,6 +1605,7 @@ def get_simulated_pnl(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1651,6 +1690,7 @@ def get_strategy_metrics(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     strategy: str = Query("RSI"),
+    user: CurrentUser | None = Depends(require_auth_or_internal),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1745,6 +1785,7 @@ def get_strategy_metrics(
 def get_summary(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -1837,7 +1878,7 @@ def _load_account_summary() -> AccountSummary:
 
 
 @app.get("/account/summary", response_model=AccountSummary)
-def get_account_summary():
+def get_account_summary(user: CurrentUser = Depends(require_auth)):
     return _load_account_summary()
 
 
@@ -2010,7 +2051,10 @@ def start_ai_tuner():
 
 
 @app.post("/ai/analyze-strategy", response_model=AIAnalyzeResponse)
-def analyze_strategy_with_ai(req: AIAnalyzeRequest):
+def analyze_strategy_with_ai(
+    req: AIAnalyzeRequest,
+    user: CurrentUser = Depends(require_admin),
+):
     if openai_client is None:
         raise HTTPException(status_code=500, detail="OpenAI API key not configured on backend")
 
@@ -2032,6 +2076,7 @@ def get_watchdog_events(
     strategy: str = Query("RSI"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -2075,7 +2120,11 @@ def get_watchdog_events(
 
 
 @app.get("/regime/latest", response_model=RegimePoint)
-def get_regime_latest(symbol: str = Query(DEFAULT_SYMBOL), interval: str = Query("1m")):
+def get_regime_latest(
+    symbol: str = Query(DEFAULT_SYMBOL),
+    interval: str = Query("1m"),
+    user: CurrentUser = Depends(require_auth),
+):
     with db_cursor() as (_conn, cur):
         cur.execute(
             """
@@ -2104,6 +2153,7 @@ def get_regime_history(
     symbol: str = Query(DEFAULT_SYMBOL),
     interval: str = Query("1m"),
     limit: int = Query(200, ge=1, le=5000),
+    user: CurrentUser = Depends(require_auth),
 ):
     with db_cursor() as (_conn, cur):
         cur.execute(
@@ -2130,7 +2180,7 @@ def get_regime_history(
 
 
 @app.get("/safety/status")
-def safety_status():
+def safety_status(user: CurrentUser = Depends(require_auth)):
     return {
         "environment": os.environ.get("ENVIRONMENT"),
         "trading_mode": os.environ.get("TRADING_MODE"),
@@ -2140,9 +2190,10 @@ def safety_status():
 
 
 @app.get("/bots/active")
-def bots_active(ttl_seconds: int = 600):
-    conn = None
-    cur = None
+def bots_active(
+    ttl_seconds: int = 600,
+    user: CurrentUser = Depends(require_auth),
+):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2165,17 +2216,10 @@ def bots_active(ttl_seconds: int = 600):
                         "info": r[4],
                     }
                     for r in rows
-                ]
+                ],
             })
-
     except Exception as e:
-        return {
-            "ttl_seconds": ttl_seconds,
-            "total": 0,
-            "items": [],
-            "error_type": type(e).__name__,
-            "error": str(e),
-        }
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/ops/positions/open")

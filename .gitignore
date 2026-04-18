@@ -252,3 +252,8 @@ out/
 .DS_Store
 .idea/
 .vscode/
+
+# cookies
+live.cookies
+paper.cookies
+cookies.txt

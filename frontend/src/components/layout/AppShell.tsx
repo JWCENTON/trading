@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { UiEnvironment } from '../../api';
 
-export type AppTab = 'live' | 'slots' | 'health' | 'advanced';
+export type AppTab = 'live' | 'slots' | 'health' | 'advanced' | 'security';
 
 interface AppShellProps {
   title: string;
@@ -17,6 +17,7 @@ const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
   { key: 'slots', label: 'Slots', shortLabel: 'Slots' },
   { key: 'health', label: 'Health', shortLabel: 'Health' },
   { key: 'advanced', label: 'Advanced', shortLabel: 'Adv' },
+  { key: 'security', label: 'Security', shortLabel: 'Sec' },
 ];
 
 export function AppShell({ title, subtitle, activeTab, onTabChange, children, environment }: AppShellProps) {
