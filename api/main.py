@@ -1,13 +1,13 @@
 from common.user_settings import get_user_settings_snapshot, upsert_user_settings
 import os
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
 import psycopg2
 from psycopg2.errors import UndefinedTable
 from fastapi.encoders import jsonable_encoder
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response, Depends, Cookie, status
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from binance.client import Client
@@ -19,6 +19,8 @@ import json
 import threading
 import requests
 from openai import OpenAI
+import secrets
+import hashlib
 
 
 DB_HOST = os.environ.get("DB_HOST", "db")
@@ -51,6 +53,11 @@ ALL_SYMBOLS: list[str] = [
 DEFAULT_SYMBOL = os.environ.get("DEFAULT_SYMBOL", sym("BTC"))
 
 ALL_STRATEGIES: list[str] = ["RSI", "TREND", "BBRANGE", "SUPERTREND"]
+
+SESSION_COOKIE_NAME = os.environ.get("SESSION_COOKIE_NAME", "trading_session")
+SESSION_TTL_HOURS = int(os.environ.get("SESSION_TTL_HOURS", "24"))
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true"
+SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "lax")
 
 # Uwaga: tu mają być tylko paramy, które realnie chcesz pozwolić AI zmieniać.
 ALLOWED_PARAMS: dict[str, set[str]] = {
@@ -149,6 +156,30 @@ def get_conn():
         user=DB_USER,
         password=DB_PASS,
     )
+
+
+class CurrentUser(BaseModel):
+    id: int
+    username: str
+    is_active: bool
+    is_admin: bool
+    must_change_password: bool
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class AuthMeResponse(BaseModel):
+    authenticated: bool
+    user: CurrentUser | None = None
+
 
 class Candle(BaseModel):
     open_time: datetime
@@ -445,11 +476,14 @@ def log_ui_action(cur, *, actor: str, actor_role: Optional[str], action: str, ta
 
 def get_request_actor(request: Optional[Request]) -> tuple[str, Optional[str], str]:
     if request is None:
-        return ("local-admin", "admin", "api")
-    actor = request.headers.get("X-Operator-Actor") or request.headers.get("X-User") or "local-admin"
-    role = request.headers.get("X-Operator-Role") or "admin"
-    source = request.headers.get("X-Request-Source") or "api"
-    return actor, role, source
+        return ("system", "system", "api")
+
+    current_user = getattr(request.state, "current_user", None)
+    if current_user is not None:
+        role = "admin" if current_user.is_admin else "user"
+        return (current_user.username, role, "session")
+
+    return ("anonymous", None, "api")
 
 
 def compute_max_drawdown(equity_curve: List[float]) -> float:
@@ -873,6 +907,197 @@ def db_cursor():
             except Exception: pass
 
 
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    with db_cursor() as (_conn, cur):
+        cur.execute("SELECT crypt(%s, %s) = %s", (password, password_hash, password_hash))
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+
+def hash_password(password: str) -> str:
+    with db_cursor() as (_conn, cur):
+        cur.execute("SELECT crypt(%s, gen_salt('bf', 12))", (password,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            raise HTTPException(status_code=500, detail="password hashing failed")
+        return str(row[0])
+
+
+def create_session(*, user_id: int, request: Request) -> tuple[str, datetime]:
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = hash_session_token(raw_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)
+
+    client_ip = request.client.host if request and request.client else None
+    user_agent = request.headers.get("user-agent") if request else None
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            INSERT INTO auth_sessions (
+              user_id, session_token_hash, created_at, expires_at, revoked_at, last_seen_at, ip, user_agent
+            )
+            VALUES (%s, %s, now(), %s, NULL, now(), %s, %s)
+            """,
+            (user_id, token_hash, expires_at, client_ip, user_agent),
+        )
+        conn.commit()
+
+    return raw_token, expires_at
+
+
+def set_session_cookie(response: Response, raw_token: str, expires_at: datetime) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=raw_token,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite=SESSION_COOKIE_SAMESITE,
+        expires=expires_at,
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+    )
+
+
+def get_current_user_from_session_token(raw_token: Optional[str]) -> Optional[CurrentUser]:
+    if not raw_token:
+        return None
+
+    token_hash = hash_session_token(raw_token)
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT
+              u.id,
+              u.username,
+              u.is_active,
+              u.is_admin,
+              u.must_change_password,
+              s.id
+            FROM auth_sessions s
+            JOIN users u
+              ON u.id = s.user_id
+            WHERE s.session_token_hash = %s
+              AND s.revoked_at IS NULL
+              AND s.expires_at > now()
+            LIMIT 1
+            """,
+            (token_hash,),
+        )
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        session_id = row[5]
+
+        cur.execute(
+            """
+            UPDATE auth_sessions
+            SET last_seen_at = now()
+            WHERE id = %s
+            """,
+            (session_id,),
+        )
+        conn.commit()
+
+        if not bool(row[2]):
+            return None
+
+        return CurrentUser(
+            id=int(row[0]),
+            username=str(row[1]),
+            is_active=bool(row[2]),
+            is_admin=bool(row[3]),
+            must_change_password=bool(row[4]),
+        )
+
+
+def revoke_session(raw_token: Optional[str]) -> None:
+    if not raw_token:
+        return
+
+    token_hash = hash_session_token(raw_token)
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = now()
+            WHERE session_token_hash = %s
+              AND revoked_at IS NULL
+            """,
+            (token_hash,),
+        )
+        conn.commit()
+
+
+def revoke_other_sessions(*, user_id: int, current_raw_token: Optional[str]) -> None:
+    current_hash = hash_session_token(current_raw_token) if current_raw_token else None
+
+    with db_cursor() as (conn, cur):
+        if current_hash:
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = now()
+                WHERE user_id = %s
+                  AND revoked_at IS NULL
+                  AND session_token_hash <> %s
+                """,
+                (user_id, current_hash),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = now()
+                WHERE user_id = %s
+                  AND revoked_at IS NULL
+                """,
+                (user_id,),
+            )
+        conn.commit()
+
+
+def require_auth(
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> CurrentUser:
+    user = get_current_user_from_session_token(session_token)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="authentication required",
+        )
+    request.state.current_user = user
+    return user
+
+
+def require_admin(
+    request: Request,
+    user: CurrentUser = Depends(require_auth),
+) -> CurrentUser:
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin required",
+        )
+    request.state.current_user = user
+    return user
+
+
 @app.get("/health")
 def health():
     try:
@@ -881,6 +1106,154 @@ def health():
         return {"status": "ok", "build": API_BUILD, "db": DB_NAME, "env": ENVIRONMENT, "mode": TRADING_MODE}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/login", response_model=AuthMeResponse)
+def auth_login(payload: LoginRequest, request: Request, response: Response):
+    username = (payload.username or "").strip()
+
+    if not username or not payload.password:
+        raise HTTPException(status_code=400, detail="username and password are required")
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT id, username, password_hash, is_active, is_admin, must_change_password
+            FROM users
+            WHERE username = %s
+            LIMIT 1
+            """,
+            (username,),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+
+    user_id = int(row[0])
+    db_username = str(row[1])
+    password_hash = str(row[2])
+    is_active = bool(row[3])
+    is_admin = bool(row[4])
+    must_change_password = bool(row[5])
+
+    if not is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user inactive")
+
+    if not verify_password(payload.password, password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+
+    raw_token, expires_at = create_session(user_id=user_id, request=request)
+    set_session_cookie(response, raw_token, expires_at)
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            UPDATE users
+            SET last_login_at = now()
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
+        conn.commit()
+
+    user = CurrentUser(
+        id=user_id,
+        username=db_username,
+        is_active=is_active,
+        is_admin=is_admin,
+        must_change_password=must_change_password,
+    )
+    request.state.current_user = user
+
+    return AuthMeResponse(authenticated=True, user=user)
+
+
+@app.post("/auth/logout")
+def auth_logout(
+    request: Request,
+    response: Response,
+    session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+):
+    revoke_session(session_token)
+    clear_session_cookie(response)
+    request.state.current_user = None
+    return {"ok": True}
+
+
+@app.get("/auth/me", response_model=AuthMeResponse)
+def auth_me(
+    request: Request,
+    session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+):
+    user = get_current_user_from_session_token(session_token)
+    if user is None:
+        return AuthMeResponse(authenticated=False, user=None)
+
+    request.state.current_user = user
+    return AuthMeResponse(authenticated=True, user=user)
+
+
+@app.post("/auth/change-password")
+def auth_change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_auth),
+    session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+):
+    if not payload.old_password or not payload.new_password:
+        raise HTTPException(status_code=400, detail="old_password and new_password are required")
+
+    if len(payload.new_password) < 10:
+        raise HTTPException(status_code=400, detail="new_password must be at least 10 characters")
+
+    if payload.new_password == payload.old_password:
+        raise HTTPException(status_code=400, detail="new_password must be different")
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT password_hash
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (user.id,),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    current_hash = str(row[0])
+    if not verify_password(payload.old_password, current_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid old_password")
+
+    new_hash = hash_password(payload.new_password)
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            UPDATE users
+            SET password_hash = %s,
+                must_change_password = FALSE,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (new_hash, user.id),
+        )
+        conn.commit()
+
+    revoke_other_sessions(user_id=user.id, current_raw_token=session_token)
+    request.state.current_user = CurrentUser(
+        id=user.id,
+        username=user.username,
+        is_active=user.is_active,
+        is_admin=user.is_admin,
+        must_change_password=False,
+    )
+
+    return {"ok": True, "must_change_password": False}
 
 
 @app.get("/candles/latest", response_model=List[Candle])
@@ -1469,7 +1842,7 @@ def get_account_summary():
 
 
 @app.get("/ui/account", response_model=UIAccountSummary)
-def ui_account_summary():
+def ui_account_summary(user: CurrentUser = Depends(require_auth)):
     tracked_assets = [QUOTE_ASSET, "BTC", "ETH", "BNB", "SOL"]
     assets = {asset: 0.0 for asset in tracked_assets}
     asset_values_usdc = {asset: 0.0 for asset in tracked_assets}
@@ -1556,7 +1929,7 @@ def ui_account_summary():
 
 
 @app.get("/ui/trading-24h", response_model=UITrading24hSummary)
-def ui_trading_24h():
+def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -1973,7 +2346,7 @@ def ops_environment():
     }
 
 @app.get("/ui/live-summary")
-def ui_live_summary():
+def ui_live_summary(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2111,7 +2484,7 @@ def ui_live_summary():
 
 
 @app.get("/ui/open-positions")
-def ui_open_positions():
+def ui_open_positions(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2190,7 +2563,10 @@ def ui_open_positions():
 
 
 @app.get("/ui/recent-closed")
-def ui_recent_closed(limit: int = Query(default=10, ge=1, le=100)):
+def ui_recent_closed(
+    limit: int = Query(default=10, ge=1, le=100),
+    user: CurrentUser = Depends(require_auth),
+):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2263,7 +2639,11 @@ def ui_recent_closed(limit: int = Query(default=10, ge=1, le=100)):
 
 
 @app.post("/ui/control/panic", response_model=UIControlResponse)
-def ui_control_panic(req: UIPanicControlRequest, request: Request):
+def ui_control_panic(
+    req: UIPanicControlRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
     actor, actor_role, source = get_request_actor(request)
     applied_at = datetime.now(timezone.utc)
     with db_cursor() as (conn, cur):
@@ -2321,7 +2701,7 @@ def ui_control_panic(req: UIPanicControlRequest, request: Request):
 
 
 @app.get("/ui/slots")
-def ui_slots():
+def ui_slots(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2430,7 +2810,7 @@ def ui_slots():
 
 
 @app.get("/ui/health")
-def ui_health():
+def ui_health(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2524,7 +2904,11 @@ def ui_health():
 
 
 @app.post("/ui/control/slot", response_model=UIControlResponse)
-def ui_control_slot(req: UISlotControlRequest, request: Request):
+def ui_control_slot(
+    req: UISlotControlRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
     if req.enabled is None and req.live_orders_enabled is None:
         raise HTTPException(status_code=400, detail="enabled or live_orders_enabled must be provided")
 
@@ -2606,7 +2990,11 @@ def ui_control_slot(req: UISlotControlRequest, request: Request):
 
 
 @app.post("/ui/control/slot/manual", response_model=UIControlResponse)
-def ui_control_slot_manual(req: UISlotManualControlRequest, request: Request):
+def ui_control_slot_manual(
+    req: UISlotManualControlRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
     actor, actor_role, source = get_request_actor(request)
     applied_at = datetime.now(timezone.utc)
     normalized_mode = _normalize_regime_mode(req.regime_mode)
@@ -2702,7 +3090,11 @@ def ui_control_slot_manual(req: UISlotManualControlRequest, request: Request):
 
 
 @app.post("/ui/control/slot/auto", response_model=UIControlResponse)
-def ui_control_slot_auto(req: UISlotAutoControlRequest, request: Request):
+def ui_control_slot_auto(
+    req: UISlotAutoControlRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
     actor, actor_role, source = get_request_actor(request)
     applied_at = datetime.now(timezone.utc)
     target_key = f"{req.symbol}:{req.interval}:{req.strategy}"
@@ -2797,7 +3189,11 @@ def ui_control_slot_auto(req: UISlotAutoControlRequest, request: Request):
 
 
 @app.post("/ui/control/regime", response_model=UIControlResponse)
-def ui_control_regime(req: UIRegimeControlRequest, request: Request):
+def ui_control_regime(
+    req: UIRegimeControlRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
     actor, actor_role, source = get_request_actor(request)
     applied_at = datetime.now(timezone.utc)
     normalized_mode = _normalize_regime_mode(req.regime_mode)
@@ -2875,7 +3271,7 @@ def ui_control_regime(req: UIRegimeControlRequest, request: Request):
 
 
 @app.get("/ui/orc-dashboard")
-def ui_orc_dashboard():
+def ui_orc_dashboard(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute(
@@ -3194,12 +3590,15 @@ class RestoreDefaultsResponse(BaseModel):
 
 
 @app.get("/settings/user", response_model=UIUserSettingsResponse)
-def get_settings_user():
+def get_settings_user(user: CurrentUser = Depends(require_auth)):
     return UIUserSettingsResponse(**get_user_settings_snapshot())
 
 
 @app.put("/settings/user", response_model=UIUserSettingsResponse)
-def put_settings_user(payload: UIUserSettingsUpdateRequest):
+def put_settings_user(
+    payload: UIUserSettingsUpdateRequest,
+    user: CurrentUser = Depends(require_auth),
+):
     mode = payload.mode.upper() if payload.mode else None
     if mode is not None and mode not in {"AUTO", "MANUAL"}:
         raise HTTPException(status_code=400, detail="mode must be AUTO or MANUAL")
@@ -3220,7 +3619,7 @@ def put_settings_user(payload: UIUserSettingsUpdateRequest):
 
 
 @app.post("/settings/user/restore-defaults", response_model=RestoreDefaultsResponse)
-def post_settings_user_restore_defaults():
+def post_settings_user_restore_defaults(user: CurrentUser = Depends(require_auth)):
     settings = upsert_user_settings(
         manual_entry_addon_usdc=0.0,
         three_win_boost_usdc=10.0,
@@ -3229,7 +3628,7 @@ def post_settings_user_restore_defaults():
 
 
 @app.get("/ui/advanced-summary", response_model=UIUserSettingsResponse)
-def get_ui_advanced_summary():
+def get_ui_advanced_summary(user: CurrentUser = Depends(require_auth)):
     return UIUserSettingsResponse(**get_user_settings_snapshot())
 
 
