@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  getAuthMe,
+  login,
+  logout,
+  changePassword,
   getUiAccount,
   getUiAdvancedSummary,
   getUserSettings,
@@ -18,6 +22,7 @@ import {
   updateRegimeControl,
   updateSlotControl,
   updateSlotManualControl,
+  type AuthUser,
   type UiAccountSummary,
   type UiEnvironment,
   type UiHealthResponse,
@@ -61,10 +66,103 @@ function App() {
   const [actionBusy, setActionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [panicConfirm, setPanicConfirm] = useState<PanicConfirmState | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [loginUsername, setLoginUsername] = useState("admin");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
 
   useEffect(() => {
     setUiEnvironment(environment);
   }, [environment]);
+
+  const checkAuth = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      const me = await getAuthMe();
+      setAuthenticated(Boolean(me.authenticated));
+      setCurrentUser(me.user ?? null);
+    } catch (err) {
+      setAuthenticated(false);
+      setCurrentUser(null);
+    } finally {
+      setAuthChecked(true);
+      setAuthBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkAuth();
+  }, [checkAuth, environment]);
+
+  const handleLogin = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      const result = await login({
+        username: loginUsername.trim(),
+        password: loginPassword,
+      });
+      setAuthenticated(Boolean(result.authenticated));
+      setCurrentUser(result.user ?? null);
+      setLoginPassword("");
+      await checkAuth();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      setAuthenticated(false);
+      setCurrentUser(null);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [checkAuth, loginPassword, loginUsername]);
+
+  const handleLogout = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      await logout();
+    } catch (_err) {
+      // ignore
+    } finally {
+      setAuthenticated(false);
+      setCurrentUser(null);
+      setSummary(null);
+      setAccount(null);
+      setTrading24h(null);
+      setOpenPositions([]);
+      setRecentClosed([]);
+      setSlots([]);
+      setHealth(null);
+      setSettings(null);
+      setAuthChecked(true);
+      setAuthBusy(false);
+    }
+  }, []);
+
+  const handleChangePassword = useCallback(async () => {
+    setError(null);
+    setAuthBusy(true);
+    try {
+      await changePassword({
+        old_password: oldPassword,
+        new_password: newPassword,
+      });
+
+      setOldPassword("");
+      setNewPassword("");
+      await checkAuth();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [checkAuth, newPassword, oldPassword]);
 
   const loadLive = useCallback(async () => {
     setError(null);
@@ -138,6 +236,8 @@ function App() {
   }, [environment]);
 
   useEffect(() => {
+    if (!authChecked || !authenticated) return;
+
     if (activeTab === "live") {
       void loadLive();
     } else if (activeTab === "slots") {
@@ -147,7 +247,7 @@ function App() {
     } else if (activeTab === "advanced") {
       void loadAdvanced();
     }
-  }, [activeTab, environment, loadAdvanced, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, authChecked, authenticated, loadAdvanced, loadHealth, loadLive, loadSlots]);
 
   const handleTogglePanic = useCallback(async (enabled: boolean, reason: string) => {
     setActionBusy(true);
@@ -288,6 +388,56 @@ function App() {
     return "Manual refresh first. Truth-only operatorski widok oparty o panic_state, bot_control, positions, bot_heartbeat i candles.";
   }, [activeTab]);
 
+  if (!authChecked) {
+    return <div className="panel">Checking session...</div>;
+  }
+
+  if (!authenticated) {
+    return (
+      <div className="page-grid">
+        <section className="panel quick-actions-panel" style={{ maxWidth: 420, margin: "40px auto" }}>
+          <div className="panel-header">
+            <h2>Login</h2>
+            <span className="panel-meta">{environment} environment</span>
+          </div>
+
+          {error ? <div className="error-banner">API error: {error}</div> : null}
+
+          <div style={{ display: "grid", gap: 12 }}>
+            <label>
+              <div>Username</div>
+              <input
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                autoComplete="username"
+              />
+            </label>
+
+            <label>
+              <div>Password</div>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+
+            <div className="button-row">
+              <button className="action-button" onClick={() => void handleLogin()} disabled={authBusy}>
+                {authBusy ? "Logging in..." : `Login to ${environment}`}
+              </button>
+            </div>
+
+            <div className="live-controls-primary">
+              <EnvironmentSwitch environment={environment} onChange={setEnvironment} />
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <AppShell
       title={title}
@@ -296,6 +446,56 @@ function App() {
       onTabChange={setActiveTab}
       environment={environment}
     >
+      <div className="button-row" style={{ marginBottom: 12 }}>
+        <span style={{ marginRight: 12 }}>
+          Logged in as <strong>{currentUser?.username}</strong> ({environment})
+        </span>
+        <button className="action-button secondary" onClick={() => void handleLogout()} disabled={authBusy}>
+          Logout
+        </button>
+      </div>
+
+      <div className="panel" style={{ marginBottom: 12 }}>
+        <div className="panel-header">
+          <h3>Security</h3>
+          <span className="panel-meta">
+            {currentUser?.must_change_password ? "Password change required" : "Session active"}
+          </span>
+        </div>
+
+        <div style={{ display: "grid", gap: 12, maxWidth: 420 }}>
+          <label>
+            <div>Current password</div>
+            <input
+              type="password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+
+          <label>
+            <div>New password</div>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+          </label>
+
+          <div className="button-row">
+            <button
+              className="action-button"
+              onClick={() => void handleChangePassword()}
+              disabled={authBusy || !oldPassword || !newPassword}
+            >
+              {authBusy ? "Updating..." : "Change password"}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="page-grid">
         {error ? <div className="error-banner">API error: {error}</div> : null}
         {loading && activeTab === "live" && !summary ? <div className="panel">Ładowanie nowego panelu Live…</div> : null}

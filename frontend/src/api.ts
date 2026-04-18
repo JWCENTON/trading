@@ -51,7 +51,10 @@ export function getCurrentApiBaseUrl(): string {
 }
 
 function getApi() {
-  return axios.create({ baseURL: getCurrentApiBaseUrl() });
+  return axios.create({
+    baseURL: getCurrentApiBaseUrl(),
+    withCredentials: true,
+  });
 }
 
 export type Strategy = "RSI" | "TREND" | "BBRANGE" | "SUPERTREND";
@@ -555,11 +558,35 @@ export interface UiSlotAutoPayload {
   strategy: Strategy;
   reason?: string;
 }
+
 export interface UiControlResponse {
   ok: boolean;
   message: string;
   applied_at: string;
   new_state: Record<string, unknown>;
+}
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  is_active: boolean;
+  is_admin: boolean;
+  must_change_password: boolean;
+}
+
+export interface AuthMeResponse {
+  authenticated: boolean;
+  user: AuthUser | null;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface ChangePasswordRequest {
+  old_password: string;
+  new_password: string;
 }
 
 export async function getSafetyStatus() {
@@ -794,5 +821,28 @@ export async function getUiAdvancedSummary(): Promise<UiUserSettings> {
 
 export async function restoreUserSettingsDefaults(): Promise<{ ok: boolean; settings: UiUserSettings }> {
   const response = await getApi().post<{ ok: boolean; settings: UiUserSettings }>("/settings/user/restore-defaults");
+  return response.data;
+}
+
+export async function getAuthMe(): Promise<AuthMeResponse> {
+  const response = await getApi().get<AuthMeResponse>("/auth/me");
+  return response.data;
+}
+
+export async function login(payload: LoginRequest): Promise<AuthMeResponse> {
+  const response = await getApi().post<AuthMeResponse>("/auth/login", payload);
+  return response.data;
+}
+
+export async function logout(): Promise<{ ok: boolean }> {
+  const response = await getApi().post<{ ok: boolean }>("/auth/logout");
+  return response.data;
+}
+
+export async function changePassword(payload: ChangePasswordRequest): Promise<{ ok: boolean; must_change_password: boolean }> {
+  const response = await getApi().post<{ ok: boolean; must_change_password: boolean }>(
+    "/auth/change-password",
+    payload,
+  );
   return response.data;
 }

@@ -7,7 +7,7 @@ from typing import List, Optional, Dict
 import psycopg2
 from psycopg2.errors import UndefinedTable
 from fastapi.encoders import jsonable_encoder
-from fastapi import FastAPI, HTTPException, Query, Request, Response, Depends, Cookie, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, Depends, Cookie, Header, status
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from binance.client import Client
@@ -2179,7 +2179,7 @@ def bots_active(ttl_seconds: int = 600):
 
 
 @app.get("/ops/positions/open")
-def ops_positions_open():
+def ops_positions_open(user: CurrentUser = Depends(require_admin)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2222,7 +2222,10 @@ def ops_positions_open():
 
 
 @app.get("/ops/live-attempts")
-def ops_live_attempts(minutes: int = 120):
+def ops_live_attempts(
+    minutes: int = 120,
+    user: CurrentUser = Depends(require_admin),
+):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2295,7 +2298,7 @@ def ops_live_attempts(minutes: int = 120):
 
 
 @app.get("/ops/bot-control")
-def ops_bot_control():
+def ops_bot_control(user: CurrentUser = Depends(require_admin)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
@@ -2337,7 +2340,7 @@ def ops_bot_control():
 
 
 @app.get("/ops/environment")
-def ops_environment():
+def ops_environment(user: CurrentUser = Depends(require_admin)):
     return {
         "environment": ENVIRONMENT,
         "trading_mode": TRADING_MODE,
@@ -3657,13 +3660,18 @@ class PromotionsUpsertRequest(BaseModel):
 
 
 @app.post("/internal/promotions/upsert")
-def internal_promotions_upsert(req: PromotionsUpsertRequest):
+def internal_promotions_upsert(
+    req: PromotionsUpsertRequest,
+    x_internal_token: Optional[str] = Header(default=None, alias="X-Internal-Token"),
+):
     # Minimal auth (optional) – if you set INTERNAL_API_TOKEN in env, require it via header X-Internal-Token.
     internal_token = os.environ.get("INTERNAL_API_TOKEN")
     if internal_token:
-        # FastAPI will pass headers via Request normally; keep it simple: accept token also in query for now
-        # to avoid changing imports. If you want header-only, we can tighten later.
-        pass
+        if not x_internal_token or x_internal_token != internal_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid internal token",
+            )
 
     # Basic sanity
     if not req.rows:
