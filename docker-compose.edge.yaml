@@ -3,18 +3,17 @@ services:
     image: nginx:stable
     container_name: edge-nginx
     restart: unless-stopped
+    env_file:
+      - .env.edge
     ports:
       - "80:80"
       # odblokujesz po certach:
       # - "443:443"
-    environment:
-      LIVE_HOST: client1.trade.com
-      PAPER_HOST: paper.client1.trade.com
     volumes:
       - ./edge/templates:/etc/nginx/templates:ro
+      - ./edge/acme:/var/www/certbot
       # odblokujesz po certach:
       # - ./edge/certs:/etc/nginx/certs:ro
-      # - ./edge/acme:/var/www/certbot
     networks:
       - trading-edge
 
