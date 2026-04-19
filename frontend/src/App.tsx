@@ -7,14 +7,12 @@ import {
   getUiAccount,
   getUiAdvancedSummary,
   getUserSettings,
-  getUiEnvironment,
   getUiHealth,
   getUiLiveSummary,
   getUiOpenPositions,
   getUiRecentClosed,
   getUiSlots,
   getUiTrading24h,
-  setUiEnvironment,
   updatePanicState,
   restoreUserSettingsDefaults,
   returnSlotToAuto,
@@ -51,9 +49,14 @@ interface PanicConfirmState {
   reason: string;
 }
 
+function detectEnvironmentFromHost(): UiEnvironment {
+  if (typeof window === "undefined") return "LIVE";
+  return window.location.hostname.startsWith("paper.") ? "PAPER" : "LIVE";
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("live");
-  const [environment, setEnvironment] = useState<UiEnvironment>(() => getUiEnvironment());
+  const [environment] = useState<UiEnvironment>(() => detectEnvironmentFromHost());
   const [summary, setSummary] = useState<UiLiveSummary | null>(null);
   const [account, setAccount] = useState<UiAccountSummary | null>(null);
   const [trading24h, setTrading24h] = useState<UiTrading24hSummary | null>(null);
@@ -74,10 +77,6 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
-
-  useEffect(() => {
-    setUiEnvironment(environment);
-  }, [environment]);
 
   const checkAuth = useCallback(async () => {
     setError(null);
@@ -447,7 +446,7 @@ function App() {
             </div>
 
             <div className="live-controls-primary">
-              <EnvironmentSwitch environment={environment} onChange={setEnvironment} />
+              <EnvironmentSwitch environment={environment} />
             </div>
           </div>
         </section>
@@ -493,7 +492,7 @@ function App() {
 
             <div className="live-controls-grid">
               <div className="live-controls-primary">
-                <EnvironmentSwitch environment={environment} onChange={setEnvironment} />
+                <EnvironmentSwitch environment={environment} />
               </div>
               <div className="live-controls-secondary">
                 <QuickActionsPanel

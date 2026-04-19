@@ -1,18 +1,25 @@
 services:
   db:
-    ports:
-      - "5432:5432"
+    ports: []
 
   api:
-    ports:
-      - "8000:8000"
-    environment: 
+    ports: []
+    environment:
       API_BUILD: "paper-20260118-1"
+    networks:
+      default:
+      trading-edge:
+        aliases:
+          - paper-api
 
   frontend:
     profiles: ["legacy-paper-ui"]
-    ports:
-      - "3000:80"
+    ports: []
+    networks:
+      default:
+      trading-edge:
+        aliases:
+          - paper-frontend
 
   bot-runner:
     build:
@@ -46,7 +53,12 @@ services:
     depends_on:
       - db
     restart: unless-stopped
-  
+
   regime-worker:
     environment:
       BOT_VERSION: 2026-01-26_a_paper
+
+networks:
+  trading-edge:
+    name: trading-edge
+    external: true
