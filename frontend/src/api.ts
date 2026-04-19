@@ -12,17 +12,20 @@ function getEnv(name: string): string | undefined {
 
 export type UiEnvironment = "LIVE" | "PAPER";
 
+export const DEFAULT_API_BASE_URL =
+  getEnv("VITE_API_BASE_URL") ||
+  import.meta.env.VITE_API_BASE_URL ||
+  "/api";
+
 export const LIVE_API_BASE_URL =
   getEnv("VITE_API_BASE_URL_LIVE") ||
   import.meta.env.VITE_API_BASE_URL_LIVE ||
-  "http://localhost:8001";
+  DEFAULT_API_BASE_URL;
 
 export const PAPER_API_BASE_URL =
   getEnv("VITE_API_BASE_URL_PAPER") ||
   import.meta.env.VITE_API_BASE_URL_PAPER ||
-  getEnv("VITE_API_BASE_URL") ||
-  import.meta.env.VITE_API_BASE_URL ||
-  "http://localhost:8000";
+  DEFAULT_API_BASE_URL;
 
 export const QUOTE_ASSET =
   (getEnv("VITE_QUOTE_ASSET") ||
@@ -42,12 +45,12 @@ export function setUiEnvironment(env: UiEnvironment) {
   }
 }
 
-export function getApiBaseUrlForEnvironment(env: UiEnvironment): string {
-  return env === "LIVE" ? LIVE_API_BASE_URL : PAPER_API_BASE_URL;
+export function getApiBaseUrlForEnvironment(_env: UiEnvironment): string {
+  return DEFAULT_API_BASE_URL;
 }
 
 export function getCurrentApiBaseUrl(): string {
-  return getApiBaseUrlForEnvironment(getUiEnvironment());
+  return DEFAULT_API_BASE_URL;
 }
 
 function getApi() {

@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-: "${VITE_API_BASE_URL:=http://localhost:8001}"
+: "${VITE_API_BASE_URL:=/api}"
 : "${VITE_API_BASE_URL_LIVE:=$VITE_API_BASE_URL}"
-: "${VITE_API_BASE_URL_PAPER:=http://localhost:8000}"
+: "${VITE_API_BASE_URL_PAPER:=$VITE_API_BASE_URL}"
 : "${VITE_QUOTE_ASSET:=USDC}"
 
 cat >/usr/share/nginx/html/env.js <<EOF

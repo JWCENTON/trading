@@ -3,14 +3,22 @@ services:
     ports: []
 
   api:
-    ports:
-      - "8001:8000"
-    environment: 
+    ports: []
+    environment:
       API_BUILD: "live-20260118-1"
+    networks:
+      default:
+      trading-edge:
+        aliases:
+          - live-api
 
   frontend:
-    ports:
-      - "3001:80"
+    ports: []
+    networks:
+      default:
+      trading-edge:
+        aliases:
+          - live-frontend
 
   bot-runner:
     build:
@@ -51,3 +59,8 @@ services:
       DAILY_LOSS_SENTINEL_STRATEGY: RISK
       DAILY_LOSS_SENTINEL_STRATEGIES: RSI,SUPER_TREND,BBRANGE,TREND
       BOT_VERSION: 2026-01-26_a_live
+
+networks:
+  trading-edge:
+    name: trading-edge
+    external: true

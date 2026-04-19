@@ -107,15 +107,13 @@ ALLOWED_PARAMS: dict[str, set[str]] = {
     },
 }
 
-ALLOWED_ORIGINS = [
-    # PAPER
-    "http://192.168.101.10:3000",
-    "http://localhost:3000",
+def _parse_allowed_origins() -> list[str]:
+    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
-    # LIVE
-    "http://192.168.101.10:3001",
-    "http://localhost:3001",
-]
+ALLOWED_ORIGINS = _parse_allowed_origins()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,13 +138,14 @@ binance_client = (
 
 app = FastAPI(title="Trading Bot API", version="0.1.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 def get_conn():
     return psycopg2.connect(
