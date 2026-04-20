@@ -7,13 +7,12 @@ services:
       - .env.edge
     ports:
       - "80:80"
-      # odblokujesz po certach:
-      # - "443:443"
+      - "443:443"
     volumes:
       - ./edge/templates:/etc/nginx/templates:ro
       - ./edge/acme:/var/www/certbot
       # odblokujesz po certach:
-      # - ./edge/certs:/etc/nginx/certs:ro
+      - ./edge/certs:/etc/nginx/certs:ro
     networks:
       - trading-edge
 

@@ -51,7 +51,7 @@ interface PanicConfirmState {
 
 function detectEnvironmentFromHost(): UiEnvironment {
   if (typeof window === "undefined") return "LIVE";
-  return window.location.hostname.startsWith("paper.") ? "PAPER" : "LIVE";
+  return window.location.hostname.startsWith("paper-") ? "PAPER" : "LIVE";
 }
 
 function App() {

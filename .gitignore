@@ -234,6 +234,7 @@ logs/
 .env.old
 .env.paper
 .env.live
+.env.edge
 *.pem
 *.key
 *.crt

@@ -9,34 +9,28 @@ function isMobileDevice(): boolean {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(window.navigator.userAgent);
 }
 
-function isLocalHost(hostname: string): boolean {
-  return (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname.endsWith(".local") ||
-    /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
-    /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
-    /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname)
-  );
-}
-
 function getEnvironmentUrl(env: UiEnvironment): string {
   if (typeof window === "undefined") return "#";
 
-  const { protocol, hostname, port } = window.location;
+  const protocol = window.location.protocol;
+  const currentHost = window.location.hostname;
 
-  if (isLocalHost(hostname)) {
-    const localBase = port ? `${protocol}//${hostname}:${port}` : `${protocol}//${hostname}`;
-    return localBase;
+  const isPaper = currentHost.startsWith("paper-");
+
+  let liveHost: string;
+  let paperHost: string;
+
+  if (isPaper) {
+    liveHost = currentHost.replace(/^paper-/, "");
+    paperHost = currentHost;
+  } else {
+    liveHost = currentHost;
+    paperHost = `paper-${currentHost}`;
   }
 
-  const isPaperHost = hostname.startsWith("paper.");
-  const baseHost = isPaperHost ? hostname.slice("paper.".length) : hostname;
-
-  const targetHost = env === "LIVE" ? baseHost : `paper.${baseHost}`;
-
-  return `${protocol}//${targetHost}`;
+  return env === "LIVE"
+    ? `${protocol}//${liveHost}`
+    : `${protocol}//${paperHost}`;
 }
 
 export function EnvironmentSwitch({ environment }: EnvironmentSwitchProps) {
@@ -46,8 +40,6 @@ export function EnvironmentSwitch({ environment }: EnvironmentSwitchProps) {
 
     const url = getEnvironmentUrl(target);
 
-    // Desktop: nowa karta
-    // Mobile: to samo okno
     if (isMobileDevice()) {
       window.location.href = url;
       return;
