@@ -31,6 +31,34 @@ def build_live_client_order_id(symbol: str, pos_id: int, leg: str) -> str:
     return f"{base[:keep]}-{h6}"
 
 
+def build_live_entry_intent_client_order_id(
+    symbol: str,
+    strategy: str,
+    interval: str,
+    candle_open_time,
+) -> str:
+    """
+    CID for LIVE ENTRY before position row exists.
+    Must fit Binance <= 36 chars.
+    """
+    sym = str(symbol).upper()
+    strat = str(strategy).upper()[:4]
+    itv = str(interval).lower()
+
+    ts_raw = str(candle_open_time)
+    h8 = hashlib.sha1(f"{sym}|{strat}|{itv}|{ts_raw}".encode("utf-8")).hexdigest()[:8]
+
+    base = f"ORC-L-{sym}-{strat}-{itv}-E-{h8}"
+    base = _CID_RE.sub("-", base)
+
+    if len(base) <= 36:
+        return base
+
+    h6 = hashlib.sha1(base.encode("utf-8")).hexdigest()[:6]
+    keep = 36 - (1 + len(h6))
+    return f"{base[:keep]}-{h6}"
+
+
 def _attach_order_to_position(conn, *, position_id: int, leg: str, client_order_id: str, order_id: str):
     """
     Attach on ACK (deterministic SSOT binding).
@@ -301,6 +329,118 @@ def _get_symbol_filters(client, symbol: str):
     return step_size, min_qty, min_notional_val
 
 
+def preflight_live_order(
+    client,
+    symbol: str,
+    side: str,
+    qty: float,
+    *,
+    trading_mode: str,
+    live_orders_enabled: bool,
+    quote_asset: str,
+    panic_disable_trading: bool,
+    live_max_notional: float,
+    skip_balance_precheck: bool = False,
+):
+    """
+    Full business validation BEFORE create_order().
+    Returns canonical result:
+      {ok, blocked, reason, meta, qty_adj, px, notional}
+    """
+    try:
+        symbol = str(symbol).upper()
+        side = str(side).upper()
+
+        if trading_mode != "LIVE":
+            return _blocked("NOT_LIVE_MODE", trading_mode=trading_mode)
+
+        if side not in ("BUY", "SELL"):
+            return _blocked("INVALID_SIDE", side=side)
+
+        if panic_disable_trading:
+            return _blocked("PANIC_DISABLE_TRADING")
+
+        if not live_orders_enabled:
+            return _blocked("LIVE_ORDERS_DISABLED")
+
+        if quote_asset and not symbol.endswith(str(quote_asset).upper()):
+            return _blocked("QUOTE_ASSET_MISMATCH", symbol=symbol, quote_asset=quote_asset)
+
+        step_size, min_qty, min_notional = _get_symbol_filters(client, symbol)
+
+        qty_adj = float(_floor_to_step(qty, step_size))
+        if min_qty and qty_adj < min_qty:
+            return _blocked(
+                "QTY_BELOW_MIN_QTY",
+                qty=float(qty),
+                qty_adj=float(qty_adj),
+                min_qty=float(min_qty),
+                step=float(step_size),
+            )
+
+        px = float(client.get_symbol_ticker(symbol=symbol)["price"])
+        notional = float(px * qty_adj)
+
+        if min_notional and notional < min_notional:
+            return _blocked(
+                "NOTIONAL_BELOW_MIN_NOTIONAL",
+                qty=float(qty_adj),
+                px=float(px),
+                notional=float(notional),
+                min_notional=float(min_notional),
+            )
+
+        if (not skip_balance_precheck) and side == "BUY":
+            # zostaw obecną logikę balance check, tylko bez exceptionów
+            try:
+                acct = client.get_account()
+                bals = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
+                free_quote = float(bals.get(str(quote_asset).upper(), 0.0))
+                if free_quote + 1e-9 < notional:
+                    return _blocked(
+                        "INSUFFICIENT_QUOTE_BALANCE",
+                        quote_asset=str(quote_asset).upper(),
+                        free=float(free_quote),
+                        needed=float(notional),
+                    )
+            except Exception as e:
+                return _blocked("BALANCE_PRECHECK_FAILED", err=str(e))
+
+        if skip_balance_precheck and side == "SELL":
+            # opcjonalnie możesz tu potem dodać asset balance check dla exitów
+            pass
+
+        if live_max_notional and float(live_max_notional) > 0 and notional > float(live_max_notional):
+            return _blocked(
+                "LIVE_MAX_NOTIONAL_EXCEEDED",
+                qty=float(qty_adj),
+                px=float(px),
+                notional=float(notional),
+                live_max_notional=float(live_max_notional),
+            )
+
+        return {
+            "ok": True,
+            "blocked": False,
+            "reason": None,
+            "meta": {
+                "qty": float(qty),
+                "qty_adj": float(qty_adj),
+                "px": float(px),
+                "notional": float(notional),
+                "step": float(step_size) if step_size is not None else None,
+                "min_qty": float(min_qty) if min_qty is not None else None,
+                "min_notional": float(min_notional) if min_notional is not None else None,
+            },
+            "qty_adj": float(qty_adj),
+            "px": float(px),
+            "notional": float(notional),
+        }
+
+    except Exception as e:
+        return _blocked("PREFLIGHT_EXCEPTION", err=str(e))
+
+
 def place_live_order(
     client,
     symbol: str,
@@ -319,29 +459,31 @@ def place_live_order(
     position_id: int | None = None,
     leg: str | None = None,
 ):
-    # --- HARD SAFETY: quote asset ---
-    if not symbol.endswith(quote_asset.upper()):
-        raise RuntimeError(f"Symbol {symbol} does not match QUOTE_ASSET={quote_asset}")
+    pre = preflight_live_order(
+        client,
+        symbol,
+        side,
+        qty,
+        trading_mode=trading_mode,
+        live_orders_enabled=live_orders_enabled,
+        quote_asset=quote_asset,
+        panic_disable_trading=panic_disable_trading,
+        live_max_notional=live_max_notional,
+        skip_balance_precheck=skip_balance_precheck,
+    )
 
-    # --- MODE GUARD ---
-    if trading_mode != "LIVE":
-        return _blocked("NOT_LIVE_MODE", trading_mode=trading_mode)
+    if not pre.get("ok"):
+        return {
+            "ok": False,
+            "live_ok": False,
+            "blocked": True,
+            "reason": pre.get("reason"),
+            "meta": pre.get("meta"),
+            "resp": None,
+        }
 
-    side = side.strip().upper()
-    if side not in ("BUY", "SELL"):
-        raise ValueError(f"Invalid side={side} (expected BUY/SELL)")
+    qty = float(pre["qty_adj"])
 
-    # --- PANIC / KILL SWITCH ---
-    if panic_disable_trading:
-        logging.warning("LIVE ORDER BLOCKED (PANIC_DISABLE_TRADING=1) symbol=%s side=%s qty=%.8f", symbol, side, qty)
-        return _blocked("PANIC_DISABLE_TRADING", symbol=symbol, side=side, qty=float(qty))
-
-    # --- MASTER ENABLE ---
-    if not live_orders_enabled:
-        logging.warning("LIVE ORDER BLOCKED (LIVE_ORDERS_ENABLED=0) symbol=%s side=%s qty=%.8f", symbol, side, qty)
-        return _blocked("LIVE_ORDERS_DISABLED", symbol=symbol, side=side, qty=float(qty))
-
-    # --- idempotency / SSOT binding ---
     if client_order_id is None:
         if trading_mode == "LIVE" and position_id is not None and leg is not None:
             leg_char = "E" if str(leg).upper().startswith("E") else "X"
@@ -349,117 +491,60 @@ def place_live_order(
         else:
             client_order_id = str(uuid.uuid4())
 
-    # --- exchange filters ---
-    step_size, min_qty, min_notional = _get_symbol_filters(client, symbol)
-
-    qty_adj = _floor_to_step(qty, step_size)
-    if qty_adj <= 0 or qty_adj < Decimal(str(min_qty)):
-        logging.warning(
-            "LIVE ORDER BLOCKED (minQty/step): symbol=%s side=%s qty=%.8f -> qty_adj=%.8f step=%s min_qty=%.8f",
-            symbol, side, qty, qty_adj, step_size, min_qty
-        )
-        return _blocked("MIN_QTY_OR_STEP", qty=float(qty), qty_adj=float(qty_adj), step=step_size, min_qty=float(min_qty))
-
-    # --- single price fetch ---
-    px = float(client.get_symbol_ticker(symbol=symbol)["price"])
-    notional = Decimal(str(px)) * qty_adj
-
-    # --- balance pre-check ---
-    if not skip_balance_precheck:
-        try:
-            acct = client.get_account()
-            balances = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
-        except BinanceAPIException as e:
-            logging.error(
-                "LIVE ORDER REJECTED symbol=%s side=%s qty=%.8f code=%s msg=%s clientOrderId=%s",
-                symbol, side, float(qty_adj),
-                getattr(e, "code", None),
-                getattr(e, "message", str(e)),
-                client_order_id,
-            )
-            return None
-        except Exception:
-            logging.exception(
-                "LIVE ORDER ERROR symbol=%s side=%s qty=%.8f clientOrderId=%s",
-                symbol, side, float(qty_adj), client_order_id
-            )
-            return None
-
-        base_asset = _base_asset_from_symbol(symbol, quote_asset)
-        free_base = balances.get(base_asset, 0.0)
-        free_quote = balances.get(quote_asset.upper(), 0.0)
-
-        if side == "SELL":
-            if free_base + 1e-12 < qty_adj:
-                logging.error(
-                    "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=SELL need %s=%.8f free=%.8f",
-                    symbol, base_asset, qty_adj, free_base
-                )
-                return _blocked("INSUFFICIENT_BASE", base_asset=base_asset, need=float(qty_adj), free=float(free_base))
-
-        if side == "BUY":
-            if free_quote + 1e-8 < notional:
-                logging.error(
-                    "LIVE ORDER BLOCKED (insufficient balance): symbol=%s side=BUY need %s≈%.4f free=%.4f (qty=%.8f px=%.2f)",
-                    symbol, quote_asset.upper(), notional, free_quote, qty_adj, px
-                )
-                return _blocked("INSUFFICIENT_QUOTE", quote_asset=quote_asset.upper(), need=float(notional), free=float(free_quote), qty=float(qty_adj), px=float(px))
-
-    # --- safety: max notional ---
-    if live_max_notional > 0 and notional > live_max_notional:
-        raise RuntimeError(f"Notional {notional:.2f} > LIVE_MAX_NOTIONAL {live_max_notional:.2f}")
-
-    # --- exchange MIN_NOTIONAL ---
-    if min_notional and min_notional > 0 and notional < min_notional:
-        logging.warning(
-            "LIVE ORDER BLOCKED (minNotional): symbol=%s side=%s notional=%.4f < min_notional=%.4f (qty=%.8f px=%.4f)",
-            symbol, side, notional, min_notional, qty_adj, px
-        )
-        return _blocked("MIN_NOTIONAL", notional=float(notional), min_notional=float(min_notional), qty=float(qty_adj), px=float(px))
-
-    logging.warning(
-        "LIVE ORDER SENDING symbol=%s side=%s type=MARKET qty=%.8f clientOrderId=%s",
-        symbol, side, float(qty_adj), client_order_id
-    )
-
     try:
+        logging.info(
+            "LIVE ORDER SEND symbol=%s side=%s qty=%.8f clientOrderId=%s",
+            symbol, side, qty, client_order_id
+        )
+
         resp = client.create_order(
             symbol=symbol,
             side=side,
             type="MARKET",
-            quantity=_qty_to_plain_str(qty_adj),
+            quantity=_qty_to_plain_str(qty),
             newClientOrderId=client_order_id,
         )
+
+        status = str(resp.get("status", "")).upper()
+        executed_qty = _safe_float(resp.get("executedQty"), 0.0)
+        live_ok = (status == "FILLED") or (executed_qty > 0.0)
+
+        return {
+            "ok": True,
+            "live_ok": bool(live_ok),
+            "blocked": False,
+            "reason": None,
+            "resp": resp,
+            "client_order_id": client_order_id,
+        }
+
     except BinanceAPIException as e:
-        if getattr(e, "code", None) == -2010:
-            logging.error("LIVE ORDER REJECTED (-2010 insufficient balance): %s", e)
-            return _blocked("BINANCE_REJECTED_2010", code=getattr(e, "code", None), msg=getattr(e, "message", str(e)))
-        raise
-
-    # --- attach on ACK (deterministic) ---
-    if db_conn is not None and position_id is not None and leg is not None:
-        _attach_order_to_position(
-            db_conn,
-            position_id=int(position_id),
-            leg=str(leg),
-            client_order_id=str(client_order_id),
-            order_id=(resp or {}).get("orderId"),
+        logging.error(
+            "LIVE ORDER REJECTED symbol=%s side=%s qty=%.8f code=%s msg=%s clientOrderId=%s",
+            symbol, side, qty,
+            getattr(e, "code", None),
+            getattr(e, "message", str(e)),
+            client_order_id,
         )
+        return {
+            "ok": False,
+            "live_ok": False,
+            "blocked": False,
+            "reason": "BINANCE_API_EXCEPTION",
+            "meta": {"code": getattr(e, "code", None), "msg": getattr(e, "message", str(e))},
+            "resp": None,
+        }
 
-    logging.warning(
-        "LIVE ORDER ACK symbol=%s side=%s orderId=%s status=%s",
-        symbol, side, resp.get("orderId"), resp.get("status")
-    )
-    status = (resp or {}).get("status")
-    executed_qty = float((resp or {}).get("executedQty", 0) or 0)
-    live_ok = (status in ("FILLED", "PARTIALLY_FILLED")) and executed_qty > 0
-
-    return {
-        "ok": True,               # backward compat = ACK
-        "blocked": False,
-        "resp": resp,
-        "send_ok": True,
-        "live_ok": live_ok,
-        "status": status,
-        "executed_qty": executed_qty,
+    except Exception as e:
+        logging.exception(
+            "LIVE ORDER ERROR symbol=%s side=%s qty=%.8f clientOrderId=%s",
+            symbol, side, qty, client_order_id
+        )
+        return {
+            "ok": False,
+            "live_ok": False,
+            "blocked": False,
+            "reason": "LIVE_ORDER_EXCEPTION",
+            "meta": {"err": str(e)},
+            "resp": None,
         }

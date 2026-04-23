@@ -17,18 +17,22 @@ from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from datetime import datetime, timezone, date
 from psycopg2.extras import execute_batch
-from common.execution import place_live_order
 from common.sizing import compute_qty_from_notional
 from common.telemetry_throttle import should_emit_throttled_event
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.binance_ingest_trades import ingest_my_trades
 from common.db import get_db_conn
-from common.execution import build_live_client_order_id
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
 from common.exit_guards.guarded_profit import evaluate_guarded_profit
 from common.exit_guards.early_cut_adaptive import AdaptiveEarlyCutConfig, evaluate_adaptive_early_cut_long
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
+from common.execution import (
+    place_live_order,
+    build_live_client_order_id,
+    build_live_entry_intent_client_order_id,
+    preflight_live_order,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +86,8 @@ client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "
 
 TREND_BUFFER = float(os.environ.get("TREND_BUFFER", "0.001"))  # 0.1%
 MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
+KEEP_PROFIT_MAX_EXTRA_MINUTES = int(os.environ.get("KEEP_PROFIT_MAX_EXTRA_MINUTES", "60"))
+TIME_EXIT_MIN_PROFIT_PROTECT_PCT = float(os.environ.get("TIME_EXIT_MIN_PROFIT_PROTECT_PCT", "0.20"))
 
 # jeśli DAILY_MAX_LOSS_PCT <= 0 -> dzienny SL wyłączony
 DAILY_MAX_LOSS_PCT = float(os.environ.get("DAILY_MAX_LOSS_PCT", "0.5"))
@@ -455,6 +461,62 @@ def open_position(side: str, qty: float, entry_price: float, open_time, *, entry
     return pos_id
 
 
+def open_position_from_live_ack(
+    *,
+    side: str,
+    qty: float,
+    entry_price: float,
+    entry_client_order_id: str,
+    entry_order_id: str,
+) -> int | None:
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id
+        FROM positions
+        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+        ORDER BY entry_time DESC
+        LIMIT 1
+        """,
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
+    )
+    row = cur.fetchone()
+    if row:
+        pos_id = int(row[0])
+        cur.close()
+        conn.close()
+        logging.info("TREND: open_position_from_live_ack skipped – already OPEN pos_id=%s", pos_id)
+        return None
+
+    cur.execute(
+        """
+        INSERT INTO positions(
+          symbol, strategy, interval, status, side, qty, entry_price, entry_time,
+          entry_client_order_id, entry_order_id
+        )
+        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s, %s)
+        RETURNING id;
+        """,
+        (
+            SYMBOL,
+            STRATEGY_NAME,
+            INTERVAL,
+            side,
+            float(qty),
+            float(entry_price),
+            str(entry_client_order_id),
+            str(entry_order_id),
+        ),
+    )
+    pos_id = int(cur.fetchone()[0])
+    conn.commit()
+    cur.close()
+    conn.close()
+    return pos_id
+
+
 def close_position(exit_price: float, reason: str, open_time) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
@@ -519,6 +581,22 @@ def attach_exit_order(pos_id: int, *, exit_order_id: str | int | None, exit_clie
     conn.commit()
     cur.close()
     conn.close()
+
+
+def attach_exit_order_id_with_conn(cur, pos_id: int, order_id: str | None, client_order_id: str | None):
+    cur.execute(
+        """
+        UPDATE positions
+        SET exit_order_id = COALESCE(exit_order_id, %s),
+            exit_client_order_id = COALESCE(exit_client_order_id, %s)
+        WHERE id = %s
+        """,
+        (
+            str(order_id) if order_id is not None else None,
+            str(client_order_id) if client_order_id else None,
+            int(pos_id),
+        ),
+    )
 
 
 def set_entry_client_order_id(pos_id: int, client_order_id: str) -> None:
@@ -604,6 +682,8 @@ def seed_default_params_from_env(conn):
         "EARLY_EXIT_MINUTES": float(EARLY_EXIT_MINUTES),
         "EARLY_EXIT_MAX_LOSS_PCT": float(EARLY_EXIT_MAX_LOSS_PCT),
         "MIN_PROFIT_TO_KEEP_PCT": float(MIN_PROFIT_TO_KEEP_PCT),
+        "KEEP_PROFIT_MAX_EXTRA_MINUTES": float(KEEP_PROFIT_MAX_EXTRA_MINUTES),
+        "TIME_EXIT_MIN_PROFIT_PROTECT_PCT": float(TIME_EXIT_MIN_PROFIT_PROTECT_PCT),
         "ORDER_NOTIONAL_USDC": float(ORDER_NOTIONAL_USDC),
         "MIN_NOTIONAL_BUFFER_PCT": float(MIN_NOTIONAL_BUFFER_PCT),
         **guarded_profit_defaults_map(),
@@ -663,7 +743,7 @@ def load_runtime_params():
     global MAX_POSITION_MINUTES, DAILY_MAX_LOSS_PCT, TREND_BUFFER
     global TREND_FILTER_PCT, ENTRY_BUFFER_PCT, EMA_FAST, EMA_SLOW
     global ORDER_QTY_BTC, MAX_DIST_FROM_EMA_FAST_PCT
-    global ALLOW_SHORT, EARLY_EXIT_MINUTES, EARLY_EXIT_MAX_LOSS_PCT, MIN_PROFIT_TO_KEEP_PCT
+    global ALLOW_SHORT, EARLY_EXIT_MINUTES, EARLY_EXIT_MAX_LOSS_PCT, MIN_PROFIT_TO_KEEP_PCT, KEEP_PROFIT_MAX_EXTRA_MINUTES, TIME_EXIT_MIN_PROFIT_PROTECT_PCT
     global GUARDED_PROFIT_ENABLED, GUARDED_MIN_AGE_MINUTES
     global GUARDED_MFE_ARM_090_ABS, GUARDED_FLOOR_090_ABS, GUARDED_MFE_ARM_110_ABS, GUARDED_FLOOR_110_ABS
     global ORDER_NOTIONAL_USDC, MIN_NOTIONAL_BUFFER_PCT
@@ -745,6 +825,12 @@ def load_runtime_params():
     if "MIN_PROFIT_TO_KEEP_PCT" in params:
         MIN_PROFIT_TO_KEEP_PCT = clamp(params["MIN_PROFIT_TO_KEEP_PCT"], 0.0, 5.0)
 
+    if "KEEP_PROFIT_MAX_EXTRA_MINUTES" in params:
+        KEEP_PROFIT_MAX_EXTRA_MINUTES = int(clamp(params["KEEP_PROFIT_MAX_EXTRA_MINUTES"], 0, 24 * 60))
+
+    if "TIME_EXIT_MIN_PROFIT_PROTECT_PCT" in params:
+        TIME_EXIT_MIN_PROFIT_PROTECT_PCT = clamp(params["TIME_EXIT_MIN_PROFIT_PROTECT_PCT"], -5.0, 5.0)
+
     guarded_cfg = parse_guarded_profit_config(params)
     GUARDED_PROFIT_ENABLED = guarded_cfg.enabled
     GUARDED_MIN_AGE_MINUTES = guarded_cfg.min_age_minutes
@@ -774,6 +860,7 @@ def load_runtime_params():
         "DAILY_MAX_LOSS_PCT=%.2f|RSI_OVERSOLD=%.1f|RSI_OVERBOUGHT=%.1f|"
         "ORDER_QTY_BTC=%.8f|ORDER_NOTIONAL_USDC=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f|MAX_DIST_FROM_EMA_FAST_PCT=%.2f|"
         "ALLOW_SHORT=%s|EARLY_EXIT_MINUTES=%d|EARLY_EXIT_MAX_LOSS_PCT=%.2f|MIN_PROFIT_TO_KEEP_PCT=%.2f|"
+        "KEEP_PROFIT_MAX_EXTRA_MINUTES=%d|TIME_EXIT_MIN_PROFIT_PROTECT_PCT=%.2f|"
         "ADAPTIVE_EARLY_CUT_SHADOW_ENABLED=%s|ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES=%d|"
         "ADAPTIVE_EARLY_CUT_ATR_MULT=%.2f|ADAPTIVE_EARLY_CUT_WEAK_MFE_ATR_MULT=%.2f|"
         "GUARDED_PROFIT_ENABLED=%s|GUARDED_MIN_AGE_MINUTES=%d|GUARDED_MFE_ARM_090_ABS=%.4f|"
@@ -799,6 +886,8 @@ def load_runtime_params():
         EARLY_EXIT_MINUTES,
         EARLY_EXIT_MAX_LOSS_PCT,
         MIN_PROFIT_TO_KEEP_PCT,
+        KEEP_PROFIT_MAX_EXTRA_MINUTES,
+        TIME_EXIT_MIN_PROFIT_PROTECT_PCT,
         ADAPTIVE_EARLY_CUT_SHADOW_ENABLED,
         ADAPTIVE_EARLY_CUT_MIN_AGE_MINUTES,
         ADAPTIVE_EARLY_CUT_ATR_MULT,
@@ -1165,17 +1254,87 @@ def execute_and_record(
             pos_id = int(p[0])
         tag = "X"
 
-    client_order_id = make_client_order_id(
-        cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag=tag
-    )
+    if not is_exit:
+        existing_open = get_open_position()
+        if existing_open:
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "ALREADY_OPEN",
+                "client_order_id": None,
+                "resp": None,
+            }
 
-    if is_exit:
-        set_exit_client_order_id(int(pos_id), client_order_id)
+        client_order_id = build_live_entry_intent_client_order_id(
+            cfg_used.symbol,
+            STRATEGY_NAME,
+            cfg_used.interval,
+            candle_open_time,
+        )
     else:
-        set_entry_client_order_id(int(pos_id), client_order_id)
+        if pos_id is None:
+            p = get_open_position()
+            if not p:
+                return {
+                    "ledger_ok": True,
+                    "live_attempted": False,
+                    "live_ok": False,
+                    "blocked_reason": "NO_OPEN_POSITION",
+                    "client_order_id": None,
+                    "resp": None,
+                }
+            pos_id = int(p[0])
+
+        client_order_id = make_client_order_id(
+            cfg_used.symbol,
+            STRATEGY_NAME,
+            cfg_used.interval,
+            side,
+            candle_open_time,
+            pos_id=int(pos_id),
+            tag="X",
+        )
+
+        set_exit_client_order_id(int(pos_id), client_order_id)
 
     conn_exec = get_db_conn()
     try:
+        pre = preflight_live_order(
+            client,
+            cfg_used.symbol,
+            side,
+            qty_btc,
+            trading_mode=cfg_used.trading_mode,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
+            quote_asset=cfg_used.quote_asset,
+            panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
+            live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+            skip_balance_precheck=bool(is_exit),
+        )
+
+        if not pre or not pre.get("ok"):
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=side,
+                reason=(pre or {}).get("reason") or "LIVE_PREFLIGHT_FAILED",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={
+                    "is_exit": bool(is_exit),
+                    "pos_id": int(pos_id) if pos_id else None,
+                    "client_order_id": client_order_id,
+                    "resp": pre,
+                },
+            )
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": (pre or {}).get("reason") or "LIVE_PREFLIGHT_FAILED",
+                "client_order_id": client_order_id,
+                "resp": pre,
+            }
         resp = place_live_order(
             client,
             cfg_used.symbol,
@@ -1933,21 +2092,105 @@ def run_trend_strategy():
                         pnl_pct = (pos_entry_price - price) / pos_entry_price * 100.0
 
                     # If position is doing well enough, we keep it (avoid cutting trend winners)
-                    if pnl_pct >= MIN_PROFIT_TO_KEEP_PCT:
+                    extra_age_minutes = float(age_minutes - max_pos_minutes)
+
+                    # 1) still profitable enough and inside limited extension window -> hold temporarily
+                    if (
+                        pnl_pct >= MIN_PROFIT_TO_KEEP_PCT
+                        and extra_age_minutes < float(KEEP_PROFIT_MAX_EXTRA_MINUTES)
+                    ):
                         emit_strategy_event(
                             event_type="BLOCKED",
                             decision=None,
-                            reason="TIME_EXIT_SKIPPED_KEEP_PROFIT",
+                            reason="TIME_EXIT_SKIPPED_KEEP_PROFIT_WINDOW",
                             price=price,
                             candle_open_time=open_time,
                             info={
                                 "pos_side": pos_side,
                                 "age_minutes": float(age_minutes),
                                 "max_minutes": int(max_pos_minutes),
+                                "extra_age_minutes": float(extra_age_minutes),
+                                "keep_profit_max_extra_minutes": int(KEEP_PROFIT_MAX_EXTRA_MINUTES),
                                 "pnl_pct": float(pnl_pct),
                                 "min_profit_to_keep_pct": float(MIN_PROFIT_TO_KEEP_PCT),
                             },
                         )
+                        return
+
+                    # 2) after timeout, if profit has faded below protect floor -> force exit
+                    if extra_age_minutes >= 0 and pnl_pct < float(TIME_EXIT_MIN_PROFIT_PROTECT_PCT):
+                        side_timeout = "SELL" if pos_side == "LONG" else "BUY"
+                        reason_timeout = (
+                            f"TREND TIMEOUT_PROFIT_FADED {pos_side} age={age_minutes:.1f}m "
+                            f"extra={extra_age_minutes:.1f}m pnl={pnl_pct:.2f}% "
+                            f"< protect={TIME_EXIT_MIN_PROFIT_PROTECT_PCT:.2f}%"
+                        )
+
+                        emit_regime_gate_event(
+                            symbol=SYMBOL,
+                            interval=INTERVAL,
+                            strategy=STRATEGY_NAME,
+                            decision="TICK",
+                            d=decide_regime_gate(
+                                symbol=SYMBOL,
+                                interval=INTERVAL,
+                                strategy=STRATEGY_NAME,
+                                decision="TICK",
+                                regime_enabled=bc.regime_enabled,
+                                regime_mode=bc.regime_mode,
+                            ),
+                        )
+                        res = execute_and_record(
+                            side=side_timeout,
+                            price=price,
+                            qty_btc=pos_qty,
+                            reason=reason_timeout,
+                            candle_open_time=open_time,
+                            cfg_used=cfg_effective,
+                            allow_live_orders=snap["allowed_orders_exit"],
+                            allow_meta=snap["allow_meta_exit"],
+                            is_exit=True,
+                        )
+                        if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                            close_position(exit_price=price, reason="TIME_EXIT_PROFIT_FADED", open_time=open_time)
+                        return
+
+                    # 3) hard final timeout after extension window
+                    if extra_age_minutes >= float(KEEP_PROFIT_MAX_EXTRA_MINUTES):
+                        side_timeout = "SELL" if pos_side == "LONG" else "BUY"
+                        reason_timeout = (
+                            f"TREND TIMEOUT_HARD {pos_side} age={age_minutes:.1f}m "
+                            f"extra={extra_age_minutes:.1f}m >= keep_window={KEEP_PROFIT_MAX_EXTRA_MINUTES}m "
+                            f"(pnl={pnl_pct:.2f}%)"
+                        )
+
+                        emit_regime_gate_event(
+                            symbol=SYMBOL,
+                            interval=INTERVAL,
+                            strategy=STRATEGY_NAME,
+                            decision="TICK",
+                            d=decide_regime_gate(
+                                symbol=SYMBOL,
+                                interval=INTERVAL,
+                                strategy=STRATEGY_NAME,
+                                decision="TICK",
+                                regime_enabled=bc.regime_enabled,
+                                regime_mode=bc.regime_mode,
+                            ),
+                        )
+                        res = execute_and_record(
+                            side=side_timeout,
+                            price=price,
+                            qty_btc=pos_qty,
+                            reason=reason_timeout,
+                            candle_open_time=open_time,
+                            cfg_used=cfg_effective,
+                            allow_live_orders=snap["allowed_orders_exit"],
+                            allow_meta=snap["allow_meta_exit"],
+                            is_exit=True,
+                        )
+                        if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                            close_position(exit_price=price, reason="TIME_EXIT_HARD", open_time=open_time)
                         return
 
                     side_timeout = "SELL" if pos_side == "LONG" else "BUY"
