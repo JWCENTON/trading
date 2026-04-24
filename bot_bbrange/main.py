@@ -6,7 +6,7 @@ import hashlib
 import logging
 import psycopg2
 import pandas as pd
-from common.execution import build_live_client_order_id
+from common.execution import build_live_client_order_id, build_live_entry_intent_client_order_id
 from dataclasses import replace
 from datetime import datetime, timezone, date
 from psycopg2.extras import execute_batch
@@ -390,6 +390,60 @@ def open_position(side: str, qty: float, entry_price: float, entry_client_order_
     return pos_id
 
 
+def open_position_from_live_ack(
+    *,
+    side: str,
+    qty: float,
+    entry_price: float,
+    entry_client_order_id: str,
+    entry_order_id: str,
+) -> int | None:
+    if str(side).upper() != "LONG":
+        return None
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id FROM positions
+        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+        ORDER BY entry_time DESC
+        LIMIT 1
+        """,
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
+    )
+    row = cur.fetchone()
+    if row:
+        pos_id = int(row[0])
+        cur.close()
+        conn.close()
+        logging.info("BBRANGE: open_position_from_live_ack skipped – already OPEN pos_id=%s.", pos_id)
+        return None
+
+    cur.execute(
+        """
+        INSERT INTO positions(
+          symbol, strategy, interval, status, side, qty, entry_price, entry_time,
+          entry_client_order_id, entry_order_id
+        )
+        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s, %s)
+        RETURNING id;
+        """,
+        (
+            SYMBOL, STRATEGY_NAME, INTERVAL,
+            side, float(qty), float(entry_price),
+            str(entry_client_order_id), str(entry_order_id),
+        ),
+    )
+    pos_id = int(cur.fetchone()[0])
+    conn.commit()
+    cur.close()
+    conn.close()
+    logging.info("BBRANGE: position OPENED FROM LIVE ACK pos_id=%s LONG qty=%.8f entry=%.2f", pos_id, float(qty), float(entry_price))
+    return pos_id
+
+
 def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
@@ -696,14 +750,8 @@ def execute_and_record(
     client_order_id = None
 
     if not is_exit:
-        # ENTRY: utwórz pozycję aby mieć pos_id -> potem CID zawiera pos_id
-        pos_id = open_position(
-            side="LONG",
-            qty=float(qty_btc),
-            entry_price=float(price),
-            entry_client_order_id=None,
-        )
-        if pos_id is None:
+        existing_open = get_open_position()
+        if existing_open:
             return {
                 "ledger_ok": True,
                 "live_attempted": False,
@@ -713,25 +761,12 @@ def execute_and_record(
                 "resp": None,
             }
 
-        client_order_id = make_client_order_id(
-            cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=pos_id, tag="E"
+        client_order_id = build_live_entry_intent_client_order_id(
+            cfg_used.symbol,
+            STRATEGY_NAME,
+            cfg_used.interval,
+            candle_open_time,
         )
-        # --- DB: pre-attach client_order_id (single-conn) ---
-        conn_exec = get_db_conn()
-        cur_exec = conn_exec.cursor()
-        try:
-            if pos_id:
-                if is_exit:
-                    attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
-                else:
-                    attach_entry_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
-            conn_exec.commit()
-        except Exception:
-            conn_exec.rollback()
-            logging.exception("BBRANGE: pre-attach client_order_id failed pos_id=%s", pos_id)
-        finally:
-            cur_exec.close()
-            conn_exec.close()
 
     else:
         # EXIT: użyj istniejącej OPEN pozycji
@@ -775,19 +810,30 @@ def execute_and_record(
             cur_exec.close()
             conn_exec.close()
 
-    resp = place_live_order(
-        client,
-        cfg_used.symbol,
-        side,
-        qty_btc,
-        trading_mode=cfg_used.trading_mode,
-        live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
-        quote_asset=cfg_used.quote_asset,
-        client_order_id=client_order_id,
-        panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
-        live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
-        skip_balance_precheck=is_exit,
-    )
+    conn_exec = get_db_conn()
+    try:
+        resp = place_live_order(
+            client,
+            cfg_used.symbol,
+            side_u,
+            qty_btc,
+            trading_mode=cfg_used.trading_mode,
+            live_orders_enabled=(cfg_used.live_orders_enabled or is_exit),
+            quote_asset=cfg_used.quote_asset,
+            client_order_id=client_order_id,
+            panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
+            live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
+            skip_balance_precheck=is_exit,
+            db_conn=conn_exec,
+            position_id=int(pos_id) if pos_id is not None else None,
+            leg=("EXIT" if is_exit else "ENTRY"),
+        )
+        conn_exec.commit()
+    finally:
+        try:
+            conn_exec.close()
+        except Exception:
+            pass
 
     if not resp or not resp.get("ok"):
         emit_strategy_event(
@@ -844,6 +890,34 @@ def execute_and_record(
     )
 
     order_id = raw.get("orderId")
+
+    if not is_exit:
+        if not order_id:
+            logging.error("BBRANGE: LIVE ENTRY ACK missing orderId resp=%s", raw)
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=side,
+                reason="LIVE_ACK_MISSING_ORDER_ID",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={"is_exit": False, "client_order_id": client_order_id, "resp": raw},
+            )
+            return {
+                "ledger_ok": True,
+                "live_attempted": True,
+                "live_ok": False,
+                "blocked_reason": "LIVE_ACK_MISSING_ORDER_ID",
+                "client_order_id": client_order_id,
+                "resp": raw,
+            }
+
+        pos_id = open_position_from_live_ack(
+            side="LONG",
+            qty=float(qty_btc),
+            entry_price=float(price),
+            entry_client_order_id=str(client_order_id),
+            entry_order_id=str(order_id),
+        )
 
     if pos_id:
         conn_exec = get_db_conn()
