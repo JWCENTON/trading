@@ -1497,67 +1497,6 @@ def open_position_from_live_ack(
     return pos_id
 
 
-def open_position_from_live_ack(
-    *,
-    side: str,
-    qty: float,
-    entry_price: float,
-    entry_client_order_id: str,
-    entry_order_id: str,
-) -> int | None:
-    conn = get_db_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT id
-        FROM positions
-        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
-        ORDER BY entry_time DESC
-        LIMIT 1
-        """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
-    )
-    row = cur.fetchone()
-    if row:
-        pos_id = int(row[0])
-        cur.close()
-        conn.close()
-        logging.info("open_position_from_live_ack skipped – already OPEN pos_id=%s", pos_id)
-        return None
-
-    cur.execute(
-        """
-        INSERT INTO positions(
-          symbol, strategy, interval, status, side, qty, entry_price, entry_time,
-          entry_client_order_id, entry_order_id
-        )
-        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s, %s)
-        RETURNING id;
-        """,
-        (
-            SYMBOL,
-            STRATEGY_NAME,
-            INTERVAL,
-            side,
-            float(qty),
-            float(entry_price),
-            str(entry_client_order_id),
-            str(entry_order_id),
-        ),
-    )
-    pos_id = int(cur.fetchone()[0])
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    logging.info(
-        "position OPENED FROM LIVE ACK pos_id=%s side=%s qty=%.8f entry=%.8f order_id=%s cid=%s",
-        pos_id, side, float(qty), float(entry_price), str(entry_order_id), str(entry_client_order_id)
-    )
-    return pos_id
-
-
 def close_position(exit_price: float, reason: str) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()

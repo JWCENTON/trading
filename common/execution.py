@@ -329,6 +329,35 @@ def _get_symbol_filters(client, symbol: str):
     return step_size, min_qty, min_notional_val
 
 
+def compute_sellable_asset_qty(
+    client,
+    symbol: str,
+    *,
+    requested_qty: float,
+    quote_asset: str,
+    reserve_step_count: int = 1,
+):
+    step_size, min_qty, _ = _get_symbol_filters(client, symbol)
+    acct = client.get_account()
+    bals = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
+
+    base_asset = _base_asset_from_symbol(symbol, quote_asset)
+    free_qty = float(bals.get(base_asset.upper(), 0.0))
+
+    reserve = float(Decimal(str(step_size)) * Decimal(str(max(0, reserve_step_count))))
+    usable_free = max(0.0, free_qty - reserve)
+    sellable_qty = float(_floor_to_step(min(float(requested_qty), usable_free), step_size))
+
+    return {
+        "requested_qty": float(requested_qty),
+        "free_qty": float(free_qty),
+        "sellable_qty": float(sellable_qty),
+        "step_size": float(step_size),
+        "min_qty": float(min_qty),
+        "base_asset": str(base_asset).upper(),
+    }
+
+
 def preflight_live_order(
     client,
     symbol: str,
@@ -406,9 +435,36 @@ def preflight_live_order(
             except Exception as e:
                 return _blocked("BALANCE_PRECHECK_FAILED", err=str(e))
 
-        if skip_balance_precheck and side == "SELL":
-            # opcjonalnie możesz tu potem dodać asset balance check dla exitów
-            pass
+        if side == "SELL":
+            try:
+                sell_meta = compute_sellable_asset_qty(
+                    client,
+                    symbol,
+                    requested_qty=float(qty_adj),
+                    quote_asset=quote_asset,
+                )
+                sellable_qty = float(sell_meta["sellable_qty"])
+
+                if sellable_qty <= 0.0:
+                    return _blocked("EXIT_BLOCKED_INSUFFICIENT_BALANCE", **sell_meta)
+
+                if min_qty and sellable_qty < min_qty:
+                    return _blocked("EXIT_BLOCKED_TOO_SMALL_BALANCE", **sell_meta)
+
+                qty_adj = float(sellable_qty)
+                notional = float(px * qty_adj)
+
+                if min_notional and notional < min_notional:
+                    return _blocked(
+                        "EXIT_BLOCKED_NOTIONAL_TOO_SMALL",
+                        **sell_meta,
+                        px=float(px),
+                        notional=float(notional),
+                        min_notional=float(min_notional),
+                    )
+            except Exception as e:
+                return _blocked("EXIT_BALANCE_PRECHECK_FAILED", err=str(e))
+
 
         if live_max_notional and float(live_max_notional) > 0 and notional > float(live_max_notional):
             return _blocked(

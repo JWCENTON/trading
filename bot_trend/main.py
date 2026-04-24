@@ -414,6 +414,9 @@ def get_open_position():
 
 
 def open_position(side: str, qty: float, entry_price: float, open_time, *, entry_client_order_id: str | None) -> int | None:
+    if cfg.trading_mode == "LIVE" and not entry_client_order_id:
+        logging.error("TREND: open_position refused in LIVE without entry_client_order_id")
+        return None
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
@@ -1216,25 +1219,41 @@ def execute_and_record(
 
     # ENTRY
     if not is_exit:
-        # OPEN position first (SSOT)
         pos_side = "LONG" if side_u == "BUY" else "SHORT"
-        pos_id_new = open_position(
-            side=str(pos_side),
-            qty=float(qty_btc),
-            entry_price=float(price),
-            open_time=candle_open_time,
-            entry_client_order_id=None,
-        )
-        if pos_id_new is None:
-            return {
-                "ledger_ok": True,
-                "live_attempted": False,
-                "live_ok": False,
-                "blocked_reason": "ALREADY_OPEN",
-                "client_order_id": None,
-                "resp": None,
-            }
-        pos_id = pos_id_new
+
+        if cfg_used.trading_mode != "LIVE":
+            # PAPER: local OPEN immediately
+            pos_id_new = open_position(
+                side=str(pos_side),
+                qty=float(qty_btc),
+                entry_price=float(price),
+                open_time=candle_open_time,
+                entry_client_order_id=None,
+            )
+            if pos_id_new is None:
+                return {
+                    "ledger_ok": True,
+                    "live_attempted": False,
+                    "live_ok": False,
+                    "blocked_reason": "ALREADY_OPEN",
+                    "client_order_id": None,
+                    "resp": None,
+                }
+            pos_id = pos_id_new
+        else:
+            # LIVE: do NOT open locally before exchange ACK/fill
+            existing_open = get_open_position()
+            if existing_open:
+                return {
+                    "ledger_ok": True,
+                    "live_attempted": False,
+                    "live_ok": False,
+                    "blocked_reason": "ALREADY_OPEN",
+                    "client_order_id": None,
+                    "resp": None,
+                }
+            pos_id = None
+
         tag = "E"
 
     # EXIT
@@ -1255,17 +1274,6 @@ def execute_and_record(
         tag = "X"
 
     if not is_exit:
-        existing_open = get_open_position()
-        if existing_open:
-            return {
-                "ledger_ok": True,
-                "live_attempted": False,
-                "live_ok": False,
-                "blocked_reason": "ALREADY_OPEN",
-                "client_order_id": None,
-                "resp": None,
-            }
-
         client_order_id = build_live_entry_intent_client_order_id(
             cfg_used.symbol,
             STRATEGY_NAME,
