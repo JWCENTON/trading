@@ -240,6 +240,8 @@ logs/
 *.crt
 secrets/
 **/secrets/
+edge/certs/*
+!edge/certs/.gitkeep
 
 # Frontend
 node_modules/
