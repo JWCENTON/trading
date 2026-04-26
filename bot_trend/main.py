@@ -1463,7 +1463,6 @@ def execute_and_record(
             side=("LONG" if str(side).upper() == "BUY" else "SHORT"),
             qty=float(executed_f),
             entry_price=float(avg_px),
-            open_time=candle_open_time,
             entry_order_id=str(order_id) if order_id is not None else None,
             entry_client_order_id=str(client_order_id),
         )
