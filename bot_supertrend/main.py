@@ -27,6 +27,7 @@ from common.execution import place_live_order
 from common.sizing import compute_qty_from_notional as common_compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
+from common.win_streak import get_recent_win_streak
 
 
 logging.basicConfig(
@@ -1843,10 +1844,13 @@ def run_strategy(latest, prev):
 
         settings_snapshot = get_user_settings_snapshot()
         manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
+        configured_three_win_boost_usdc = float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0)
+        recent_win_streak = get_recent_win_streak(strategy=STRATEGY_NAME, symbol=SYMBOL, interval=INTERVAL, required_wins=3)
+        applied_three_win_boost_usdc = configured_three_win_boost_usdc if recent_win_streak.eligible else 0.0
         base_target_notional = float(LIVE_TARGET_NOTIONAL)
-        final_target_notional = base_target_notional + manual_entry_addon_usdc
+        final_target_notional = base_target_notional + manual_entry_addon_usdc + applied_three_win_boost_usdc
 
-        if manual_entry_addon_usdc > 0:
+        if (manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0):
             qty_btc, sizing_info = compute_qty_from_notional_safe(
                 client,
                 symbol=SYMBOL,
@@ -1866,8 +1870,14 @@ def run_strategy(latest, prev):
                 **sizing_info,
                 "base_target_notional": base_target_notional,
                 "manual_entry_addon_usdc": manual_entry_addon_usdc,
-                "configured_three_win_boost_usdc": float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0),
-                "three_win_boost_active": base_target_notional > float(SYSTEM_MIN_ENTRY_USDC),
+                "configured_three_win_boost_usdc": float(configured_three_win_boost_usdc),
+                "recent_closed_trades_checked": int(recent_win_streak.checked),
+                "recent_win_streak_required": int(recent_win_streak.required),
+                "recent_win_streak": int(recent_win_streak.streak),
+                "three_win_boost_active": bool(recent_win_streak.eligible),
+                "applied_three_win_boost_usdc": float(applied_three_win_boost_usdc),
+                "win_streak_source": recent_win_streak.source,
+                "win_streak_error": recent_win_streak.error,
                 "final_target_notional": float(final_target_notional),
             },
         )

@@ -27,6 +27,7 @@ from common.position_path import load_position_path_snapshot
 from common.exit_guards.guarded_profit import evaluate_guarded_profit
 from common.exit_guards.early_cut_adaptive import AdaptiveEarlyCutConfig, evaluate_adaptive_early_cut_long
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
+from common.win_streak import get_recent_win_streak
 from common.execution import (
     place_live_order,
     build_live_client_order_id,
@@ -1427,6 +1428,67 @@ def execute_and_record(
         },
     )
 
+
+    if (
+        cfg_used.trading_mode == "LIVE"
+        and not is_exit
+        and live_ok
+        and executed_f > 0.0
+    ):
+        order_id = raw.get("orderId")
+
+        avg_px = None
+        try:
+            fills = raw.get("fills") or []
+            if fills:
+                total_qty = 0.0
+                total_quote = 0.0
+                for fl in fills:
+                    q = float(fl.get("qty") or 0.0)
+                    p = float(fl.get("price") or 0.0)
+                    total_qty += q
+                    total_quote += q * p
+                if total_qty > 0.0:
+                    avg_px = total_quote / total_qty
+        except Exception:
+            avg_px = None
+
+        if avg_px is None:
+            try:
+                avg_px = float(raw.get("price") or price)
+            except Exception:
+                avg_px = float(price)
+
+        pos_id_new = open_position_from_live_ack(
+            side=("LONG" if str(side).upper() == "BUY" else "SHORT"),
+            qty=float(executed_f),
+            entry_price=float(avg_px),
+            open_time=candle_open_time,
+            entry_order_id=str(order_id) if order_id is not None else None,
+            entry_client_order_id=str(client_order_id),
+        )
+
+        if not pos_id_new:
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision=side,
+                reason="LIVE_ENTRY_ACK_BUT_POSITION_NOT_OPENED",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={
+                    "client_order_id": client_order_id,
+                    "order_id": order_id,
+                    "executed_qty": executed_f,
+                    "avg_px": avg_px,
+                    "resp": raw,
+                },
+            )
+            raise RuntimeError(
+                "TREND live entry ACK but position not opened: "
+                f"symbol={cfg_used.symbol} interval={cfg_used.interval} "
+                f"client_order_id={client_order_id} order_id={order_id}"
+            )
+
     return {
         "ledger_ok": True,
         "live_attempted": True,
@@ -2516,10 +2578,13 @@ def run_trend_strategy():
 
         settings_snapshot = get_user_settings_snapshot()
         manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
+        configured_three_win_boost_usdc = float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0)
+        recent_win_streak = get_recent_win_streak(strategy=STRATEGY_NAME, symbol=SYMBOL, interval=INTERVAL, required_wins=3)
+        applied_three_win_boost_usdc = configured_three_win_boost_usdc if recent_win_streak.eligible else 0.0
         base_target_notional = float(LIVE_TARGET_NOTIONAL)
-        final_target_notional = base_target_notional + manual_entry_addon_usdc
+        final_target_notional = base_target_notional + manual_entry_addon_usdc + applied_three_win_boost_usdc
 
-        if cfg_effective.trading_mode == "LIVE" and manual_entry_addon_usdc > 0:
+        if cfg_effective.trading_mode == "LIVE" and (manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0):
             qty_btc, sizing_info = compute_qty_from_notional(
                 client,
                 symbol=SYMBOL,
@@ -2539,8 +2604,14 @@ def run_trend_strategy():
                 **sizing_info,
                 "base_target_notional": base_target_notional,
                 "manual_entry_addon_usdc": manual_entry_addon_usdc,
-                "configured_three_win_boost_usdc": float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0),
-                "three_win_boost_active": base_target_notional > float(SYSTEM_MIN_ENTRY_USDC),
+                "configured_three_win_boost_usdc": float(configured_three_win_boost_usdc),
+                "recent_closed_trades_checked": int(recent_win_streak.checked),
+                "recent_win_streak_required": int(recent_win_streak.required),
+                "recent_win_streak": int(recent_win_streak.streak),
+                "three_win_boost_active": bool(recent_win_streak.eligible),
+                "applied_three_win_boost_usdc": float(applied_three_win_boost_usdc),
+                "win_streak_source": recent_win_streak.source,
+                "win_streak_error": recent_win_streak.error,
                 "final_target_notional": float(final_target_notional),
             },
         )
