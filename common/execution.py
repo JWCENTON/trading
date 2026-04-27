@@ -565,6 +565,23 @@ def place_live_order(
         executed_qty = _safe_float(resp.get("executedQty"), 0.0)
         live_ok = (status == "FILLED") or (executed_qty > 0.0)
 
+        # --- SSOT attach (CRITICAL FIX) ---
+        if live_ok and db_conn is not None and position_id is not None and leg is not None:
+            try:
+                order_id = resp.get("orderId")
+                _attach_order_to_position(
+                    db_conn,
+                    position_id=int(position_id),
+                    leg=str(leg),
+                    client_order_id=str(client_order_id),
+                    order_id=str(order_id) if order_id is not None else None,
+                )
+            except Exception as e:
+                logging.exception(
+                    "SSOT ATTACH FAILED position_id=%s leg=%s clientOrderId=%s err=%s",
+                    position_id, leg, client_order_id, str(e)
+                )
+
         return {
             "ok": True,
             "live_ok": bool(live_ok),
