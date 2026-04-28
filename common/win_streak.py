@@ -16,8 +16,32 @@ class RecentWinStreak:
     required: int
     streak: int
     eligible: bool
-    source: str = "positions_closed_pnl_v1"
+    source: str = "positions_closed_calc_pnl_v2"
     error: Optional[str] = None
+
+
+def _calc_gross_pnl_usdc(*, side, qty, entry_price, exit_price) -> Decimal:
+    """
+    Calculate gross PnL from positions columns.
+
+    LONG:  (exit_price - entry_price) * qty
+    SHORT: (entry_price - exit_price) * qty
+
+    This intentionally avoids positions.pnl because that column does not exist.
+    Commission-aware net PnL can be added later using binance_order_fills,
+    but win-streak boost must first be schema-safe and fail-closed.
+    """
+    side_u = str(side or "").upper()
+    qty_d = Decimal(str(qty))
+    entry_d = Decimal(str(entry_price))
+    exit_d = Decimal(str(exit_price))
+
+    if side_u == "LONG":
+        return (exit_d - entry_d) * qty_d
+    if side_u == "SHORT":
+        return (entry_d - exit_d) * qty_d
+
+    return Decimal("0")
 
 
 def get_recent_win_streak(
@@ -31,9 +55,12 @@ def get_recent_win_streak(
     Count consecutive winning CLOSED positions for exactly one slot:
     strategy + symbol + interval.
 
-    A win is defined as positions.pnl > 0. If fewer than required_wins
-    CLOSED rows exist, eligibility is false. On DB/query errors, fail closed:
-    return eligible=false and expose the error in telemetry.
+    A win is defined as calculated gross PnL > 0 from positions:
+      LONG  => (exit_price - entry_price) * qty
+      SHORT => (entry_price - exit_price) * qty
+
+    If fewer than required_wins CLOSED rows exist, eligibility is false.
+    On DB/query/data errors, fail closed: eligible=false and expose error.
     """
     required_wins = int(required_wins or 3)
     if required_wins <= 0:
@@ -46,14 +73,17 @@ def get_recent_win_streak(
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT pnl
+            SELECT id, side, qty, entry_price, exit_price
             FROM positions
             WHERE status = 'CLOSED'
               AND exit_time IS NOT NULL
+              AND qty IS NOT NULL
+              AND entry_price IS NOT NULL
+              AND exit_price IS NOT NULL
               AND strategy = %s
               AND symbol = %s
               AND interval = %s
-            ORDER BY exit_time DESC
+            ORDER BY exit_time DESC, id DESC
             LIMIT %s;
             """,
             (strategy, symbol, interval, required_wins),
@@ -62,8 +92,14 @@ def get_recent_win_streak(
         checked = len(rows)
 
         streak = 0
-        for (pnl,) in rows:
-            if pnl is not None and Decimal(str(pnl)) > Decimal("0"):
+        for _pos_id, side, qty, entry_price, exit_price in rows:
+            pnl = _calc_gross_pnl_usdc(
+                side=side,
+                qty=qty,
+                entry_price=entry_price,
+                exit_price=exit_price,
+            )
+            if pnl > Decimal("0"):
                 streak += 1
             else:
                 break
