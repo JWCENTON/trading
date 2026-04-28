@@ -39,6 +39,9 @@ services:
   automation-runner:
     env_file:
       - .env.paper
+    networks:
+      - default
+      - trading-edge
 
   bot-runner-orchestrator:
     build:
