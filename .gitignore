@@ -260,3 +260,5 @@ out/
 live.cookies
 paper.cookies
 cookies.txt
+
+!scripts/cleanup.sql
