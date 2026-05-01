@@ -59,6 +59,9 @@ SESSION_TTL_HOURS = int(os.environ.get("SESSION_TTL_HOURS", "24"))
 SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true"
 SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "lax")
 
+LOGIN_LOCK_WINDOW_MINUTES = int(os.environ.get("LOGIN_LOCK_WINDOW_MINUTES", "15"))
+LOGIN_LOCK_MAX_FAILED = int(os.environ.get("LOGIN_LOCK_MAX_FAILED", "5"))
+
 # Uwaga: tu mają być tylko paramy, które realnie chcesz pozwolić AI zmieniać.
 ALLOWED_PARAMS: dict[str, set[str]] = {
     "RSI": {
@@ -919,6 +922,79 @@ def db_cursor():
             except Exception: pass
 
 
+
+def get_client_ip(request: Request) -> Optional[str]:
+    forwarded_for = request.headers.get("x-forwarded-for") if request else None
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip() or None
+    real_ip = request.headers.get("x-real-ip") if request else None
+    if real_ip:
+        return real_ip.strip() or None
+    return request.client.host if request and request.client else None
+
+
+def get_user_agent(request: Request) -> Optional[str]:
+    return request.headers.get("user-agent") if request else None
+
+
+def record_auth_event(
+    *,
+    action: str,
+    result: str,
+    request: Request,
+    user_id: Optional[int] = None,
+    username: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> None:
+    try:
+        with db_cursor() as (conn, cur):
+            cur.execute(
+                """
+                INSERT INTO auth_login_events (
+                  created_at, user_id, username, action, result, ip, user_agent, reason
+                )
+                VALUES (now(), %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (user_id, username, action, result, get_client_ip(request), get_user_agent(request), reason),
+            )
+            conn.commit()
+    except Exception as exc:
+        logging.warning("auth event write failed: %s", exc)
+
+
+def count_recent_failed_logins(*, request: Request, username: str) -> int:
+    client_ip = get_client_ip(request)
+    with db_cursor() as (_conn, cur):
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM auth_login_events
+            WHERE action = 'LOGIN_FAILED'
+              AND result = 'FAIL'
+              AND created_at > now() - (%s || ' minutes')::interval
+              AND (lower(username) = lower(%s) OR ip = %s)
+            """,
+            (LOGIN_LOCK_WINDOW_MINUTES, username, client_ip),
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
+def assert_login_not_locked(*, request: Request, username: str) -> None:
+    if count_recent_failed_logins(request=request, username=username) >= LOGIN_LOCK_MAX_FAILED:
+        record_auth_event(
+            action="LOGIN_FAILED",
+            result="FAIL",
+            request=request,
+            username=username,
+            reason="TEMPORARY_LOCK",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed login attempts; try again later",
+        )
+
+
 def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -944,8 +1020,8 @@ def create_session(*, user_id: int, request: Request) -> tuple[str, datetime]:
     token_hash = hash_session_token(raw_token)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)
 
-    client_ip = request.client.host if request and request.client else None
-    user_agent = request.headers.get("user-agent") if request else None
+    client_ip = get_client_ip(request)
+    user_agent = get_user_agent(request)
 
     with db_cursor() as (conn, cur):
         cur.execute(
@@ -1146,7 +1222,16 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
     username = (payload.username or "").strip()
 
     if not username or not payload.password:
+        record_auth_event(
+            action="LOGIN_FAILED",
+            result="FAIL",
+            request=request,
+            username=username or None,
+            reason="MISSING_USERNAME_OR_PASSWORD",
+        )
         raise HTTPException(status_code=400, detail="username and password are required")
+
+    assert_login_not_locked(request=request, username=username)
 
     with db_cursor() as (conn, cur):
         cur.execute(
@@ -1161,6 +1246,13 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
         row = cur.fetchone()
 
     if not row:
+        record_auth_event(
+            action="LOGIN_FAILED",
+            result="FAIL",
+            request=request,
+            username=username,
+            reason="INVALID_CREDENTIALS",
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
     user_id = int(row[0])
@@ -1171,9 +1263,25 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
     must_change_password = bool(row[5])
 
     if not is_active:
+        record_auth_event(
+            action="LOGIN_FAILED",
+            result="FAIL",
+            request=request,
+            user_id=user_id,
+            username=db_username,
+            reason="USER_INACTIVE",
+        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="user inactive")
 
     if not verify_password(payload.password, password_hash):
+        record_auth_event(
+            action="LOGIN_FAILED",
+            result="FAIL",
+            request=request,
+            user_id=user_id,
+            username=db_username,
+            reason="INVALID_CREDENTIALS",
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
     raw_token, expires_at = create_session(user_id=user_id, request=request)
@@ -1198,6 +1306,14 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
         must_change_password=must_change_password,
     )
     request.state.current_user = user
+    record_auth_event(
+        action="LOGIN_SUCCESS",
+        result="OK",
+        request=request,
+        user_id=user_id,
+        username=db_username,
+        reason=None,
+    )
 
     return AuthMeResponse(authenticated=True, user=user)
 
@@ -1208,8 +1324,18 @@ def auth_logout(
     response: Response,
     session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ):
+    user = get_current_user_from_session_token(session_token)
     revoke_session(session_token)
     clear_session_cookie(response)
+    if user is not None:
+        record_auth_event(
+            action="LOGOUT",
+            result="OK",
+            request=request,
+            user_id=user.id,
+            username=user.username,
+            reason=None,
+        )
     request.state.current_user = None
     return {"ok": True}
 
@@ -1235,12 +1361,15 @@ def auth_change_password(
     session_token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ):
     if not payload.old_password or not payload.new_password:
+        record_auth_event(action="PASSWORD_CHANGE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="MISSING_PASSWORD")
         raise HTTPException(status_code=400, detail="old_password and new_password are required")
 
     if len(payload.new_password) < 10:
+        record_auth_event(action="PASSWORD_CHANGE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="NEW_PASSWORD_TOO_SHORT")
         raise HTTPException(status_code=400, detail="new_password must be at least 10 characters")
 
     if payload.new_password == payload.old_password:
+        record_auth_event(action="PASSWORD_CHANGE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="NEW_PASSWORD_SAME_AS_OLD")
         raise HTTPException(status_code=400, detail="new_password must be different")
 
     with db_cursor() as (conn, cur):
@@ -1256,10 +1385,12 @@ def auth_change_password(
         row = cur.fetchone()
 
     if not row:
+        record_auth_event(action="PASSWORD_CHANGE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="USER_NOT_FOUND")
         raise HTTPException(status_code=404, detail="user not found")
 
     current_hash = str(row[0])
     if not verify_password(payload.old_password, current_hash):
+        record_auth_event(action="PASSWORD_CHANGE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="INVALID_OLD_PASSWORD")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid old_password")
 
     new_hash = hash_password(payload.new_password)
@@ -1270,6 +1401,7 @@ def auth_change_password(
             UPDATE users
             SET password_hash = %s,
                 must_change_password = FALSE,
+                password_changed_at = now(),
                 updated_at = now()
             WHERE id = %s
             """,
@@ -1285,8 +1417,87 @@ def auth_change_password(
         is_admin=user.is_admin,
         must_change_password=False,
     )
+    record_auth_event(action="PASSWORD_CHANGED", result="OK", request=request, user_id=user.id, username=user.username, reason=None)
 
     return {"ok": True, "must_change_password": False}
+
+
+@app.get("/auth/security-summary")
+def auth_security_summary(user: CurrentUser = Depends(require_auth)):
+    with db_cursor() as (_conn, cur):
+        cur.execute(
+            """
+            SELECT last_login_at, password_changed_at
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (user.id,),
+        )
+        user_row = cur.fetchone()
+
+        cur.execute(
+            """
+            SELECT created_at, ip, user_agent
+            FROM auth_login_events
+            WHERE user_id = %s
+              AND action = 'LOGIN_SUCCESS'
+              AND result = 'OK'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (user.id,),
+        )
+        last_success = cur.fetchone()
+
+        cur.execute(
+            """
+            SELECT created_at, username, ip, user_agent, reason
+            FROM auth_login_events
+            WHERE action = 'LOGIN_FAILED'
+              AND (user_id = %s OR lower(username) = lower(%s))
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            (user.id, user.username),
+        )
+        failed_rows = cur.fetchall() or []
+
+        cur.execute(
+            """
+            SELECT count(*)
+            FROM auth_sessions
+            WHERE user_id = %s
+              AND revoked_at IS NULL
+              AND expires_at > now()
+            """,
+            (user.id,),
+        )
+        active_sessions_row = cur.fetchone()
+
+    return {
+        "user_id": user.id,
+        "username": user.username,
+        "last_login_at": user_row[0] if user_row else None,
+        "password_changed_at": user_row[1] if user_row else None,
+        "last_successful_login": {
+            "created_at": last_success[0] if last_success else None,
+            "ip": last_success[1] if last_success else None,
+            "user_agent": last_success[2] if last_success else None,
+        },
+        "failed_logins": [
+            {
+                "created_at": r[0],
+                "username": r[1],
+                "ip": r[2],
+                "user_agent": r[3],
+                "reason": r[4],
+            }
+            for r in failed_rows
+        ],
+        "active_sessions": int(active_sessions_row[0] or 0) if active_sessions_row else 0,
+    }
+
 
 
 @app.get("/candles/latest", response_model=List[Candle])

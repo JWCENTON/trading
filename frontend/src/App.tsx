@@ -4,6 +4,7 @@ import {
   login,
   logout,
   changePassword,
+  getSecuritySummary,
   getUiAccount,
   getUiAdvancedSummary,
   getUserSettings,
@@ -21,6 +22,7 @@ import {
   updateSlotControl,
   updateSlotManualControl,
   type AuthUser,
+  type SecuritySummary,
   type UiAccountSummary,
   type UiEnvironment,
   type UiHealthResponse,
@@ -72,11 +74,14 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
-  const [loginUsername, setLoginUsername] = useState("admin");
+  const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+
+  const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(null);
+  const [securityLoading, setSecurityLoading] = useState(false);
 
   const checkAuth = useCallback(async () => {
     setError(null);
@@ -231,6 +236,18 @@ function App() {
       setLoading(false);
     }
   }, [environment]);
+
+  const loadSecuritySummary = useCallback(async () => {
+    try {
+      setSecurityLoading(true);
+      const res = await getSecuritySummary();
+      setSecuritySummary(res);
+    } catch (e) {
+      console.error("security summary failed", e);
+    } finally {
+      setSecurityLoading(false);
+    }
+  }, []);
 
   const loadHealth = useCallback(async () => {
     setError(null);
@@ -387,6 +404,12 @@ function App() {
       setThreeWinBoostInput(String(settings.three_win_boost_usdc ?? 10));
     }
   }, [settings]);
+
+  useEffect(() => {
+    if (activeTab === "security" && authenticated) {
+      void loadSecuritySummary();
+    }
+  }, [activeTab, authenticated, loadSecuritySummary]);
 
   const subtitle = useMemo(() => {
     if (activeTab === "security") {
@@ -546,7 +569,7 @@ function App() {
             <div className="panel-header">
               <h2>Security</h2>
               <span className="panel-meta">
-                {currentUser?.must_change_password ? "Password change required" : "Password & session"}
+                {securityLoading ? "Loading security..." : currentUser?.must_change_password ? "Password change required" : "Password & session"}
               </span>
             </div>
 
@@ -606,6 +629,37 @@ function App() {
                   Logout
                 </button>
               </div>
+            
+              {securitySummary && (
+                <div className="info-tile" style={{ marginTop: 20 }}>
+                  <strong>Last login:</strong> {securitySummary.last_login_at ?? "-"}<br />
+                  <strong>Password changed:</strong> {securitySummary.password_changed_at ?? "-"}<br />
+                  <strong>Active sessions:</strong> {securitySummary.active_sessions}
+                </div>
+              )}
+
+              {securitySummary?.last_successful_login && (
+                <div className="info-tile" style={{ marginTop: 10 }}>
+                  <strong>Last successful login</strong><br />
+                  {securitySummary.last_successful_login.created_at}<br />
+                  IP: {securitySummary.last_successful_login.ip}<br />
+                  UA: {securitySummary.last_successful_login.user_agent}
+                </div>
+              )}
+
+              {securitySummary?.failed_logins?.length ? (
+                <div className="info-tile" style={{ marginTop: 10 }}>
+                  <strong>Recent failed logins</strong>
+                  <ul>
+                    {securitySummary.failed_logins.slice(0,5).map((f, i) => (
+                      <li key={i}>
+                        {f.created_at} | {f.ip} | {f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
             </div>
           </section>
         ) : null}
@@ -735,6 +789,7 @@ function App() {
                   Refresh advanced
                 </button>
               </div>
+            
             </div>
           </section>
         ) : null}

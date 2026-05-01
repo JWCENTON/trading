@@ -587,6 +587,26 @@ export interface LoginRequest {
   password: string;
 }
 
+export interface SecuritySummary {
+  user_id: number;
+  username: string;
+  last_login_at: string | null;
+  password_changed_at: string | null;
+  last_successful_login: {
+    created_at: string | null;
+    ip: string | null;
+    user_agent: string | null;
+  };
+  failed_logins: {
+    created_at: string;
+    username: string;
+    ip: string;
+    user_agent: string;
+    reason: string;
+  }[];
+  active_sessions: number;
+}
+
 export interface ChangePasswordRequest {
   old_password: string;
   new_password: string;
@@ -839,6 +859,11 @@ export async function login(payload: LoginRequest): Promise<AuthMeResponse> {
 
 export async function logout(): Promise<{ ok: boolean }> {
   const response = await getApi().post<{ ok: boolean }>("/auth/logout");
+  return response.data;
+}
+
+export async function getSecuritySummary(): Promise<SecuritySummary> {
+  const response = await getApi().get<SecuritySummary>("/auth/security-summary");
   return response.data;
 }
 
