@@ -92,8 +92,8 @@ def get_recent_win_streak(
                 p.id,
                 p.exit_reason,
                 p.entry_context_json,
-                COALESCE(v.pnl_net_real_usdc, p.net_pnl_usdc) AS net_pnl_usdc,
-                COALESCE(v.pnl_gross_real_usdc, p.gross_pnl_usdc) AS gross_pnl_usdc,
+                v.pnl_net_real_usdc AS net_pnl_usdc,
+                v.pnl_gross_real_usdc AS gross_pnl_usdc,
                 v.pnl_gross_real_pct AS gross_pct
             FROM positions p
             LEFT JOIN v_positions_pnl_net_real_ssot v ON v.id = p.id
