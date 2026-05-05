@@ -2854,8 +2854,11 @@ def run_strategy(row, prev_row=None):
             qty_btc = float(ORDER_QTY_BTC)
 
         settings_snapshot = get_user_settings_snapshot()
-        manual_entry_addon_usdc = float(settings_snapshot.get("manual_entry_addon_usdc", 0.0) or 0.0)
-        configured_three_win_boost_usdc = float(settings_snapshot.get("three_win_boost_usdc", 10.0) or 10.0)
+        raw_manual_entry_addon_usdc = settings_snapshot.get("manual_entry_addon_usdc")
+        manual_entry_addon_usdc = 0.0 if raw_manual_entry_addon_usdc is None else float(raw_manual_entry_addon_usdc)
+
+        raw_three_win_boost_usdc = settings_snapshot.get("three_win_boost_usdc")
+        configured_three_win_boost_usdc = 10.0 if raw_three_win_boost_usdc is None else float(raw_three_win_boost_usdc)
         recent_win_streak = get_recent_win_streak(strategy=STRATEGY_NAME, symbol=SYMBOL, interval=INTERVAL, required_wins=3)
         applied_three_win_boost_usdc = configured_three_win_boost_usdc if recent_win_streak.eligible else 0.0
         base_target_notional = float(ORDER_NOTIONAL_USDC)
