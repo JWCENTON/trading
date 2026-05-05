@@ -1353,6 +1353,59 @@ def auth_me(
     return AuthMeResponse(authenticated=True, user=user)
 
 
+@app.get("/ui/api-key-status")
+def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
+    configured = bool(BINANCE_API_KEY and BINANCE_API_SECRET)
+
+    status_payload = {
+        "configured": configured,
+        "key_source": "env" if configured else "missing",
+        "can_read_account": False,
+        "account_read_check": "NOT_CONFIGURED" if not configured else "UNKNOWN",
+        "spot_trading_check": "UNKNOWN",
+        "withdraw_permission": "MUST_BE_DISABLED_BY_USER_CONFIRMATION",
+        "ip_whitelist_recommended": True,
+        "secrets_exposed": False,
+    }
+
+    if not configured or binance_client is None:
+        return status_payload
+
+    try:
+        account = binance_client.get_account()
+        status_payload["can_read_account"] = True
+        status_payload["account_read_check"] = "OK"
+
+        can_trade = bool(account.get("canTrade"))
+        account_can_withdraw_reported = bool(account.get("canWithdraw"))
+
+        status_payload["spot_trading_check"] = "OK" if can_trade else "FAIL"
+        status_payload["binance_can_trade"] = can_trade
+
+        # Binance account.canWithdraw is account-level/capability-style data and is not a reliable
+        # proof that this specific API key has withdrawal permission enabled.
+        # Withdrawal permission must be confirmed by the user in Binance API Management UI.
+        status_payload["account_can_withdraw_reported"] = account_can_withdraw_reported
+        status_payload["withdraw_permission"] = "USER_CONFIRMATION_REQUIRED"
+        status_payload["required_user_confirmation"] = {
+            "reading_enabled": True,
+            "spot_trading_enabled": True,
+            "withdrawals_disabled": True,
+            "margin_loan_repay_transfer_disabled": True,
+            "internal_transfer_disabled": True,
+            "universal_transfer_disabled": True,
+            "ip_whitelist_enabled": True,
+        }
+
+    except Exception as e:
+        logging.warning("API key status check failed: %s", str(e))
+        status_payload["account_read_check"] = "FAIL"
+        status_payload["spot_trading_check"] = "UNKNOWN"
+        status_payload["error"] = "BINANCE_ACCOUNT_CHECK_FAILED"
+
+    return status_payload
+
+
 @app.post("/auth/change-password")
 def auth_change_password(
     payload: ChangePasswordRequest,
