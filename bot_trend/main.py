@@ -2580,7 +2580,7 @@ def run_trend_strategy():
         manual_entry_addon_usdc = 0.0 if raw_manual_entry_addon_usdc is None else float(raw_manual_entry_addon_usdc)
 
         raw_three_win_boost_usdc = settings_snapshot.get("three_win_boost_usdc")
-        configured_three_win_boost_usdc = 10.0 if raw_three_win_boost_usdc is None else float(raw_three_win_boost_usdc)
+        configured_three_win_boost_usdc = 0.0 if raw_three_win_boost_usdc is None else float(raw_three_win_boost_usdc)
         recent_win_streak = get_recent_win_streak(strategy=STRATEGY_NAME, symbol=SYMBOL, interval=INTERVAL, required_wins=3)
         applied_three_win_boost_usdc = configured_three_win_boost_usdc if recent_win_streak.eligible else 0.0
         base_target_notional = float(LIVE_TARGET_NOTIONAL)

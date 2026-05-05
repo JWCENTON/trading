@@ -6,7 +6,7 @@ from common.db import get_db_conn
 
 SYSTEM_MIN_ENTRY_USDC = 6.0
 DEFAULT_MANUAL_ENTRY_ADDON_USDC = 0.0
-DEFAULT_THREE_WIN_BOOST_USDC = 10.0
+DEFAULT_THREE_WIN_BOOST_USDC = 0.0
 
 
 def ensure_user_settings_table(cur) -> None:
@@ -36,7 +36,7 @@ def ensure_user_settings_table(cur) -> None:
     cur.execute(
         """
         ALTER TABLE user_settings
-        ADD COLUMN IF NOT EXISTS three_win_boost_usdc NUMERIC(18,8) NOT NULL DEFAULT 10;
+        ADD COLUMN IF NOT EXISTS three_win_boost_usdc NUMERIC(18,8) NOT NULL DEFAULT 0;
         """
     )
     cur.execute(

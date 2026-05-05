@@ -3879,7 +3879,7 @@ def put_settings_user(
 def post_settings_user_restore_defaults(user: CurrentUser = Depends(require_auth)):
     settings = upsert_user_settings(
         manual_entry_addon_usdc=0.0,
-        three_win_boost_usdc=10.0,
+        three_win_boost_usdc=0.0,
     )
     return RestoreDefaultsResponse(ok=True, settings=UIUserSettingsResponse(**settings))
 
