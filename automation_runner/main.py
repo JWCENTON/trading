@@ -134,13 +134,37 @@ def run_orc_v5_apply(conn):
             AND interval IN ('1m','5m')
             AND strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
         ),
+        explore_enabled AS (
+        SELECT COALESCE((
+            SELECT value IN ('1','true','TRUE','yes','on')
+            FROM automation_kv
+            WHERE key = 'orc_explore_enabled'
+        ), false) AS enabled
+        ),
         picks AS (
-          SELECT symbol, interval, strategy
-          FROM v_orc_picks_v5
+        SELECT
+            symbol,
+            interval,
+            strategy,
+            'ORC_V5' AS pick_source
+        FROM v_orc_picks_v5
+
+        UNION ALL
+
+        SELECT
+            e.symbol,
+            e.interval,
+            e.strategy,
+            'ORC_EXPLORE_V1' AS pick_source
+        FROM v_orc_exploration_picks_v1 e
+        CROSS JOIN explore_enabled x
+        WHERE x.enabled = true
         ),
         desired AS (
-          SELECT u.*,
-                 (p.symbol IS NOT NULL) AS want_on
+          SELECT
+            u.*,
+            (p.symbol IS NOT NULL) AS want_on,
+            p.pick_source
           FROM universe u
           LEFT JOIN picks p
             ON p.symbol=u.symbol AND p.interval=u.interval AND p.strategy=u.strategy
@@ -156,10 +180,13 @@ def run_orc_v5_apply(conn):
             regime_enabled = true,
             regime_mode = CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END,
             updated_at = now(),
-            reason = CASE WHEN d.want_on
-                          THEN 'ORC_V5: picked (entries ON, ENFORCE)'
-                          ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
-                     END,
+            reason = CASE
+                WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
+                    THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
+                WHEN d.want_on
+                    THEN 'ORC_V5: picked (entries ON, ENFORCE)'
+                ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
+                END,
             live_since = CASE
               WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
               ELSE bc.live_since
@@ -179,10 +206,13 @@ def run_orc_v5_apply(conn):
               OR bc.manual_override_updated_at IS NOT NULL
               OR bc.regime_mode IS DISTINCT FROM (CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END)
               OR bc.regime_enabled IS DISTINCT FROM true
-              OR bc.reason IS DISTINCT FROM (CASE WHEN d.want_on
+              OR bc.reason IS DISTINCT FROM (CASE
+                            WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
+                                THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
+                            WHEN d.want_on
                                 THEN 'ORC_V5: picked (entries ON, ENFORCE)'
-                                ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
-                           END)
+                            ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
+                            END)
             )
           RETURNING d.want_on
         )
@@ -192,7 +222,7 @@ def run_orc_v5_apply(conn):
           (SELECT COUNT(*) FROM applied)                       AS touched,
           (SELECT COUNT(*) FROM applied WHERE want_on)         AS touched_on,
           (SELECT COUNT(*) FROM applied WHERE NOT want_on)     AS touched_off,
-          (SELECT md5(string_agg(symbol||'|'||interval||'|'||strategy, ',' ORDER BY symbol, interval, strategy)) FROM picks) AS picks_hash;
+          (SELECT md5(string_agg(symbol||'|'||interval||'|'||strategy||'|'||pick_source, ',' ORDER BY symbol, interval, strategy, pick_source)) FROM picks) AS picks_hash;
         """
 
         cur.execute(sql)
