@@ -607,6 +607,44 @@ export interface SecuritySummary {
   active_sessions: number;
 }
 
+export interface ApiKeyStatusResponse {
+  configured: boolean;
+  key_source: string;
+  can_read_account: boolean;
+  account_read_check: string;
+  spot_trading_check: string;
+  withdraw_permission: string;
+  ip_whitelist_recommended: boolean;
+  secrets_exposed: boolean;
+  binance_can_trade?: boolean;
+  account_can_withdraw_reported?: boolean;
+  safety_confirmed?: boolean;
+  safety_confirmed_at?: string | null;
+  required_user_confirmation?: {
+    reading_enabled: boolean;
+    spot_trading_enabled: boolean;
+    withdrawals_disabled: boolean;
+    margin_loan_repay_transfer_disabled: boolean;
+    internal_transfer_disabled: boolean;
+    universal_transfer_disabled: boolean;
+    ip_whitelist_enabled: boolean;
+  };
+}
+
+export interface ApiKeySafetyConfirmationRequest {
+  reading_enabled: boolean;
+  spot_trading_enabled: boolean;
+  withdrawals_disabled: boolean;
+  margin_loan_repay_transfer_disabled: boolean;
+  internal_transfer_disabled: boolean;
+  universal_transfer_disabled: boolean;
+  ip_whitelist_enabled: boolean;
+  risk_accepted: boolean;
+  no_investment_advice_ack: boolean;
+  client_controls_binance_account_ack: boolean;
+}
+
+
 export interface ChangePasswordRequest {
   old_password: string;
   new_password: string;
@@ -864,6 +902,21 @@ export async function logout(): Promise<{ ok: boolean }> {
 
 export async function getSecuritySummary(): Promise<SecuritySummary> {
   const response = await getApi().get<SecuritySummary>("/auth/security-summary");
+  return response.data;
+}
+
+export async function getApiKeyStatus(): Promise<ApiKeyStatusResponse> {
+  const response = await getApi().get<ApiKeyStatusResponse>("/ui/api-key-status");
+  return response.data;
+}
+
+export async function submitApiKeySafetyConfirmation(
+  payload: ApiKeySafetyConfirmationRequest,
+): Promise<{ ok: boolean; all_confirmed: boolean }> {
+  const response = await getApi().post<{ ok: boolean; all_confirmed: boolean }>(
+    "/ui/api-key-safety-confirmation",
+    payload,
+  );
   return response.data;
 }
 

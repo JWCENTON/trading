@@ -5,6 +5,8 @@ import {
   logout,
   changePassword,
   getSecuritySummary,
+  getApiKeyStatus,
+  submitApiKeySafetyConfirmation,
   getUiAccount,
   getUiAdvancedSummary,
   getUserSettings,
@@ -23,6 +25,7 @@ import {
   updateSlotManualControl,
   type AuthUser,
   type SecuritySummary,
+  type ApiKeyStatusResponse,
   type UiAccountSummary,
   type UiEnvironment,
   type UiHealthResponse,
@@ -82,6 +85,9 @@ function App() {
 
   const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatusResponse | null>(null);
+  const [apiKeyConfirmBusy, setApiKeyConfirmBusy] = useState(false);
+  const [apiKeyConfirmDone, setApiKeyConfirmDone] = useState(false);
 
   const checkAuth = useCallback(async () => {
     setError(null);
@@ -240,14 +246,51 @@ function App() {
   const loadSecuritySummary = useCallback(async () => {
     try {
       setSecurityLoading(true);
-      const res = await getSecuritySummary();
-      setSecuritySummary(res);
+      const [summaryRes, apiKeyRes] = await Promise.all([
+        getSecuritySummary(),
+        getApiKeyStatus(),
+      ]);
+      setSecuritySummary(summaryRes);
+      setApiKeyStatus(apiKeyRes);
+      setApiKeyConfirmDone(Boolean(apiKeyRes.safety_confirmed));
     } catch (e) {
       console.error("security summary failed", e);
     } finally {
       setSecurityLoading(false);
     }
   }, []);
+
+  const handleApiKeySafetyConfirm = useCallback(async () => {
+    try {
+      setApiKeyConfirmBusy(true);
+
+      const payload = {
+        reading_enabled: true,
+        spot_trading_enabled: true,
+        withdrawals_disabled: true,
+        margin_loan_repay_transfer_disabled: true,
+        internal_transfer_disabled: true,
+        universal_transfer_disabled: true,
+        ip_whitelist_enabled: true,
+        risk_accepted: true,
+        no_investment_advice_ack: true,
+        client_controls_binance_account_ack: true,
+      };
+
+      const res = await submitApiKeySafetyConfirmation(payload);
+
+      if (res.ok && res.all_confirmed) {
+        setApiKeyConfirmDone(true);
+      }
+
+      await loadSecuritySummary();
+    } catch (e) {
+      console.error("api key safety confirm failed", e);
+      setError("API key safety confirmation failed");
+    } finally {
+      setApiKeyConfirmBusy(false);
+    }
+  }, [loadSecuritySummary]);
 
   const loadHealth = useCallback(async () => {
     setError(null);
@@ -659,6 +702,45 @@ function App() {
                   </ul>
                 </div>
               ) : null}
+
+              <div className="info-tile" style={{ marginTop: 16 }}>
+                <strong>Binance API key safety</strong><br />
+                Configured: {apiKeyStatus?.configured ? "YES" : "NO"}<br />
+                Account read: {apiKeyStatus?.account_read_check ?? "-"}<br />
+                Spot trading: {apiKeyStatus?.spot_trading_check ?? "-"}<br />
+                Secret exposed: {apiKeyStatus?.secrets_exposed ? "YES - CHECK IMMEDIATELY" : "NO"}<br />
+                Withdraw permission: must be disabled in Binance API Management.<br />
+                IP whitelist: required/recommended.
+              </div>
+
+              <div className="info-tile" style={{ marginTop: 10 }}>
+                <strong>Required confirmation</strong>
+                <ul>
+                  <li>Reading permission is enabled.</li>
+                  <li>Spot trading permission is enabled.</li>
+                  <li>Withdrawal permission is disabled.</li>
+                  <li>Margin loan/repay/transfer is disabled.</li>
+                  <li>Internal transfer is disabled.</li>
+                  <li>Universal transfer is disabled.</li>
+                  <li>IP whitelist is enabled for this VPS.</li>
+                  <li>I understand crypto trading risk and possible losses.</li>
+                  <li>This software is not investment advice.</li>
+                  <li>I control the Binance account and API key.</li>
+                </ul>
+
+                <button
+                  className="action-button"
+                  onClick={() => void handleApiKeySafetyConfirm()}
+                  disabled={apiKeyConfirmBusy || apiKeyConfirmDone || !apiKeyStatus?.configured}
+                >
+                  {apiKeyConfirmBusy
+                    ? "Saving confirmation..."
+                    : apiKeyConfirmDone
+                      ? "Confirmed"
+                      : "Confirm API key safety checklist"}
+                </button>
+              </div>
+
 
             </div>
           </section>

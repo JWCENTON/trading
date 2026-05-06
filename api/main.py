@@ -1407,6 +1407,27 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
         "secrets_exposed": False,
     }
 
+    try:
+        with db_cursor() as (_conn, cur):
+            ensure_api_key_safety_confirmations_table(cur)
+            cur.execute(
+                """
+                SELECT created_at, all_confirmed
+                FROM api_key_safety_confirmations
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user.id,),
+            )
+            row = cur.fetchone()
+            status_payload["safety_confirmed"] = bool(row[1]) if row else False
+            status_payload["safety_confirmed_at"] = row[0].isoformat() if row and row[0] else None
+    except Exception as e:
+        logging.warning("API key safety confirmation lookup failed: %s", str(e))
+        status_payload["safety_confirmed"] = False
+        status_payload["safety_confirmed_at"] = None
+
     if not configured or binance_client is None:
         return status_payload
 
@@ -1478,7 +1499,7 @@ def post_api_key_safety_confirmation(
         payload.client_controls_binance_account_ack,
     ])
 
-    request_ip = get_request_ip(request)
+    request_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent")
 
     with db_cursor() as (conn, cur):
