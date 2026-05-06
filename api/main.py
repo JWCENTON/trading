@@ -476,6 +476,45 @@ def log_ui_action(cur, *, actor: str, actor_role: Optional[str], action: str, ta
     )
 
 
+def ensure_api_key_safety_confirmations_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_key_safety_confirmations (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          user_id BIGINT,
+          username TEXT NOT NULL,
+          reading_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+          spot_trading_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+          withdrawals_disabled BOOLEAN NOT NULL DEFAULT FALSE,
+          margin_loan_repay_transfer_disabled BOOLEAN NOT NULL DEFAULT FALSE,
+          internal_transfer_disabled BOOLEAN NOT NULL DEFAULT FALSE,
+          universal_transfer_disabled BOOLEAN NOT NULL DEFAULT FALSE,
+          ip_whitelist_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+          risk_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+          no_investment_advice_ack BOOLEAN NOT NULL DEFAULT FALSE,
+          client_controls_binance_account_ack BOOLEAN NOT NULL DEFAULT FALSE,
+          all_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+          ip TEXT,
+          user_agent TEXT
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_api_key_safety_confirmations_created_at
+          ON api_key_safety_confirmations(created_at DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_api_key_safety_confirmations_user_id
+          ON api_key_safety_confirmations(user_id);
+        """
+    )
+
+
 def get_request_actor(request: Optional[Request]) -> tuple[str, Optional[str], str]:
     if request is None:
         return ("system", "system", "api")
@@ -1404,6 +1443,115 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
         status_payload["error"] = "BINANCE_ACCOUNT_CHECK_FAILED"
 
     return status_payload
+
+
+
+class ApiKeySafetyConfirmationRequest(BaseModel):
+    reading_enabled: bool
+    spot_trading_enabled: bool
+    withdrawals_disabled: bool
+    margin_loan_repay_transfer_disabled: bool
+    internal_transfer_disabled: bool
+    universal_transfer_disabled: bool
+    ip_whitelist_enabled: bool
+    risk_accepted: bool
+    no_investment_advice_ack: bool
+    client_controls_binance_account_ack: bool
+
+
+@app.post("/ui/api-key-safety-confirmation")
+def post_api_key_safety_confirmation(
+    payload: ApiKeySafetyConfirmationRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_auth),
+):
+    all_confirmed = all([
+        payload.reading_enabled,
+        payload.spot_trading_enabled,
+        payload.withdrawals_disabled,
+        payload.margin_loan_repay_transfer_disabled,
+        payload.internal_transfer_disabled,
+        payload.universal_transfer_disabled,
+        payload.ip_whitelist_enabled,
+        payload.risk_accepted,
+        payload.no_investment_advice_ack,
+        payload.client_controls_binance_account_ack,
+    ])
+
+    request_ip = get_request_ip(request)
+    user_agent = request.headers.get("user-agent")
+
+    with db_cursor() as (conn, cur):
+        ensure_api_key_safety_confirmations_table(cur)
+
+        cur.execute(
+            """
+            INSERT INTO api_key_safety_confirmations (
+              user_id,
+              username,
+              reading_enabled,
+              spot_trading_enabled,
+              withdrawals_disabled,
+              margin_loan_repay_transfer_disabled,
+              internal_transfer_disabled,
+              universal_transfer_disabled,
+              ip_whitelist_enabled,
+              risk_accepted,
+              no_investment_advice_ack,
+              client_controls_binance_account_ack,
+              all_confirmed,
+              ip,
+              user_agent
+            )
+            VALUES (
+              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+            )
+            """,
+            (
+                user.id,
+                user.username,
+                payload.reading_enabled,
+                payload.spot_trading_enabled,
+                payload.withdrawals_disabled,
+                payload.margin_loan_repay_transfer_disabled,
+                payload.internal_transfer_disabled,
+                payload.universal_transfer_disabled,
+                payload.ip_whitelist_enabled,
+                payload.risk_accepted,
+                payload.no_investment_advice_ack,
+                payload.client_controls_binance_account_ack,
+                all_confirmed,
+                request_ip,
+                user_agent,
+            ),
+        )
+
+        actor, actor_role, source = get_request_actor(request)
+
+        log_ui_action(
+            cur,
+            actor=actor,
+            actor_role=actor_role,
+            action="API_KEY_SAFETY_CONFIRMED",
+            target_type="api_key_security",
+            target_key=user.username,
+            before_json=None,
+            after_json={
+                "all_confirmed": all_confirmed,
+                "risk_accepted": payload.risk_accepted,
+                "ip_whitelist_enabled": payload.ip_whitelist_enabled,
+                "withdrawals_disabled": payload.withdrawals_disabled,
+            },
+            source=source,
+            note="User confirmed Binance API key safety checklist",
+        )
+
+        conn.commit()
+
+    return {
+        "ok": True,
+        "all_confirmed": all_confirmed,
+    }
 
 
 @app.post("/auth/change-password")
