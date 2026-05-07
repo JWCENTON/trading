@@ -747,3 +747,423 @@ td {
   line-height: 1.5;
   padding: 0 2px;
 }
+
+:root {
+  color-scheme: dark;
+  --wt-bg: #050816;
+  --wt-panel: rgba(15, 23, 42, 0.92);
+  --wt-panel-soft: rgba(30, 41, 59, 0.72);
+  --wt-text: #e5e7eb;
+  --wt-muted: #94a3b8;
+  --wt-border: rgba(148, 163, 184, 0.22);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --wt-bg: #f6f8fc;
+  --wt-panel: rgba(255, 255, 255, 0.94);
+  --wt-panel-soft: rgba(241, 245, 249, 0.86);
+  --wt-text: #0f172a;
+  --wt-muted: #64748b;
+  --wt-border: rgba(15, 23, 42, 0.14);
+}
+
+body {
+  background: var(--wt-bg);
+  color: var(--wt-text);
+  transition: background 180ms ease, color 180ms ease;
+}
+
+.panel,
+.app-shell,
+.card,
+.table-card,
+.quick-actions-panel {
+  background: var(--wt-panel);
+  color: var(--wt-text);
+  border-color: var(--wt-border);
+}
+
+.panel-meta,
+.app-brand-env,
+.muted,
+small {
+  color: var(--wt-muted);
+}
+
+.theme-toggle {
+  margin-top: 8px;
+  border: 1px solid var(--wt-border);
+  background: var(--wt-panel-soft);
+  color: var(--wt-text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  filter: brightness(1.08);
+}
+
+:root[data-theme="light"] input,
+:root[data-theme="light"] select,
+:root[data-theme="light"] textarea {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: var(--wt-border);
+}
+
+/* Theme coverage fixes */
+.app-sidebar,
+.app-main,
+.page-header,
+.app-nav,
+.nav-button,
+.env-button,
+.action-button,
+.table-wrap,
+.desktop-table,
+.mobile-card,
+.security-card,
+.confirm-modal,
+.confirm-modal-body {
+  color: var(--wt-text);
+}
+
+.app-sidebar {
+  background: var(--wt-panel);
+  border-color: var(--wt-border);
+}
+
+:root[data-theme="light"] .app-brand,
+:root[data-theme="light"] .app-brand-subtitle,
+:root[data-theme="light"] .app-brand-env,
+:root[data-theme="light"] .page-header h1,
+:root[data-theme="light"] .page-header p,
+:root[data-theme="light"] .panel-header h2,
+:root[data-theme="light"] .nav-button,
+:root[data-theme="light"] .env-button-title,
+:root[data-theme="light"] td,
+:root[data-theme="light"] th,
+:root[data-theme="light"] label,
+:root[data-theme="light"] strong {
+  color: var(--wt-text);
+}
+
+:root[data-theme="light"] .panel-meta,
+:root[data-theme="light"] .mobile-card-meta,
+:root[data-theme="light"] .env-button-meta,
+:root[data-theme="light"] .app-brand-subtitle,
+:root[data-theme="light"] .app-brand-env,
+:root[data-theme="light"] th {
+  color: var(--wt-muted);
+}
+
+:root[data-theme="light"] .nav-button,
+:root[data-theme="light"] .env-button,
+:root[data-theme="light"] .action-button,
+:root[data-theme="light"] .mobile-card,
+:root[data-theme="light"] .table-wrap {
+  background: var(--wt-panel-soft);
+  border-color: var(--wt-border);
+}
+
+:root[data-theme="light"] .nav-button.active,
+:root[data-theme="light"] .env-button.active,
+:root[data-theme="light"] .action-button.is-active,
+:root[data-theme="light"] .action-button[aria-pressed="true"] {
+  background: rgba(37, 99, 235, 0.10);
+  border-color: rgba(37, 99, 235, 0.45);
+  color: #1d4ed8;
+}
+
+@media (max-width: 900px) {
+  .app-brand-row {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .theme-toggle {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 1000;
+    margin-top: 0;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.24);
+  }
+}
+
+/* Strong light-mode normalization */
+:root[data-theme="light"] body,
+:root[data-theme="light"] .app-shell,
+:root[data-theme="light"] .app-main {
+  background: var(--wt-bg);
+  color: var(--wt-text);
+}
+
+:root[data-theme="light"] .app-sidebar,
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .quick-actions-panel,
+:root[data-theme="light"] .mobile-card,
+:root[data-theme="light"] .confirm-modal,
+:root[data-theme="light"] .table-wrap {
+  background: var(--wt-panel);
+  color: var(--wt-text);
+  border-color: var(--wt-border);
+}
+
+:root[data-theme="light"] .app-sidebar *,
+:root[data-theme="light"] .panel *,
+:root[data-theme="light"] .quick-actions-panel *,
+:root[data-theme="light"] .mobile-card *,
+:root[data-theme="light"] .confirm-modal *,
+:root[data-theme="light"] table *,
+:root[data-theme="light"] .page-header * {
+  color: inherit;
+}
+
+:root[data-theme="light"] .panel-meta,
+:root[data-theme="light"] .app-brand-subtitle,
+:root[data-theme="light"] .app-brand-env,
+:root[data-theme="light"] .mobile-card-meta,
+:root[data-theme="light"] .env-button-meta,
+:root[data-theme="light"] th,
+:root[data-theme="light"] small {
+  color: var(--wt-muted) !important;
+}
+
+:root[data-theme="light"] .nav-button,
+:root[data-theme="light"] .env-button,
+:root[data-theme="light"] .action-button,
+:root[data-theme="light"] input,
+:root[data-theme="light"] select,
+:root[data-theme="light"] textarea {
+  background: #ffffff;
+  color: var(--wt-text) !important;
+  border-color: var(--wt-border);
+}
+
+:root[data-theme="light"] .nav-button.active,
+:root[data-theme="light"] .env-button.active,
+:root[data-theme="light"] .action-button.is-active,
+:root[data-theme="light"] .action-button[aria-pressed="true"] {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8 !important;
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+:root[data-theme="light"] .positive {
+  color: #15803d !important;
+}
+
+:root[data-theme="light"] .negative,
+:root[data-theme="light"] .danger {
+  color: #b91c1c !important;
+}
+
+/* Light mode card surface cleanup */
+:root[data-theme="light"] .summary-card,
+:root[data-theme="light"] .metric-card,
+:root[data-theme="light"] .account-card,
+:root[data-theme="light"] .asset-card,
+:root[data-theme="light"] .stat-card,
+:root[data-theme="light"] .info-card,
+:root[data-theme="light"] .health-card,
+:root[data-theme="light"] .slot-card,
+:root[data-theme="light"] .position-card {
+  background: #ffffff !important;
+  color: var(--wt-text) !important;
+  border-color: var(--wt-border) !important;
+}
+
+:root[data-theme="light"] .summary-card *,
+:root[data-theme="light"] .metric-card *,
+:root[data-theme="light"] .account-card *,
+:root[data-theme="light"] .asset-card *,
+:root[data-theme="light"] .stat-card *,
+:root[data-theme="light"] .info-card *,
+:root[data-theme="light"] .health-card *,
+:root[data-theme="light"] .slot-card *,
+:root[data-theme="light"] .position-card * {
+  color: inherit;
+}
+
+:root[data-theme="light"] .positive,
+:root[data-theme="light"] .success,
+:root[data-theme="light"] .status-ok {
+  color: #16a34a !important;
+}
+
+:root[data-theme="light"] .negative,
+:root[data-theme="light"] .danger,
+:root[data-theme="light"] .status-bad {
+  color: #dc2626 !important;
+}
+
+:root[data-theme="light"] .warning,
+:root[data-theme="light"] .status-warn {
+  color: #d97706 !important;
+}
+
+/* Real card classes light-mode override */
+:root[data-theme="light"] .status-card,
+:root[data-theme="light"] .info-tile,
+:root[data-theme="light"] .account-total-card,
+:root[data-theme="light"] .account-asset-card,
+:root[data-theme="light"] .selected-slot-summary,
+:root[data-theme="light"] .health-card {
+  background: #ffffff !important;
+  color: var(--wt-text) !important;
+  border-color: var(--wt-border) !important;
+}
+
+:root[data-theme="light"] .status-card *,
+:root[data-theme="light"] .info-tile *,
+:root[data-theme="light"] .account-total-card *,
+:root[data-theme="light"] .account-asset-card *,
+:root[data-theme="light"] .selected-slot-summary *,
+:root[data-theme="light"] .health-card * {
+  color: inherit;
+}
+
+:root[data-theme="light"] .status-label,
+:root[data-theme="light"] .status-meta {
+  color: var(--wt-muted) !important;
+}
+
+:root[data-theme="light"] .status-value {
+  color: var(--wt-text) !important;
+}
+
+:root[data-theme="light"] .status-value.positive,
+:root[data-theme="light"] .positive {
+  color: #16a34a !important;
+}
+
+:root[data-theme="light"] .status-value.negative,
+:root[data-theme="light"] .negative {
+  color: #dc2626 !important;
+}
+
+:root[data-theme="light"] .status-value.warning,
+:root[data-theme="light"] .warning {
+  color: #d97706 !important;
+}
+
+/* Restore semantic colors in light mode */
+:root[data-theme="light"] .status-card.positive .status-value,
+:root[data-theme="light"] .status-value.positive,
+:root[data-theme="light"] .positive {
+  color: #16a34a !important;
+}
+
+:root[data-theme="light"] .status-card.negative .status-value,
+:root[data-theme="light"] .status-value.negative,
+:root[data-theme="light"] .negative {
+  color: #dc2626 !important;
+}
+
+:root[data-theme="light"] .status-card.warning .status-value,
+:root[data-theme="light"] .status-value.warning,
+:root[data-theme="light"] .warning {
+  color: #d97706 !important;
+}
+
+/* Mobile: move theme button away from hamburger */
+@media (max-width: 900px) {
+  .theme-toggle {
+    top: auto;
+    right: 16px;
+    bottom: 18px;
+    position: fixed;
+    z-index: 1200;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-sidebar .theme-toggle {
+    position: fixed !important;
+    top: auto !important;
+    right: 14px !important;
+    bottom: 14px !important;
+    z-index: 2000 !important;
+  }
+}
+
+.theme-toggle--mobile {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .theme-toggle--desktop {
+    display: none !important;
+  }
+
+  .theme-toggle--mobile {
+    display: block !important;
+    position: static !important;
+    width: 100%;
+    margin: 0 0 10px 0;
+    text-align: center;
+  }
+
+  .app-sidebar .theme-toggle {
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .theme-toggle--mobile {
+    margin-top: 10px !important;
+    margin-bottom: 0 !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .theme-toggle--mobile {
+    position: relative !important;
+    inset: auto !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: auto !important;
+    display: block !important;
+    width: 100%;
+    margin-top: 12px !important;
+    z-index: auto !important;
+  }
+
+  .theme-toggle--desktop {
+    display: none !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .theme-toggle--desktop {
+    display: none !important;
+  }
+
+  .theme-toggle--mobile {
+    display: block !important;
+    position: relative !important;
+    inset: auto !important;
+    width: 100%;
+    margin: 12px 0 0 0 !important;
+    z-index: auto !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-sidebar .app-nav .theme-toggle.theme-toggle--mobile {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 12px 0 0 0 !important;
+    inset: auto !important;
+    transform: none !important;
+    z-index: auto !important;
+  }
+}

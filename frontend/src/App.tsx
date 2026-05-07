@@ -36,6 +36,7 @@ import {
   type UiTrading24hSummary,
   type UiUserSettings,
 } from "./api";
+import { applyTheme, getInitialTheme, toggleTheme, type ThemeMode } from "./theme";
 import { AppShell, type AppTab } from "./components/layout/AppShell";
 import { TopStatusBar } from "./components/live/TopStatusBar";
 import { EnvironmentSwitch } from "./components/live/EnvironmentSwitch";
@@ -67,6 +68,7 @@ function App() {
   const [trading24h, setTrading24h] = useState<UiTrading24hSummary | null>(null);
   const [openPositions, setOpenPositions] = useState<UiOpenPosition[]>([]);
   const [recentClosed, setRecentClosed] = useState<UiRecentClosedPosition[]>([]);
+  const [theme, setTheme] = useState<ThemeMode>(() => getInitialTheme());
   const [slots, setSlots] = useState<UiSlotRow[]>([]);
   const [health, setHealth] = useState<UiHealthResponse | null>(null);
   const [settings, setSettings] = useState<UiUserSettings | null>(null);
@@ -111,6 +113,10 @@ function App() {
       setAuthBusy(false);
     }
   }, []);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     void checkAuth();
@@ -527,6 +533,8 @@ function App() {
       activeTab={activeTab}
       onTabChange={setActiveTab}
       environment={environment}
+      theme={theme}
+      onThemeToggle={() => setTheme((current) => toggleTheme(current))}
     >
       <div className="button-row" style={{ marginBottom: 12 }}>
         <span style={{ marginRight: 12 }}>

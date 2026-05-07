@@ -10,6 +10,8 @@ interface AppShellProps {
   onTabChange: (tab: AppTab) => void;
   children: ReactNode;
   environment?: UiEnvironment;
+  theme?: 'dark' | 'light';
+  onThemeToggle?: () => void;
 }
 
 const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
@@ -20,7 +22,7 @@ const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
   { key: 'security', label: 'Security', shortLabel: 'Sec' },
 ];
 
-export function AppShell({ title, subtitle, activeTab, onTabChange, children, environment }: AppShellProps) {
+export function AppShell({ title, subtitle, activeTab, onTabChange, children, environment, theme = 'dark', onThemeToggle }: AppShellProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -47,6 +49,14 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
               <div className="app-brand">TRADING UI</div>
               <div className="app-brand-subtitle">Operator Dark • manual refresh first</div>
               <div className="app-brand-env">{environment ? `ENV: ${environment}` : 'ENV: —'}</div>
+              <button
+                type="button"
+                className="theme-toggle theme-toggle--desktop"
+                onClick={onThemeToggle}
+                aria-label="Toggle dark/light mode"
+              >
+                {theme === 'dark' ? 'Light' : 'Dark'}
+              </button>
             </div>
 
             <button
@@ -81,6 +91,16 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
               <span className="nav-button-label nav-button-label--short">{tab.shortLabel}</span>
             </button>
           ))}
+
+          <button
+            type="button"
+            className="theme-toggle theme-toggle--mobile"
+            onClick={onThemeToggle}
+            aria-label="Toggle dark/light mode"
+          >
+            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          </button>
+
         </nav>
       </aside>
 
