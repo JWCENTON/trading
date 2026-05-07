@@ -419,6 +419,8 @@ export interface UiRecentClosedPosition {
   entry_price: number | null;
   exit_price: number | null;
   qty: number | null;
+  entry_notional_usdc: number | null;
+  exit_notional_usdc: number | null;
   pnl_usdc: number;
   pnl_pct: number | null;
   exit_reason: string | null;

@@ -48,8 +48,8 @@ export function RecentClosedTable({ items }: RecentClosedTableProps) {
                     <div><span>PnL</span><strong className={tone}>{formatNumber(item.pnl_usdc)}</strong></div>
                     <div><span>PnL %</span><strong className={tone}>{formatPercent(item.pnl_pct)}%</strong></div>
                     <div><span>Reason</span><strong>{item.exit_reason || '—'}</strong></div>
-                    <div><span>Entry</span><strong>{formatNumber(item.entry_price)}</strong></div>
-                    <div><span>Exit price</span><strong>{formatNumber(item.exit_price)}</strong></div>
+                    <div><span>Entry USDC</span><strong>{formatNumber(item.entry_notional_usdc, 2)} USDC</strong></div>
+                    <div><span>Exit USDC</span><strong>{formatNumber(item.exit_notional_usdc, 2)} USDC</strong></div>
                   </div>
                 </article>
               );
@@ -65,9 +65,9 @@ export function RecentClosedTable({ items }: RecentClosedTableProps) {
                   <th>Interval</th>
                   <th>Strategy</th>
                   <th>Side</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <th>Qty</th>
+                  <th>Entry price</th>
+                  <th>Exit price</th>
+                  <th>Entry USDC</th>
                   <th>PnL</th>
                   <th>PnL %</th>
                   <th>Exit reason</th>
@@ -86,7 +86,7 @@ export function RecentClosedTable({ items }: RecentClosedTableProps) {
                       <td>{item.side}</td>
                       <td>{formatNumber(item.entry_price)}</td>
                       <td>{formatNumber(item.exit_price)}</td>
-                      <td>{formatNumber(item.qty, 6)}</td>
+                      <td>{formatNumber(item.entry_notional_usdc, 2)} USDC</td>
                       <td className={tone}>{formatNumber(item.pnl_usdc)}</td>
                       <td className={tone}>{formatPercent(item.pnl_pct)}%</td>
                       <td>{item.exit_reason || '—'}</td>

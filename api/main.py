@@ -3061,6 +3061,14 @@ def ui_recent_closed(
                 exit_price::double precision AS exit_price,
                 qty::double precision AS qty,
                 CASE
+                  WHEN entry_price IS NULL OR qty IS NULL THEN NULL
+                  ELSE (entry_price * qty)::double precision
+                END AS entry_notional_usdc,
+                CASE
+                  WHEN exit_price IS NULL OR qty IS NULL THEN NULL
+                  ELSE (exit_price * qty)::double precision
+                END AS exit_notional_usdc,
+                CASE
                   WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
                     THEN ((entry_price - exit_price) * qty)::double precision
                   ELSE ((exit_price - entry_price) * qty)::double precision
@@ -3082,7 +3090,7 @@ def ui_recent_closed(
 
         items = []
         for r in rows:
-            pnl_usdc = _safe_float(r[10]) or 0.0
+            pnl_usdc = _safe_float(r[12]) or 0.0
             items.append({
                 "id": r[0],
                 "exit_time": r[1],
@@ -3094,9 +3102,11 @@ def ui_recent_closed(
                 "entry_price": _safe_float(r[7]),
                 "exit_price": _safe_float(r[8]),
                 "qty": _safe_float(r[9]),
+                "entry_notional_usdc": _safe_float(r[10]),
+                "exit_notional_usdc": _safe_float(r[11]),
                 "pnl_usdc": pnl_usdc,
-                "pnl_pct": _safe_float(r[11]),
-                "exit_reason": r[12],
+                "pnl_pct": _safe_float(r[13]),
+                "exit_reason": r[14],
                 "win_loss": "WIN" if pnl_usdc > 0 else "LOSS" if pnl_usdc < 0 else "FLAT",
             })
 
