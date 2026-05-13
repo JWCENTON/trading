@@ -965,7 +965,3 @@ export async function markAllUiNotificationsRead(): Promise<{ ok: boolean }> {
   return response.data;
 }
 
-export async function createTestUiNotification(): Promise<{ ok: boolean; id: number }> {
-  const response = await getApi().post<{ ok: boolean; id: number }>("/ui/notifications/test");
-  return response.data;
-}
