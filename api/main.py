@@ -4383,30 +4383,3 @@ def mark_all_ui_notifications_read(user: CurrentUser = Depends(require_auth)):
     return {"ok": True}
 
 
-@app.post("/ui/notifications/test")
-def create_test_ui_notification(user: CurrentUser = Depends(require_admin)):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            notification_id = create_ui_notification(
-                cur,
-                event_type="manual_test",
-                severity="info",
-                title="Notification center test",
-                message="Test notification created from the API.",
-                source="ui",
-                meta={"created_by": user.username},
-            )
-            log_ui_action(
-                cur,
-                actor=user.username,
-                actor_role="admin" if user.is_admin else "user",
-                action="CREATE_TEST_NOTIFICATION",
-                target_type="ui_notification",
-                target_key=str(notification_id),
-                before_json=None,
-                after_json={"id": notification_id},
-                source="ui",
-                note="Manual test notification",
-            )
-            conn.commit()
-    return {"ok": True, "id": notification_id}

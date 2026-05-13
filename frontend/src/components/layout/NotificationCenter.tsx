@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  createTestUiNotification,
   getUiNotifications,
   markAllUiNotificationsRead,
   markUiNotificationRead,
@@ -66,16 +65,6 @@ export function NotificationCenter() {
     }
   }
 
-  async function handleCreateTest() {
-    setBusy(true);
-    try {
-      await createTestUiNotification();
-      await loadNotifications();
-      setOpen(true);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <div className="notification-center" ref={wrapRef}>
@@ -97,9 +86,6 @@ export function NotificationCenter() {
               <div className="notification-subtitle">{unread} unread</div>
             </div>
             <div className="notification-actions">
-              <button type="button" onClick={() => void handleCreateTest()} disabled={busy}>
-                Test
-              </button>
               <button type="button" onClick={() => void handleMarkAllRead()} disabled={busy || unread === 0}>
                 Mark all read
               </button>
