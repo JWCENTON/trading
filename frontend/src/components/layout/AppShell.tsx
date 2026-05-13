@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { UiEnvironment } from '../../api';
+import { NotificationCenter } from './NotificationCenter';
 
 export type AppTab = 'live' | 'slots' | 'health' | 'advanced' | 'security';
 
@@ -106,8 +107,11 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
 
       <main className="app-main">
         <header className="page-header">
-          <h1>{title}</h1>
-          <p>{subtitle}</p>
+          <div>
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
+          </div>
+          <NotificationCenter />
         </header>
         {children}
       </main>

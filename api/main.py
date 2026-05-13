@@ -4234,3 +4234,179 @@ def internal_promotions_upsert(
         conn.commit()
 
     return {"status": "ok", "idempotent": False, "inserted": n, "hash": req.hash}
+
+
+
+class UiNotification(BaseModel):
+    id: int
+    created_at: datetime
+    event_type: str
+    severity: str
+    title: str
+    message: str
+    source: Optional[str] = None
+    read_at: Optional[datetime] = None
+    meta: Optional[dict] = None
+
+
+class UiNotificationPage(BaseModel):
+    total: int
+    unread: int
+    items: List[UiNotification]
+
+
+def ensure_ui_notifications_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ui_notifications (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          event_type TEXT NOT NULL,
+          severity TEXT NOT NULL DEFAULT 'info',
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          source TEXT,
+          read_at TIMESTAMPTZ,
+          meta JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_ui_notifications_created_at
+          ON ui_notifications(created_at DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_ui_notifications_read_at
+          ON ui_notifications(read_at);
+        """
+    )
+
+
+def create_ui_notification(cur, *, event_type: str, severity: str, title: str, message: str, source: str = "system", meta: Optional[dict] = None):
+    ensure_ui_notifications_table(cur)
+    cur.execute(
+        """
+        INSERT INTO ui_notifications (event_type, severity, title, message, source, meta)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+        RETURNING id
+        """,
+        (event_type, severity, title, message, source, json.dumps(jsonable_encoder(meta or {}))),
+    )
+    return cur.fetchone()[0]
+
+
+@app.get("/ui/notifications", response_model=UiNotificationPage)
+def get_ui_notifications(
+    limit: int = Query(20, ge=1, le=100),
+    unread_only: bool = False,
+    user: CurrentUser = Depends(require_auth),
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_ui_notifications_table(cur)
+
+            where_sql = "WHERE read_at IS NULL" if unread_only else ""
+            cur.execute(f"SELECT COUNT(*) FROM ui_notifications {where_sql}")
+            total = int(cur.fetchone()[0] or 0)
+
+            cur.execute("SELECT COUNT(*) FROM ui_notifications WHERE read_at IS NULL")
+            unread = int(cur.fetchone()[0] or 0)
+
+            cur.execute(
+                f"""
+                SELECT id, created_at, event_type, severity, title, message, source, read_at, meta
+                FROM ui_notifications
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "total": total,
+        "unread": unread,
+        "items": [
+            {
+                "id": r[0],
+                "created_at": r[1],
+                "event_type": r[2],
+                "severity": r[3],
+                "title": r[4],
+                "message": r[5],
+                "source": r[6],
+                "read_at": r[7],
+                "meta": r[8] or {},
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/ui/notifications/{notification_id}/read")
+def mark_ui_notification_read(
+    notification_id: int,
+    user: CurrentUser = Depends(require_auth),
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_ui_notifications_table(cur)
+            cur.execute(
+                """
+                UPDATE ui_notifications
+                SET read_at = COALESCE(read_at, now())
+                WHERE id = %s
+                """,
+                (notification_id,),
+            )
+            conn.commit()
+    return {"ok": True}
+
+
+@app.post("/ui/notifications/read-all")
+def mark_all_ui_notifications_read(user: CurrentUser = Depends(require_auth)):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_ui_notifications_table(cur)
+            cur.execute(
+                """
+                UPDATE ui_notifications
+                SET read_at = COALESCE(read_at, now())
+                WHERE read_at IS NULL
+                """
+            )
+            conn.commit()
+    return {"ok": True}
+
+
+@app.post("/ui/notifications/test")
+def create_test_ui_notification(user: CurrentUser = Depends(require_admin)):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            notification_id = create_ui_notification(
+                cur,
+                event_type="manual_test",
+                severity="info",
+                title="Notification center test",
+                message="Test notification created from the API.",
+                source="ui",
+                meta={"created_by": user.username},
+            )
+            log_ui_action(
+                cur,
+                actor=user.username,
+                actor_role="admin" if user.is_admin else "user",
+                action="CREATE_TEST_NOTIFICATION",
+                target_type="ui_notification",
+                target_key=str(notification_id),
+                before_json=None,
+                after_json={"id": notification_id},
+                source="ui",
+                note="Manual test notification",
+            )
+            conn.commit()
+    return {"ok": True, "id": notification_id}
