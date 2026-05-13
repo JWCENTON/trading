@@ -1463,6 +1463,27 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
         status_payload["spot_trading_check"] = "UNKNOWN"
         status_payload["error"] = "BINANCE_ACCOUNT_CHECK_FAILED"
 
+        try:
+            with db_cursor() as (conn, cur):
+                create_ui_notification_dedup(
+                    cur,
+                    event_type="binance_api_invalid",
+                    severity="danger",
+                    title="Binance API check failed",
+                    message="Binance account/API validation failed. Check API key, permissions, IP whitelist and Binance connectivity.",
+                    source="security",
+                    meta={
+                        "environment": ENVIRONMENT,
+                        "trading_mode": TRADING_MODE,
+                        "error_type": type(e).__name__,
+                        "error": str(e)[:300],
+                    },
+                    dedupe_minutes=60,
+                )
+                conn.commit()
+        except Exception as notify_error:
+            logging.warning("Binance API invalid notification failed: %s", str(notify_error))
+
     return status_payload
 
 
@@ -2916,6 +2937,29 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
             """, (ENVIRONMENT, TRADING_MODE))
             r = cur.fetchone()
 
+            heartbeat_total = _safe_int(r[15])
+            heartbeat_stale = _safe_int(r[17])
+            latest_heartbeat_at = r[14]
+
+            if heartbeat_total > 0 and heartbeat_stale > 0:
+                create_ui_notification_dedup(
+                    cur,
+                    event_type="runtime_stale",
+                    severity="warning",
+                    title="Runtime heartbeat stale",
+                    message=f"{heartbeat_stale}/{heartbeat_total} bot heartbeat records are stale.",
+                    source="runtime",
+                    meta={
+                        "environment": ENVIRONMENT,
+                        "trading_mode": TRADING_MODE,
+                        "heartbeat_total": heartbeat_total,
+                        "heartbeat_stale": heartbeat_stale,
+                        "latest_heartbeat_at": latest_heartbeat_at.isoformat() if latest_heartbeat_at else None,
+                    },
+                    dedupe_minutes=30,
+                )
+                _conn.commit()
+
         return jsonable_encoder({
             "environment": r[0],
             "trading_mode": r[1],
@@ -3178,6 +3222,29 @@ def ui_control_panic(
             source=source,
             note=req.reason,
         )
+
+        if bool(before_state.get("enabled")) != bool(after_state.get("enabled")):
+            if after_state.get("enabled"):
+                create_ui_notification(
+                    cur,
+                    event_type="panic_enabled",
+                    severity="danger",
+                    title="PANIC enabled",
+                    message=req.reason or "Trading panic mode was enabled.",
+                    source="security",
+                    meta={"actor": actor, "environment": ENVIRONMENT, "trading_mode": TRADING_MODE},
+                )
+            else:
+                create_ui_notification(
+                    cur,
+                    event_type="panic_cleared",
+                    severity="success",
+                    title="PANIC cleared",
+                    message=req.reason or "Trading panic mode was cleared.",
+                    source="security",
+                    meta={"actor": actor, "environment": ENVIRONMENT, "trading_mode": TRADING_MODE},
+                )
+
         conn.commit()
 
     return UIControlResponse(
@@ -4296,6 +4363,49 @@ def create_ui_notification(cur, *, event_type: str, severity: str, title: str, m
         (event_type, severity, title, message, source, json.dumps(jsonable_encoder(meta or {}))),
     )
     return cur.fetchone()[0]
+
+
+def create_ui_notification_dedup(
+    cur,
+    *,
+    event_type: str,
+    severity: str,
+    title: str,
+    message: str,
+    source: str = "system",
+    meta: Optional[dict] = None,
+    dedupe_minutes: int = 30,
+):
+    """
+    Creates a UI notification only if the same unread event_type was not created recently.
+    This prevents dashboard polling from spamming repeated runtime/API alerts.
+    """
+    ensure_ui_notifications_table(cur)
+    cur.execute(
+        """
+        SELECT id
+        FROM ui_notifications
+        WHERE event_type = %s
+          AND read_at IS NULL
+          AND created_at >= now() - (%s || ' minutes')::interval
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (event_type, dedupe_minutes),
+    )
+    existing = cur.fetchone()
+    if existing:
+        return existing[0]
+
+    return create_ui_notification(
+        cur,
+        event_type=event_type,
+        severity=severity,
+        title=title,
+        message=message,
+        source=source,
+        meta=meta,
+    )
 
 
 @app.get("/ui/notifications", response_model=UiNotificationPage)
