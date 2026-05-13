@@ -929,3 +929,43 @@ export async function changePassword(payload: ChangePasswordRequest): Promise<{ 
   );
   return response.data;
 }
+
+export interface UiNotification {
+  id: number;
+  created_at: string;
+  event_type: string;
+  severity: "info" | "success" | "warning" | "danger" | string;
+  title: string;
+  message: string;
+  source: string | null;
+  read_at: string | null;
+  meta: Record<string, any> | null;
+}
+
+export interface UiNotificationPage {
+  total: number;
+  unread: number;
+  items: UiNotification[];
+}
+
+export async function getUiNotifications(limit = 20, unreadOnly = false): Promise<UiNotificationPage> {
+  const response = await getApi().get<UiNotificationPage>("/ui/notifications", {
+    params: { limit, unread_only: unreadOnly },
+  });
+  return response.data;
+}
+
+export async function markUiNotificationRead(id: number): Promise<{ ok: boolean }> {
+  const response = await getApi().post<{ ok: boolean }>(`/ui/notifications/${id}/read`);
+  return response.data;
+}
+
+export async function markAllUiNotificationsRead(): Promise<{ ok: boolean }> {
+  const response = await getApi().post<{ ok: boolean }>("/ui/notifications/read-all");
+  return response.data;
+}
+
+export async function createTestUiNotification(): Promise<{ ok: boolean; id: number }> {
+  const response = await getApi().post<{ ok: boolean; id: number }>("/ui/notifications/test");
+  return response.data;
+}
