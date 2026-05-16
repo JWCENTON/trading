@@ -23,6 +23,8 @@ import {
   updateRegimeControl,
   updateSlotControl,
   updateSlotManualControl,
+  getUiNotificationPreferences,
+  updateUiNotificationPreferences,
   type AuthUser,
   type SecuritySummary,
   type ApiKeyStatusResponse,
@@ -35,6 +37,7 @@ import {
   type UiSlotRow,
   type UiTrading24hSummary,
   type UiUserSettings,
+  type UiNotificationPreference,
 } from "./api";
 import { applyTheme, getInitialTheme, toggleTheme, type ThemeMode } from "./theme";
 import { AppShell, type AppTab } from "./components/layout/AppShell";
@@ -84,6 +87,8 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [notificationPreferences, setNotificationPreferences] = useState<UiNotificationPreference[]>([]);
+  const [notificationPrefBusy, setNotificationPrefBusy] = useState(false);
 
   const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
@@ -239,8 +244,12 @@ function App() {
     setError(null);
     setLoading(true);
     try {
-      const settingsRes = await getUiAdvancedSummary();
+      const [settingsRes, notificationPrefsRes] = await Promise.all([
+        getUiAdvancedSummary(),
+        getUiNotificationPreferences(),
+      ]);
       setSettings(settingsRes);
+      setNotificationPreferences(notificationPrefsRes.items);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
@@ -377,6 +386,23 @@ function App() {
       setActionBusy(false);
     }
   }, [loadAdvanced, loadLive]);
+
+  const handleToggleNotificationPreference = useCallback(async (category: string, enabled: boolean) => {
+    setNotificationPrefBusy(true);
+    setError(null);
+    try {
+      const nextPrefs = notificationPreferences.map((item) =>
+        item.category === category ? { ...item, enabled } : item,
+      );
+      const response = await updateUiNotificationPreferences(nextPrefs);
+      setNotificationPreferences(response.items);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setNotificationPrefBusy(false);
+    }
+  }, [notificationPreferences]);
 
   const handleSlotUpdate = useCallback(async (payload: Parameters<typeof updateSlotControl>[0]) => {
     setActionBusy(true);
@@ -858,6 +884,27 @@ function App() {
                   <span className="status-label">Updated at</span>
                   <strong className="status-value text-ellipsis">{settings?.updated_at ?? '-'}</strong>
                 </div>
+              </div>
+
+
+              <div className="info-tile">
+                <strong>Notification preferences</strong><br />
+                Default is conservative: CRITICAL only. TRADING and INFO can be enabled when the signal/noise ratio is acceptable.
+              </div>
+
+              <div className="stack-row stack-row--split">
+                {notificationPreferences.map((pref) => (
+                  <label key={pref.category} className="info-tile notification-pref-tile">
+                    <span className="status-label">{pref.category}</span>
+                    <strong className="status-value">{pref.enabled ? "ENABLED" : "DISABLED"}</strong>
+                    <input
+                      type="checkbox"
+                      checked={pref.enabled}
+                      disabled={notificationPrefBusy}
+                      onChange={(e) => void handleToggleNotificationPreference(pref.category, e.target.checked)}
+                    />
+                  </label>
+                ))}
               </div>
 
               <div className="button-row button-row--stack-mobile">

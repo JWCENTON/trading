@@ -1441,3 +1441,12 @@ small {
 [data-theme="light"] .nav-toggle span {
   background: #0f172a;
 }
+
+
+.notification-pref-tile {
+  cursor: pointer;
+}
+
+.notification-pref-tile input {
+  margin-top: 10px;
+}

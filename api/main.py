@@ -4304,10 +4304,30 @@ def internal_promotions_upsert(
 
 
 
+NOTIFICATION_CATEGORIES = ("CRITICAL", "TRADING", "INFO")
+
+NOTIFICATION_EVENT_CATEGORIES = {
+    "panic_enabled": "CRITICAL",
+    "panic_cleared": "CRITICAL",
+    "runtime_stale": "CRITICAL",
+    "binance_api_invalid": "CRITICAL",
+    "db_unavailable": "CRITICAL",
+    "backup_stale": "CRITICAL",
+    "position_opened": "TRADING",
+    "position_closed": "TRADING",
+    "tp_sl": "TRADING",
+    "daily_pnl_summary": "INFO",
+    "runtime_recovered": "INFO",
+    "binance_api_recovered": "INFO",
+    "deploy_notification": "INFO",
+}
+
+
 class UiNotification(BaseModel):
     id: int
     created_at: datetime
     event_type: str
+    category: str = "CRITICAL"
     severity: str
     title: str
     message: str
@@ -4322,6 +4342,59 @@ class UiNotificationPage(BaseModel):
     items: List[UiNotification]
 
 
+class UiNotificationPreference(BaseModel):
+    category: str
+    enabled: bool
+
+
+class UiNotificationPreferencesResponse(BaseModel):
+    items: List[UiNotificationPreference]
+
+
+class UiNotificationPreferencesUpdate(BaseModel):
+    items: List[UiNotificationPreference]
+
+
+def notification_category_for_event(event_type: str) -> str:
+    return NOTIFICATION_EVENT_CATEGORIES.get(event_type, "INFO")
+
+
+def ensure_ui_notification_preferences_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ui_notification_preferences (
+          category TEXT PRIMARY KEY,
+          enabled BOOLEAN NOT NULL DEFAULT false,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        """
+    )
+    for category in NOTIFICATION_CATEGORIES:
+        cur.execute(
+            """
+            INSERT INTO ui_notification_preferences (category, enabled)
+            VALUES (%s, %s)
+            ON CONFLICT (category) DO NOTHING
+            """,
+            (category, category == "CRITICAL"),
+        )
+
+
+def get_enabled_notification_categories(cur) -> List[str]:
+    ensure_ui_notification_preferences_table(cur)
+    cur.execute(
+        """
+        SELECT category
+        FROM ui_notification_preferences
+        WHERE enabled = true
+        ORDER BY category
+        """
+    )
+    rows = cur.fetchall()
+    enabled = [str(r[0]) for r in rows if str(r[0]) in NOTIFICATION_CATEGORIES]
+    return enabled or ["CRITICAL"]
+
+
 def ensure_ui_notifications_table(cur):
     cur.execute(
         """
@@ -4329,6 +4402,7 @@ def ensure_ui_notifications_table(cur):
           id BIGSERIAL PRIMARY KEY,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           event_type TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT 'CRITICAL',
           severity TEXT NOT NULL DEFAULT 'info',
           title TEXT NOT NULL,
           message TEXT NOT NULL,
@@ -4338,6 +4412,7 @@ def ensure_ui_notifications_table(cur):
         );
         """
     )
+    cur.execute("ALTER TABLE ui_notifications ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'CRITICAL';")
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_ui_notifications_created_at
@@ -4354,13 +4429,14 @@ def ensure_ui_notifications_table(cur):
 
 def create_ui_notification(cur, *, event_type: str, severity: str, title: str, message: str, source: str = "system", meta: Optional[dict] = None):
     ensure_ui_notifications_table(cur)
+    category = notification_category_for_event(event_type)
     cur.execute(
         """
-        INSERT INTO ui_notifications (event_type, severity, title, message, source, meta)
-        VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+        INSERT INTO ui_notifications (event_type, category, severity, title, message, source, meta)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
         RETURNING id
         """,
-        (event_type, severity, title, message, source, json.dumps(jsonable_encoder(meta or {}))),
+        (event_type, category, severity, title, message, source, json.dumps(jsonable_encoder(meta or {}))),
     )
     return cur.fetchone()[0]
 
@@ -4417,23 +4493,35 @@ def get_ui_notifications(
     with get_conn() as conn:
         with conn.cursor() as cur:
             ensure_ui_notifications_table(cur)
+            enabled_categories = get_enabled_notification_categories(cur)
 
-            where_sql = "WHERE read_at IS NULL" if unread_only else ""
-            cur.execute(f"SELECT COUNT(*) FROM ui_notifications {where_sql}")
+            where_parts = ["category = ANY(%s)"]
+            if unread_only:
+                where_parts.append("read_at IS NULL")
+            where_sql = "WHERE " + " AND ".join(where_parts)
+
+            cur.execute(f"SELECT COUNT(*) FROM ui_notifications {where_sql}", (enabled_categories,))
             total = int(cur.fetchone()[0] or 0)
 
-            cur.execute("SELECT COUNT(*) FROM ui_notifications WHERE read_at IS NULL")
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM ui_notifications
+                WHERE read_at IS NULL AND category = ANY(%s)
+                """,
+                (enabled_categories,),
+            )
             unread = int(cur.fetchone()[0] or 0)
 
             cur.execute(
                 f"""
-                SELECT id, created_at, event_type, severity, title, message, source, read_at, meta
+                SELECT id, created_at, event_type, category, severity, title, message, source, read_at, meta
                 FROM ui_notifications
                 {where_sql}
                 ORDER BY created_at DESC
                 LIMIT %s
                 """,
-                (limit,),
+                (enabled_categories, limit),
             )
             rows = cur.fetchall()
 
@@ -4445,16 +4533,64 @@ def get_ui_notifications(
                 "id": r[0],
                 "created_at": r[1],
                 "event_type": r[2],
-                "severity": r[3],
-                "title": r[4],
-                "message": r[5],
-                "source": r[6],
-                "read_at": r[7],
-                "meta": r[8] or {},
+                "category": r[3],
+                "severity": r[4],
+                "title": r[5],
+                "message": r[6],
+                "source": r[7],
+                "read_at": r[8],
+                "meta": r[9] or {},
             }
             for r in rows
         ],
     }
+
+
+@app.get("/ui/notification-preferences", response_model=UiNotificationPreferencesResponse)
+def get_ui_notification_preferences(user: CurrentUser = Depends(require_auth)):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_ui_notification_preferences_table(cur)
+            cur.execute(
+                """
+                SELECT category, enabled
+                FROM ui_notification_preferences
+                ORDER BY CASE category
+                  WHEN 'CRITICAL' THEN 1
+                  WHEN 'TRADING' THEN 2
+                  WHEN 'INFO' THEN 3
+                  ELSE 99
+                END
+                """
+            )
+            rows = cur.fetchall()
+
+    return {"items": [{"category": r[0], "enabled": bool(r[1])} for r in rows]}
+
+
+@app.put("/ui/notification-preferences", response_model=UiNotificationPreferencesResponse)
+def update_ui_notification_preferences(
+    payload: UiNotificationPreferencesUpdate,
+    user: CurrentUser = Depends(require_auth),
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ensure_ui_notification_preferences_table(cur)
+            for item in payload.items:
+                category = item.category.upper().strip()
+                if category not in NOTIFICATION_CATEGORIES:
+                    continue
+                cur.execute(
+                    """
+                    UPDATE ui_notification_preferences
+                    SET enabled = %s, updated_at = now()
+                    WHERE category = %s
+                    """,
+                    (bool(item.enabled), category),
+                )
+            conn.commit()
+
+    return get_ui_notification_preferences(user=user)
 
 
 @app.post("/ui/notifications/{notification_id}/read")

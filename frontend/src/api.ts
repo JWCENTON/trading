@@ -934,6 +934,7 @@ export interface UiNotification {
   id: number;
   created_at: string;
   event_type: string;
+  category: "CRITICAL" | "TRADING" | "INFO" | string;
   severity: "info" | "success" | "warning" | "danger" | string;
   title: string;
   message: string;
@@ -964,4 +965,26 @@ export async function markAllUiNotificationsRead(): Promise<{ ok: boolean }> {
   const response = await getApi().post<{ ok: boolean }>("/ui/notifications/read-all");
   return response.data;
 }
+
+export interface UiNotificationPreference {
+  category: "CRITICAL" | "TRADING" | "INFO" | string;
+  enabled: boolean;
+}
+
+export interface UiNotificationPreferencesResponse {
+  items: UiNotificationPreference[];
+}
+
+export async function getUiNotificationPreferences(): Promise<UiNotificationPreferencesResponse> {
+  const response = await getApi().get<UiNotificationPreferencesResponse>("/ui/notification-preferences");
+  return response.data;
+}
+
+export async function updateUiNotificationPreferences(
+  items: UiNotificationPreference[],
+): Promise<UiNotificationPreferencesResponse> {
+  const response = await getApi().put<UiNotificationPreferencesResponse>("/ui/notification-preferences", { items });
+  return response.data;
+}
+
 
