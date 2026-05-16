@@ -3710,7 +3710,7 @@ def ui_control_slot_auto(
                 before_state["regime_mode"],
                 applied_at,
                 "AUTO",
-                "USER",
+                "ORC",
                 None,
                 None,
             ),
