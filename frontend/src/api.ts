@@ -45,12 +45,12 @@ export function setUiEnvironment(env: UiEnvironment) {
   }
 }
 
-export function getApiBaseUrlForEnvironment(_env: UiEnvironment): string {
-  return DEFAULT_API_BASE_URL;
+export function getApiBaseUrlForEnvironment(env: UiEnvironment): string {
+  return env === "PAPER" ? PAPER_API_BASE_URL : LIVE_API_BASE_URL;
 }
 
 export function getCurrentApiBaseUrl(): string {
-  return DEFAULT_API_BASE_URL;
+  return getApiBaseUrlForEnvironment(getUiEnvironment());
 }
 
 function getApi() {

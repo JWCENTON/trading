@@ -1450,3 +1450,41 @@ small {
 .notification-pref-tile input {
   margin-top: 10px;
 }
+
+.advanced-section-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 16px;
+  margin-bottom: 10px;
+}
+
+.advanced-section-title span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.advanced-section-actions {
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.section-divider {
+  width: 100%;
+  height: 1px;
+  margin: 18px 0;
+  background: var(--border-subtle);
+}
+
+[data-theme="light"] .advanced-section-actions {
+  background: rgba(248, 250, 252, 0.72);
+}
+
+@media (max-width: 720px) {
+  .advanced-section-actions .action-button {
+    width: 100%;
+  }
+}

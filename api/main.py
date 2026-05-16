@@ -1457,6 +1457,22 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
             "ip_whitelist_enabled": True,
         }
 
+        try:
+            with db_cursor() as (conn, cur):
+                create_ui_recovery_notification_if_needed(
+                    cur,
+                    failure_event_type="binance_api_invalid",
+                    recovered_event_type="binance_api_recovered",
+                    title="Binance API recovered",
+                    message="Binance account/API validation is healthy again.",
+                    source="security",
+                    meta={"environment": ENVIRONMENT, "trading_mode": TRADING_MODE},
+                    dedupe_minutes=60,
+                )
+                conn.commit()
+        except Exception as notify_error:
+            logging.warning("Binance API recovered notification failed: %s", str(notify_error))
+
     except Exception as e:
         logging.warning("API key status check failed: %s", str(e))
         status_payload["account_read_check"] = "FAIL"
@@ -2959,6 +2975,23 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                     dedupe_minutes=30,
                 )
                 _conn.commit()
+            elif heartbeat_total > 0 and heartbeat_stale == 0:
+                create_ui_recovery_notification_if_needed(
+                    cur,
+                    failure_event_type="runtime_stale",
+                    recovered_event_type="runtime_recovered",
+                    title="Runtime recovered",
+                    message="All bot heartbeat records are fresh again.",
+                    source="runtime",
+                    meta={
+                        "environment": ENVIRONMENT,
+                        "trading_mode": TRADING_MODE,
+                        "heartbeat_total": heartbeat_total,
+                        "latest_heartbeat_at": latest_heartbeat_at.isoformat() if latest_heartbeat_at else None,
+                    },
+                    dedupe_minutes=60,
+                )
+                _conn.commit()
 
         return jsonable_encoder({
             "environment": r[0],
@@ -3010,6 +3043,8 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
 def ui_open_positions(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
+            create_trade_position_notifications(cur)
+            _conn.commit()
             cur.execute("""
               SELECT
                 p.id,
@@ -3092,6 +3127,8 @@ def ui_recent_closed(
 ):
     try:
         with db_cursor() as (_conn, cur):
+            create_trade_position_notifications(cur)
+            _conn.commit()
             cur.execute("""
               SELECT
                 id,
@@ -4439,6 +4476,206 @@ def create_ui_notification(cur, *, event_type: str, severity: str, title: str, m
         (event_type, category, severity, title, message, source, json.dumps(jsonable_encoder(meta or {}))),
     )
     return cur.fetchone()[0]
+
+
+def create_ui_recovery_notification_if_needed(
+    cur,
+    *,
+    failure_event_type: str,
+    recovered_event_type: str,
+    title: str,
+    message: str,
+    source: str,
+    meta: Optional[dict] = None,
+    dedupe_minutes: int = 60,
+):
+    ensure_ui_notifications_table(cur)
+    cur.execute(
+        """
+        SELECT id
+        FROM ui_notifications
+        WHERE event_type = %s
+          AND read_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (failure_event_type,),
+    )
+    failed = cur.fetchone()
+    if not failed:
+        return None
+
+    cur.execute(
+        """
+        UPDATE ui_notifications
+        SET read_at = COALESCE(read_at, now())
+        WHERE event_type = %s
+          AND read_at IS NULL
+        """,
+        (failure_event_type,),
+    )
+
+    return create_ui_notification_dedup(
+        cur,
+        event_type=recovered_event_type,
+        severity="success",
+        title=title,
+        message=message,
+        source=source,
+        meta=meta,
+        dedupe_minutes=dedupe_minutes,
+    )
+
+
+def create_trade_position_notifications(cur):
+    """
+    Creates in-app trade notifications from positions without touching execution logic.
+    Dedupe is based on event_type + position_id stored in notification meta.
+    """
+    ensure_ui_notifications_table(cur)
+
+    cur.execute(
+        """
+        SELECT
+          p.id,
+          p.symbol,
+          p.interval,
+          p.strategy,
+          p.side,
+          p.entry_time,
+          p.entry_price::double precision,
+          p.qty::double precision,
+          (p.entry_price * p.qty)::double precision AS entry_notional_usdc
+        FROM positions p
+        WHERE p.entry_time >= now() - INTERVAL '24 hours'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ui_notifications n
+            WHERE n.event_type = 'position_opened'
+              AND n.meta->>'position_id' = p.id::text
+          )
+        ORDER BY p.entry_time DESC
+        LIMIT 20
+        """
+    )
+    opened_rows = cur.fetchall()
+
+    for r in opened_rows:
+        pos_id = int(r[0])
+        symbol = str(r[1])
+        interval = str(r[2])
+        strategy = str(r[3])
+        side = str(r[4])
+        entry_price = float(r[6] or 0)
+        qty = float(r[7] or 0)
+        entry_notional = float(r[8] or 0)
+        create_ui_notification(
+            cur,
+            event_type="position_opened",
+            severity="info",
+            title=f"Position opened: {symbol}",
+            message=f"{side} {symbol} {interval} via {strategy}. Entry notional: {entry_notional:.2f} USDC.",
+            source="trading",
+            meta={
+                "environment": ENVIRONMENT,
+                "trading_mode": TRADING_MODE,
+                "position_id": pos_id,
+                "symbol": symbol,
+                "interval": interval,
+                "strategy": strategy,
+                "side": side,
+                "entry_price": entry_price,
+                "qty": qty,
+                "entry_notional_usdc": entry_notional,
+                "entry_time": r[5].isoformat() if r[5] else None,
+            },
+        )
+
+    cur.execute(
+        """
+        SELECT
+          p.id,
+          p.symbol,
+          p.interval,
+          p.strategy,
+          p.side,
+          p.entry_time,
+          p.exit_time,
+          p.entry_price::double precision,
+          p.exit_price::double precision,
+          p.qty::double precision,
+          (p.entry_price * p.qty)::double precision AS entry_notional_usdc,
+          (p.exit_price * p.qty)::double precision AS exit_notional_usdc,
+          CASE
+            WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+              THEN ((p.entry_price - p.exit_price) * p.qty)::double precision
+            ELSE ((p.exit_price - p.entry_price) * p.qty)::double precision
+          END AS pnl_usdc,
+          CASE
+            WHEN p.entry_price IS NULL OR p.entry_price = 0 THEN NULL
+            WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+              THEN (((p.entry_price - p.exit_price) / p.entry_price) * 100.0)::double precision
+            ELSE (((p.exit_price - p.entry_price) / p.entry_price) * 100.0)::double precision
+          END AS pnl_pct,
+          p.exit_reason
+        FROM positions p
+        WHERE p.status = 'CLOSED'
+          AND p.exit_time IS NOT NULL
+          AND p.exit_time >= now() - INTERVAL '24 hours'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ui_notifications n
+            WHERE n.event_type = 'position_closed'
+              AND n.meta->>'position_id' = p.id::text
+          )
+        ORDER BY p.exit_time DESC
+        LIMIT 20
+        """
+    )
+    closed_rows = cur.fetchall()
+
+    for r in closed_rows:
+        pos_id = int(r[0])
+        symbol = str(r[1])
+        interval = str(r[2])
+        strategy = str(r[3])
+        side = str(r[4])
+        entry_price = float(r[7] or 0)
+        exit_price = float(r[8] or 0)
+        qty = float(r[9] or 0)
+        entry_notional = float(r[10] or 0)
+        exit_notional = float(r[11] or 0)
+        pnl_usdc = float(r[12] or 0)
+        pnl_pct = None if r[13] is None else float(r[13])
+        severity = "success" if pnl_usdc > 0 else "warning" if pnl_usdc < 0 else "info"
+        create_ui_notification(
+            cur,
+            event_type="position_closed",
+            severity=severity,
+            title=f"Position closed: {symbol}",
+            message=f"{side} {symbol} {interval} closed. PnL: {pnl_usdc:.2f} USDC.",
+            source="trading",
+            meta={
+                "environment": ENVIRONMENT,
+                "trading_mode": TRADING_MODE,
+                "position_id": pos_id,
+                "symbol": symbol,
+                "interval": interval,
+                "strategy": strategy,
+                "side": side,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "qty": qty,
+                "entry_notional_usdc": entry_notional,
+                "exit_notional_usdc": exit_notional,
+                "pnl_usdc": pnl_usdc,
+                "pnl_pct": pnl_pct,
+                "exit_reason": r[14],
+                "entry_time": r[5].isoformat() if r[5] else None,
+                "exit_time": r[6].isoformat() if r[6] else None,
+            },
+        )
+
 
 
 def create_ui_notification_dedup(

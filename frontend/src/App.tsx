@@ -887,6 +887,33 @@ function App() {
               </div>
 
 
+              <div className="advanced-section-title">
+                <strong>Sizing controls actions</strong>
+                <span>These actions apply only to manual add-on and 3-win boost settings.</span>
+              </div>
+
+              <div className="button-row button-row--stack-mobile advanced-section-actions">
+                <button
+                  className="action-button"
+                  onClick={() => void handleSaveAdvancedSettings(Number(manualAddonInput || '0'), Number(threeWinBoostInput || '0'))}
+                  disabled={actionBusy}
+                >
+                  Save sizing controls
+                </button>
+                <button
+                  className="action-button"
+                  onClick={() => void handleRestoreAdvancedDefaults()}
+                  disabled={actionBusy}
+                >
+                  Restore sizing defaults
+                </button>
+                <button className="action-button" onClick={() => void loadAdvanced()} disabled={actionBusy}>
+                  Refresh sizing controls
+                </button>
+              </div>
+
+              <div className="section-divider" />
+
               <div className="info-tile">
                 <strong>Notification preferences</strong><br />
                 Default is conservative: CRITICAL only. TRADING and INFO can be enabled when the signal/noise ratio is acceptable.
@@ -907,25 +934,7 @@ function App() {
                 ))}
               </div>
 
-              <div className="button-row button-row--stack-mobile">
-                <button
-                  className="action-button"
-                  onClick={() => void handleSaveAdvancedSettings(Number(manualAddonInput || '0'), Number(threeWinBoostInput || '0'))}
-                  disabled={actionBusy}
-                >
-                  Save advanced
-                </button>
-                <button
-                  className="action-button"
-                  onClick={() => void handleRestoreAdvancedDefaults()}
-                  disabled={actionBusy}
-                >
-                  Restore defaults
-                </button>
-                <button className="action-button" onClick={() => void loadAdvanced()} disabled={actionBusy}>
-                  Refresh advanced
-                </button>
-              </div>
+
             
             </div>
           </section>
