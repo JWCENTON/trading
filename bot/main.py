@@ -2864,7 +2864,7 @@ def run_strategy(row, prev_row=None):
         base_target_notional = float(ORDER_NOTIONAL_USDC)
         final_target_notional = base_target_notional + manual_entry_addon_usdc + applied_three_win_boost_usdc
 
-        if cfg_effective.trading_mode == "LIVE" and (manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0):
+        if manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0:
             qty_btc, px_live, notional_live, step, min_qty, min_notional = compute_live_qty_from_notional(
                 client,
                 SYMBOL,

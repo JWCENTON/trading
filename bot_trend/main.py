@@ -2549,27 +2549,18 @@ def run_trend_strategy():
             return
 
         # ===== SIZING (MUSI być przed użyciem qty_btc) =====
-        if cfg_effective.trading_mode == "LIVE":
-            qty_btc, sizing_info = compute_qty_from_notional(
-                client,
-                symbol=SYMBOL,
-                px=price,
-                target_notional=LIVE_TARGET_NOTIONAL,
-                min_notional_buffer_pct=MIN_NOTIONAL_BUFFER_PCT,
-            )
-        else:
-            # PAPER sizing: stała ilość (albo możesz też policzyć z notional — jak w RSI)
-            qty_btc = float(ORDER_QTY_BTC)
-            sizing_info = {
-                "mode": "PAPER_FIXED_QTY",
-                "qty": float(qty_btc),
-                "px": float(price),
-            }
+        qty_btc, sizing_info = compute_qty_from_notional(
+            client,
+            symbol=SYMBOL,
+            px=price,
+            target_notional=LIVE_TARGET_NOTIONAL,
+            min_notional_buffer_pct=MIN_NOTIONAL_BUFFER_PCT,
+        )
 
         emit_strategy_event(
             event_type="SIZING",
             decision=decision,
-            reason="NOTIONAL" if cfg_effective.trading_mode == "LIVE" else "FIXED_QTY",
+            reason="NOTIONAL",
             price=float(price),
             candle_open_time=open_time,
             info=sizing_info,
@@ -2586,7 +2577,7 @@ def run_trend_strategy():
         base_target_notional = float(LIVE_TARGET_NOTIONAL)
         final_target_notional = base_target_notional + manual_entry_addon_usdc + applied_three_win_boost_usdc
 
-        if cfg_effective.trading_mode == "LIVE" and (manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0):
+        if manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0:
             qty_btc, sizing_info = compute_qty_from_notional(
                 client,
                 symbol=SYMBOL,
