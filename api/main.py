@@ -41,6 +41,14 @@ MARKET_DATA_STALE_MINUTES = int(os.environ.get("MARKET_DATA_STALE_MINUTES", "10"
 BACKUP_STALE_PATH = os.environ.get("BACKUP_STALE_PATH", "").strip()
 BACKUP_STALE_HOURS = int(os.environ.get("BACKUP_STALE_HOURS", "26"))
 
+ENABLE_DAILY_PNL_SUMMARY = os.environ.get("ENABLE_DAILY_PNL_SUMMARY", "true").lower() == "true"
+DAILY_PNL_SUMMARY_HOUR_UTC = int(os.environ.get("DAILY_PNL_SUMMARY_HOUR_UTC", "0"))
+
+LIVE_DAILY_DRAWDOWN_ALERT_USDC = float(os.environ.get("LIVE_DAILY_DRAWDOWN_ALERT_USDC", "-100"))
+LIVE_DAILY_PROFIT_ALERT_USDC = float(os.environ.get("LIVE_DAILY_PROFIT_ALERT_USDC", "200"))
+PAPER_DAILY_DRAWDOWN_ALERT_USDC = float(os.environ.get("PAPER_DAILY_DRAWDOWN_ALERT_USDC", "-500"))
+PAPER_DAILY_PROFIT_ALERT_USDC = float(os.environ.get("PAPER_DAILY_PROFIT_ALERT_USDC", "500"))
+
 FEE_RATE = float(os.environ.get("PAPER_FEE_RATE", "0.0004"))       # 0.04% (taker-ish)
 SLIPPAGE_RATE = float(os.environ.get("PAPER_SLIPPAGE_RATE", "0.0002"))  # 0.02%
 
@@ -3052,6 +3060,7 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                 _conn.commit()
 
             create_backup_stale_notification_if_needed(cur)
+            create_daily_pnl_notifications_if_needed(cur)
             _conn.commit()
 
         return jsonable_encoder({
@@ -4416,6 +4425,10 @@ NOTIFICATION_EVENT_CATEGORIES = {
     "position_closed": "TRADING",
     "tp_sl": "TRADING",
     "daily_pnl_summary": "INFO",
+    "daily_drawdown_alert": "CRITICAL",
+    "daily_drawdown_recovered": "INFO",
+    "daily_profit_alert": "TRADING",
+    "daily_profit_recovered": "INFO",
     "runtime_recovered": "INFO",
     "market_data_recovered": "INFO",
     "binance_api_recovered": "INFO",
@@ -4631,6 +4644,220 @@ def get_backup_stale_status():
             "age_hours": None,
             "error": str(e),
         }
+
+
+
+def get_daily_pnl_thresholds():
+    if TRADING_MODE.upper() == "PAPER" or ENVIRONMENT.lower() == "paper":
+        return PAPER_DAILY_DRAWDOWN_ALERT_USDC, PAPER_DAILY_PROFIT_ALERT_USDC
+    return LIVE_DAILY_DRAWDOWN_ALERT_USDC, LIVE_DAILY_PROFIT_ALERT_USDC
+
+
+def fetch_realized_pnl_stats(cur, start_dt, end_dt):
+    """
+    Realized PnL from CLOSED positions only.
+    This intentionally ignores unrealized PnL to avoid noisy alerts.
+    """
+    cur.execute(
+        """
+        SELECT
+          COUNT(*)::int AS trades,
+          COALESCE(SUM(
+            CASE
+              WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                THEN ((entry_price - exit_price) * qty)
+              ELSE ((exit_price - entry_price) * qty)
+            END
+          ), 0)::double precision AS pnl_usdc,
+          COUNT(*) FILTER (
+            WHERE
+              CASE
+                WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                  THEN ((entry_price - exit_price) * qty)
+                ELSE ((exit_price - entry_price) * qty)
+              END > 0
+          )::int AS wins,
+          COUNT(*) FILTER (
+            WHERE
+              CASE
+                WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                  THEN ((entry_price - exit_price) * qty)
+                ELSE ((exit_price - entry_price) * qty)
+              END < 0
+          )::int AS losses,
+          MAX(
+            CASE
+              WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                THEN ((entry_price - exit_price) * qty)
+              ELSE ((exit_price - entry_price) * qty)
+            END
+          )::double precision AS best_trade_pnl_usdc,
+          MIN(
+            CASE
+              WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+                THEN ((entry_price - exit_price) * qty)
+              ELSE ((exit_price - entry_price) * qty)
+            END
+          )::double precision AS worst_trade_pnl_usdc
+        FROM positions
+        WHERE status = 'CLOSED'
+          AND exit_time IS NOT NULL
+          AND exit_time >= %s
+          AND exit_time < %s
+        """,
+        (start_dt, end_dt),
+    )
+    r = cur.fetchone()
+    trades = int(r[0] or 0)
+    pnl_usdc = float(r[1] or 0.0)
+    wins = int(r[2] or 0)
+    losses = int(r[3] or 0)
+    best_trade = None if r[4] is None else float(r[4])
+    worst_trade = None if r[5] is None else float(r[5])
+    winrate = (wins / trades * 100.0) if trades > 0 else 0.0
+
+    return {
+        "trades": trades,
+        "pnl_usdc": pnl_usdc,
+        "wins": wins,
+        "losses": losses,
+        "winrate_pct": winrate,
+        "best_trade_pnl_usdc": best_trade,
+        "worst_trade_pnl_usdc": worst_trade,
+    }
+
+
+def ui_notification_exists_for_period(cur, event_type: str, period_key: str) -> bool:
+    ensure_ui_notifications_table(cur)
+    cur.execute(
+        """
+        SELECT 1
+        FROM ui_notifications
+        WHERE event_type = %s
+          AND meta->>'period_key' = %s
+        LIMIT 1
+        """,
+        (event_type, period_key),
+    )
+    return cur.fetchone() is not None
+
+
+def create_daily_pnl_summary_if_needed(cur, now_utc):
+    if not ENABLE_DAILY_PNL_SUMMARY:
+        return None
+
+    if now_utc.hour < DAILY_PNL_SUMMARY_HOUR_UTC:
+        return None
+
+    # Summarize the previous completed UTC day. Endpoint-driven:
+    # it is created on the first dashboard refresh after DAILY_PNL_SUMMARY_HOUR_UTC.
+    today = now_utc.date()
+    summary_day = today - timedelta(days=1)
+    start_dt = datetime(summary_day.year, summary_day.month, summary_day.day, tzinfo=timezone.utc)
+    end_dt = start_dt + timedelta(days=1)
+    period_key = f"{ENVIRONMENT}:{TRADING_MODE}:daily_summary:{summary_day.isoformat()}"
+
+    if ui_notification_exists_for_period(cur, "daily_pnl_summary", period_key):
+        return None
+
+    stats = fetch_realized_pnl_stats(cur, start_dt, end_dt)
+    pnl = stats["pnl_usdc"]
+    sign = "+" if pnl > 0 else ""
+    severity = "success" if pnl > 0 else "warning" if pnl < 0 else "info"
+
+    return create_ui_notification(
+        cur,
+        event_type="daily_pnl_summary",
+        severity=severity,
+        title=f"Daily PnL summary: {summary_day.isoformat()}",
+        message=f"{TRADING_MODE} realized PnL: {sign}{pnl:.2f} USDC from {stats['trades']} closed trades. Winrate: {stats['winrate_pct']:.1f}%.",
+        source="trading",
+        meta={
+            "environment": ENVIRONMENT,
+            "trading_mode": TRADING_MODE,
+            "period_key": period_key,
+            "summary_date": summary_day.isoformat(),
+            "start_at": start_dt.isoformat(),
+            "end_at": end_dt.isoformat(),
+            **stats,
+        },
+    )
+
+
+def create_daily_threshold_alerts_if_needed(cur, now_utc):
+    start_dt = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+    end_dt = now_utc
+    today_key = now_utc.date().isoformat()
+    period_key = f"{ENVIRONMENT}:{TRADING_MODE}:today:{today_key}"
+
+    drawdown_threshold, profit_threshold = get_daily_pnl_thresholds()
+    stats = fetch_realized_pnl_stats(cur, start_dt, end_dt)
+    pnl = stats["pnl_usdc"]
+    sign = "+" if pnl > 0 else ""
+
+    meta = {
+        "environment": ENVIRONMENT,
+        "trading_mode": TRADING_MODE,
+        "period_key": period_key,
+        "date": today_key,
+        "start_at": start_dt.isoformat(),
+        "end_at": end_dt.isoformat(),
+        "drawdown_threshold_usdc": drawdown_threshold,
+        "profit_threshold_usdc": profit_threshold,
+        **stats,
+    }
+
+    if pnl <= drawdown_threshold:
+        if not ui_notification_exists_for_period(cur, "daily_drawdown_alert", period_key):
+            create_ui_notification(
+                cur,
+                event_type="daily_drawdown_alert",
+                severity="danger",
+                title="Daily drawdown alert",
+                message=f"{TRADING_MODE} realized PnL today is {pnl:.2f} USDC, below threshold {drawdown_threshold:.2f} USDC.",
+                source="trading",
+                meta=meta,
+            )
+    else:
+        create_ui_recovery_notification_if_needed(
+            cur,
+            failure_event_type="daily_drawdown_alert",
+            recovered_event_type="daily_drawdown_recovered",
+            title="Daily drawdown recovered",
+            message=f"{TRADING_MODE} realized PnL today recovered to {sign}{pnl:.2f} USDC.",
+            source="trading",
+            meta=meta,
+            dedupe_minutes=360,
+        )
+
+    if pnl >= profit_threshold:
+        if not ui_notification_exists_for_period(cur, "daily_profit_alert", period_key):
+            create_ui_notification(
+                cur,
+                event_type="daily_profit_alert",
+                severity="success",
+                title="Daily profit target reached",
+                message=f"{TRADING_MODE} realized PnL today is {sign}{pnl:.2f} USDC, above threshold {profit_threshold:.2f} USDC.",
+                source="trading",
+                meta=meta,
+            )
+    else:
+        create_ui_recovery_notification_if_needed(
+            cur,
+            failure_event_type="daily_profit_alert",
+            recovered_event_type="daily_profit_recovered",
+            title="Daily profit condition cleared",
+            message=f"{TRADING_MODE} realized PnL today is now {sign}{pnl:.2f} USDC.",
+            source="trading",
+            meta=meta,
+            dedupe_minutes=360,
+        )
+
+
+def create_daily_pnl_notifications_if_needed(cur):
+    now_utc = datetime.now(timezone.utc)
+    create_daily_pnl_summary_if_needed(cur, now_utc)
+    create_daily_threshold_alerts_if_needed(cur, now_utc)
 
 
 def create_backup_stale_notification_if_needed(cur):
