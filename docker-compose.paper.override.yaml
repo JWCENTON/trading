@@ -4,6 +4,8 @@ services:
 
   api:
     ports: []
+    volumes:
+      - ./backups:/backup-health:ro
     environment:
       API_BUILD: "paper-20260118-1"
     networks:
