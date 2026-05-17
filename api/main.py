@@ -31,6 +31,16 @@ DB_PASS = os.environ.get("DB_PASS", "botpass")
 PAPER_START_USDT = float(os.environ.get("PAPER_START_USDT", "1000"))
 API_BUILD = os.environ.get("API_BUILD", "dev-unknown")
 
+NOTIFICATION_RETENTION_CRITICAL_DAYS = int(os.environ.get("NOTIFICATION_RETENTION_CRITICAL_DAYS", "90"))
+NOTIFICATION_RETENTION_TRADING_DAYS = int(os.environ.get("NOTIFICATION_RETENTION_TRADING_DAYS", "30"))
+NOTIFICATION_RETENTION_INFO_DAYS = int(os.environ.get("NOTIFICATION_RETENTION_INFO_DAYS", "14"))
+NOTIFICATION_RETENTION_HARD_DELETE_DAYS = int(os.environ.get("NOTIFICATION_RETENTION_HARD_DELETE_DAYS", "365"))
+
+MARKET_DATA_STALE_MINUTES = int(os.environ.get("MARKET_DATA_STALE_MINUTES", "10"))
+
+BACKUP_STALE_PATH = os.environ.get("BACKUP_STALE_PATH", "").strip()
+BACKUP_STALE_HOURS = int(os.environ.get("BACKUP_STALE_HOURS", "26"))
+
 FEE_RATE = float(os.environ.get("PAPER_FEE_RATE", "0.0004"))       # 0.04% (taker-ish)
 SLIPPAGE_RATE = float(os.environ.get("PAPER_SLIPPAGE_RATE", "0.0002"))  # 0.02%
 
@@ -2993,6 +3003,57 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                 )
                 _conn.commit()
 
+            latest_mark_price_at = r[18]
+            market_data_age_minutes = None
+            if latest_mark_price_at is None:
+                market_data_is_stale = True
+            else:
+                market_data_age_minutes = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - latest_mark_price_at).total_seconds() / 60.0,
+                )
+                market_data_is_stale = market_data_age_minutes > MARKET_DATA_STALE_MINUTES
+
+            if market_data_is_stale:
+                create_ui_notification_dedup(
+                    cur,
+                    event_type="market_data_stale",
+                    severity="warning",
+                    title="Market data stale",
+                    message=f"Latest candle/market data is older than {MARKET_DATA_STALE_MINUTES} minutes.",
+                    source="market_data",
+                    meta={
+                        "environment": ENVIRONMENT,
+                        "trading_mode": TRADING_MODE,
+                        "latest_mark_price_at": latest_mark_price_at.isoformat() if latest_mark_price_at else None,
+                        "age_minutes": market_data_age_minutes,
+                        "threshold_minutes": MARKET_DATA_STALE_MINUTES,
+                    },
+                    dedupe_minutes=30,
+                )
+                _conn.commit()
+            else:
+                create_ui_recovery_notification_if_needed(
+                    cur,
+                    failure_event_type="market_data_stale",
+                    recovered_event_type="market_data_recovered",
+                    title="Market data recovered",
+                    message="Market data freshness is healthy again.",
+                    source="market_data",
+                    meta={
+                        "environment": ENVIRONMENT,
+                        "trading_mode": TRADING_MODE,
+                        "latest_mark_price_at": latest_mark_price_at.isoformat() if latest_mark_price_at else None,
+                        "age_minutes": market_data_age_minutes,
+                        "threshold_minutes": MARKET_DATA_STALE_MINUTES,
+                    },
+                    dedupe_minutes=60,
+                )
+                _conn.commit()
+
+            create_backup_stale_notification_if_needed(cur)
+            _conn.commit()
+
         return jsonable_encoder({
             "environment": r[0],
             "trading_mode": r[1],
@@ -4347,6 +4408,7 @@ NOTIFICATION_EVENT_CATEGORIES = {
     "panic_enabled": "CRITICAL",
     "panic_cleared": "CRITICAL",
     "runtime_stale": "CRITICAL",
+    "market_data_stale": "CRITICAL",
     "binance_api_invalid": "CRITICAL",
     "db_unavailable": "CRITICAL",
     "backup_stale": "CRITICAL",
@@ -4355,7 +4417,9 @@ NOTIFICATION_EVENT_CATEGORIES = {
     "tp_sl": "TRADING",
     "daily_pnl_summary": "INFO",
     "runtime_recovered": "INFO",
+    "market_data_recovered": "INFO",
     "binance_api_recovered": "INFO",
+    "backup_recovered": "INFO",
     "deploy_notification": "INFO",
 }
 
@@ -4466,6 +4530,7 @@ def ensure_ui_notifications_table(cur):
 
 def create_ui_notification(cur, *, event_type: str, severity: str, title: str, message: str, source: str = "system", meta: Optional[dict] = None):
     ensure_ui_notifications_table(cur)
+    cleanup_ui_notifications(cur)
     category = notification_category_for_event(event_type)
     cur.execute(
         """
@@ -4476,6 +4541,137 @@ def create_ui_notification(cur, *, event_type: str, severity: str, title: str, m
         (event_type, category, severity, title, message, source, json.dumps(jsonable_encoder(meta or {}))),
     )
     return cur.fetchone()[0]
+
+
+def cleanup_ui_notifications(cur):
+    """Apply category-based notification retention."""
+    ensure_ui_notifications_table(cur)
+
+    retention_rules = [
+        ("CRITICAL", NOTIFICATION_RETENTION_CRITICAL_DAYS),
+        ("TRADING", NOTIFICATION_RETENTION_TRADING_DAYS),
+        ("INFO", NOTIFICATION_RETENTION_INFO_DAYS),
+    ]
+
+    for category, days in retention_rules:
+        cur.execute(
+            """
+            DELETE FROM ui_notifications
+            WHERE read_at IS NOT NULL
+              AND category = %s
+              AND created_at < now() - (%s || ' days')::interval
+            """,
+            (category, days),
+        )
+
+    cur.execute(
+        """
+        DELETE FROM ui_notifications
+        WHERE created_at < now() - (%s || ' days')::interval
+        """,
+        (NOTIFICATION_RETENTION_HARD_DELETE_DAYS,),
+    )
+
+
+def get_backup_stale_status():
+    """Optional backup freshness check. Disabled unless BACKUP_STALE_PATH is set."""
+    if not BACKUP_STALE_PATH:
+        return None
+
+    try:
+        if not os.path.exists(BACKUP_STALE_PATH):
+            return {
+                "configured": True,
+                "ok": False,
+                "reason": "path_missing",
+                "path": BACKUP_STALE_PATH,
+                "latest_backup_at": None,
+                "age_hours": None,
+            }
+
+        latest_mtime = None
+        if os.path.isdir(BACKUP_STALE_PATH):
+            for name in os.listdir(BACKUP_STALE_PATH):
+                full = os.path.join(BACKUP_STALE_PATH, name)
+                if not os.path.isfile(full):
+                    continue
+                mtime = os.path.getmtime(full)
+                latest_mtime = mtime if latest_mtime is None else max(latest_mtime, mtime)
+        else:
+            latest_mtime = os.path.getmtime(BACKUP_STALE_PATH)
+
+        if latest_mtime is None:
+            return {
+                "configured": True,
+                "ok": False,
+                "reason": "no_backup_files",
+                "path": BACKUP_STALE_PATH,
+                "latest_backup_at": None,
+                "age_hours": None,
+            }
+
+        age_hours = (time.time() - latest_mtime) / 3600.0
+        latest_backup_at = datetime.fromtimestamp(latest_mtime, timezone.utc)
+
+        return {
+            "configured": True,
+            "ok": age_hours <= BACKUP_STALE_HOURS,
+            "reason": "ok" if age_hours <= BACKUP_STALE_HOURS else "backup_stale",
+            "path": BACKUP_STALE_PATH,
+            "latest_backup_at": latest_backup_at,
+            "age_hours": age_hours,
+        }
+    except Exception as e:
+        return {
+            "configured": True,
+            "ok": False,
+            "reason": "backup_check_failed",
+            "path": BACKUP_STALE_PATH,
+            "latest_backup_at": None,
+            "age_hours": None,
+            "error": str(e),
+        }
+
+
+def create_backup_stale_notification_if_needed(cur):
+    status = get_backup_stale_status()
+    if not status or not status.get("configured"):
+        return None
+
+    latest_backup_at = status.get("latest_backup_at")
+    meta = {
+        "environment": ENVIRONMENT,
+        "trading_mode": TRADING_MODE,
+        "path": status.get("path"),
+        "reason": status.get("reason"),
+        "latest_backup_at": latest_backup_at.isoformat() if latest_backup_at else None,
+        "age_hours": status.get("age_hours"),
+        "threshold_hours": BACKUP_STALE_HOURS,
+        "error": status.get("error"),
+    }
+
+    if not status.get("ok"):
+        return create_ui_notification_dedup(
+            cur,
+            event_type="backup_stale",
+            severity="warning",
+            title="Backup stale",
+            message=f"No fresh backup found within {BACKUP_STALE_HOURS} hours.",
+            source="backup",
+            meta=meta,
+            dedupe_minutes=360,
+        )
+
+    return create_ui_recovery_notification_if_needed(
+        cur,
+        failure_event_type="backup_stale",
+        recovered_event_type="backup_recovered",
+        title="Backup recovered",
+        message="Backup freshness check is healthy again.",
+        source="backup",
+        meta=meta,
+        dedupe_minutes=360,
+    )
 
 
 def create_ui_recovery_notification_if_needed(
@@ -4730,6 +4926,8 @@ def get_ui_notifications(
     with get_conn() as conn:
         with conn.cursor() as cur:
             ensure_ui_notifications_table(cur)
+            cleanup_ui_notifications(cur)
+            conn.commit()
             enabled_categories = get_enabled_notification_categories(cur)
 
             where_parts = ["category = ANY(%s)"]
