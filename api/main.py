@@ -2937,10 +2937,24 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                 hb AS (
                   SELECT
                     COUNT(*) AS heartbeat_total,
-                    COUNT(*) FILTER (WHERE last_seen >= now() - INTERVAL '10 minutes') AS heartbeat_fresh_count,
-                    COUNT(*) FILTER (WHERE last_seen < now() - INTERVAL '10 minutes') AS heartbeat_stale_count,
-                    MAX(last_seen) AS latest_heartbeat_at
-                  FROM bot_heartbeat
+                    COUNT(*) FILTER (
+                      WHERE bh.last_seen IS NOT NULL
+                        AND bh.last_seen >= now() - INTERVAL '10 minutes'
+                    ) AS heartbeat_fresh_count,
+                    COUNT(*) FILTER (
+                      WHERE bh.last_seen IS NULL
+                         OR bh.last_seen < now() - INTERVAL '10 minutes'
+                    ) AS heartbeat_stale_count,
+                    MAX(bh.last_seen) AS latest_heartbeat_at
+                  FROM orchestrator.bot_state bs
+                  LEFT JOIN bot_heartbeat bh
+                    ON bh.symbol = bs.symbol
+                   AND bh.interval = bs.interval
+                   AND (
+                        bh.strategy = bs.strategy
+                        OR (bs.strategy = 'SUPER_TREND' AND bh.strategy = 'SUPERTREND')
+                   )
+                  WHERE bs.enabled = true
                 ),
                 candle_freshness AS (
                   SELECT MAX(close_time) AS latest_mark_price_at
