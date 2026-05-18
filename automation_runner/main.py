@@ -745,10 +745,15 @@ def main():
                 last_ssot_watchdog_ts = now
 
         except Exception as e:
+            try:
+                if conn is not None and not getattr(conn, "closed", True):
+                    conn.rollback()
+            except Exception as rollback_error:
+                logging.warning("rollback skipped/failed after tick error: %s", rollback_error)
             logging.exception("tick failed: %s", str(e))
         finally:
             try:
-                if conn is not None:
+                if conn is not None and not getattr(conn, "closed", True):
                     conn.close()
             except Exception:
                 pass
