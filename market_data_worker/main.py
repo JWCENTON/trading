@@ -8,6 +8,7 @@ from psycopg2.extras import execute_batch
 from binance.client import Client
 
 from common.schema import ensure_schema
+from common.worker_heartbeat import record_worker_heartbeat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -182,14 +183,28 @@ def main():
 
     while True:
         tick_start = time.perf_counter()
+        loop_errors = []
         for s in symbols:
             for itv in intervals:
                 try:
                     catch_up(s, itv)
-                except Exception:
+                except Exception as exc:
+                    loop_errors.append(f"{s}:{itv}:{type(exc).__name__}:{exc}")
                     logging.exception("MD|catchup failed|%s|%s", s, itv)
 
         elapsed = time.perf_counter() - tick_start
+        record_worker_heartbeat(
+            "market-data-worker",
+            status="degraded" if loop_errors else "healthy",
+            error="; ".join(loop_errors[-3:]) if loop_errors else None,
+            loop_duration_s=elapsed,
+            meta={
+                "symbols": symbols,
+                "intervals": intervals,
+                "sleep_seconds": MD_SLEEP_SECONDS,
+                "errors": len(loop_errors),
+            },
+        )
         if elapsed < MD_SLEEP_SECONDS:
             time.sleep(MD_SLEEP_SECONDS - elapsed)
 

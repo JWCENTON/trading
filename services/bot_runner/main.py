@@ -10,6 +10,7 @@ from typing import Dict, Tuple, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from common.worker_heartbeat import record_worker_heartbeat
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -207,6 +208,8 @@ def main():
 
     try:
         while not _shutdown:
+            tick_start = time.perf_counter()
+            tick_error = None
             desired = fetch_desired_configs(conn)
 
             # 1) Zatrzymaj te, które nie powinny działać
@@ -262,6 +265,20 @@ def main():
                     running[key] = BotProc(key=key, popen=p, started_at=time.time())
                 except Exception as e:
                     logger.exception("Failed to start %s: %s", key, e)
+
+            elapsed = time.perf_counter() - tick_start
+            record_worker_heartbeat(
+                "bot-runner",
+                status="healthy",
+                loop_duration_s=elapsed,
+                meta={
+                    "running_bots": len(running),
+                    "desired_bots": len(desired),
+                    "poll_seconds": POLL_SECONDS,
+                    "trading_mode": TRADING_MODE,
+                },
+                conn=conn,
+            )
 
             time.sleep(POLL_SECONDS)
 

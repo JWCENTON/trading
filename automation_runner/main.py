@@ -9,6 +9,7 @@ from common.reconcile_positions import reconcile_positions
 from common.db import get_db_conn
 from binance.client import Client
 from common.runtime import RuntimeConfig
+from common.worker_heartbeat import record_worker_heartbeat
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -697,6 +698,8 @@ def main():
     last_rg = 0.0
 
     while True:
+        tick_start = time.perf_counter()
+        tick_error = None
         conn = None
         try:
             conn = get_db_conn()
@@ -745,6 +748,7 @@ def main():
                 last_ssot_watchdog_ts = now
 
         except Exception as e:
+            tick_error = e
             try:
                 if conn is not None and not getattr(conn, "closed", True):
                     conn.rollback()
@@ -752,6 +756,20 @@ def main():
                 logging.warning("rollback skipped/failed after tick error: %s", rollback_error)
             logging.exception("tick failed: %s", str(e))
         finally:
+            elapsed = time.perf_counter() - tick_start
+            try:
+                record_worker_heartbeat(
+                    "automation-runner",
+                    status="degraded" if tick_error else "healthy",
+                    error=tick_error,
+                    loop_duration_s=elapsed,
+                    meta={"mode": mode, "tick_seconds": tick_s, "trading_mode": cfg.trading_mode},
+                    conn=conn if conn is not None and not getattr(conn, "closed", True) else None,
+                )
+                if conn is not None and not getattr(conn, "closed", True):
+                    conn.commit()
+            except Exception:
+                logging.exception("automation heartbeat failed")
             try:
                 if conn is not None and not getattr(conn, "closed", True):
                     conn.close()

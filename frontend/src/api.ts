@@ -494,6 +494,25 @@ export interface UiHealthResponse {
     fresh: number;
     stale: number;
   };
+  worker_heartbeats?: {
+    total: number;
+    healthy: number;
+    degraded: number;
+    stale: number;
+    dead: number;
+    items: {
+      service_name: string;
+      environment: string;
+      status: string;
+      effective_status: string;
+      last_tick: string | null;
+      last_ok: string | null;
+      last_error: string | null;
+      loop_duration_ms: number | null;
+      age_seconds: number | null;
+      meta: Record<string, unknown>;
+    }[];
+  };
   market_data: {
     latest_candle_close_at: string | null;
     tracked_pairs: number;

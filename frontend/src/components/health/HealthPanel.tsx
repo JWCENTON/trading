@@ -24,10 +24,18 @@ export function HealthPanel({ health }: HealthPanelProps) {
       meta: formatDateTime(health?.db.now),
     },
     {
-      title: 'Heartbeats',
+      title: 'Bot heartbeats',
       value: health ? `${health.bot_heartbeats.fresh} fresh / ${health.bot_heartbeats.stale} stale` : '—',
       tone: (health?.bot_heartbeats.stale ?? 0) > 0 ? 'negative' : 'positive',
       meta: `Latest: ${formatDateTime(health?.bot_heartbeats.latest_at)}`,
+    },
+    {
+      title: 'Workers',
+      value: health?.worker_heartbeats
+        ? `${health.worker_heartbeats.healthy} OK / ${health.worker_heartbeats.degraded + health.worker_heartbeats.stale + health.worker_heartbeats.dead} issue`
+        : '—',
+      tone: ((health?.worker_heartbeats?.degraded ?? 0) + (health?.worker_heartbeats?.stale ?? 0) + (health?.worker_heartbeats?.dead ?? 0)) > 0 ? 'negative' : 'positive',
+      meta: health?.worker_heartbeats ? `${health.worker_heartbeats.total} reporting` : '—',
     },
     {
       title: 'Market data',
@@ -64,6 +72,39 @@ export function HealthPanel({ health }: HealthPanelProps) {
           </article>
         ))}
       </div>
+
+      {health?.worker_heartbeats?.items?.length ? (
+        <div className="table-wrap health-workers-table-wrap">
+          <table className="data-table health-workers-table">
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Status</th>
+                <th>Last tick</th>
+                <th>Age</th>
+                <th>Loop</th>
+                <th>Last error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {health.worker_heartbeats.items.map((worker) => (
+                <tr key={`${worker.service_name}:${worker.environment}`}>
+                  <td>{worker.service_name}</td>
+                  <td>
+                    <span className={`status-pill status-pill--${worker.effective_status}`}>
+                      {worker.effective_status}
+                    </span>
+                  </td>
+                  <td>{formatDateTime(worker.last_tick)}</td>
+                  <td>{worker.age_seconds == null ? '—' : `${worker.age_seconds}s`}</td>
+                  <td>{worker.loop_duration_ms == null ? '—' : `${worker.loop_duration_ms}ms`}</td>
+                  <td className="muted-cell">{worker.last_error || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -1467,7 +1467,7 @@ small {
 .advanced-section-actions {
   margin: 0 0 18px;
   padding: 12px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
   border-radius: 14px;
   background: rgba(15, 23, 42, 0.34);
 }
@@ -1487,4 +1487,44 @@ small {
   .advanced-section-actions .action-button {
     width: 100%;
   }
+}
+
+.health-workers-table-wrap {
+  margin-top: 16px;
+}
+
+.health-workers-table th,
+.health-workers-table td {
+  white-space: nowrap;
+}
+
+.health-workers-table .muted-cell {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted, #94a3b8);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
+  background: var(--surface-soft, rgba(15, 23, 42, 0.56));
+}
+
+.status-pill--healthy {
+  color: var(--positive, #22c55e);
+}
+
+.status-pill--degraded,
+.status-pill--stale {
+  color: var(--warning, #f59e0b);
+}
+
+.status-pill--dead {
+  color: var(--negative, #ef4444);
 }

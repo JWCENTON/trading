@@ -9,6 +9,7 @@ from common.db import get_db_conn
 from common.regime import detect_regime
 from common.daily_loss import compute_daily_loss_pct_positions
 from common.alerts import emit_alert_throttled
+from common.worker_heartbeat import record_worker_heartbeat
 from common.daily_loss import should_emit_daily_loss_shadow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -210,6 +211,8 @@ def main():
         t0 = time.perf_counter()
         now_utc = pd.Timestamp.now(tz="UTC")
 
+        loop_errors = []
+
         for sym in symbols:
             for interval in INTERVALS:
                 try:
@@ -306,10 +309,23 @@ def main():
                         logging.info("Catch-up done: %s %s wrote=%d up_to=%s",
                                      sym, interval, catchup_count, ts_target.isoformat())
 
-                except Exception:
+                except Exception as exc:
+                    loop_errors.append(f"{sym}:{interval}:{type(exc).__name__}:{exc}")
                     logging.exception("Regime calc failed for %s %s", sym, interval)
 
         dt = time.perf_counter() - t0
+        record_worker_heartbeat(
+            "regime-worker",
+            status="degraded" if loop_errors else "healthy",
+            error="; ".join(loop_errors[-3:]) if loop_errors else None,
+            loop_duration_s=dt,
+            meta={
+                "symbols": symbols,
+                "intervals": INTERVALS,
+                "sleep_seconds": SLEEP_SECONDS,
+                "errors": len(loop_errors),
+            },
+        )
         logging.info("Regime loop finished in %.3f s", dt)
         time.sleep(SLEEP_SECONDS)
 

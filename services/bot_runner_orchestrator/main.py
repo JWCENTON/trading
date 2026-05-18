@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from collections import defaultdict
 from common.db import get_db_conn
+from common.worker_heartbeat import record_worker_heartbeat
 from typing import Dict, Tuple, Any, Optional, List, Set
 from datetime import datetime, timezone, timedelta
 import psycopg2
@@ -1615,6 +1616,9 @@ def main():
         logging.info("Starting in REPORT_ONLY mode (ORC_ACTIONS_ENABLED=false)")
 
     while True:
+        tick_start = time.perf_counter()
+        tick_error = None
+        conn = None
         try:
             conn = get_db_conn()
             conn.autocommit = False
@@ -1622,6 +1626,7 @@ def main():
                 run_orchestrator_v1(conn, actions_enabled=actions_enabled)
                 conn.commit()
             except Exception as e:
+                tick_error = e
                 try:
                     if not getattr(conn, "closed", True):
                         conn.rollback()
@@ -1629,13 +1634,35 @@ def main():
                     logging.warning("rollback skipped/failed after tick error: %s", rollback_error)
                 logging.exception("tick failed: %s", e)
             finally:
+                elapsed = time.perf_counter() - tick_start
+                try:
+                    record_worker_heartbeat(
+                        "bot-runner-orchestrator",
+                        status="degraded" if tick_error else "healthy",
+                        error=tick_error,
+                        loop_duration_s=elapsed,
+                        meta={"actions_enabled": actions_enabled, "poll_seconds": poll_s},
+                        conn=conn if conn is not None and not getattr(conn, "closed", True) else None,
+                    )
+                    if conn is not None and not getattr(conn, "closed", True):
+                        conn.commit()
+                except Exception:
+                    logging.exception("orchestrator heartbeat failed")
                 try:
                     if conn is not None and not getattr(conn, "closed", True):
                         conn.close()
                 except Exception:
                     pass
         except Exception as e:
+            tick_error = e
             logging.exception("db connection failed: %s", e)
+            record_worker_heartbeat(
+                "bot-runner-orchestrator",
+                status="degraded",
+                error=e,
+                loop_duration_s=time.perf_counter() - tick_start,
+                meta={"actions_enabled": actions_enabled, "poll_seconds": poll_s},
+            )
 
         time.sleep(poll_s)
 

@@ -159,6 +159,35 @@ def ensure_schema():
 
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+              service_name TEXT NOT NULL,
+              environment TEXT NOT NULL DEFAULT 'UNKNOWN',
+              status TEXT NOT NULL DEFAULT 'unknown',
+              last_tick TIMESTAMPTZ NOT NULL DEFAULT now(),
+              last_ok TIMESTAMPTZ,
+              last_error TEXT,
+              loop_duration_ms INTEGER,
+              meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (service_name, environment)
+            );
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_status_updated
+              ON worker_heartbeats(status, updated_at DESC);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_last_tick
+              ON worker_heartbeats(last_tick DESC);
+            """
+        )
+
+        cur.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_positions_open
             ON positions(symbol, strategy, interval)
             WHERE status='OPEN';

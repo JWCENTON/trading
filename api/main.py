@@ -3486,6 +3486,37 @@ def ui_slots(user: CurrentUser = Depends(require_auth)):
         }
 
 
+def ensure_worker_heartbeats_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_heartbeats (
+          service_name TEXT NOT NULL,
+          environment TEXT NOT NULL DEFAULT 'UNKNOWN',
+          status TEXT NOT NULL DEFAULT 'unknown',
+          last_tick TIMESTAMPTZ NOT NULL DEFAULT now(),
+          last_ok TIMESTAMPTZ,
+          last_error TEXT,
+          loop_duration_ms INTEGER,
+          meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (service_name, environment)
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_status_updated
+          ON worker_heartbeats(status, updated_at DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_last_tick
+          ON worker_heartbeats(last_tick DESC);
+        """
+    )
+
+
 @app.get("/ui/health")
 def ui_health(user: CurrentUser = Depends(require_auth)):
     try:
@@ -3535,6 +3566,46 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
             """)
             r = cur.fetchone()
 
+            ensure_worker_heartbeats_table(cur)
+            cur.execute(
+                """
+                SELECT
+                  service_name,
+                  environment,
+                  status,
+                  last_tick,
+                  last_ok,
+                  last_error,
+                  loop_duration_ms,
+                  meta,
+                  EXTRACT(EPOCH FROM (now() - last_tick))::int AS age_seconds,
+                  CASE
+                    WHEN last_tick < now() - INTERVAL '10 minutes' THEN 'dead'
+                    WHEN last_tick < now() - INTERVAL '3 minutes' THEN 'stale'
+                    WHEN status = 'degraded' THEN 'degraded'
+                    ELSE 'healthy'
+                  END AS effective_status
+                FROM worker_heartbeats
+                ORDER BY service_name ASC, environment ASC
+                """
+            )
+            worker_rows = cur.fetchall()
+
+        workers = []
+        for wr in worker_rows:
+            workers.append({
+                "service_name": wr[0],
+                "environment": wr[1],
+                "status": wr[2],
+                "last_tick": wr[3],
+                "last_ok": wr[4],
+                "last_error": wr[5],
+                "loop_duration_ms": _safe_int(wr[6], default=None),
+                "meta": wr[7] or {},
+                "age_seconds": _safe_int(wr[8], default=None),
+                "effective_status": wr[9],
+            })
+
         return jsonable_encoder({
             "api": {
                 "ok": True,
@@ -3551,6 +3622,14 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 "total": _safe_int(r[1]),
                 "fresh": _safe_int(r[2]),
                 "stale": _safe_int(r[3]),
+            },
+            "worker_heartbeats": {
+                "total": len(workers),
+                "healthy": sum(1 for w in workers if w["effective_status"] == "healthy"),
+                "degraded": sum(1 for w in workers if w["effective_status"] == "degraded"),
+                "stale": sum(1 for w in workers if w["effective_status"] == "stale"),
+                "dead": sum(1 for w in workers if w["effective_status"] == "dead"),
+                "items": workers,
             },
             "market_data": {
                 "latest_candle_close_at": r[5],
