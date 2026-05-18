@@ -1622,10 +1622,18 @@ def main():
                 run_orchestrator_v1(conn, actions_enabled=actions_enabled)
                 conn.commit()
             except Exception as e:
-                conn.rollback()
+                try:
+                    if not getattr(conn, "closed", True):
+                        conn.rollback()
+                except Exception as rollback_error:
+                    logging.warning("rollback skipped/failed after tick error: %s", rollback_error)
                 logging.exception("tick failed: %s", e)
             finally:
-                conn.close()
+                try:
+                    if conn is not None and not getattr(conn, "closed", True):
+                        conn.close()
+                except Exception:
+                    pass
         except Exception as e:
             logging.exception("db connection failed: %s", e)
 
