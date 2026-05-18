@@ -28,6 +28,7 @@ from common.exit_guards.guarded_profit import evaluate_guarded_profit
 from common.exit_guards.early_cut_adaptive import AdaptiveEarlyCutConfig, evaluate_adaptive_early_cut_long
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 from common.win_streak import get_recent_win_streak
+from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
 from common.execution import (
     place_live_order,
     build_live_client_order_id,
@@ -50,6 +51,7 @@ SYMBOL = os.environ.get("SYMBOL", "BTCUSDC")
 INTERVAL = os.environ.get("INTERVAL", "1m")
 
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "TREND").upper()
+PROFIT_LOCK_CONFIG = ProfitLockConfig.from_env()
 
 EMA_FAST = int(os.environ.get("EMA_FAST", "21"))
 EMA_SLOW = int(os.environ.get("EMA_SLOW", "55"))
@@ -2063,6 +2065,93 @@ def run_trend_strategy():
                             "reason_code": adaptive_decision.reason_code,
                         },
                     )
+
+            # --- PROFIT LOCK: percent high-watermark guard for RSI/TREND/SUPERTREND/BBRANGE ---
+            if pos_entry_time is not None:
+                if pos_entry_time.tzinfo is None:
+                    pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+                age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+                path = load_position_path_snapshot(
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    entry_time=pos_entry_time,
+                    asof_open_time=open_time,
+                    entry_price=pos_entry_price,
+                )
+                profit_lock_decision = evaluate_profit_lock(
+                    strategy=STRATEGY_NAME,
+                    side=pos_side,
+                    age_minutes=age_minutes,
+                    entry_price=pos_entry_price,
+                    current_price=price,
+                    path=path,
+                    config=PROFIT_LOCK_CONFIG,
+                )
+                if profit_lock_decision.triggered:
+                    exit_side = "SELL" if pos_side == "LONG" else "BUY"
+                    exit_kind = str(profit_lock_decision.reason_code or "PROFIT_LOCK")
+                    reason_profit_lock = (
+                        f"TREND {exit_kind} {profit_lock_decision.trigger_type} "
+                        f"peak={profit_lock_decision.peak_move_pct:.3f}% "
+                        f"current={profit_lock_decision.current_move_pct:.3f}% "
+                        f"floor={profit_lock_decision.floor_pct:.3f}% "
+                        f"trail_drop={profit_lock_decision.trail_drop_pct:.3f}% "
+                        f"age={profit_lock_decision.age_minutes:.1f}m"
+                    )
+                    emit_strategy_event(
+                        event_type="EXIT_SIGNAL",
+                        decision=exit_side,
+                        reason=exit_kind,
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "trigger_type": profit_lock_decision.trigger_type,
+                            "peak_move_pct": float(profit_lock_decision.peak_move_pct),
+                            "current_move_pct": float(profit_lock_decision.current_move_pct),
+                            "floor_pct": float(profit_lock_decision.floor_pct),
+                            "trail_drop_pct": float(profit_lock_decision.trail_drop_pct),
+                            "age_minutes": float(profit_lock_decision.age_minutes),
+                            "bars_seen": int(path.bars_seen),
+                            "max_high": float(path.max_high),
+                            "min_low": float(path.min_low),
+                        },
+                    )
+                    emit_regime_gate_event(
+                        symbol=SYMBOL,
+                        interval=INTERVAL,
+                        strategy=STRATEGY_NAME,
+                        decision="TICK",
+                        d=decide_regime_gate(
+                            symbol=SYMBOL,
+                            interval=INTERVAL,
+                            strategy=STRATEGY_NAME,
+                            decision="TICK",
+                            regime_enabled=bc.regime_enabled,
+                            regime_mode=bc.regime_mode,
+                        ),
+                    )
+                    res = execute_and_record(
+                        side=exit_side,
+                        price=price,
+                        qty_btc=pos_qty,
+                        reason=reason_profit_lock,
+                        candle_open_time=open_time,
+                        cfg_used=cfg_effective,
+                        rsi_14=rsi_14,
+                        ema_21=ema_21,
+                        allow_live_orders=snap["allowed_orders_exit"],
+                        allow_meta=snap["allow_meta_exit"],
+                        is_exit=True,
+                        pos_id=int(pos[0]),
+                    )
+                    if not res["ledger_ok"]:
+                        logging.info("TREND: profit-lock exit blocked by DB guard -> skipping close.")
+                        return
+                    if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
+                        logging.info("TREND: profit-lock exit suppressed/failed -> not closing position.")
+                        return
+                    close_position(exit_price=price, reason=exit_kind, open_time=open_time)
+                    return
 
             # --- EARLY EXIT: cut losers earlier than TIMEOUT/SL to make TIMEOUT non-negative on average ---
             if EARLY_EXIT_MINUTES > 0 and pos_entry_time is not None:

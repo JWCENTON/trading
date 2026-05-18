@@ -21,6 +21,8 @@ from common.daily_loss import compute_daily_loss_pct_positions, should_block_dai
 from common.db import get_db_conn
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 from common.win_streak import get_recent_win_streak
+from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
+from common.position_path import load_position_path_snapshot
 from common.execution import (
     place_live_order,
     compute_live_qty_from_notional,
@@ -114,6 +116,8 @@ API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 TIME_EXIT_ENABLED = 1
+
+PROFIT_LOCK_CONFIG = ProfitLockConfig.from_env()
 
 ORDER_NOTIONAL_USDC = float(os.environ.get("ORDER_NOTIONAL_USDC", "6.0"))
 MIN_NOTIONAL_BUFFER_PCT = float(os.environ.get("MIN_NOTIONAL_BUFFER_PCT", "0.05"))
@@ -2418,6 +2422,75 @@ def run_strategy(row, prev_row=None):
                             emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
                         return
                 
+            # PROFIT LOCK: stateful high-watermark guard based on candle path since entry.
+            # Captures profits for RSI/TREND/SUPERTREND/BBRANGE and intentionally excludes legacy SUPER_TREND config rows.
+            if pos_entry_time is not None:
+                if pos_entry_time.tzinfo is None:
+                    pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+                age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+                path = load_position_path_snapshot(
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    entry_time=pos_entry_time,
+                    asof_open_time=open_time,
+                    entry_price=entry_f,
+                )
+                profit_lock_decision = evaluate_profit_lock(
+                    strategy=STRATEGY_NAME,
+                    side=pos_side_u,
+                    age_minutes=age_minutes,
+                    entry_price=entry_f,
+                    current_price=price,
+                    path=path,
+                    config=PROFIT_LOCK_CONFIG,
+                )
+                if profit_lock_decision.triggered:
+                    exit_side = "SELL" if pos_side_u == "LONG" else "BUY"
+                    exit_kind = str(profit_lock_decision.reason_code or "PROFIT_LOCK")
+                    reason_exit = (
+                        f"{exit_kind} {profit_lock_decision.trigger_type} "
+                        f"peak={profit_lock_decision.peak_move_pct:.3f}% "
+                        f"current={profit_lock_decision.current_move_pct:.3f}% "
+                        f"floor={profit_lock_decision.floor_pct:.3f}% "
+                        f"trail_drop={profit_lock_decision.trail_drop_pct:.3f}% "
+                        f"age={profit_lock_decision.age_minutes:.1f}m"
+                    )
+                    emit_strategy_event(
+                        event_type="EXIT_SIGNAL",
+                        decision=exit_side,
+                        reason=exit_kind,
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "trigger_type": profit_lock_decision.trigger_type,
+                            "peak_move_pct": float(profit_lock_decision.peak_move_pct),
+                            "current_move_pct": float(profit_lock_decision.current_move_pct),
+                            "floor_pct": float(profit_lock_decision.floor_pct),
+                            "trail_drop_pct": float(profit_lock_decision.trail_drop_pct),
+                            "age_minutes": float(profit_lock_decision.age_minutes),
+                            "bars_seen": int(path.bars_seen),
+                            "max_high": float(path.max_high),
+                            "min_low": float(path.min_low),
+                        },
+                    )
+                    res = execute_exit_safe(
+                        exit_side=exit_side,
+                        price=price,
+                        qty_btc=qty_f,
+                        reason_text=reason_exit,
+                        candle_open_time=open_time,
+                        cfg_used=cfg_effective,
+                        allow_live_orders=snap["allowed_orders_exit"],
+                        allow_meta=snap["allow_meta_exit"],
+                        exit_kind=exit_kind,
+                    )
+                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                        if cfg_effective.trading_mode == "LIVE":
+                            close_position(exit_price=price, reason=exit_kind)
+                    else:
+                        emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
+                    return
+
             # SOFT EXIT (mean reversion) — jeśli włączone
             if int(RSI_SOFT_EXIT_ENABLED) == 1:
                 # LONG: zamykamy gdy RSI wraca wysoko (overbought/exit threshold)

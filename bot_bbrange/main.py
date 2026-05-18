@@ -27,6 +27,8 @@ from common.sizing import compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 from common.win_streak import get_recent_win_streak
+from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
+from common.position_path import load_position_path_snapshot
 
 
 # =========================
@@ -41,6 +43,7 @@ if not SYMBOL.endswith(QUOTE_ASSET):
     raise RuntimeError(f"SYMBOL={SYMBOL} does not match QUOTE_ASSET={QUOTE_ASSET}")
 
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "BBRANGE").upper()
+PROFIT_LOCK_CONFIG = ProfitLockConfig.from_env()
 INTERVAL = os.environ.get("INTERVAL", "1m")
 LIVE_TARGET_NOTIONAL = float(os.environ.get("LIVE_TARGET_NOTIONAL", "6.0"))
 
@@ -1417,6 +1420,80 @@ def run_strategy(row):
                         info={"res": res},
                     )
                 return
+
+            # PROFIT LOCK: percent high-watermark guard for RSI/TREND/SUPERTREND/BBRANGE.
+            if pos_entry_time is not None:
+                if pos_entry_time.tzinfo is None:
+                    pos_entry_time = pos_entry_time.replace(tzinfo=timezone.utc)
+                age_minutes = (datetime.now(timezone.utc) - pos_entry_time).total_seconds() / 60.0
+                path = load_position_path_snapshot(
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    entry_time=pos_entry_time,
+                    asof_open_time=open_time,
+                    entry_price=entry_f,
+                )
+                profit_lock_decision = evaluate_profit_lock(
+                    strategy=STRATEGY_NAME,
+                    side=side_u,
+                    age_minutes=age_minutes,
+                    entry_price=entry_f,
+                    current_price=price,
+                    path=path,
+                    config=PROFIT_LOCK_CONFIG,
+                )
+                if profit_lock_decision.triggered:
+                    exit_kind = str(profit_lock_decision.reason_code or "PROFIT_LOCK_LONG")
+                    reason_profit_lock = (
+                        f"BBRANGE {exit_kind} {profit_lock_decision.trigger_type} "
+                        f"peak={profit_lock_decision.peak_move_pct:.3f}% "
+                        f"current={profit_lock_decision.current_move_pct:.3f}% "
+                        f"floor={profit_lock_decision.floor_pct:.3f}% "
+                        f"trail_drop={profit_lock_decision.trail_drop_pct:.3f}% "
+                        f"age={profit_lock_decision.age_minutes:.1f}m"
+                    )
+                    emit_strategy_event(
+                        event_type="EXIT_SIGNAL",
+                        decision="SELL",
+                        reason=exit_kind,
+                        price=price,
+                        candle_open_time=open_time,
+                        info={
+                            "trigger_type": profit_lock_decision.trigger_type,
+                            "peak_move_pct": float(profit_lock_decision.peak_move_pct),
+                            "current_move_pct": float(profit_lock_decision.current_move_pct),
+                            "floor_pct": float(profit_lock_decision.floor_pct),
+                            "trail_drop_pct": float(profit_lock_decision.trail_drop_pct),
+                            "age_minutes": float(profit_lock_decision.age_minutes),
+                            "bars_seen": int(path.bars_seen),
+                            "max_high": float(path.max_high),
+                            "min_low": float(path.min_low),
+                        },
+                    )
+                    res = execute_and_record(
+                        side="SELL",
+                        price=price,
+                        qty_btc=qty_f,
+                        reason=reason_profit_lock,
+                        candle_open_time=open_time,
+                        is_exit=True,
+                        cfg_used=cfg_effective,
+                        allow_live_orders=snap["allowed_orders_exit"],
+                        allow_meta=snap["allow_meta_exit"],
+                        rsi_14=rsi_val,
+                        ema_21=ema_val,
+                    )
+                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                        close_position(exit_price=price, reason=exit_kind, candle_open_time=open_time)
+                    else:
+                        emit_blocked(
+                            reason="EXIT_BLOCKED",
+                            decision="SELL",
+                            price=price,
+                            candle_open_time=open_time,
+                            info={"res": res, "exit_kind": exit_kind},
+                        )
+                    return
 
             # TIME EXIT
             if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:

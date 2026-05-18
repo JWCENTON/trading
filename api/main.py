@@ -2952,7 +2952,7 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                    AND bh.interval = bs.interval
                    AND (
                         bh.strategy = bs.strategy
-                        OR (bs.strategy = 'SUPER_TREND' AND bh.strategy = 'SUPERTREND')
+                        OR (bs.strategy = 'SUPER_TREND' AND bh.strategy = 'SUPERTREND') 
                    )
                   WHERE bs.enabled = true
                 ),
