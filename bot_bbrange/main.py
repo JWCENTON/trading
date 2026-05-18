@@ -28,6 +28,7 @@ from common.daily_loss import compute_daily_loss_pct_positions, should_block_dai
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
+from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.position_path import load_position_path_snapshot
 
 
@@ -585,12 +586,16 @@ def load_runtime_params():
     logging.info(
         "RUNTIME_PARAMS|symbol=%s|strategy=%s|STOP_LOSS_PCT=%.3f|TAKE_PROFIT_PCT=%.3f|MAX_POSITION_MINUTES=%d|"
         "DAILY_MAX_LOSS_PCT=%.3f|TREND_BUFFER=%.5f|ORDER_NOTIONAL_USDC=%.2f|MIN_QTY_BTC=%.8f|QTY_STEP_BTC=%.8f|BB_PERIOD=%d|BB_STD=%.2f|MIN_BB_WIDTH_PCT=%.5f|"
-        "RSI_LONG_MAX=%.2f|RSI_BLOCK_EXTREME_LOW=%.2f|RSI_BLOCK_EXTREME_HIGH=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f",
+        "RSI_LONG_MAX=%.2f|RSI_BLOCK_EXTREME_LOW=%.2f|RSI_BLOCK_EXTREME_HIGH=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f|"
+        "PROFIT_LOCK_ENABLED=%s|PROFIT_LOCK_ARM_PCT=%.3f|PROFIT_LOCK_FLOOR_PCT=%.3f|PROFIT_LOCK_TRAIL_DROP_PCT=%.3f|PROFIT_LOCK_MIN_AGE_MINUTES=%.1f|PROFIT_LOCK_STRATEGIES=%s",
         SYMBOL, STRATEGY_NAME,
         STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_MINUTES,
         DAILY_MAX_LOSS_PCT, TREND_BUFFER, ORDER_NOTIONAL_USDC, MIN_QTY_BTC, QTY_STEP_BTC,
         BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT,
         RSI_LONG_MAX, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH, MIN_NOTIONAL_BUFFER_PCT,
+        bool(PROFIT_LOCK_CONFIG.enabled), float(PROFIT_LOCK_CONFIG.arm_pct), float(PROFIT_LOCK_CONFIG.floor_pct),
+        float(PROFIT_LOCK_CONFIG.trail_drop_pct), float(PROFIT_LOCK_CONFIG.min_age_minutes),
+        ",".join(sorted(PROFIT_LOCK_CONFIG.strategies)),
     )
 
 # =========================
@@ -1442,6 +1447,46 @@ def run_strategy(row):
                     path=path,
                     config=PROFIT_LOCK_CONFIG,
                 )
+
+                profit_lock_info = {
+                    "enabled": bool(PROFIT_LOCK_CONFIG.enabled),
+                    "strategies": sorted(PROFIT_LOCK_CONFIG.strategies),
+                    "arm_pct": float(PROFIT_LOCK_CONFIG.arm_pct),
+                    "floor_pct": float(PROFIT_LOCK_CONFIG.floor_pct),
+                    "trail_drop_pct": float(PROFIT_LOCK_CONFIG.trail_drop_pct),
+                    "min_age_minutes": float(PROFIT_LOCK_CONFIG.min_age_minutes),
+                    "reason_code": profit_lock_decision.reason_code,
+                    "trigger_type": profit_lock_decision.trigger_type,
+                    "peak_move_pct": float(profit_lock_decision.peak_move_pct),
+                    "current_move_pct": float(profit_lock_decision.current_move_pct),
+                    "age_minutes": float(profit_lock_decision.age_minutes),
+                    "bars_seen": int(path.bars_seen),
+                    "max_high": float(path.max_high),
+                    "min_low": float(path.min_low),
+                }
+                profit_lock_event_type = None
+                profit_lock_event_decision = "HOLD"
+                if profit_lock_decision.triggered:
+                    profit_lock_event_type = "PROFIT_LOCK_TRIGGERED"
+                    profit_lock_event_decision = "EXIT"
+                elif profit_lock_decision.reason_code == "ARMED_WAITING":
+                    profit_lock_event_type = "PROFIT_LOCK_ARMED"
+                elif profit_lock_decision.reason_code == "NOT_ARMED" and profit_lock_decision.peak_move_pct > 0:
+                    profit_lock_event_type = "PROFIT_LOCK_PEAK_UPDATED"
+
+                if profit_lock_event_type:
+                    emit_profit_lock_event_once(
+                        symbol=SYMBOL,
+                        interval=INTERVAL,
+                        strategy=STRATEGY_NAME,
+                        event_type=profit_lock_event_type,
+                        decision=profit_lock_event_decision,
+                        reason=profit_lock_decision.reason_code,
+                        price=price,
+                        candle_open_time=open_time,
+                        position_entry_time=pos_entry_time,
+                        info=profit_lock_info,
+                    )
                 if profit_lock_decision.triggered:
                     exit_kind = str(profit_lock_decision.reason_code or "PROFIT_LOCK_LONG")
                     reason_profit_lock = (
