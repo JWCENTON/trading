@@ -2,6 +2,11 @@ services:
   db:
     image: postgres:16
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     env_file:
       - ${ENV_FILE}
     environment:
@@ -21,6 +26,11 @@ services:
       context: .
       dockerfile: api/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
@@ -36,11 +46,22 @@ services:
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASS: ${DB_PASS}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   frontend:
     build:
       context: ./frontend
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       - api
     environment:
@@ -48,12 +69,23 @@ services:
       VITE_API_BASE_URL_LIVE: ${VITE_API_BASE_URL_LIVE}
       VITE_API_BASE_URL_PAPER: ${VITE_API_BASE_URL_PAPER}
       VITE_QUOTE_ASSET: ${QUOTE_ASSET}
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t >/dev/null 2>&1 && test -f /usr/share/nginx/html/index.html"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   regime-worker:
     build:
       context: .
       dockerfile: regime_worker/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
@@ -78,6 +110,11 @@ services:
       context: .
       dockerfile: market_data_worker/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
@@ -104,6 +141,11 @@ services:
       context: .
       dockerfile: automation_runner/Dockerfile
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       - db
 
@@ -113,6 +155,11 @@ services:
       context: .
       dockerfile: bot/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
@@ -134,6 +181,11 @@ services:
       context: .
       dockerfile: bot_trend/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
@@ -155,6 +207,11 @@ services:
       context: .
       dockerfile: bot_bbrange/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
@@ -176,6 +233,11 @@ services:
       context: .
       dockerfile: bot_supertrend/Dockerfile
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       db:
         condition: service_healthy
