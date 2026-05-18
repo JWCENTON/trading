@@ -37,6 +37,11 @@ services:
     depends_on:
       - db
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
 
   automation-runner:
     env_file:
@@ -58,6 +63,11 @@ services:
     depends_on:
       - db
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-5}"
 
   regime-worker:
     environment:
