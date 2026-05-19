@@ -3075,6 +3075,7 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
 
             create_backup_stale_notification_if_needed(cur)
             create_daily_pnl_notifications_if_needed(cur)
+            create_worker_heartbeat_notifications_if_needed(cur)
             _conn.commit()
 
         return jsonable_encoder({
@@ -3590,6 +3591,8 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 """
             )
             worker_rows = cur.fetchall()
+            create_worker_heartbeat_notifications_if_needed(cur)
+            _conn.commit()
 
         workers = []
         for wr in worker_rows:
@@ -4510,6 +4513,9 @@ NOTIFICATION_EVENT_CATEGORIES = {
     "panic_enabled": "CRITICAL",
     "panic_cleared": "CRITICAL",
     "runtime_stale": "CRITICAL",
+    "worker_stale": "CRITICAL",
+    "worker_dead": "CRITICAL",
+    "worker_recovered": "INFO",
     "market_data_stale": "CRITICAL",
     "binance_api_invalid": "CRITICAL",
     "db_unavailable": "CRITICAL",
@@ -4993,6 +4999,110 @@ def create_backup_stale_notification_if_needed(cur):
         dedupe_minutes=360,
     )
 
+
+
+def create_worker_heartbeat_notifications_if_needed(cur):
+    """Create deduplicated notifications for stale/dead worker heartbeats."""
+    ensure_worker_heartbeats_table(cur)
+
+    cur.execute(
+        """
+        SELECT
+          service_name,
+          environment,
+          status,
+          last_tick,
+          last_ok,
+          last_error,
+          loop_duration_ms,
+          EXTRACT(EPOCH FROM (now() - last_tick))::int AS age_seconds,
+          CASE
+            WHEN last_tick < now() - INTERVAL '10 minutes' THEN 'dead'
+            WHEN last_tick < now() - INTERVAL '3 minutes' THEN 'stale'
+            WHEN status = 'degraded' THEN 'degraded'
+            ELSE 'healthy'
+          END AS effective_status
+        FROM worker_heartbeats
+        ORDER BY service_name ASC, environment ASC
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return None
+
+    problem_rows = [r for r in rows if str(r[8]) in ("stale", "dead", "degraded")]
+    healthy_rows = [r for r in rows if str(r[8]) == "healthy"]
+
+    if not problem_rows:
+        return create_ui_recovery_notification_if_needed(
+            cur,
+            failure_event_type="worker_dead",
+            recovered_event_type="worker_recovered",
+            title="Worker runtime recovered",
+            message="All worker heartbeats are healthy again.",
+            source="worker_heartbeat",
+            meta={
+                "environment": ENVIRONMENT,
+                "trading_mode": TRADING_MODE,
+                "total_workers": len(rows),
+                "healthy_workers": len(healthy_rows),
+            },
+            dedupe_minutes=60,
+        ) or create_ui_recovery_notification_if_needed(
+            cur,
+            failure_event_type="worker_stale",
+            recovered_event_type="worker_recovered",
+            title="Worker runtime recovered",
+            message="All worker heartbeats are healthy again.",
+            source="worker_heartbeat",
+            meta={
+                "environment": ENVIRONMENT,
+                "trading_mode": TRADING_MODE,
+                "total_workers": len(rows),
+                "healthy_workers": len(healthy_rows),
+            },
+            dedupe_minutes=60,
+        )
+
+    worst = "dead" if any(str(r[8]) == "dead" for r in problem_rows) else "stale"
+    event_type = "worker_dead" if worst == "dead" else "worker_stale"
+    severity = "danger" if worst == "dead" else "warning"
+
+    affected = []
+    for r in problem_rows:
+        affected.append({
+            "service_name": str(r[0]),
+            "environment": str(r[1]),
+            "status": str(r[2]),
+            "effective_status": str(r[8]),
+            "last_tick": r[3].isoformat() if r[3] else None,
+            "last_ok": r[4].isoformat() if r[4] else None,
+            "last_error": r[5],
+            "loop_duration_ms": _safe_int(r[6], default=None),
+            "age_seconds": _safe_int(r[7], default=None),
+        })
+
+    names = ", ".join(a["service_name"] for a in affected[:4])
+    if len(affected) > 4:
+        names += f", +{len(affected) - 4} more"
+
+    return create_ui_notification_dedup(
+        cur,
+        event_type=event_type,
+        severity=severity,
+        title="Worker heartbeat problem" if worst == "stale" else "Worker heartbeat dead",
+        message=f"{len(affected)}/{len(rows)} worker heartbeats are {worst}: {names}.",
+        source="worker_heartbeat",
+        meta={
+            "environment": ENVIRONMENT,
+            "trading_mode": TRADING_MODE,
+            "total_workers": len(rows),
+            "affected_workers": len(affected),
+            "worst_status": worst,
+            "workers": affected,
+        },
+        dedupe_minutes=30,
+    )
 
 def create_ui_recovery_notification_if_needed(
     cur,
