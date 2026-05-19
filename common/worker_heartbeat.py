@@ -2,11 +2,16 @@
 import json
 import logging
 import os
+import random
+import time
 from typing import Any, Optional
 
 from common.db import get_db_conn
 
 log = logging.getLogger(__name__)
+
+HEARTBEAT_MAX_RETRIES = 3
+HEARTBEAT_RETRYABLE_ERRORS = ("deadlock detected", "could not serialize access")
 
 
 def current_environment() -> str:
@@ -57,6 +62,7 @@ def record_worker_heartbeat(
     loop_duration_s: Optional[float] = None,
     meta: Optional[dict[str, Any]] = None,
     conn=None,
+    _attempt: int = 1,
 ) -> None:
     """
     Best-effort heartbeat writer. Never raises to the caller.
@@ -108,10 +114,40 @@ def record_worker_heartbeat(
             hb_conn.commit()
     except Exception as exc:
         try:
-            if own_conn and hb_conn is not None and not getattr(hb_conn, "closed", True):
+            if hb_conn is not None and not getattr(hb_conn, "closed", True):
                 hb_conn.rollback()
         except Exception:
             pass
+
+        msg = str(exc).lower()
+        retryable = any(token in msg for token in HEARTBEAT_RETRYABLE_ERRORS)
+
+        if retryable and _attempt < HEARTBEAT_MAX_RETRIES:
+            sleep_s = round((0.05 * _attempt) + random.uniform(0.01, 0.08), 3)
+            log.warning(
+                "worker heartbeat retry for %s attempt=%s sleep=%.3fs error=%s",
+                service_name,
+                _attempt,
+                sleep_s,
+                exc,
+            )
+            time.sleep(sleep_s)
+            try:
+                if own_conn and hb_conn is not None and not getattr(hb_conn, "closed", True):
+                    hb_conn.close()
+            except Exception:
+                pass
+
+            return record_worker_heartbeat(
+                service_name,
+                status=status,
+                error=error,
+                loop_duration_s=loop_duration_s,
+                meta=meta,
+                conn=None if own_conn else conn,
+                _attempt=_attempt + 1,
+            )
+
         log.warning("worker heartbeat write failed for %s: %s", service_name, exc)
     finally:
         try:
