@@ -370,6 +370,8 @@ export interface UiLiveSummary {
     total: number;
     fresh: number;
     stale: number;
+    legacy_old?: number;
+    raw_total?: number;
   };
   market_data: {
     latest_mark_price_at: string | null;
@@ -493,6 +495,8 @@ export interface UiHealthResponse {
     total: number;
     fresh: number;
     stale: number;
+    legacy_old?: number;
+    raw_total?: number;
   };
   worker_heartbeats?: {
     total: number;

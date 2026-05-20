@@ -60,7 +60,7 @@ export function TopStatusBar({ summary, onRefresh, refreshBusy }: TopStatusBarPr
       meta: 'Mark value',
     },
     {
-      label: 'Heartbeats',
+      label: 'Active heartbeats',
       value: summary ? `${summary.heartbeats.fresh} fresh / ${summary.heartbeats.stale} stale` : '—',
       tone: summary && summary.heartbeats.stale > 0 ? 'negative' : 'positive',
       meta: `Latest: ${formatDateTime(summary?.heartbeats.latest_at)}`,

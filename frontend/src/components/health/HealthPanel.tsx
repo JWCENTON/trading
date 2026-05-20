@@ -9,6 +9,11 @@ function formatDateTime(value: string | null | undefined) {
   return new Date(value).toLocaleString();
 }
 
+function formatAgeSeconds(value: number | null | undefined) {
+  if (value == null) return '—';
+  return `${Math.max(value, 0)}s`;
+}
+
 export function HealthPanel({ health }: HealthPanelProps) {
   const cards = [
     {
@@ -24,10 +29,12 @@ export function HealthPanel({ health }: HealthPanelProps) {
       meta: formatDateTime(health?.db.now),
     },
     {
-      title: 'Bot heartbeats',
+      title: 'Active bot heartbeats',
       value: health ? `${health.bot_heartbeats.fresh} fresh / ${health.bot_heartbeats.stale} stale` : '—',
       tone: (health?.bot_heartbeats.stale ?? 0) > 0 ? 'negative' : 'positive',
-      meta: `Latest: ${formatDateTime(health?.bot_heartbeats.latest_at)}`,
+      meta: health
+        ? `Latest: ${formatDateTime(health.bot_heartbeats.latest_at)}${health.bot_heartbeats.legacy_old ? ` · Legacy inactive: ${health.bot_heartbeats.legacy_old}` : ''}`
+        : '—',
     },
     {
       title: 'Workers',
@@ -96,7 +103,7 @@ export function HealthPanel({ health }: HealthPanelProps) {
                     </span>
                   </td>
                   <td>{formatDateTime(worker.last_tick)}</td>
-                  <td>{worker.age_seconds == null ? '—' : `${worker.age_seconds}s`}</td>
+                  <td>{formatAgeSeconds(worker.age_seconds)}</td>
                   <td>{worker.loop_duration_ms == null ? '—' : `${worker.loop_duration_ms}ms`}</td>
                   <td className="muted-cell">{worker.last_error || '—'}</td>
                 </tr>
