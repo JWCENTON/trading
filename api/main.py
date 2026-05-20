@@ -2938,8 +2938,8 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                   SELECT
                     last_seen,
                     CASE
-                      WHEN interval = '1m' THEN INTERVAL '4 minutes'
-                      WHEN interval = '5m' THEN INTERVAL '12 minutes'
+                      WHEN interval = '1m' THEN INTERVAL '5 minutes'
+                      WHEN interval = '5m' THEN INTERVAL '15 minutes'
                       ELSE INTERVAL '10 minutes'
                     END AS stale_after
                   FROM bot_heartbeat
@@ -3527,8 +3527,8 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 SELECT
                   last_seen,
                   CASE
-                    WHEN interval = '1m' THEN INTERVAL '4 minutes'
-                    WHEN interval = '5m' THEN INTERVAL '12 minutes'
+                    WHEN interval = '1m' THEN INTERVAL '5 minutes'
+                    WHEN interval = '5m' THEN INTERVAL '15 minutes'
                     ELSE INTERVAL '10 minutes'
                   END AS stale_after
                 FROM bot_heartbeat
@@ -5004,7 +5004,7 @@ def create_backup_stale_notification_if_needed(cur):
             message=f"No fresh backup found within {BACKUP_STALE_HOURS} hours.",
             source="backup",
             meta=meta,
-            dedupe_minutes=360,
+            dedupe_minutes=1440,
         )
 
     return create_ui_recovery_notification_if_needed(
