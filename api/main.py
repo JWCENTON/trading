@@ -2934,27 +2934,24 @@ def ui_live_summary(user: CurrentUser = Depends(require_auth)):
                     MAX(updated_at) AS last_bot_control_update
                   FROM bot_control
                 ),
+                hb_source AS (
+                  SELECT
+                    last_seen,
+                    CASE
+                      WHEN interval = '1m' THEN INTERVAL '4 minutes'
+                      WHEN interval = '5m' THEN INTERVAL '12 minutes'
+                      ELSE INTERVAL '10 minutes'
+                    END AS stale_after
+                  FROM bot_heartbeat
+                  WHERE last_seen > now() - INTERVAL '24 hours'
+                ),
                 hb AS (
                   SELECT
                     COUNT(*) AS heartbeat_total,
-                    COUNT(*) FILTER (
-                      WHERE bh.last_seen IS NOT NULL
-                        AND bh.last_seen >= now() - INTERVAL '10 minutes'
-                    ) AS heartbeat_fresh_count,
-                    COUNT(*) FILTER (
-                      WHERE bh.last_seen IS NULL
-                         OR bh.last_seen < now() - INTERVAL '10 minutes'
-                    ) AS heartbeat_stale_count,
-                    MAX(bh.last_seen) AS latest_heartbeat_at
-                  FROM orchestrator.bot_state bs
-                  LEFT JOIN bot_heartbeat bh
-                    ON bh.symbol = bs.symbol
-                   AND bh.interval = bs.interval
-                   AND (
-                        bh.strategy = bs.strategy
-                        OR (bs.strategy = 'SUPER_TREND' AND bh.strategy = 'SUPERTREND') 
-                   )
-                  WHERE bs.enabled = true
+                    COUNT(*) FILTER (WHERE last_seen >= now() - stale_after) AS heartbeat_fresh_count,
+                    COUNT(*) FILTER (WHERE last_seen < now() - stale_after) AS heartbeat_stale_count,
+                    MAX(last_seen) AS latest_heartbeat_at
+                  FROM hb_source
                 ),
                 candle_freshness AS (
                   SELECT MAX(close_time) AS latest_mark_price_at
@@ -3526,13 +3523,31 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
               WITH db_now AS (
                 SELECT now() AS ts
               ),
+              bot_health AS (
+                SELECT
+                  last_seen,
+                  CASE
+                    WHEN interval = '1m' THEN INTERVAL '4 minutes'
+                    WHEN interval = '5m' THEN INTERVAL '12 minutes'
+                    ELSE INTERVAL '10 minutes'
+                  END AS stale_after
+                FROM bot_heartbeat
+              ),
               hb AS (
                 SELECT
-                  COUNT(*) AS total,
-                  COUNT(*) FILTER (WHERE last_seen >= now() - INTERVAL '10 minutes') AS fresh,
-                  COUNT(*) FILTER (WHERE last_seen < now() - INTERVAL '10 minutes') AS stale,
+                  COUNT(*) FILTER (WHERE last_seen > now() - INTERVAL '24 hours') AS active_total,
+                  COUNT(*) FILTER (
+                    WHERE last_seen > now() - INTERVAL '24 hours'
+                      AND last_seen >= now() - stale_after
+                  ) AS active_fresh,
+                  COUNT(*) FILTER (
+                    WHERE last_seen > now() - INTERVAL '24 hours'
+                      AND last_seen < now() - stale_after
+                  ) AS active_stale,
+                  COUNT(*) FILTER (WHERE last_seen <= now() - INTERVAL '24 hours') AS legacy_old,
+                  COUNT(*) AS raw_total,
                   MAX(last_seen) AS latest_at
-                FROM bot_heartbeat
+                FROM bot_health
               ),
               candles_agg AS (
                 SELECT
@@ -3553,9 +3568,11 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
               )
               SELECT
                 (SELECT ts FROM db_now),
-                COALESCE((SELECT total FROM hb), 0),
-                COALESCE((SELECT fresh FROM hb), 0),
-                COALESCE((SELECT stale FROM hb), 0),
+                COALESCE((SELECT active_total FROM hb), 0),
+                COALESCE((SELECT active_fresh FROM hb), 0),
+                COALESCE((SELECT active_stale FROM hb), 0),
+                COALESCE((SELECT legacy_old FROM hb), 0),
+                COALESCE((SELECT raw_total FROM hb), 0),
                 (SELECT latest_at FROM hb),
                 (SELECT latest_candle_close_at FROM candles_agg),
                 COALESCE((SELECT tracked_pairs FROM candles_agg), 0),
@@ -3605,7 +3622,7 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 "last_error": wr[5],
                 "loop_duration_ms": _safe_int(wr[6], default=None),
                 "meta": wr[7] or {},
-                "age_seconds": _safe_int(wr[8], default=None),
+                "age_seconds": max(_safe_int(wr[8], default=0), 0) if wr[8] is not None else None,
                 "effective_status": wr[9],
             })
 
@@ -3614,17 +3631,19 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 "ok": True,
                 "environment": ENVIRONMENT,
                 "trading_mode": TRADING_MODE,
-                "snapshot_at": r[11],
+                "snapshot_at": r[13],
             },
             "db": {
                 "ok": r[0] is not None,
                 "now": r[0],
             },
             "bot_heartbeats": {
-                "latest_at": r[4],
+                "latest_at": r[6],
                 "total": _safe_int(r[1]),
                 "fresh": _safe_int(r[2]),
                 "stale": _safe_int(r[3]),
+                "legacy_old": _safe_int(r[4]),
+                "raw_total": _safe_int(r[5]),
             },
             "worker_heartbeats": {
                 "total": len(workers),
@@ -3635,16 +3654,16 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 "items": workers,
             },
             "market_data": {
-                "latest_candle_close_at": r[5],
-                "tracked_pairs": _safe_int(r[6]),
+                "latest_candle_close_at": r[7],
+                "tracked_pairs": _safe_int(r[8]),
             },
             "orchestrator": {
-                "latest_event_at": r[7],
-                "events_last_15m": _safe_int(r[8]),
+                "latest_event_at": r[9],
+                "events_last_15m": _safe_int(r[10]),
             },
             "panic_state": {
-                "enabled": bool(r[9]),
-                "updated_at": r[10],
+                "enabled": bool(r[11]),
+                "updated_at": r[12],
             },
         })
 
