@@ -13,6 +13,7 @@ interface AppShellProps {
   environment?: UiEnvironment;
   theme?: 'dark' | 'light';
   onThemeToggle?: () => void;
+  isAdmin?: boolean;
 }
 
 const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
@@ -23,7 +24,7 @@ const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
   { key: 'security', label: 'Security', shortLabel: 'Sec' },
 ];
 
-export function AppShell({ title, subtitle, activeTab, onTabChange, children, environment, theme = 'dark', onThemeToggle }: AppShellProps) {
+export function AppShell({ title, subtitle, activeTab, onTabChange, children, environment, theme = 'dark', onThemeToggle, isAdmin = false }: AppShellProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -40,6 +41,8 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  const visibleTabs = isAdmin ? tabs : tabs.filter((tab) => tab.key !== 'advanced');
 
   return (
     <div className="app-shell">
@@ -80,7 +83,7 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
           className={`app-nav ${mobileNavOpen ? 'open' : ''}`}
           aria-label="Primary navigation"
         >
-          {tabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.key}
               type="button"
@@ -111,7 +114,7 @@ export function AppShell({ title, subtitle, activeTab, onTabChange, children, en
             <h1>{title}</h1>
             <p>{subtitle}</p>
           </div>
-          <NotificationCenter />
+          <NotificationCenter canMarkRead={isAdmin} />
         </header>
         {children}
       </main>

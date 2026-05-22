@@ -1539,7 +1539,7 @@ class ApiKeySafetyConfirmationRequest(BaseModel):
 def post_api_key_safety_confirmation(
     payload: ApiKeySafetyConfirmationRequest,
     request: Request,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(require_admin),
 ):
     all_confirmed = all([
         payload.reading_enabled,
@@ -4375,7 +4375,7 @@ def get_settings_user(user: CurrentUser = Depends(require_auth)):
 @app.put("/settings/user", response_model=UIUserSettingsResponse)
 def put_settings_user(
     payload: UIUserSettingsUpdateRequest,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(require_admin),
 ):
     mode = payload.mode.upper() if payload.mode else None
     if mode is not None and mode not in {"AUTO", "MANUAL"}:
@@ -4397,7 +4397,7 @@ def put_settings_user(
 
 
 @app.post("/settings/user/restore-defaults", response_model=RestoreDefaultsResponse)
-def post_settings_user_restore_defaults(user: CurrentUser = Depends(require_auth)):
+def post_settings_user_restore_defaults(user: CurrentUser = Depends(require_admin)):
     settings = upsert_user_settings(
         manual_entry_addon_usdc=0.0,
         three_win_boost_usdc=0.0,
@@ -5455,7 +5455,7 @@ def get_ui_notification_preferences(user: CurrentUser = Depends(require_auth)):
 @app.put("/ui/notification-preferences", response_model=UiNotificationPreferencesResponse)
 def update_ui_notification_preferences(
     payload: UiNotificationPreferencesUpdate,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(require_admin),
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -5480,7 +5480,7 @@ def update_ui_notification_preferences(
 @app.post("/ui/notifications/{notification_id}/read")
 def mark_ui_notification_read(
     notification_id: int,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(require_admin),
 ):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -5498,7 +5498,7 @@ def mark_ui_notification_read(
 
 
 @app.post("/ui/notifications/read-all")
-def mark_all_ui_notifications_read(user: CurrentUser = Depends(require_auth)):
+def mark_all_ui_notifications_read(user: CurrentUser = Depends(require_admin)):
     with get_conn() as conn:
         with conn.cursor() as cur:
             ensure_ui_notifications_table(cur)

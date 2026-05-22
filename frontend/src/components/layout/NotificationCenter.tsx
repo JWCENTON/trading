@@ -12,7 +12,11 @@ function formatNotificationTime(value: string): string {
   return d.toLocaleString();
 }
 
-export function NotificationCenter() {
+interface NotificationCenterProps {
+  canMarkRead?: boolean;
+}
+
+export function NotificationCenter({ canMarkRead = false }: NotificationCenterProps) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<UiNotification[]>([]);
   const [unread, setUnread] = useState(0);
@@ -47,6 +51,7 @@ export function NotificationCenter() {
   }, []);
 
   async function handleMarkRead(id: number) {
+    if (!canMarkRead) return;
     await markUiNotificationRead(id);
     await loadNotifications();
   }
@@ -58,6 +63,7 @@ export function NotificationCenter() {
   async function handleMarkAllRead() {
     setBusy(true);
     try {
+      if (!canMarkRead) return;
       await markAllUiNotificationsRead();
       await loadNotifications();
     } finally {
@@ -86,8 +92,8 @@ export function NotificationCenter() {
               <div className="notification-subtitle">{unread} unread</div>
             </div>
             <div className="notification-actions">
-              <button type="button" onClick={() => void handleMarkAllRead()} disabled={busy || unread === 0}>
-                Mark all read
+              <button type="button" onClick={() => void handleMarkAllRead()} disabled={!canMarkRead || busy || unread === 0}>
+                {canMarkRead ? "Mark all read" : "Read-only"}
               </button>
             </div>
           </div>
@@ -102,6 +108,7 @@ export function NotificationCenter() {
                   type="button"
                   className={`notification-item notification-item--${item.severity} ${item.read_at ? "" : "unread"}`}
                   onClick={() => void handleMarkRead(item.id)}
+                  disabled={!canMarkRead}
                 >
                   <div className="notification-item-top">
                     <span className="notification-item-title">{item.title}</span>

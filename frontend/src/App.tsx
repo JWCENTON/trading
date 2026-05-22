@@ -82,6 +82,9 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const isAdmin = Boolean(currentUser?.is_admin);
+  const userRoleLabel = isAdmin ? "Admin" : "Viewer";
+  const userAccessLabel = isAdmin ? "full control" : "read-only";
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -276,6 +279,10 @@ function App() {
   }, []);
 
   const handleApiKeySafetyConfirm = useCallback(async () => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     try {
       setApiKeyConfirmBusy(true);
 
@@ -305,7 +312,7 @@ function App() {
     } finally {
       setApiKeyConfirmBusy(false);
     }
-  }, [loadSecuritySummary]);
+  }, [isAdmin, loadSecuritySummary]);
 
   const loadHealth = useCallback(async () => {
     setError(null);
@@ -331,12 +338,22 @@ function App() {
       void loadSlots();
     } else if (activeTab === "health") {
       void loadHealth();
-    } else if (activeTab === "advanced") {
+    } else if (activeTab === "advanced" && isAdmin) {
       void loadAdvanced();
     }
-  }, [activeTab, environment, authChecked, authenticated, loadAdvanced, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, authChecked, authenticated, isAdmin, loadAdvanced, loadHealth, loadLive, loadSlots]);
+
+  useEffect(() => {
+    if (authenticated && !isAdmin && activeTab === "advanced") {
+      setActiveTab("live");
+    }
+  }, [authenticated, isAdmin, activeTab]);
 
   const handleTogglePanic = useCallback(async (enabled: boolean, reason: string) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -348,13 +365,17 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadHealth, loadLive]);
+  }, [isAdmin, loadHealth, loadLive]);
 
   const handleRequestPanicToggle = useCallback((enabled: boolean, reason: string) => {
     setPanicConfirm({ enabled, reason });
   }, []);
 
   const handleSaveAdvancedSettings = useCallback(async (manualEntryAddonUsdc: number, threeWinBoostUsdc: number) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -370,9 +391,13 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadAdvanced, loadLive]);
+  }, [isAdmin, loadAdvanced, loadLive]);
 
   const handleRestoreAdvancedDefaults = useCallback(async () => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -385,9 +410,13 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadAdvanced, loadLive]);
+  }, [isAdmin, loadAdvanced, loadLive]);
 
   const handleToggleNotificationPreference = useCallback(async (category: string, enabled: boolean) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setNotificationPrefBusy(true);
     setError(null);
     try {
@@ -402,9 +431,13 @@ function App() {
     } finally {
       setNotificationPrefBusy(false);
     }
-  }, [notificationPreferences]);
+  }, [isAdmin, notificationPreferences]);
 
   const handleSlotUpdate = useCallback(async (payload: Parameters<typeof updateSlotControl>[0]) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -416,9 +449,13 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadLive, loadSlots]);
+  }, [isAdmin, loadLive, loadSlots]);
 
   const handleRegimeUpdate = useCallback(async (payload: Parameters<typeof updateRegimeControl>[0]) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -430,9 +467,13 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadLive, loadSlots]);
+  }, [isAdmin, loadLive, loadSlots]);
 
   const handleSlotManualUpdate = useCallback(async (payload: Parameters<typeof updateSlotManualControl>[0]) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -444,9 +485,13 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadLive, loadSlots]);
+  }, [isAdmin, loadLive, loadSlots]);
 
   const handleSlotReturnAuto = useCallback(async (payload: Parameters<typeof returnSlotToAuto>[0]) => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
     setActionBusy(true);
     setError(null);
     try {
@@ -458,7 +503,7 @@ function App() {
     } finally {
       setActionBusy(false);
     }
-  }, [loadLive, loadSlots]);
+  }, [isAdmin, loadLive, loadSlots]);
 
   const title = useMemo(() => {
     switch (activeTab) {
@@ -544,7 +589,7 @@ function App() {
             </div>
 
             <div className="live-controls-primary">
-              <EnvironmentSwitch environment={environment} />
+              <EnvironmentSwitch environment={environment} canSwitch={true} />
             </div>
           </div>
         </section>
@@ -561,10 +606,11 @@ function App() {
       environment={environment}
       theme={theme}
       onThemeToggle={() => setTheme((current) => toggleTheme(current))}
+      isAdmin={isAdmin}
     >
       <div className="button-row" style={{ marginBottom: 12 }}>
         <span style={{ marginRight: 12 }}>
-          Logged in as <strong>{currentUser?.username}</strong> ({environment})
+          Logged in as <strong>{currentUser?.username}</strong> · <strong>{userRoleLabel}</strong> · {userAccessLabel} ({environment})
         </span>
         <button className="action-button secondary" onClick={() => void handleLogout()} disabled={authBusy}>
           Logout
@@ -592,7 +638,7 @@ function App() {
 
             <div className="live-controls-grid">
               <div className="live-controls-primary">
-                <EnvironmentSwitch environment={environment} />
+                <EnvironmentSwitch environment={environment} canSwitch={isAdmin} />
               </div>
               <div className="live-controls-secondary">
                 <QuickActionsPanel
@@ -600,6 +646,7 @@ function App() {
                   onTogglePanic={handleRequestPanicToggle}
                   settings={settings}
                   actionBusy={actionBusy}
+                  canControl={isAdmin}
                 />
               </div>
             </div>
@@ -619,6 +666,7 @@ function App() {
               onUpdateRegime={handleRegimeUpdate}
               onSetManual={handleSlotManualUpdate}
               onReturnAuto={handleSlotReturnAuto}
+              canControl={isAdmin}
             />
             <SlotsTable items={slots} />
           </>
@@ -658,7 +706,7 @@ function App() {
                 </div>
                 <div className="info-tile">
                   <span className="status-label">Role</span>
-                  <strong className="status-value">{currentUser?.is_admin ? "ADMIN" : "USER"}</strong>
+                  <strong className="status-value">{currentUser?.is_admin ? "ADMIN" : "VIEWER / READ-ONLY"}</strong>
                 </div>
                 <div className="info-tile">
                   <span className="status-label">Password state</span>
@@ -765,7 +813,7 @@ function App() {
                 <button
                   className="action-button"
                   onClick={() => void handleApiKeySafetyConfirm()}
-                  disabled={apiKeyConfirmBusy || apiKeyConfirmDone || !apiKeyStatus?.configured}
+                  disabled={!isAdmin || apiKeyConfirmBusy || apiKeyConfirmDone || !apiKeyStatus?.configured}
                 >
                   {apiKeyConfirmBusy
                     ? "Saving confirmation..."
@@ -831,7 +879,7 @@ function App() {
           </div>
         ) : null}
 
-        {activeTab === "advanced" ? (
+        {activeTab === "advanced" && isAdmin ? (
           <section className="panel advanced-placeholder">
             <div className="panel-header">
               <h2>Advanced</h2>
@@ -927,7 +975,7 @@ function App() {
                     <input
                       type="checkbox"
                       checked={pref.enabled}
-                      disabled={notificationPrefBusy}
+                      disabled={notificationPrefBusy || !isAdmin}
                       onChange={(e) => void handleToggleNotificationPreference(pref.category, e.target.checked)}
                     />
                   </label>

@@ -9,9 +9,10 @@ interface SlotActionsPanelProps {
   onUpdateRegime: (payload: UiRegimeControlPayload) => Promise<void> | void;
   onSetManual: (payload: UiSlotManualPayload) => Promise<void> | void;
   onReturnAuto: (payload: UiSlotAutoPayload) => Promise<void> | void;
+  canControl?: boolean;
 }
 
-export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, onUpdateRegime, onSetManual, onReturnAuto }: SlotActionsPanelProps) {
+export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, onUpdateRegime, onSetManual, onReturnAuto, canControl = false }: SlotActionsPanelProps) {
   const [selectedKey, setSelectedKey] = useState('');
   const [reason, setReason] = useState('ui operator slot update');
 
@@ -48,10 +49,18 @@ export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, o
           </select>
         </div>
 
+        {canControl ? (
         <div className="stack-row">
           <label htmlFor="slot-reason" className="field-label">Reason</label>
           <input id="slot-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>
+        ) : (
+          <div className="info-tile">
+            <span className="status-label">Access</span>
+            <strong className="status-value">VIEWER</strong>
+            <span className="cell-subtext">Slot actions are disabled for this account.</span>
+          </div>
+        )}
 
         {selected ? (
           <>
@@ -76,6 +85,8 @@ export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, o
 
         <div className="button-row button-row--stack-mobile">
           <button type="button" className="action-button" onClick={() => void onRefresh()} disabled={actionBusy}>Refresh slots</button>
+          {canControl ? (
+          <>
           <button
             type="button"
             className={`action-button success ${selected?.control_mode === 'MANUAL' && selected?.enabled && selected?.live_orders_enabled && selected?.regime_mode === 'ENFORCE' ? 'is-active' : ''}`}
@@ -112,8 +123,12 @@ export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, o
           >
             Return to AUTO
           </button>
+          </>
+          ) : null}
         </div>
 
+        {canControl ? (
+        <>
         <div className="selected-slot-summary">
           <span className="status-label">Legacy direct controls</span>
           <strong>Only use these for debugging.</strong>
@@ -167,6 +182,8 @@ export function SlotActionsPanel({ items, actionBusy, onRefresh, onUpdateSlot, o
             Regime DRY_RUN
           </button>
         </div>
+        </>
+        ) : null}
       </div>
     </section>
   );

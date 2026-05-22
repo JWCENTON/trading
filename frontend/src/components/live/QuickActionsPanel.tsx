@@ -6,9 +6,10 @@ interface QuickActionsPanelProps {
   onTogglePanic: (enabled: boolean, reason: string) => Promise<void> | void;
   settings: UiUserSettings | null;
   actionBusy: boolean;
+  canControl?: boolean;
 }
 
-export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy }: QuickActionsPanelProps) {
+export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy, canControl = false }: QuickActionsPanelProps) {
   const [reason, setReason] = useState('ui operator action');
 
   return (
@@ -32,6 +33,7 @@ export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy
           </div>
         </div>
 
+        {canControl ? (
         <div className="panic-block">
           <label htmlFor="panic-reason">Panic reason</label>
           <input
@@ -41,6 +43,13 @@ export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy
             placeholder="Podaj reason do audit loga"
           />
         </div>
+        ) : (
+          <div className="info-tile">
+            <span className="status-label">Access</span>
+            <strong className="status-value">VIEWER</strong>
+            <span className="cell-subtext">Runtime controls are disabled for this account.</span>
+          </div>
+        )}
 
         <div className="stack-row stack-row--split">
           <div className="info-tile">
@@ -68,6 +77,7 @@ export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy
           </div>
         </div>
 
+        {canControl ? (
         <div className="button-row button-row--stack-mobile">
           <button
             type="button"
@@ -88,6 +98,7 @@ export function QuickActionsPanel({ summary, onTogglePanic, settings, actionBusy
             Panic OFF
           </button>
         </div>
+        ) : null}
       </div>
     </section>
   );
