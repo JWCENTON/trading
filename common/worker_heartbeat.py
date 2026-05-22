@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 
 HEARTBEAT_MAX_RETRIES = 3
 HEARTBEAT_RETRYABLE_ERRORS = ("deadlock detected", "could not serialize access")
+_HEARTBEAT_SCHEMA_READY = False
 
 
 def current_environment() -> str:
@@ -83,8 +84,12 @@ def record_worker_heartbeat(
         environment = current_environment()
         payload = json.dumps(meta or {})
 
+        global _HEARTBEAT_SCHEMA_READY
         with hb_conn.cursor() as cur:
-            ensure_worker_heartbeats_table(cur)
+            if not _HEARTBEAT_SCHEMA_READY:
+                cur.execute("SELECT pg_advisory_xact_lock(917263001)")
+                ensure_worker_heartbeats_table(cur)
+                _HEARTBEAT_SCHEMA_READY = True
             cur.execute(
                 """
                 INSERT INTO worker_heartbeats (
