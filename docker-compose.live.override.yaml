@@ -1,5 +1,6 @@
 services:
   db:
+    shm_size: "256mb"
     ports: []
 
   api:
