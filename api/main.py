@@ -21,6 +21,7 @@ import requests
 from openai import OpenAI
 import secrets
 import hashlib
+import pyotp
 
 
 DB_HOST = os.environ.get("DB_HOST", "db")
@@ -184,11 +185,14 @@ class CurrentUser(BaseModel):
     is_active: bool
     is_admin: bool
     must_change_password: bool
+    totp_enabled: bool = False
 
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+    totp_code: Optional[str] = None
+    recovery_code: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -199,6 +203,24 @@ class ChangePasswordRequest(BaseModel):
 class AuthMeResponse(BaseModel):
     authenticated: bool
     user: CurrentUser | None = None
+    requires_2fa: bool = False
+    username: Optional[str] = None
+
+
+class TotpSetupStartResponse(BaseModel):
+    ok: bool
+    manual_secret: str
+    otpauth_uri: str
+
+
+class TotpVerifyRequest(BaseModel):
+    code: str
+
+
+class TotpDisableRequest(BaseModel):
+    password: str
+    code: Optional[str] = None
+    recovery_code: Optional[str] = None
 
 
 class Candle(BaseModel):
@@ -1019,6 +1041,125 @@ def record_auth_event(
         logging.warning("auth event write failed: %s", exc)
 
 
+
+def ensure_totp_schema() -> None:
+    with db_cursor() as (conn, cur):
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_totp (
+              user_id integer PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              totp_secret text NOT NULL,
+              enabled boolean NOT NULL DEFAULT false,
+              created_at timestamptz NOT NULL DEFAULT now(),
+              enabled_at timestamptz NULL,
+              disabled_at timestamptz NULL,
+              last_used_at timestamptz NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_recovery_codes (
+              id bigserial PRIMARY KEY,
+              user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              code_hash text NOT NULL,
+              created_at timestamptz NOT NULL DEFAULT now(),
+              used_at timestamptz NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_user_recovery_codes_user_active ON user_recovery_codes(user_id, used_at)")
+        conn.commit()
+
+
+def normalize_totp_code(code: Optional[str]) -> str:
+    return "".join(ch for ch in (code or "") if ch.isdigit())
+
+
+def normalize_recovery_code(code: Optional[str]) -> str:
+    return (code or "").strip().replace(" ", "").replace("-", "").upper()
+
+
+def hash_recovery_code(code: str) -> str:
+    with db_cursor() as (_conn, cur):
+        cur.execute("SELECT crypt(%s, gen_salt('bf', 12))", (code,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            raise HTTPException(status_code=500, detail="recovery code hashing failed")
+        return str(row[0])
+
+
+def generate_recovery_codes(n: int = 10) -> list[str]:
+    return [secrets.token_hex(5).upper() for _ in range(n)]
+
+
+def get_totp_row(user_id: int) -> Optional[tuple[str, bool]]:
+    ensure_totp_schema()
+    with db_cursor() as (_conn, cur):
+        cur.execute("SELECT totp_secret, enabled FROM user_totp WHERE user_id = %s LIMIT 1", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return str(row[0]), bool(row[1])
+
+
+def is_totp_enabled(user_id: int) -> bool:
+    row = get_totp_row(user_id)
+    return bool(row and row[1])
+
+
+def verify_totp_for_user(user_id: int, code: Optional[str]) -> bool:
+    normalized = normalize_totp_code(code)
+    if len(normalized) != 6:
+        return False
+    row = get_totp_row(user_id)
+    if not row or not row[1]:
+        return False
+    secret = row[0]
+    ok = pyotp.TOTP(secret).verify(normalized, valid_window=1)
+    if ok:
+        with db_cursor() as (conn, cur):
+            cur.execute("UPDATE user_totp SET last_used_at = now() WHERE user_id = %s", (user_id,))
+            conn.commit()
+    return bool(ok)
+
+
+def consume_recovery_code(user_id: int, code: Optional[str]) -> bool:
+    normalized = normalize_recovery_code(code)
+    if len(normalized) < 8:
+        return False
+    ensure_totp_schema()
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT id, code_hash
+            FROM user_recovery_codes
+            WHERE user_id = %s AND used_at IS NULL
+            ORDER BY id ASC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall() or []
+        for code_id, code_hash in rows:
+            cur.execute("SELECT crypt(%s, %s) = %s", (normalized, code_hash, code_hash))
+            match = cur.fetchone()
+            if match and bool(match[0]):
+                cur.execute("UPDATE user_recovery_codes SET used_at = now() WHERE id = %s AND used_at IS NULL", (code_id,))
+                conn.commit()
+                return True
+    return False
+
+
+def replace_recovery_codes(user_id: int) -> list[str]:
+    ensure_totp_schema()
+    codes = generate_recovery_codes()
+    hashes = [hash_recovery_code(code) for code in codes]
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM user_recovery_codes WHERE user_id = %s", (user_id,))
+        for code_hash in hashes:
+            cur.execute(
+                "INSERT INTO user_recovery_codes (user_id, code_hash, created_at, used_at) VALUES (%s, %s, now(), NULL)",
+                (user_id, code_hash),
+            )
+        conn.commit()
+    return codes
+
 def count_recent_failed_logins(*, request: Request, username: str) -> int:
     client_ip = get_client_ip(request)
     with db_cursor() as (_conn, cur):
@@ -1129,10 +1270,13 @@ def get_current_user_from_session_token(raw_token: Optional[str]) -> Optional[Cu
               u.is_active,
               u.is_admin,
               u.must_change_password,
-              s.id
+              s.id,
+              COALESCE(t.enabled, false) AS totp_enabled
             FROM auth_sessions s
             JOIN users u
               ON u.id = s.user_id
+            LEFT JOIN user_totp t
+              ON t.user_id = u.id
             WHERE s.session_token_hash = %s
               AND s.revoked_at IS NULL
               AND s.expires_at > now()
@@ -1166,6 +1310,7 @@ def get_current_user_from_session_token(raw_token: Optional[str]) -> Optional[Cu
             is_active=bool(row[2]),
             is_admin=bool(row[3]),
             must_change_password=bool(row[4]),
+            totp_enabled=bool(row[6]) if len(row) > 6 else False,
         )
 
 
@@ -1293,9 +1438,12 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
     with db_cursor() as (conn, cur):
         cur.execute(
             """
-            SELECT id, username, password_hash, is_active, is_admin, must_change_password
-            FROM users
-            WHERE username = %s
+            SELECT
+              u.id, u.username, u.password_hash, u.is_active, u.is_admin, u.must_change_password,
+              COALESCE(t.enabled, false) AS totp_enabled
+            FROM users u
+            LEFT JOIN user_totp t ON t.user_id = u.id
+            WHERE u.username = %s
             LIMIT 1
             """,
             (username,),
@@ -1318,6 +1466,7 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
     is_active = bool(row[3])
     is_admin = bool(row[4])
     must_change_password = bool(row[5])
+    totp_enabled = bool(row[6])
 
     if not is_active:
         record_auth_event(
@@ -1341,6 +1490,29 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
+    if totp_enabled:
+        totp_ok = verify_totp_for_user(user_id, payload.totp_code)
+        recovery_ok = False if totp_ok else consume_recovery_code(user_id, payload.recovery_code)
+        if not totp_ok and not recovery_ok:
+            record_auth_event(
+                action="LOGIN_2FA_REQUIRED" if not payload.totp_code and not payload.recovery_code else "LOGIN_2FA_FAILED",
+                result="FAIL",
+                request=request,
+                user_id=user_id,
+                username=db_username,
+                reason="TOTP_REQUIRED" if not payload.totp_code and not payload.recovery_code else "INVALID_TOTP_OR_RECOVERY_CODE",
+            )
+            return AuthMeResponse(authenticated=False, user=None, requires_2fa=True, username=db_username)
+        if recovery_ok:
+            record_auth_event(
+                action="RECOVERY_CODE_USED",
+                result="OK",
+                request=request,
+                user_id=user_id,
+                username=db_username,
+                reason=None,
+            )
+
     raw_token, expires_at = create_session(user_id=user_id, request=request)
     set_session_cookie(response, raw_token, expires_at)
 
@@ -1361,6 +1533,7 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
         is_active=is_active,
         is_admin=is_admin,
         must_change_password=must_change_password,
+        totp_enabled=totp_enabled,
     )
     request.state.current_user = user
     record_auth_event(
@@ -1630,6 +1803,103 @@ def post_api_key_safety_confirmation(
     }
 
 
+
+@app.post("/auth/2fa/setup/start", response_model=TotpSetupStartResponse)
+def auth_2fa_setup_start(
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
+    ensure_totp_schema()
+    existing = get_totp_row(user.id)
+    if existing and existing[1]:
+        raise HTTPException(status_code=400, detail="2FA already enabled")
+    secret = pyotp.random_base32()
+    issuer = os.environ.get("TOTP_ISSUER", "WALTRADE BOT")
+    label = f"{issuer}:{user.username}:{ENVIRONMENT or TRADING_MODE or 'trading'}"
+    otpauth_uri = pyotp.TOTP(secret).provisioning_uri(name=label, issuer_name=issuer)
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            INSERT INTO user_totp (user_id, totp_secret, enabled, created_at, enabled_at, disabled_at, last_used_at)
+            VALUES (%s, %s, false, now(), NULL, NULL, NULL)
+            ON CONFLICT (user_id) DO UPDATE
+            SET totp_secret = EXCLUDED.totp_secret,
+                enabled = false,
+                created_at = now(),
+                enabled_at = NULL,
+                disabled_at = NULL,
+                last_used_at = NULL
+            """,
+            (user.id, secret),
+        )
+        conn.commit()
+    record_auth_event(action="2FA_SETUP_STARTED", result="OK", request=request, user_id=user.id, username=user.username, reason=None)
+    return TotpSetupStartResponse(ok=True, manual_secret=secret, otpauth_uri=otpauth_uri)
+
+
+@app.post("/auth/2fa/setup/verify")
+def auth_2fa_setup_verify(
+    payload: TotpVerifyRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
+    ensure_totp_schema()
+    row = get_totp_row(user.id)
+    if not row:
+        raise HTTPException(status_code=400, detail="2FA setup not started")
+    secret, enabled = row
+    if enabled:
+        raise HTTPException(status_code=400, detail="2FA already enabled")
+    code = normalize_totp_code(payload.code)
+    if not pyotp.TOTP(secret).verify(code, valid_window=1):
+        record_auth_event(action="2FA_SETUP_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="INVALID_TOTP")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid TOTP code")
+    recovery_codes = replace_recovery_codes(user.id)
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE user_totp SET enabled = true, enabled_at = now(), disabled_at = NULL, last_used_at = now() WHERE user_id = %s", (user.id,))
+        conn.commit()
+    record_auth_event(action="2FA_ENABLED", result="OK", request=request, user_id=user.id, username=user.username, reason=None)
+    return {"ok": True, "recovery_codes": recovery_codes}
+
+
+@app.post("/auth/2fa/recovery-codes/regenerate")
+def auth_2fa_recovery_codes_regenerate(
+    payload: TotpVerifyRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
+    if not verify_totp_for_user(user.id, payload.code):
+        record_auth_event(action="RECOVERY_CODES_REGENERATE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="INVALID_TOTP")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid TOTP code")
+    codes = replace_recovery_codes(user.id)
+    record_auth_event(action="RECOVERY_CODES_REGENERATED", result="OK", request=request, user_id=user.id, username=user.username, reason=None)
+    return {"ok": True, "recovery_codes": codes}
+
+
+@app.post("/auth/2fa/disable")
+def auth_2fa_disable(
+    payload: TotpDisableRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as (_conn, cur):
+        cur.execute("SELECT password_hash FROM users WHERE id = %s LIMIT 1", (user.id,))
+        row = cur.fetchone()
+    if not row or not verify_password(payload.password, str(row[0])):
+        record_auth_event(action="2FA_DISABLE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="INVALID_PASSWORD")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid password")
+    if not (verify_totp_for_user(user.id, payload.code) or consume_recovery_code(user.id, payload.recovery_code)):
+        record_auth_event(action="2FA_DISABLE_FAILED", result="FAIL", request=request, user_id=user.id, username=user.username, reason="INVALID_TOTP_OR_RECOVERY_CODE")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid TOTP or recovery code")
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE user_totp SET enabled = false, disabled_at = now() WHERE user_id = %s", (user.id,))
+        cur.execute("DELETE FROM user_recovery_codes WHERE user_id = %s", (user.id,))
+        conn.commit()
+    revoke_other_sessions(user_id=user.id, current_raw_token=None)
+    record_auth_event(action="2FA_DISABLED", result="OK", request=request, user_id=user.id, username=user.username, reason=None)
+    return {"ok": True}
+
+
 @app.post("/auth/change-password")
 def auth_change_password(
     payload: ChangePasswordRequest,
@@ -1704,9 +1974,10 @@ def auth_security_summary(user: CurrentUser = Depends(require_auth)):
     with db_cursor() as (_conn, cur):
         cur.execute(
             """
-            SELECT last_login_at, password_changed_at
-            FROM users
-            WHERE id = %s
+            SELECT u.last_login_at, u.password_changed_at, COALESCE(t.enabled, false), t.enabled_at, t.last_used_at
+            FROM users u
+            LEFT JOIN user_totp t ON t.user_id = u.id
+            WHERE u.id = %s
             LIMIT 1
             """,
             (user.id,),
@@ -1757,6 +2028,9 @@ def auth_security_summary(user: CurrentUser = Depends(require_auth)):
         "username": user.username,
         "last_login_at": user_row[0] if user_row else None,
         "password_changed_at": user_row[1] if user_row else None,
+        "totp_enabled": bool(user_row[2]) if user_row else False,
+        "totp_enabled_at": user_row[3] if user_row else None,
+        "totp_last_used_at": user_row[4] if user_row else None,
         "last_successful_login": {
             "created_at": last_success[0] if last_success else None,
             "ip": last_success[1] if last_success else None,
@@ -2532,6 +2806,10 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
 
 @app.on_event("startup")
 def start_ai_tuner():
+    try:
+        ensure_totp_schema()
+    except Exception as exc:
+        logging.warning("2FA schema ensure failed: %s", exc)
     t = threading.Thread(target=ai_auto_tuner_loop, daemon=True)
     t.start()
     logging.info("AI tuner thread started.")

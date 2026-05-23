@@ -4,6 +4,10 @@ import {
   login,
   logout,
   changePassword,
+  startTotpSetup,
+  verifyTotpSetup,
+  regenerateRecoveryCodes,
+  disableTotp,
   getSecuritySummary,
   getApiKeyStatus,
   submitApiKeySafetyConfirmation,
@@ -87,6 +91,9 @@ function App() {
   const userAccessLabel = isAdmin ? "full control" : "read-only";
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [loginTotpCode, setLoginTotpCode] = useState("");
+  const [loginRecoveryCode, setLoginRecoveryCode] = useState("");
+  const [loginRequires2fa, setLoginRequires2fa] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -98,6 +105,12 @@ function App() {
   const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatusResponse | null>(null);
   const [apiKeyConfirmBusy, setApiKeyConfirmBusy] = useState(false);
   const [apiKeyConfirmDone, setApiKeyConfirmDone] = useState(false);
+  const [totpSetupSecret, setTotpSetupSecret] = useState("");
+  const [totpSetupUri, setTotpSetupUri] = useState("");
+  const [totpVerifyCode, setTotpVerifyCode] = useState("");
+  const [totpDisablePassword, setTotpDisablePassword] = useState("");
+  const [totpDisableCode, setTotpDisableCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   const checkAuth = useCallback(async () => {
     setError(null);
@@ -137,10 +150,20 @@ function App() {
       const result = await login({
         username: loginUsername.trim(),
         password: loginPassword,
+        totp_code: loginTotpCode || undefined,
+        recovery_code: loginRecoveryCode || undefined,
       });
+      if (result.requires_2fa && !result.authenticated) {
+        setLoginRequires2fa(true);
+        setError("2FA code required");
+        return;
+      }
       setAuthenticated(Boolean(result.authenticated));
       setCurrentUser(result.user ?? null);
       setLoginPassword("");
+      setLoginTotpCode("");
+      setLoginRecoveryCode("");
+      setLoginRequires2fa(false);
       await checkAuth();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -150,7 +173,7 @@ function App() {
     } finally {
       setAuthBusy(false);
     }
-  }, [checkAuth, loginPassword, loginUsername]);
+  }, [checkAuth, loginPassword, loginRecoveryCode, loginTotpCode, loginUsername]);
 
   const handleLogout = useCallback(async () => {
     setError(null);
@@ -277,6 +300,74 @@ function App() {
       setSecurityLoading(false);
     }
   }, []);
+
+  const handleStartTotpSetup = useCallback(async () => {
+    if (!isAdmin) {
+      setError("Admin privileges required");
+      return;
+    }
+    try {
+      setAuthBusy(true);
+      const res = await startTotpSetup();
+      setTotpSetupSecret(res.manual_secret);
+      setTotpSetupUri(res.otpauth_uri);
+      setRecoveryCodes([]);
+      setError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [isAdmin]);
+
+  const handleVerifyTotpSetup = useCallback(async () => {
+    try {
+      setAuthBusy(true);
+      const res = await verifyTotpSetup(totpVerifyCode);
+      setRecoveryCodes(res.recovery_codes);
+      setTotpSetupSecret("");
+      setTotpSetupUri("");
+      setTotpVerifyCode("");
+      await loadSecuritySummary();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [loadSecuritySummary, totpVerifyCode]);
+
+  const handleRegenerateRecoveryCodes = useCallback(async () => {
+    try {
+      setAuthBusy(true);
+      const res = await regenerateRecoveryCodes(totpVerifyCode);
+      setRecoveryCodes(res.recovery_codes);
+      setTotpVerifyCode("");
+      await loadSecuritySummary();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [loadSecuritySummary, totpVerifyCode]);
+
+  const handleDisableTotp = useCallback(async () => {
+    try {
+      setAuthBusy(true);
+      await disableTotp({ password: totpDisablePassword, code: totpDisableCode || undefined });
+      setTotpDisablePassword("");
+      setTotpDisableCode("");
+      setRecoveryCodes([]);
+      await handleLogout();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [handleLogout, totpDisableCode, totpDisablePassword]);
 
   const handleApiKeySafetyConfirm = useCallback(async () => {
     if (!isAdmin) {
@@ -582,6 +673,28 @@ function App() {
               />
             </label>
 
+            {loginRequires2fa ? (
+              <>
+                <label>
+                  <div>2FA code</div>
+                  <input
+                    value={loginTotpCode}
+                    onChange={(e) => setLoginTotpCode(e.target.value)}
+                    autoComplete="one-time-code"
+                    placeholder="123456"
+                  />
+                </label>
+                <label>
+                  <div>Recovery code, optional</div>
+                  <input
+                    value={loginRecoveryCode}
+                    onChange={(e) => setLoginRecoveryCode(e.target.value)}
+                    placeholder="Use only if TOTP unavailable"
+                  />
+                </label>
+              </>
+            ) : null}
+
             <div className="button-row">
               <button className="action-button" onClick={() => void handleLogin()} disabled={authBusy}>
                 {authBusy ? "Logging in..." : `Login to ${environment}`}
@@ -759,7 +872,10 @@ function App() {
                 <div className="info-tile" style={{ marginTop: 20 }}>
                   <strong>Last login:</strong> {securitySummary.last_login_at ?? "-"}<br />
                   <strong>Password changed:</strong> {securitySummary.password_changed_at ?? "-"}<br />
-                  <strong>Active sessions:</strong> {securitySummary.active_sessions}
+                  <strong>Active sessions:</strong> {securitySummary.active_sessions}<br />
+                  <strong>2FA:</strong> {securitySummary.totp_enabled ? "ENABLED" : "DISABLED"}<br />
+                  <strong>2FA enabled at:</strong> {securitySummary.totp_enabled_at ?? "-"}<br />
+                  <strong>2FA last used:</strong> {securitySummary.totp_last_used_at ?? "-"}
                 </div>
               )}
 
@@ -784,6 +900,57 @@ function App() {
                   </ul>
                 </div>
               ) : null}
+
+              <div className="info-tile" style={{ marginTop: 16 }}>
+                <strong>2FA / TOTP</strong><br />
+                Status: {securitySummary?.totp_enabled ? "ENABLED" : "DISABLED"}<br />
+                {!securitySummary?.totp_enabled ? (
+                  <button className="action-button" onClick={() => void handleStartTotpSetup()} disabled={authBusy || !isAdmin}>
+                    Start 2FA setup
+                  </button>
+                ) : null}
+                {totpSetupSecret ? (
+                  <div style={{ marginTop: 10 }}>
+                    <div><strong>Manual secret:</strong> {totpSetupSecret}</div>
+                    <div style={{ wordBreak: "break-all" }}><strong>otpauth:</strong> {totpSetupUri}</div>
+                    <label>
+                      <div>Verify first 2FA code</div>
+                      <input value={totpVerifyCode} onChange={(e) => setTotpVerifyCode(e.target.value)} autoComplete="one-time-code" />
+                    </label>
+                    <button className="action-button" onClick={() => void handleVerifyTotpSetup()} disabled={authBusy || !totpVerifyCode}>
+                      Enable 2FA
+                    </button>
+                  </div>
+                ) : null}
+                {securitySummary?.totp_enabled ? (
+                  <div style={{ marginTop: 10 }}>
+                    <label>
+                      <div>2FA code</div>
+                      <input value={totpVerifyCode} onChange={(e) => setTotpVerifyCode(e.target.value)} autoComplete="one-time-code" />
+                    </label>
+                    <button className="action-button secondary" onClick={() => void handleRegenerateRecoveryCodes()} disabled={authBusy || !totpVerifyCode}>
+                      Regenerate recovery codes
+                    </button>
+                    <label>
+                      <div>Password to disable 2FA</div>
+                      <input type="password" value={totpDisablePassword} onChange={(e) => setTotpDisablePassword(e.target.value)} />
+                    </label>
+                    <label>
+                      <div>2FA code to disable</div>
+                      <input value={totpDisableCode} onChange={(e) => setTotpDisableCode(e.target.value)} autoComplete="one-time-code" />
+                    </label>
+                    <button className="action-button danger" onClick={() => void handleDisableTotp()} disabled={authBusy || !totpDisablePassword || !totpDisableCode}>
+                      Disable 2FA and logout
+                    </button>
+                  </div>
+                ) : null}
+                {recoveryCodes.length ? (
+                  <div style={{ marginTop: 10 }}>
+                    <strong>Recovery codes — save now, shown once:</strong>
+                    <ul>{recoveryCodes.map((code) => <li key={code}><code>{code}</code></li>)}</ul>
+                  </div>
+                ) : null}
+              </div>
 
               <div className="info-tile" style={{ marginTop: 16 }}>
                 <strong>Binance API key safety</strong><br />

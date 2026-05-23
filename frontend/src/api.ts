@@ -600,16 +600,21 @@ export interface AuthUser {
   is_active: boolean;
   is_admin: boolean;
   must_change_password: boolean;
+  totp_enabled?: boolean;
 }
 
 export interface AuthMeResponse {
   authenticated: boolean;
   user: AuthUser | null;
+  requires_2fa?: boolean;
+  username?: string | null;
 }
 
 export interface LoginRequest {
   username: string;
   password: string;
+  totp_code?: string;
+  recovery_code?: string;
 }
 
 export interface SecuritySummary {
@@ -630,6 +635,9 @@ export interface SecuritySummary {
     reason: string;
   }[];
   active_sessions: number;
+  totp_enabled?: boolean;
+  totp_enabled_at?: string | null;
+  totp_last_used_at?: string | null;
 }
 
 export interface ApiKeyStatusResponse {
@@ -942,6 +950,38 @@ export async function submitApiKeySafetyConfirmation(
     "/ui/api-key-safety-confirmation",
     payload,
   );
+  return response.data;
+}
+
+
+export interface TotpSetupStartResponse {
+  ok: boolean;
+  manual_secret: string;
+  otpauth_uri: string;
+}
+
+export interface TotpSetupVerifyResponse {
+  ok: boolean;
+  recovery_codes: string[];
+}
+
+export async function startTotpSetup(): Promise<TotpSetupStartResponse> {
+  const response = await getApi().post<TotpSetupStartResponse>("/auth/2fa/setup/start");
+  return response.data;
+}
+
+export async function verifyTotpSetup(code: string): Promise<TotpSetupVerifyResponse> {
+  const response = await getApi().post<TotpSetupVerifyResponse>("/auth/2fa/setup/verify", { code });
+  return response.data;
+}
+
+export async function regenerateRecoveryCodes(code: string): Promise<TotpSetupVerifyResponse> {
+  const response = await getApi().post<TotpSetupVerifyResponse>("/auth/2fa/recovery-codes/regenerate", { code });
+  return response.data;
+}
+
+export async function disableTotp(payload: { password: string; code?: string; recovery_code?: string }): Promise<{ ok: boolean }> {
+  const response = await getApi().post<{ ok: boolean }>("/auth/2fa/disable", payload);
   return response.data;
 }
 
