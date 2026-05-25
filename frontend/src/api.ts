@@ -640,6 +640,18 @@ export interface SecuritySummary {
   totp_last_used_at?: string | null;
 }
 
+export interface ApiKeyValidationHistoryItem {
+  created_at: string | null;
+  result: string;
+  account_read_check: string;
+  spot_trading_check: string;
+  can_read_account: boolean;
+  binance_can_trade?: boolean | null;
+  account_can_withdraw_reported?: boolean | null;
+  error_type?: string | null;
+  error_message?: string | null;
+}
+
 export interface ApiKeyStatusResponse {
   configured: boolean;
   key_source: string;
@@ -653,6 +665,13 @@ export interface ApiKeyStatusResponse {
   account_can_withdraw_reported?: boolean;
   safety_confirmed?: boolean;
   safety_confirmed_at?: string | null;
+  last_validation_at?: string | null;
+  last_validation_result?: string | null;
+  last_validation_error?: string | null;
+  last_successful_validation_at?: string | null;
+  last_failed_validation_at?: string | null;
+  last_failed_validation_error?: string | null;
+  validation_history?: ApiKeyValidationHistoryItem[];
   required_user_confirmation?: {
     reading_enabled: boolean;
     spot_trading_enabled: boolean;

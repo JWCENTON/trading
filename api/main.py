@@ -555,6 +555,133 @@ def ensure_api_key_safety_confirmations_table(cur):
     )
 
 
+def ensure_api_key_validation_events_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_key_validation_events (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          result TEXT NOT NULL,
+          account_read_check TEXT NOT NULL,
+          spot_trading_check TEXT NOT NULL,
+          can_read_account BOOLEAN NOT NULL DEFAULT FALSE,
+          binance_can_trade BOOLEAN,
+          account_can_withdraw_reported BOOLEAN,
+          error_type TEXT,
+          error_message TEXT,
+          source TEXT NOT NULL DEFAULT 'api_key_status',
+          environment TEXT,
+          trading_mode TEXT
+        );
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_api_key_validation_events_created_at
+          ON api_key_validation_events(created_at DESC);
+        """
+    )
+
+
+def record_api_key_validation_event(
+    cur,
+    *,
+    result: str,
+    account_read_check: str,
+    spot_trading_check: str,
+    can_read_account: bool,
+    binance_can_trade: Optional[bool] = None,
+    account_can_withdraw_reported: Optional[bool] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+):
+    ensure_api_key_validation_events_table(cur)
+    cur.execute(
+        """
+        INSERT INTO api_key_validation_events (
+          result, account_read_check, spot_trading_check, can_read_account,
+          binance_can_trade, account_can_withdraw_reported, error_type, error_message,
+          environment, trading_mode
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            result,
+            account_read_check,
+            spot_trading_check,
+            can_read_account,
+            binance_can_trade,
+            account_can_withdraw_reported,
+            error_type,
+            (error_message or None)[:500] if error_message else None,
+            ENVIRONMENT,
+            TRADING_MODE,
+        ),
+    )
+
+
+def load_api_key_validation_summary(cur) -> dict:
+    ensure_api_key_validation_events_table(cur)
+    cur.execute(
+        """
+        SELECT created_at, result, account_read_check, spot_trading_check, can_read_account,
+               binance_can_trade, account_can_withdraw_reported, error_type, error_message
+        FROM api_key_validation_events
+        ORDER BY created_at DESC
+        LIMIT 5
+        """
+    )
+    rows = cur.fetchall()
+    history = [
+        {
+            "created_at": row[0].isoformat() if row[0] else None,
+            "result": row[1],
+            "account_read_check": row[2],
+            "spot_trading_check": row[3],
+            "can_read_account": bool(row[4]),
+            "binance_can_trade": row[5],
+            "account_can_withdraw_reported": row[6],
+            "error_type": row[7],
+            "error_message": row[8],
+        }
+        for row in rows
+    ]
+
+    summary = {
+        "last_validation_at": history[0]["created_at"] if history else None,
+        "last_validation_result": history[0]["result"] if history else None,
+        "last_validation_error": history[0]["error_message"] if history and history[0]["result"] != "OK" else None,
+        "validation_history": history,
+    }
+
+    cur.execute(
+        """
+        SELECT created_at
+        FROM api_key_validation_events
+        WHERE result = 'OK'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    summary["last_successful_validation_at"] = row[0].isoformat() if row and row[0] else None
+
+    cur.execute(
+        """
+        SELECT created_at, error_message
+        FROM api_key_validation_events
+        WHERE result <> 'OK'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    summary["last_failed_validation_at"] = row[0].isoformat() if row and row[0] else None
+    summary["last_failed_validation_error"] = row[1] if row else None
+
+    return summary
+
+
 def get_request_actor(request: Optional[Request]) -> tuple[str, Optional[str], str]:
     if request is None:
         return ("system", "system", "api")
@@ -1651,6 +1778,15 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
 
         try:
             with db_cursor() as (conn, cur):
+                record_api_key_validation_event(
+                    cur,
+                    result="OK" if can_trade else "FAIL",
+                    account_read_check="OK",
+                    spot_trading_check="OK" if can_trade else "FAIL",
+                    can_read_account=True,
+                    binance_can_trade=can_trade,
+                    account_can_withdraw_reported=account_can_withdraw_reported,
+                )
                 create_ui_recovery_notification_if_needed(
                     cur,
                     failure_event_type="binance_api_invalid",
@@ -1661,9 +1797,10 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
                     meta={"environment": ENVIRONMENT, "trading_mode": TRADING_MODE},
                     dedupe_minutes=60,
                 )
+                status_payload.update(load_api_key_validation_summary(cur))
                 conn.commit()
         except Exception as notify_error:
-            logging.warning("Binance API recovered notification failed: %s", str(notify_error))
+            logging.warning("Binance API validation history/recovery notification failed: %s", str(notify_error))
 
     except Exception as e:
         logging.warning("API key status check failed: %s", str(e))
@@ -1673,6 +1810,15 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
 
         try:
             with db_cursor() as (conn, cur):
+                record_api_key_validation_event(
+                    cur,
+                    result="FAIL",
+                    account_read_check="FAIL",
+                    spot_trading_check="UNKNOWN",
+                    can_read_account=False,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
                 create_ui_notification_dedup(
                     cur,
                     event_type="binance_api_invalid",
@@ -1688,9 +1834,17 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
                     },
                     dedupe_minutes=60,
                 )
+                status_payload.update(load_api_key_validation_summary(cur))
                 conn.commit()
         except Exception as notify_error:
-            logging.warning("Binance API invalid notification failed: %s", str(notify_error))
+            logging.warning("Binance API validation history/invalid notification failed: %s", str(notify_error))
+
+    if "validation_history" not in status_payload:
+        try:
+            with db_cursor() as (_conn, cur):
+                status_payload.update(load_api_key_validation_summary(cur))
+        except Exception as history_error:
+            logging.warning("Binance API validation history lookup failed: %s", str(history_error))
 
     return status_payload
 

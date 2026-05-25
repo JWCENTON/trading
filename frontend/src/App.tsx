@@ -958,9 +958,27 @@ function App() {
                 Account read: {apiKeyStatus?.account_read_check ?? "-"}<br />
                 Spot trading: {apiKeyStatus?.spot_trading_check ?? "-"}<br />
                 Secret exposed: {apiKeyStatus?.secrets_exposed ? "YES - CHECK IMMEDIATELY" : "NO"}<br />
+                Last validation: {apiKeyStatus?.last_validation_at ? `${apiKeyStatus.last_validation_at} (${apiKeyStatus.last_validation_result ?? "-"})` : "-"}<br />
+                Last successful validation: {apiKeyStatus?.last_successful_validation_at ?? "-"}<br />
+                Last failed validation: {apiKeyStatus?.last_failed_validation_at ?? "-"}<br />
+                Last failed error: {apiKeyStatus?.last_failed_validation_error ?? "-"}<br />
                 Withdraw permission: must be disabled in Binance API Management.<br />
                 IP whitelist: required/recommended.
               </div>
+
+              {apiKeyStatus?.validation_history?.length ? (
+                <div className="info-tile" style={{ marginTop: 10 }}>
+                  <strong>Binance API validation history</strong>
+                  <ul>
+                    {apiKeyStatus.validation_history.map((item, idx) => (
+                      <li key={`${item.created_at ?? "validation"}-${idx}`}>
+                        {item.created_at ?? "-"}: {item.result} / account={item.account_read_check} / spot={item.spot_trading_check}
+                        {item.error_message ? ` / ${item.error_message}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               <div className="info-tile" style={{ marginTop: 10 }}>
                 <strong>Required confirmation</strong>
