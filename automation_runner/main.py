@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import requests
+import shutil
 from datetime import datetime, timezone, date
 from pathlib import Path
 from common.reconcile_positions import reconcile_positions
@@ -19,6 +20,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] auto
 client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
 last_reconcile_ts = 0.0
 last_ssot_watchdog_ts = 0.0
+last_disk_usage_check_ts = 0.0
 
 def _json_default(o):
     if isinstance(o, (datetime, date)):
@@ -336,6 +338,167 @@ def run_daily_report(conn):
 
     conn.commit()
     logging.info("daily_report: done")
+
+
+def ensure_ui_notifications_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ui_notifications (
+          id BIGSERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          event_type TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT 'CRITICAL',
+          severity TEXT NOT NULL DEFAULT 'info',
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          source TEXT,
+          read_at TIMESTAMPTZ,
+          meta JSONB NOT NULL DEFAULT '{}'::jsonb
+        );
+        """
+    )
+    cur.execute("ALTER TABLE ui_notifications ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'CRITICAL';")
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_ui_notifications_created_at
+          ON ui_notifications(created_at DESC);
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_ui_notifications_read_at
+          ON ui_notifications(read_at);
+        """
+    )
+
+
+def create_ui_notification_dedup(cur, *, event_type: str, severity: str, title: str, message: str, source: str, meta: dict, dedupe_minutes: int = 1440):
+    ensure_ui_notifications_table(cur)
+    cur.execute(
+        """
+        SELECT id
+        FROM ui_notifications
+        WHERE event_type = %s
+          AND created_at >= now() - (%s || ' minutes')::interval
+        ORDER BY created_at DESC
+        LIMIT 1;
+        """,
+        (event_type, str(dedupe_minutes)),
+    )
+    if cur.fetchone():
+        return None
+
+    cur.execute(
+        """
+        INSERT INTO ui_notifications (event_type, category, severity, title, message, source, meta)
+        VALUES (%s, 'CRITICAL', %s, %s, %s, %s, %s::jsonb)
+        RETURNING id;
+        """,
+        (event_type, severity, title, message, source, json.dumps(meta, default=_json_default)),
+    )
+    return cur.fetchone()[0]
+
+
+def create_ui_recovery_notification_if_needed(cur, *, failure_event_types: tuple[str, ...], recovered_event_type: str, title: str, message: str, source: str, meta: dict, dedupe_minutes: int = 360):
+    ensure_ui_notifications_table(cur)
+    cur.execute(
+        """
+        SELECT id
+        FROM ui_notifications
+        WHERE event_type = ANY(%s)
+          AND read_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1;
+        """,
+        (list(failure_event_types),),
+    )
+    if not cur.fetchone():
+        return None
+
+    cur.execute(
+        """
+        UPDATE ui_notifications
+        SET read_at = COALESCE(read_at, now())
+        WHERE event_type = ANY(%s)
+          AND read_at IS NULL;
+        """,
+        (list(failure_event_types),),
+    )
+    return create_ui_notification_dedup(
+        cur,
+        event_type=recovered_event_type,
+        severity="success",
+        title=title,
+        message=message,
+        source=source,
+        meta=meta,
+        dedupe_minutes=dedupe_minutes,
+    )
+
+
+def run_disk_usage_notification_check(conn):
+    if os.getenv("DISK_USAGE_ALERT_ENABLED", "1") != "1":
+        return
+
+    path = os.getenv("DISK_USAGE_PATH", "/")
+    warning_pct = float(os.getenv("DISK_USAGE_WARNING_PCT", "80"))
+    danger_pct = float(os.getenv("DISK_USAGE_DANGER_PCT", "90"))
+    dedupe_minutes = int(os.getenv("DISK_USAGE_ALERT_DEDUPE_MINUTES", "1440"))
+
+    usage = shutil.disk_usage(path)
+    total_gb = usage.total / (1024 ** 3)
+    used_gb = usage.used / (1024 ** 3)
+    free_gb = usage.free / (1024 ** 3)
+    used_pct = (usage.used / usage.total * 100.0) if usage.total else 0.0
+
+    meta = {
+        "environment": os.getenv("ENVIRONMENT"),
+        "trading_mode": cfg.trading_mode,
+        "path": path,
+        "used_pct": round(used_pct, 2),
+        "warning_pct": warning_pct,
+        "danger_pct": danger_pct,
+        "total_gb": round(total_gb, 2),
+        "used_gb": round(used_gb, 2),
+        "free_gb": round(free_gb, 2),
+    }
+
+    with conn.cursor() as cur:
+        if used_pct >= danger_pct:
+            create_ui_notification_dedup(
+                cur,
+                event_type="disk_usage_danger",
+                severity="danger",
+                title="Disk usage danger",
+                message=f"Disk usage on {path} is {used_pct:.1f}% ({free_gb:.1f} GB free).",
+                source="disk_usage",
+                meta=meta,
+                dedupe_minutes=dedupe_minutes,
+            )
+        elif used_pct >= warning_pct:
+            create_ui_notification_dedup(
+                cur,
+                event_type="disk_usage_warning",
+                severity="warning",
+                title="Disk usage warning",
+                message=f"Disk usage on {path} is {used_pct:.1f}% ({free_gb:.1f} GB free).",
+                source="disk_usage",
+                meta=meta,
+                dedupe_minutes=dedupe_minutes,
+            )
+        else:
+            create_ui_recovery_notification_if_needed(
+                cur,
+                failure_event_types=("disk_usage_warning", "disk_usage_danger"),
+                recovered_event_type="disk_usage_recovered",
+                title="Disk usage recovered",
+                message=f"Disk usage on {path} recovered to {used_pct:.1f}% ({free_gb:.1f} GB free).",
+                source="disk_usage",
+                meta=meta,
+                dedupe_minutes=360,
+            )
+
+    conn.commit()
 
 
 def run_ip_panic_watch(conn):
@@ -676,7 +839,7 @@ def publish_promotions(conn):
 # --- /PROMOTIONS ---
 
 def main():
-    global last_reconcile_ts, last_ssot_watchdog_ts
+    global last_reconcile_ts, last_ssot_watchdog_ts, last_disk_usage_check_ts
     if os.getenv("AUTOMATION_ENABLED", "0") != "1":
         logging.info("AUTOMATION_ENABLED!=1; exiting")
         return
@@ -693,6 +856,7 @@ def main():
 
     ip_int = int(os.getenv("IP_CHECK_INTERVAL_SECONDS", "60"))
     rg_int = int(os.getenv("REGIME_WATCH_INTERVAL_SECONDS", "60"))
+    disk_int = int(os.getenv("DISK_USAGE_CHECK_INTERVAL_SECONDS", "300"))
 
     last_ip = 0.0
     last_rg = 0.0
@@ -708,6 +872,13 @@ def main():
             now = time.time()
 
             run_daily_report(conn)
+
+            if now - last_disk_usage_check_ts >= disk_int:
+                try:
+                    run_disk_usage_notification_check(conn)
+                except Exception:
+                    logging.exception("disk usage notification check failed")
+                last_disk_usage_check_ts = now
 
             # PAPER only: publish promotions to LIVE
             if cfg.trading_mode != "LIVE":
