@@ -1494,13 +1494,14 @@ def auth_login(payload: LoginRequest, request: Request, response: Response):
         totp_ok = verify_totp_for_user(user_id, payload.totp_code)
         recovery_ok = False if totp_ok else consume_recovery_code(user_id, payload.recovery_code)
         if not totp_ok and not recovery_ok:
+            missing_2fa_code = not payload.totp_code and not payload.recovery_code
             record_auth_event(
-                action="LOGIN_2FA_REQUIRED" if not payload.totp_code and not payload.recovery_code else "LOGIN_2FA_FAILED",
-                result="FAIL",
+                action="LOGIN_2FA_REQUIRED" if missing_2fa_code else "LOGIN_2FA_FAILED",
+                result="PENDING" if missing_2fa_code else "FAIL",
                 request=request,
                 user_id=user_id,
                 username=db_username,
-                reason="TOTP_REQUIRED" if not payload.totp_code and not payload.recovery_code else "INVALID_TOTP_OR_RECOVERY_CODE",
+                reason="TOTP_REQUIRED" if missing_2fa_code else "INVALID_TOTP_OR_RECOVERY_CODE",
             )
             return AuthMeResponse(authenticated=False, user=None, requires_2fa=True, username=db_username)
         if recovery_ok:
