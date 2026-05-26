@@ -760,7 +760,7 @@ function App() {
       onThemeToggle={() => setTheme((current) => toggleTheme(current))}
       isAdmin={isAdmin}
     >
-      <div className="button-row" style={{ marginBottom: 12 }}>
+      <div className="button-row session-bar">
         <span style={{ marginRight: 12 }}>
           Logged in as <strong>{currentUser?.username}</strong> · <strong>{userRoleLabel}</strong> · {userAccessLabel} ({environment})
         </span>
@@ -789,10 +789,7 @@ function App() {
               </div>
             </div>
 
-            <div className="live-controls-grid">
-              <div className="live-controls-primary">
-                <EnvironmentSwitch environment={environment} canSwitch={isAdmin} />
-              </div>
+            <div className="live-controls-grid live-controls-grid--single">
               <div className="live-controls-secondary">
                 <QuickActionsPanel
                   summary={summary}
@@ -1233,6 +1230,14 @@ function App() {
             <div className="panel-header">
               <h2>Advanced</h2>
               <span className="panel-meta">Sizing controls</span>
+            </div>
+
+            <div className="advanced-environment-switch">
+              <div>
+                <strong>Environment switch</strong>
+                <span>Manual environment switch is available only in Advanced.</span>
+              </div>
+              <EnvironmentSwitch environment={environment} canSwitch={isAdmin} />
             </div>
             <div className="quick-actions-grid">
               <div className="stack-row stack-row--split">

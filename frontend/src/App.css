@@ -1651,3 +1651,1228 @@ small {
     grid-template-columns: 1fr;
   }
 }
+
+/* Premium WALTRADE UI V1 — reference-inspired shell/cards, safe overrides only */
+:root {
+  --wt-bg: #050914;
+  --wt-bg-2: #07101f;
+  --wt-panel: rgba(8, 17, 32, 0.88);
+  --wt-panel-strong: rgba(11, 22, 39, 0.94);
+  --wt-panel-soft: rgba(14, 29, 50, 0.76);
+  --wt-border: rgba(90, 125, 162, 0.26);
+  --wt-border-strong: rgba(0, 229, 214, 0.34);
+  --wt-text: #f2f7ff;
+  --wt-text-soft: #c6d4e8;
+  --wt-muted: #8fa1ba;
+  --wt-accent: #00e5d4;
+  --wt-accent-2: #29ff90;
+  --wt-danger: #ff4d5f;
+  --wt-warning: #f6b73c;
+  --wt-shadow: 0 22px 70px rgba(0, 0, 0, 0.34);
+}
+
+:root[data-theme="light"] {
+  --wt-bg: #eef5fb;
+  --wt-bg-2: #f8fbff;
+  --wt-panel: rgba(255, 255, 255, 0.90);
+  --wt-panel-strong: rgba(255, 255, 255, 0.97);
+  --wt-panel-soft: rgba(238, 246, 252, 0.92);
+  --wt-border: rgba(15, 40, 70, 0.14);
+  --wt-border-strong: rgba(0, 166, 154, 0.28);
+  --wt-text: #0a1728;
+  --wt-text-soft: #24405e;
+  --wt-muted: #5d7289;
+  --wt-accent: #00a99b;
+  --wt-accent-2: #00b86b;
+  --wt-danger: #d92d3a;
+  --wt-warning: #b97505;
+  --wt-shadow: 0 18px 46px rgba(13, 42, 70, 0.13);
+}
+
+body {
+  background:
+    radial-gradient(circle at 18% -10%, rgba(0, 229, 212, 0.16), transparent 26rem),
+    radial-gradient(circle at 85% 2%, rgba(41, 255, 144, 0.08), transparent 22rem),
+    linear-gradient(180deg, var(--wt-bg), var(--wt-bg-2));
+}
+
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 18% -10%, rgba(0, 169, 155, 0.13), transparent 25rem),
+    radial-gradient(circle at 85% 2%, rgba(0, 184, 107, 0.08), transparent 22rem),
+    linear-gradient(180deg, var(--wt-bg), var(--wt-bg-2));
+}
+
+.app-shell--premium {
+  display: block;
+  min-height: 100vh;
+}
+
+.app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  height: auto;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: calc(18px + env(safe-area-inset-top, 0px)) clamp(16px, 3vw, 32px) 14px;
+  border-right: 0;
+  border-bottom: 1px solid var(--wt-border);
+  background: rgba(4, 10, 20, 0.82);
+  backdrop-filter: blur(18px);
+}
+
+:root[data-theme="light"] .app-topbar {
+  background: rgba(247, 251, 255, 0.86);
+}
+
+.app-brand-row {
+  align-items: center;
+  gap: 18px;
+}
+
+.app-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-logo {
+  width: 218px;
+  max-width: min(48vw, 218px);
+  height: auto;
+  display: block;
+  filter: drop-shadow(0 0 18px rgba(0, 229, 212, 0.18));
+}
+
+.app-brand-copy {
+  display: none;
+}
+
+.app-topbar-center {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  justify-self: center;
+  padding: 10px 14px;
+  border: 1px solid var(--wt-border);
+  border-radius: 16px;
+  background: var(--wt-panel-strong);
+  box-shadow: var(--wt-shadow);
+}
+
+.environment-pill,
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: 999px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.environment-pill {
+  padding: 0 18px;
+  color: var(--wt-accent);
+  border: 1px solid rgba(0, 229, 212, 0.27);
+  background: linear-gradient(180deg, rgba(0, 229, 212, 0.16), rgba(0, 229, 212, 0.06));
+  box-shadow: inset 0 0 18px rgba(0, 229, 212, 0.10);
+}
+
+.environment-pill--paper {
+  color: var(--wt-warning);
+  border-color: rgba(246, 183, 60, 0.30);
+  background: linear-gradient(180deg, rgba(246, 183, 60, 0.16), rgba(246, 183, 60, 0.06));
+}
+
+.connection-pill {
+  gap: 9px;
+  padding: 0 4px;
+  color: var(--wt-text-soft);
+  font-size: 13px;
+}
+
+.connection-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--wt-accent-2);
+  box-shadow: 0 0 16px rgba(41, 255, 144, 0.78);
+}
+
+.app-topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.nav-button {
+  width: auto;
+  min-height: 38px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border-color: var(--wt-border);
+  background: rgba(10, 24, 43, 0.52);
+  color: var(--wt-text-soft);
+  white-space: nowrap;
+}
+
+:root[data-theme="light"] .nav-button {
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.nav-button.active {
+  border-color: var(--wt-border-strong);
+  background: linear-gradient(180deg, rgba(0, 229, 212, 0.17), rgba(0, 229, 212, 0.07));
+  color: var(--wt-accent);
+  box-shadow: inset 0 0 18px rgba(0, 229, 212, 0.09), 0 10px 32px rgba(0, 229, 212, 0.08);
+}
+
+.theme-toggle {
+  margin: 0;
+  min-height: 40px;
+  border-radius: 999px;
+  border-color: var(--wt-border);
+  background: var(--wt-panel-strong);
+  color: var(--wt-text);
+  box-shadow: var(--wt-shadow);
+}
+
+.nav-toggle {
+  display: none;
+  border-color: var(--wt-border);
+  background: var(--wt-panel-strong);
+}
+
+.app-main {
+  width: min(1220px, 100%);
+  margin: 0 auto;
+  padding: 22px clamp(14px, 3vw, 32px) 28px;
+}
+
+.page-header {
+  margin-bottom: 16px;
+  padding: 14px 0 0;
+}
+
+.page-header h1 {
+  color: var(--wt-text);
+  letter-spacing: -0.03em;
+}
+
+.page-header p {
+  color: var(--wt-muted);
+}
+
+.session-bar {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 13px 16px;
+  border: 1px solid var(--wt-border);
+  border-radius: 18px;
+  background: var(--wt-panel);
+  box-shadow: var(--wt-shadow);
+}
+
+.panel,
+.status-card,
+.info-tile,
+.account-total-card,
+.mobile-card,
+.health-card,
+.selected-slot-summary,
+.confirm-modal,
+.notification-panel {
+  border-color: var(--wt-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.00)),
+    var(--wt-panel);
+  box-shadow: var(--wt-shadow);
+}
+
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .status-card,
+:root[data-theme="light"] .info-tile,
+:root[data-theme="light"] .account-total-card,
+:root[data-theme="light"] .mobile-card,
+:root[data-theme="light"] .health-card,
+:root[data-theme="light"] .selected-slot-summary,
+:root[data-theme="light"] .confirm-modal,
+:root[data-theme="light"] .notification-panel {
+  background: var(--wt-panel-strong);
+}
+
+.panel,
+.status-card {
+  border-radius: 20px;
+  padding: 20px;
+}
+
+.panel-header h2,
+.status-value,
+.account-total-value,
+.mobile-card-header h3,
+.page-header h1 {
+  color: var(--wt-text);
+}
+
+.panel-meta,
+.status-meta,
+.cell-subtext,
+.mobile-card-footer,
+.mobile-card-header p,
+.empty-state,
+.app-brand-subtitle {
+  color: var(--wt-muted);
+}
+
+.status-label,
+th,
+.mobile-kv-grid span {
+  color: var(--wt-text-soft);
+}
+
+.status-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.status-card {
+  min-height: 132px;
+  overflow: hidden;
+  position: relative;
+}
+
+.status-card::after,
+.account-total-card::after {
+  content: '';
+  position: absolute;
+  right: -38px;
+  bottom: -48px;
+  width: 128px;
+  height: 128px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(0, 229, 212, 0.20), transparent 62%);
+  pointer-events: none;
+}
+
+.status-card.positive .status-value,
+.positive {
+  color: var(--wt-accent-2);
+}
+
+.status-card.negative .status-value,
+.negative {
+  color: var(--wt-danger);
+}
+
+.account-total-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  padding: 18px;
+  background: linear-gradient(135deg, rgba(0, 229, 212, 0.13), rgba(10, 24, 43, 0.70));
+}
+
+.account-total-value {
+  font-size: clamp(30px, 4vw, 44px);
+}
+
+.info-tile {
+  border-radius: 16px;
+  background: var(--wt-panel-soft);
+}
+
+.live-priority-grid,
+.live-controls-grid {
+  gap: 18px;
+}
+
+.live-priority-grid {
+  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+}
+
+.live-controls-grid {
+  grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.2fr);
+}
+
+.environment-switch,
+.account-grid,
+.stats-grid {
+  gap: 14px;
+}
+
+.env-button,
+.action-button,
+.panic-block input,
+.dark-select,
+.quick-actions-panel input,
+.audit-filter-grid input,
+.audit-filter-grid select {
+  border-color: var(--wt-border);
+  background: var(--wt-panel-soft);
+  color: var(--wt-text);
+}
+
+.env-button.active,
+.action-button.is-active,
+.action-button[aria-pressed="true"] {
+  border-color: var(--wt-border-strong);
+  box-shadow: 0 0 0 1px rgba(0, 229, 212, 0.18), 0 16px 40px rgba(0, 229, 212, 0.08);
+}
+
+.action-button {
+  border-radius: 12px;
+}
+
+.action-button.success,
+.pill.positive {
+  color: var(--wt-accent-2);
+}
+
+.action-button.danger,
+.pill.negative {
+  color: var(--wt-danger);
+}
+
+th,
+td {
+  border-top-color: var(--wt-border);
+}
+
+td {
+  color: var(--wt-text-soft);
+}
+
+.error-banner {
+  border-color: rgba(255, 77, 95, 0.34);
+  background: rgba(255, 77, 95, 0.11);
+  color: var(--wt-danger);
+}
+
+.notification-bell {
+  background: var(--wt-panel-strong);
+  border-color: var(--wt-border);
+  color: var(--wt-text);
+}
+
+@media (max-width: 1200px) {
+  .status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .app-topbar {
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 10px;
+  }
+
+  .app-brand-row {
+    align-items: center;
+  }
+
+  .app-logo {
+    width: 174px;
+    max-width: 56vw;
+  }
+
+  .app-topbar-center {
+    order: 3;
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    justify-content: center;
+    box-shadow: none;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+  }
+
+  .app-nav {
+    display: none;
+    justify-content: stretch;
+    overflow: visible;
+    padding: 4px 0 0;
+  }
+
+  .app-nav.open {
+    display: grid;
+  }
+
+  .nav-button {
+    width: 100%;
+    text-align: left;
+    justify-content: flex-start;
+  }
+
+  .app-main {
+    padding: 16px 12px 22px;
+  }
+
+  .page-header {
+    align-items: center;
+    padding-top: 4px;
+  }
+
+  .session-bar {
+    align-items: stretch;
+    gap: 10px;
+  }
+}
+
+@media (max-width: 720px) {
+  .status-grid,
+  .live-priority-grid,
+  .live-controls-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel,
+  .status-card {
+    border-radius: 18px;
+    padding: 16px;
+  }
+
+  .account-grid,
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-logo {
+    width: 148px;
+  }
+
+  .app-topbar-actions {
+    gap: 8px;
+  }
+
+  .environment-pill,
+  .connection-pill {
+    min-height: 32px;
+    font-size: 12px;
+  }
+
+  .page-header h1 {
+    font-size: 22px;
+  }
+
+  .page-header p {
+    display: none;
+  }
+}
+
+/* Premium WALTRADE UI V1.1 — shell scale + mobile notification safety */
+html,
+body,
+#root,
+.app-shell--premium {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.app-topbar {
+  width: 100%;
+  box-sizing: border-box;
+  gap: 10px;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) clamp(14px, 2.4vw, 26px) 12px;
+}
+
+.app-brand-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);
+  align-items: center;
+  width: 100%;
+}
+
+.app-identity {
+  justify-self: start;
+}
+
+.app-topbar-center {
+  justify-self: center;
+  padding: 8px 12px;
+  box-shadow: none;
+}
+
+.app-topbar-actions {
+  justify-self: end;
+}
+
+.app-logo {
+  width: 150px;
+  max-width: min(24vw, 150px);
+}
+
+.app-nav {
+  margin-top: 0;
+}
+
+.nav-button {
+  min-height: 36px;
+  padding: 7px 15px;
+}
+
+.notification-panel {
+  z-index: 240;
+}
+
+@media (min-width: 1280px) {
+  .app-main {
+    width: min(1160px, 100%);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-topbar {
+    gap: 8px;
+    padding: calc(9px + env(safe-area-inset-top, 0px)) 10px 9px;
+  }
+
+  .app-brand-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .app-logo {
+    width: 96px;
+    max-width: 27vw;
+  }
+
+  .app-topbar-center {
+    order: 0;
+    grid-column: auto;
+    justify-self: center;
+    min-width: 0;
+    max-width: 100%;
+    gap: 7px;
+    padding: 6px 8px;
+    border-radius: 14px;
+  }
+
+  .environment-pill,
+  .connection-pill {
+    min-height: 30px;
+    font-size: 11px;
+  }
+
+  .environment-pill {
+    padding: 0 11px;
+  }
+
+  .connection-pill {
+    max-width: 16px;
+    padding: 0;
+    overflow: hidden;
+    font-size: 0;
+  }
+
+  .connection-dot {
+    width: 9px;
+    height: 9px;
+  }
+
+  .app-topbar-actions {
+    gap: 7px;
+  }
+
+  .theme-toggle {
+    min-width: 38px;
+    min-height: 38px;
+    padding: 0 10px;
+    overflow: hidden;
+
+}
+}
+
+/* Premium WALTRADE UI V1.2 — compact reference shell corrections */
+html,
+body,
+#root {
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.app-shell--premium {
+  max-width: 100%;
+  overflow-x: visible;
+}
+
+.app-topbar {
+  position: sticky !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 100vw;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 0 10px;
+}
+
+.app-brand-row,
+.app-nav {
+  width: min(1120px, calc(100vw - 28px));
+  max-width: 1120px;
+}
+
+.app-brand-row {
+  grid-template-columns: minmax(170px, 1fr) auto minmax(170px, 1fr);
+}
+
+.app-identity {
+  padding: 6px 10px;
+  border: 1px solid var(--wt-border);
+  border-radius: 16px;
+  background: rgba(3, 10, 20, 0.42);
+}
+
+:root[data-theme="light"] .app-identity {
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 10px 26px rgba(10, 35, 55, 0.10);
+}
+
+.app-logo {
+  width: 132px;
+  max-width: 132px;
+  filter: drop-shadow(0 0 10px rgba(0, 229, 212, 0.12));
+}
+
+:root[data-theme="light"] .app-logo {
+  filter: drop-shadow(0 4px 10px rgba(10, 35, 55, 0.18));
+}
+
+.app-topbar-center {
+  padding: 7px 10px;
+  border-radius: 14px;
+}
+
+.app-nav {
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.app-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-button {
+  min-height: 34px;
+  padding: 7px 13px;
+}
+
+.app-main {
+  width: min(1120px, 100%);
+}
+
+@media (max-width: 900px) {
+  .app-topbar {
+    position: static !important;
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 0 8px;
+  }
+
+  .app-brand-row,
+  .app-nav {
+    width: calc(100vw - 20px);
+    max-width: calc(100vw - 20px);
+  }
+
+  .app-brand-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .app-identity {
+    padding: 5px 7px;
+    border-radius: 13px;
+  }
+
+  .app-logo {
+    width: 88px;
+    max-width: 24vw;
+  }
+
+  .app-topbar-center {
+    max-width: 43vw;
+    padding: 5px 6px;
+  }
+
+  .environment-pill {
+    padding: 0 8px;
+  }
+
+  .theme-toggle,
+  .notification-bell,
+  .nav-toggle {
+    min-width: 36px;
+    width: 36px;
+    min-height: 36px;
+    height: 36px;
+    padding: 0;
+  }
+
+  .notification-panel {
+    position: fixed !important;
+    top: calc(68px + env(safe-area-inset-top, 0px)) !important;
+    left: 10px !important;
+    right: 10px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 84px);
+    z-index: 300;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-logo {
+    width: 78px;
+    max-width: 22vw;
+  }
+
+  .app-topbar-center {
+    max-width: 40vw;
+  }
+
+  .notification-panel {
+    top: calc(64px + env(safe-area-inset-top, 0px)) !important;
+  }
+}
+
+/* Premium WALTRADE UI V1.3 — low sticky topbar */
+.app-topbar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 220 !important;
+  min-height: 0 !important;
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 0 8px !important;
+}
+
+.app-brand-row {
+  min-height: 54px !important;
+  align-items: center !important;
+}
+
+.app-logo {
+  width: 118px !important;
+  max-width: 118px !important;
+}
+
+.app-identity {
+  padding: 4px 8px !important;
+  border-radius: 14px !important;
+}
+
+.app-topbar-center {
+  padding: 6px 9px !important;
+  min-height: 38px !important;
+}
+
+.environment-pill,
+.connection-pill {
+  min-height: 30px !important;
+}
+
+.app-nav {
+  margin-top: 6px !important;
+  min-height: 0 !important;
+}
+
+.nav-button {
+  min-height: 30px !important;
+  padding: 5px 11px !important;
+  font-size: 13px !important;
+}
+
+.theme-toggle,
+.notification-bell,
+.nav-toggle {
+  min-height: 36px !important;
+  height: 36px !important;
+}
+
+@media (max-width: 900px) {
+  .app-topbar {
+    position: sticky !important;
+    padding: calc(6px + env(safe-area-inset-top, 0px)) 0 6px !important;
+  }
+
+  .app-brand-row {
+    min-height: 48px !important;
+  }
+
+  .app-logo {
+    width: 74px !important;
+    max-width: 74px !important;
+  }
+
+  .app-topbar-center {
+    min-height: 34px !important;
+    padding: 4px 5px !important;
+  }
+
+  .environment-pill,
+  .connection-pill {
+    min-height: 28px !important;
+    font-size: 11px !important;
+  }
+
+  .app-nav {
+    margin-top: 5px !important;
+  }
+
+  .notification-panel {
+    top: calc(72px + env(safe-area-inset-top, 0px)) !important;
+    z-index: 400 !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-logo {
+    width: 66px !important;
+    max-width: 66px !important;
+  }
+
+  .notification-panel {
+    top: calc(68px + env(safe-area-inset-top, 0px)) !important;
+  }
+}
+
+/* Premium WALTRADE UI V1.5 — desktop/mobile split */
+
+/* DESKTOP */
+@media (min-width: 901px) {
+  .app-topbar {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 240 !important;
+    padding: calc(7px + env(safe-area-inset-top, 0px)) 0 7px !important;
+  }
+
+  .app-brand-row {
+    min-height: 44px !important;
+    grid-template-columns: 160px minmax(240px, auto) 160px !important;
+  }
+
+  .app-logo {
+    width: 86px !important;
+    max-width: 86px !important;
+  }
+
+  .app-identity {
+    width: fit-content !important;
+    padding: 3px 6px !important;
+  }
+
+  .app-topbar-center {
+    min-height: 34px !important;
+    padding: 5px 9px !important;
+  }
+
+  .environment-pill,
+  .connection-pill {
+    min-height: 28px !important;
+    font-size: 12px !important;
+  }
+
+  .app-nav {
+    margin-top: 5px !important;
+  }
+
+  .nav-button {
+    min-height: 29px !important;
+    padding: 5px 11px !important;
+    font-size: 13px !important;
+  }
+
+  .theme-toggle,
+  .notification-bell,
+  .nav-toggle {
+    min-height: 34px !important;
+    height: 34px !important;
+  }
+}
+
+/* MOBILE/TABLET */
+@media (max-width: 900px) {
+  .app-topbar {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 260 !important;
+    padding: calc(5px + env(safe-area-inset-top, 0px)) 0 5px !important;
+  }
+
+  .app-brand-row {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    min-height: 38px !important;
+    grid-template-columns: auto minmax(0, 1fr) auto !important;
+    gap: 6px !important;
+  }
+
+  .app-logo {
+    width: 44px !important;
+    max-width: 44px !important;
+  }
+
+  .app-identity {
+    padding: 2px 4px !important;
+    border-radius: 10px !important;
+  }
+
+  .app-topbar-center {
+    justify-self: center !important;
+    min-height: 30px !important;
+    padding: 3px 6px !important;
+    gap: 6px !important;
+    max-width: none !important;
+    border-radius: 999px !important;
+  }
+
+  .environment-pill {
+    min-height: 24px !important;
+    padding: 0 8px !important;
+    font-size: 11px !important;
+  }
+
+  .connection-pill {
+    width: 11px !important;
+    min-width: 11px !important;
+    max-width: 11px !important;
+    min-height: 11px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    overflow: hidden !important;
+    color: transparent !important;
+    font-size: 0 !important;
+  }
+
+  .connection-dot {
+    width: 9px !important;
+    height: 9px !important;
+  }
+
+  .app-topbar-actions {
+    gap: 5px !important;
+  }
+
+  .theme-toggle,
+  .notification-bell,
+  .nav-toggle {
+    width: 32px !important;
+    min-width: 32px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    padding: 0 !important;
+  }
+
+  .app-nav {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    margin-top: 4px !important;
+  }
+
+  .app-nav.open {
+    display: grid !important;
+    gap: 5px !important;
+  }
+
+  .nav-button {
+    min-height: 30px !important;
+    padding: 5px 10px !important;
+    font-size: 13px !important;
+  }
+
+  .notification-panel {
+    position: fixed !important;
+    top: calc(56px + env(safe-area-inset-top, 0px)) !important;
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 66px) !important;
+    z-index: 500 !important;
+  }
+}
+
+/* SMALL MOBILE */
+@media (max-width: 420px) {
+  .app-logo {
+    width: 38px !important;
+    max-width: 38px !important;
+  }
+
+  .app-brand-row {
+    min-height: 34px !important;
+    gap: 5px !important;
+  }
+
+  .theme-toggle,
+  .notification-bell,
+  .nav-toggle {
+    width: 30px !important;
+    min-width: 30px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+  }
+
+  .notification-panel {
+    top: calc(52px + env(safe-area-inset-top, 0px)) !important;
+  }
+}
+
+/* Premium WALTRADE UI V1.6 — environment switch moved, refresh/dot polish */
+
+/* Live dashboard no longer needs environment switch block */
+.live-controls-grid--single {
+  grid-template-columns: 1fr !important;
+}
+
+.live-controls-grid--single .live-controls-secondary {
+  min-width: 0;
+}
+
+/* Advanced-only environment switch */
+.advanced-environment-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--wt-border);
+  border-radius: 18px;
+  background: var(--wt-panel-soft);
+  box-shadow: var(--wt-shadow);
+}
+
+.advanced-environment-switch > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.advanced-environment-switch strong {
+  color: var(--wt-text);
+}
+
+.advanced-environment-switch span {
+  color: var(--wt-muted);
+  font-size: 13px;
+}
+
+/* Desktop logo slightly smaller */
+@media (min-width: 901px) {
+  .app-logo {
+    width: 78px !important;
+    max-width: 78px !important;
+  }
+}
+
+/* Mobile: keep LIVE text, show only a clean green dot */
+@media (max-width: 900px) {
+  .app-logo {
+    width: 40px !important;
+    max-width: 40px !important;
+  }
+
+  .connection-pill {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 18px !important;
+    min-width: 18px !important;
+    max-width: 18px !important;
+    height: 18px !important;
+    min-height: 18px !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    color: transparent !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .connection-dot {
+    flex: 0 0 auto !important;
+    width: 10px !important;
+    height: 10px !important;
+    margin: 0 !important;
+  }
+
+  .app-topbar-center {
+    gap: 4px !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .app-logo {
+    width: 34px !important;
+    max-width: 34px !important;
+  }
+}
+
+/* Refresh must be visible and finger-friendly */
+.status-card-actions {
+  margin-top: 12px !important;
+}
+
+.status-card-actions .action-button,
+.status-card-actions .action-button--small {
+  min-height: 38px !important;
+  padding: 8px 16px !important;
+  border-radius: 999px !important;
+  border-color: var(--wt-border-strong) !important;
+  background: linear-gradient(180deg, rgba(0, 229, 212, 0.22), rgba(0, 229, 212, 0.08)) !important;
+  color: var(--wt-accent) !important;
+  font-weight: 900 !important;
+  letter-spacing: 0.02em !important;
+  box-shadow: 0 12px 30px rgba(0, 229, 212, 0.14) !important;
+}
+
+.status-card-actions .action-button:hover,
+.status-card-actions .action-button--small:hover {
+  transform: translateY(-1px);
+  border-color: rgba(0, 229, 212, 0.54) !important;
+}
+
+/* Keep chart/dashboard zones visible on mobile if added/used by next layout step */
+.live-home-stack,
+.live-priority-grid,
+.live-controls-grid,
+.status-grid {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .status-card-actions .action-button,
+  .status-card-actions .action-button--small {
+    width: 100%;
+    min-height: 40px !important;
+  }
+
+  .advanced-environment-switch {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
