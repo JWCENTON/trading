@@ -1100,6 +1100,7 @@ export interface UiAuditEventsParams {
   action?: string;
   actor?: string;
   severity?: string;
+  include_automated?: boolean;
 }
 
 export async function getUiAuditEvents(params: UiAuditEventsParams = {}): Promise<UiAuditEventsResponse> {

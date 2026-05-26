@@ -1596,12 +1596,14 @@ def ui_audit_events(
     action: Optional[str] = Query(None),
     actor: Optional[str] = Query(None),
     severity: Optional[str] = Query(None),
+    include_automated: bool = Query(False),
 ):
     requested_source = (source or "all").strip().lower()
     action_filter = (action or "").strip().lower()
     actor_filter = (actor or "").strip().lower()
     severity_filter = (severity or "").strip().lower()
     events: list[dict] = []
+    automated_actors = {"botuser", "automation-runner", "orchestrator", "system"}
     available_sources = {
         "auth_login_events": False,
         "ui_audit_log": False,
@@ -1616,6 +1618,13 @@ def ui_audit_events(
         if actor_filter and actor_filter not in str(item.get("actor") or "").lower():
             return False
         if severity_filter and severity_filter != str(item.get("severity") or "").lower():
+            return False
+        if (
+            not include_automated
+            and requested_source == "all"
+            and item.get("source") == "bot_control"
+            and str(item.get("actor") or "").lower() in automated_actors
+        ):
             return False
         return True
 

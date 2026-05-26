@@ -107,6 +107,7 @@ function App() {
   const [auditAction, setAuditAction] = useState("");
   const [auditActor, setAuditActor] = useState("");
   const [auditSeverity, setAuditSeverity] = useState("all");
+  const [auditIncludeAutomated, setAuditIncludeAutomated] = useState(false);
 
   const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
@@ -426,6 +427,7 @@ function App() {
         action: auditAction || undefined,
         actor: auditActor || undefined,
         severity: auditSeverity === "all" ? undefined : auditSeverity,
+        include_automated: auditIncludeAutomated,
       });
       setAuditEvents(auditRes.items);
     } catch (err) {
@@ -434,7 +436,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [auditAction, auditActor, auditHours, auditSeverity, auditSource, environment]);
+  }, [auditAction, auditActor, auditHours, auditIncludeAutomated, auditSeverity, auditSource, environment]);
 
   const loadHealth = useCallback(async () => {
     setError(null);
@@ -846,7 +848,7 @@ function App() {
             <section className="panel quick-actions-panel">
               <div className="panel-header">
                 <h2>Audit filters</h2>
-                <span className="panel-meta">Read-only · last 100 events</span>
+                <span className="panel-meta">Read-only · last 100 events · automated hidden by default</span>
               </div>
 
               <div className="audit-filter-grid">
@@ -862,7 +864,7 @@ function App() {
                 <label>
                   <div>Source</div>
                   <select value={auditSource} onChange={(e) => setAuditSource(e.target.value)}>
-                    <option value="all">All</option>
+                    <option value="all">All important</option>
                     <option value="auth">Auth</option>
                     <option value="ui">UI actions</option>
                     <option value="bot_control">Bot control</option>
@@ -890,6 +892,15 @@ function App() {
                   <input value={auditActor} onChange={(e) => setAuditActor(e.target.value)} placeholder="admin, viewer…" />
                 </label>
               </div>
+
+              <label className="audit-noise-toggle">
+                <input
+                  type="checkbox"
+                  checked={auditIncludeAutomated}
+                  onChange={(e) => setAuditIncludeAutomated(e.target.checked)}
+                />
+                <span>Show automated bot_control sync noise</span>
+              </label>
 
               <div className="button-row">
                 <button className="action-button" onClick={() => void loadAudit()} disabled={loading}>
