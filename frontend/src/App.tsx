@@ -29,6 +29,7 @@ import {
   updateSlotManualControl,
   getUiNotificationPreferences,
   updateUiNotificationPreferences,
+  getUiAuditEvents,
   type AuthUser,
   type SecuritySummary,
   type ApiKeyStatusResponse,
@@ -42,6 +43,7 @@ import {
   type UiTrading24hSummary,
   type UiUserSettings,
   type UiNotificationPreference,
+  type UiAuditEvent,
 } from "./api";
 import { applyTheme, getInitialTheme, toggleTheme, type ThemeMode } from "./theme";
 import { AppShell, type AppTab } from "./components/layout/AppShell";
@@ -99,6 +101,12 @@ function App() {
   const [newPassword, setNewPassword] = useState("");
   const [notificationPreferences, setNotificationPreferences] = useState<UiNotificationPreference[]>([]);
   const [notificationPrefBusy, setNotificationPrefBusy] = useState(false);
+  const [auditEvents, setAuditEvents] = useState<UiAuditEvent[]>([]);
+  const [auditHours, setAuditHours] = useState("24");
+  const [auditSource, setAuditSource] = useState("all");
+  const [auditAction, setAuditAction] = useState("");
+  const [auditActor, setAuditActor] = useState("");
+  const [auditSeverity, setAuditSeverity] = useState("all");
 
   const [securitySummary, setSecuritySummary] = useState<SecuritySummary | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
@@ -405,6 +413,29 @@ function App() {
     }
   }, [isAdmin, loadSecuritySummary]);
 
+
+
+  const loadAudit = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const auditRes = await getUiAuditEvents({
+        limit: 100,
+        hours: Number(auditHours || "24"),
+        source: auditSource === "all" ? undefined : auditSource,
+        action: auditAction || undefined,
+        actor: auditActor || undefined,
+        severity: auditSeverity === "all" ? undefined : auditSeverity,
+      });
+      setAuditEvents(auditRes.items);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [auditAction, auditActor, auditHours, auditSeverity, auditSource, environment]);
+
   const loadHealth = useCallback(async () => {
     setError(null);
     setLoading(true);
@@ -429,10 +460,12 @@ function App() {
       void loadSlots();
     } else if (activeTab === "health") {
       void loadHealth();
+    } else if (activeTab === "audit") {
+      void loadAudit();
     } else if (activeTab === "advanced" && isAdmin) {
       void loadAdvanced();
     }
-  }, [activeTab, environment, authChecked, authenticated, isAdmin, loadAdvanced, loadHealth, loadLive, loadSlots]);
+  }, [activeTab, environment, authChecked, authenticated, isAdmin, loadAdvanced, loadAudit, loadHealth, loadLive, loadSlots]);
 
   useEffect(() => {
     if (authenticated && !isAdmin && activeTab === "advanced") {
@@ -600,6 +633,7 @@ function App() {
     switch (activeTab) {
       case "slots": return "Slots";
       case "health": return "Health";
+      case "audit": return "Audit";
       case "advanced": return "Advanced";
       case "security": return "Security";
       default: return "Live";
@@ -628,6 +662,9 @@ function App() {
     }
     if (activeTab === "advanced") {
       return "Advanced zostawiamy jako strefę cięższych rzeczy. Na tym etapie migrujemy najpierw Live, Slots, Health i Security.";
+    }
+    if (activeTab === "audit") {
+      return "Read-only audit feed: loginy, security events, UI actions i bot control changes w jednym miejscu.";
     }
     if (activeTab === "slots") {
       return "Operator slot control: enabled, live orders, regime gating, open position, heartbeat i last event.";
@@ -735,6 +772,7 @@ function App() {
         {loading && activeTab === "live" && !summary ? <div className="panel">Ładowanie nowego panelu Live…</div> : null}
         {loading && activeTab === "slots" && slots.length === 0 ? <div className="panel">Ładowanie Slots…</div> : null}
         {loading && activeTab === "health" && !health ? <div className="panel">Ładowanie Health…</div> : null}
+        {loading && activeTab === "audit" && auditEvents.length === 0 ? <div className="panel">Ładowanie Audit…</div> : null}
 
         {activeTab === "live" ? (
           <div className="live-home-stack">
@@ -799,6 +837,121 @@ function App() {
               </div>
             </section>
             <HealthPanel health={health} />
+          </>
+        ) : null}
+
+
+        {activeTab === "audit" ? (
+          <>
+            <section className="panel quick-actions-panel">
+              <div className="panel-header">
+                <h2>Audit filters</h2>
+                <span className="panel-meta">Read-only · last 100 events</span>
+              </div>
+
+              <div className="audit-filter-grid">
+                <label>
+                  <div>Time range</div>
+                  <select value={auditHours} onChange={(e) => setAuditHours(e.target.value)}>
+                    <option value="24">Last 24h</option>
+                    <option value="168">Last 7d</option>
+                    <option value="744">Last 31d</option>
+                  </select>
+                </label>
+
+                <label>
+                  <div>Source</div>
+                  <select value={auditSource} onChange={(e) => setAuditSource(e.target.value)}>
+                    <option value="all">All</option>
+                    <option value="auth">Auth</option>
+                    <option value="ui">UI actions</option>
+                    <option value="bot_control">Bot control</option>
+                  </select>
+                </label>
+
+                <label>
+                  <div>Severity</div>
+                  <select value={auditSeverity} onChange={(e) => setAuditSeverity(e.target.value)}>
+                    <option value="all">All</option>
+                    <option value="info">Info</option>
+                    <option value="warning">Warning</option>
+                    <option value="danger">Danger</option>
+                    <option value="success">Success</option>
+                  </select>
+                </label>
+
+                <label>
+                  <div>Action contains</div>
+                  <input value={auditAction} onChange={(e) => setAuditAction(e.target.value)} placeholder="LOGIN, 2FA, PANIC…" />
+                </label>
+
+                <label>
+                  <div>Actor contains</div>
+                  <input value={auditActor} onChange={(e) => setAuditActor(e.target.value)} placeholder="admin, viewer…" />
+                </label>
+              </div>
+
+              <div className="button-row">
+                <button className="action-button" onClick={() => void loadAudit()} disabled={loading}>
+                  Refresh audit
+                </button>
+              </div>
+            </section>
+
+            <section className="panel audit-panel">
+              <div className="panel-header">
+                <h2>Audit events</h2>
+                <span className="panel-meta">{auditEvents.length} events · {environment}</span>
+              </div>
+
+              <div className="audit-table-wrap">
+                <table className="audit-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Source</th>
+                      <th>Actor</th>
+                      <th>Action</th>
+                      <th>Target</th>
+                      <th>Result</th>
+                      <th>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditEvents.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="empty-cell">No audit events for current filters.</td>
+                      </tr>
+                    ) : auditEvents.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.created_at ? new Date(item.created_at).toLocaleString() : "-"}</td>
+                        <td><span className={`audit-source audit-source--${item.source}`}>{item.source}</span></td>
+                        <td>
+                          <div>{item.actor ?? "-"}</div>
+                          {item.actor_role ? <small>{item.actor_role}</small> : null}
+                        </td>
+                        <td><strong>{item.action}</strong></td>
+                        <td>
+                          <div>{item.target_type ?? "-"}</div>
+                          <small>{item.target_key ?? "-"}</small>
+                        </td>
+                        <td>
+                          <span className={`audit-severity audit-severity--${item.severity ?? "info"}`}>
+                            {item.result ?? item.severity ?? "-"}
+                          </span>
+                        </td>
+                        <td>
+                          <details>
+                            <summary>JSON</summary>
+                            <pre>{JSON.stringify(item.details ?? {}, null, 2)}</pre>
+                          </details>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </>
         ) : null}
 

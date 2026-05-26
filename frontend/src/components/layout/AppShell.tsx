@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { UiEnvironment } from '../../api';
 import { NotificationCenter } from './NotificationCenter';
 
-export type AppTab = 'live' | 'slots' | 'health' | 'advanced' | 'security';
+export type AppTab = 'live' | 'slots' | 'health' | 'audit' | 'advanced' | 'security';
 
 interface AppShellProps {
   title: string;
@@ -20,6 +20,7 @@ const tabs: Array<{ key: AppTab; label: string; shortLabel: string }> = [
   { key: 'live', label: 'Live', shortLabel: 'Live' },
   { key: 'slots', label: 'Slots', shortLabel: 'Slots' },
   { key: 'health', label: 'Health', shortLabel: 'Health' },
+  { key: 'audit', label: 'Audit', shortLabel: 'Audit' },
   { key: 'advanced', label: 'Advanced', shortLabel: 'Adv' },
   { key: 'security', label: 'Security', shortLabel: 'Sec' },
 ];

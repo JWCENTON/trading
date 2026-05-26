@@ -1070,3 +1070,39 @@ export async function updateUiNotificationPreferences(
 }
 
 
+
+export interface UiAuditEvent {
+  id: string;
+  created_at: string;
+  source: "auth" | "ui" | "bot_control" | string;
+  actor: string | null;
+  actor_role: string | null;
+  action: string;
+  target_type: string | null;
+  target_key: string | null;
+  severity: "info" | "success" | "warning" | "danger" | string | null;
+  result: string | null;
+  details: Record<string, any>;
+}
+
+export interface UiAuditEventsResponse {
+  limit: number;
+  hours: number;
+  total: number;
+  items: UiAuditEvent[];
+  available_sources: Record<string, boolean>;
+}
+
+export interface UiAuditEventsParams {
+  limit?: number;
+  hours?: number;
+  source?: string;
+  action?: string;
+  actor?: string;
+  severity?: string;
+}
+
+export async function getUiAuditEvents(params: UiAuditEventsParams = {}): Promise<UiAuditEventsResponse> {
+  const response = await getApi().get<UiAuditEventsResponse>("/ui/audit-events", { params });
+  return response.data;
+}

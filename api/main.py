@@ -223,6 +223,29 @@ class TotpDisableRequest(BaseModel):
     recovery_code: Optional[str] = None
 
 
+
+
+class UiAuditEvent(BaseModel):
+    id: str
+    created_at: datetime
+    source: str
+    actor: Optional[str] = None
+    actor_role: Optional[str] = None
+    action: str
+    target_type: Optional[str] = None
+    target_key: Optional[str] = None
+    severity: Optional[str] = None
+    result: Optional[str] = None
+    details: Dict = {}
+
+
+class UiAuditEventsResponse(BaseModel):
+    limit: int
+    hours: int
+    total: int
+    items: List[UiAuditEvent]
+    available_sources: Dict[str, bool] = {}
+
 class Candle(BaseModel):
     open_time: datetime
     close: float
@@ -1535,6 +1558,178 @@ def require_auth_or_internal(
         detail="authentication required",
     )
 
+
+
+
+def _table_exists(cur, table_name: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (table_name,))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _audit_severity_for_result(result: Optional[str]) -> str:
+    value = str(result or "").upper()
+    if value in {"FAIL", "FAILED", "ERROR", "DENIED"}:
+        return "warning"
+    if value in {"PENDING", "REQUIRED"}:
+        return "info"
+    return "info"
+
+
+def _audit_json(value):
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+@app.get("/ui/audit-events", response_model=UiAuditEventsResponse)
+def ui_audit_events(
+    user: CurrentUser = Depends(require_auth),
+    limit: int = Query(100, ge=1, le=500),
+    hours: int = Query(24, ge=1, le=24 * 31),
+    source: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    actor: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+):
+    requested_source = (source or "all").strip().lower()
+    action_filter = (action or "").strip().lower()
+    actor_filter = (actor or "").strip().lower()
+    severity_filter = (severity or "").strip().lower()
+    events: list[dict] = []
+    available_sources = {
+        "auth_login_events": False,
+        "ui_audit_log": False,
+        "bot_control_audit": False,
+    }
+
+    def include_event(item: dict) -> bool:
+        if requested_source and requested_source != "all" and item.get("source") != requested_source:
+            return False
+        if action_filter and action_filter not in str(item.get("action") or "").lower():
+            return False
+        if actor_filter and actor_filter not in str(item.get("actor") or "").lower():
+            return False
+        if severity_filter and severity_filter != str(item.get("severity") or "").lower():
+            return False
+        return True
+
+    try:
+        with db_cursor() as (_conn, cur):
+            if _table_exists(cur, "public.auth_login_events"):
+                available_sources["auth_login_events"] = True
+                cur.execute(
+                    """
+                    SELECT id, created_at, username, action, result, ip, user_agent, reason
+                    FROM public.auth_login_events
+                    WHERE created_at >= now() - (%s || ' hours')::interval
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (hours, limit),
+                )
+                for row in cur.fetchall() or []:
+                    item = {
+                        "id": f"auth:{row[0]}",
+                        "created_at": row[1],
+                        "source": "auth",
+                        "actor": row[2],
+                        "actor_role": None,
+                        "action": row[3],
+                        "target_type": "auth",
+                        "target_key": row[2] or "-",
+                        "severity": _audit_severity_for_result(row[4]),
+                        "result": row[4],
+                        "details": {
+                            "ip": row[5],
+                            "user_agent": row[6],
+                            "reason": row[7],
+                        },
+                    }
+                    if include_event(item):
+                        events.append(item)
+
+            if _table_exists(cur, "public.ui_audit_log"):
+                available_sources["ui_audit_log"] = True
+                cur.execute(
+                    """
+                    SELECT id, created_at, actor, actor_role, action, target_type, target_key, before_json, after_json, source, note
+                    FROM public.ui_audit_log
+                    WHERE created_at >= now() - (%s || ' hours')::interval
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (hours, limit),
+                )
+                for row in cur.fetchall() or []:
+                    item = {
+                        "id": f"ui:{row[0]}",
+                        "created_at": row[1],
+                        "source": "ui",
+                        "actor": row[2],
+                        "actor_role": row[3],
+                        "action": row[4],
+                        "target_type": row[5],
+                        "target_key": row[6],
+                        "severity": "info",
+                        "result": "OK",
+                        "details": {
+                            "before": _audit_json(row[7]),
+                            "after": _audit_json(row[8]),
+                            "source": row[9],
+                            "note": row[10],
+                        },
+                    }
+                    if include_event(item):
+                        events.append(item)
+
+            if _table_exists(cur, "public.bot_control_audit"):
+                available_sources["bot_control_audit"] = True
+                cur.execute(
+                    """
+                    SELECT id, changed_at, changed_by, symbol, interval, strategy, old_row, new_row
+                    FROM public.bot_control_audit
+                    WHERE changed_at >= now() - (%s || ' hours')::interval
+                    ORDER BY changed_at DESC
+                    LIMIT %s
+                    """,
+                    (hours, limit),
+                )
+                for row in cur.fetchall() or []:
+                    target_key = f"{row[3]} {row[4]} {row[5]}"
+                    item = {
+                        "id": f"bot_control:{row[0]}",
+                        "created_at": row[1],
+                        "source": "bot_control",
+                        "actor": row[2],
+                        "actor_role": None,
+                        "action": "BOT_CONTROL_CHANGED",
+                        "target_type": "bot_control",
+                        "target_key": target_key,
+                        "severity": "info",
+                        "result": "OK",
+                        "details": {
+                            "symbol": row[3],
+                            "interval": row[4],
+                            "strategy": row[5],
+                            "before": _audit_json(row[6]),
+                            "after": _audit_json(row[7]),
+                        },
+                    }
+                    if include_event(item):
+                        events.append(item)
+
+        events.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        limited = events[:limit]
+        return UiAuditEventsResponse(limit=limit, hours=hours, total=len(limited), items=limited, available_sources=available_sources)
+    except Exception as exc:
+        logging.exception("ui audit events failed")
+        raise HTTPException(status_code=500, detail=f"audit events unavailable: {type(exc).__name__}: {exc}")
 
 @app.get("/health")
 def health():
