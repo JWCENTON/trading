@@ -4,47 +4,88 @@ interface Trading24hPanelProps {
   trading24h: UiTrading24hSummary | null;
 }
 
-function formatNumber(value: number | null | undefined, digits = 2) {
+function fmt(value: number | null | undefined, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return value.toFixed(digits);
 }
 
+function clampPct(value: number) {
+  return Math.max(4, Math.min(100, value));
+}
+
 export function Trading24hPanel({ trading24h }: Trading24hPanelProps) {
   const pnl = trading24h?.closed_pnl_24h ?? 0;
+  const trades = trading24h?.trades_24h ?? 0;
+  const wins = trading24h?.wins_24h ?? 0;
+  const losses = trading24h?.losses_24h ?? 0;
+  const winRate = trading24h?.win_rate_24h ?? 0;
   const pnlTone = pnl > 0 ? "positive" : pnl < 0 ? "negative" : "neutral";
 
+  const maxCount = Math.max(wins, losses, trades, 1);
+
   return (
-    <section className="panel">
+    <section className="panel dashboard-performance-panel">
       <div className="panel-header">
-        <h2>Trading 24h</h2>
-        <span className="panel-meta">Closed trades only</span>
+        <div>
+          <h2>Performance 24h</h2>
+          <span className="panel-meta">Closed trades only · real runtime data</span>
+        </div>
+        <strong className={`dashboard-pnl ${pnlTone}`}>{fmt(pnl)} USDC</strong>
       </div>
 
-      <div className="stats-grid">
+      <div className="dashboard-chart-card">
+        <div className="dashboard-chart-header">
+          <span>Trading result</span>
+          <strong className={pnlTone}>{pnl >= 0 ? "+" : ""}{fmt(pnl)} USDC</strong>
+        </div>
+
+        <div className="dashboard-bars" aria-label="24h trading chart">
+          <div className="dashboard-bar-row">
+            <span>Trades</span>
+            <div><i style={{ width: `${clampPct((trades / maxCount) * 100)}%` }} /></div>
+            <strong>{trades}</strong>
+          </div>
+          <div className="dashboard-bar-row">
+            <span>Wins</span>
+            <div><i className="bar-positive" style={{ width: `${clampPct((wins / maxCount) * 100)}%` }} /></div>
+            <strong>{wins}</strong>
+          </div>
+          <div className="dashboard-bar-row">
+            <span>Losses</span>
+            <div><i className="bar-negative" style={{ width: `${clampPct((losses / maxCount) * 100)}%` }} /></div>
+            <strong>{losses}</strong>
+          </div>
+          <div className="dashboard-bar-row">
+            <span>Win rate</span>
+            <div><i className="bar-accent" style={{ width: `${clampPct(winRate)}%` }} /></div>
+            <strong>{fmt(winRate)}%</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="stats-grid dashboard-kpi-grid">
         <article className="info-tile">
-          <span className="status-label">Closed PnL 24h</span>
-          <strong className={`status-value ${pnlTone}`}>{formatNumber(trading24h?.closed_pnl_24h)} USDC</strong>
-          <span className="status-meta">Czy system zarabia dzisiaj</span>
+          <span className="status-label">Closed PnL</span>
+          <strong className={`status-value ${pnlTone}`}>{fmt(pnl)} USDC</strong>
+          <span className="status-meta">24h realized result</span>
         </article>
 
         <article className="info-tile">
-          <span className="status-label">Trades 24h</span>
-          <strong className="status-value">{trading24h?.trades_24h ?? "—"}</strong>
-          <span className="status-meta">Closed positions in last 24h</span>
+          <span className="status-label">Trades</span>
+          <strong className="status-value">{trades}</strong>
+          <span className="status-meta">Closed positions</span>
         </article>
 
         <article className="info-tile">
           <span className="status-label">Wins / Losses</span>
-          <strong className="status-value">
-            {trading24h ? `${trading24h.wins_24h} / ${trading24h.losses_24h}` : "—"}
-          </strong>
-          <span className="status-meta">Win / loss split</span>
+          <strong className="status-value">{wins} / {losses}</strong>
+          <span className="status-meta">Result split</span>
         </article>
 
         <article className="info-tile">
           <span className="status-label">Win rate</span>
-          <strong className="status-value">{formatNumber(trading24h?.win_rate_24h)}%</strong>
-          <span className="status-meta">24h closed-trade hit rate</span>
+          <strong className="status-value">{fmt(winRate)}%</strong>
+          <span className="status-meta">Closed-trade hit rate</span>
         </article>
       </div>
     </section>

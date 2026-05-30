@@ -2876,3 +2876,1289 @@ body,
     flex-direction: column;
   }
 }
+
+/* Premium Dashboard Layout V2 — real 24h chart block */
+.dashboard-performance-panel {
+  overflow: hidden;
+}
+
+.dashboard-performance-panel .panel-header {
+  align-items: flex-start;
+}
+
+.dashboard-pnl {
+  font-size: clamp(20px, 3vw, 34px);
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+}
+
+.dashboard-chart-card {
+  margin: 14px 0 16px;
+  padding: 18px;
+  border: 1px solid var(--wt-border);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(0, 229, 212, 0.16), transparent 28rem),
+    linear-gradient(180deg, rgba(0, 229, 212, 0.055), rgba(255, 255, 255, 0.018));
+}
+
+.dashboard-chart-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  color: var(--wt-muted);
+  font-weight: 800;
+}
+
+.dashboard-bars {
+  display: grid;
+  gap: 12px;
+}
+
+.dashboard-bar-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 10px;
+  color: var(--wt-text-soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.dashboard-bar-row div {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  overflow: hidden;
+}
+
+.dashboard-bar-row i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--wt-accent);
+  box-shadow: 0 0 18px rgba(0, 229, 212, 0.24);
+}
+
+.dashboard-bar-row .bar-positive {
+  background: var(--wt-accent-2);
+}
+
+.dashboard-bar-row .bar-negative {
+  background: var(--wt-danger);
+}
+
+.dashboard-bar-row .bar-accent {
+  background: linear-gradient(90deg, var(--wt-accent), var(--wt-accent-2));
+}
+
+.dashboard-bar-row strong {
+  text-align: right;
+  color: var(--wt-text);
+}
+
+.dashboard-kpi-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* More visible refresh */
+.status-card-actions .action-button {
+  min-height: 42px !important;
+  padding: 9px 18px !important;
+  font-size: 13px !important;
+}
+
+/* Mobile polish */
+@media (max-width: 900px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-chart-card {
+    padding: 14px;
+  }
+
+  .dashboard-bar-row {
+    grid-template-columns: 62px minmax(0, 1fr) 54px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-performance-panel .panel-header {
+    gap: 8px;
+  }
+
+  .dashboard-pnl {
+    font-size: 22px;
+  }
+}
+
+/* Premium Dashboard V2.1 — compact dashboard composition */
+.live-home-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.live-priority-grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr) !important;
+  align-items: stretch;
+}
+
+.live-priority-grid > .panel,
+.live-priority-grid > .dashboard-performance-panel {
+  min-height: 100%;
+}
+
+.live-controls-grid--single {
+  max-width: 520px;
+}
+
+.status-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+
+.status-card {
+  min-height: 108px !important;
+  padding: 14px !important;
+}
+
+.status-value {
+  font-size: clamp(19px, 2vw, 28px) !important;
+}
+
+.status-meta {
+  font-size: 12px !important;
+}
+
+.page-header {
+  margin-bottom: 8px !important;
+}
+
+.page-header p {
+  max-width: 780px;
+}
+
+.session-bar {
+  padding: 10px 13px !important;
+  border-radius: 15px !important;
+}
+
+.account-total-card {
+  padding: 14px !important;
+}
+
+.account-total-value {
+  font-size: clamp(28px, 3vw, 38px) !important;
+}
+
+.account-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+}
+
+.info-tile {
+  padding: 13px !important;
+}
+
+.dashboard-chart-card {
+  min-height: 190px;
+}
+
+.dashboard-kpi-grid .info-tile {
+  min-height: 96px;
+}
+
+.panel-header {
+  gap: 12px;
+}
+
+.panel-header h2 {
+  font-size: 18px !important;
+}
+
+.panel-meta {
+  font-size: 12px !important;
+}
+
+@media (min-width: 901px) {
+  .live-controls-grid--single {
+    margin-left: 0;
+  }
+
+  .dashboard-performance-panel {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  .account-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .live-priority-grid,
+  .live-controls-grid--single {
+    grid-template-columns: 1fr !important;
+    max-width: none;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .status-card {
+    min-height: 96px !important;
+  }
+
+  .page-header p {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .account-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Premium Dashboard V2.2 — first-screen polish + asset card fix */
+
+/* Hide dev/operator description on main dashboard */
+.page-header p {
+  display: none !important;
+}
+
+/* Make session/login bar compact */
+.session-bar {
+  min-height: 0 !important;
+  padding: 8px 12px !important;
+  border-radius: 14px !important;
+}
+
+.session-bar strong,
+.session-bar span {
+  font-size: 13px !important;
+}
+
+.session-bar .action-button,
+.session-bar button {
+  min-height: 34px !important;
+  padding: 7px 13px !important;
+  border-radius: 10px !important;
+}
+
+/* More compact top status cards */
+.status-grid {
+  gap: 10px !important;
+}
+
+.status-card {
+  min-height: 94px !important;
+  padding: 12px 14px !important;
+}
+
+.status-label {
+  font-size: 11px !important;
+  letter-spacing: 0.08em !important;
+}
+
+.status-value {
+  font-size: clamp(18px, 1.65vw, 25px) !important;
+  line-height: 1.08 !important;
+}
+
+.status-meta {
+  margin-top: 6px !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+}
+
+/* Keep refresh clear but not oversized */
+.status-card-actions .action-button,
+.status-card-actions .action-button--small {
+  min-height: 36px !important;
+  padding: 8px 15px !important;
+}
+
+/* Asset cards: prevent ugly digit wrapping */
+.account-grid {
+  grid-template-columns: repeat(5, minmax(92px, 1fr)) !important;
+  align-items: stretch;
+}
+
+.account-grid .info-tile {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.account-grid .status-value,
+.account-grid strong,
+.account-grid .info-tile strong {
+  display: block;
+  max-width: 100%;
+  font-size: clamp(18px, 1.7vw, 25px) !important;
+  line-height: 1.12 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+.account-grid .status-meta,
+.account-grid .cell-subtext,
+.account-grid .info-tile span:last-child {
+  display: block;
+  max-width: 100%;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Quick actions should not dominate the dashboard */
+.live-controls-grid--single {
+  max-width: 460px !important;
+}
+
+.live-controls-grid--single .panel {
+  padding: 16px !important;
+}
+
+.live-controls-grid--single .info-tile {
+  min-height: 82px !important;
+  padding: 12px !important;
+}
+
+.live-controls-grid--single .status-value {
+  font-size: clamp(20px, 2vw, 28px) !important;
+}
+
+.panic-block input {
+  min-height: 42px !important;
+}
+
+.live-controls-grid--single .action-button {
+  min-height: 38px !important;
+  padding: 8px 13px !important;
+}
+
+/* Desktop: make the first screen more balanced */
+@media (min-width: 901px) {
+  .page-header {
+    margin-top: 8px !important;
+    margin-bottom: 10px !important;
+  }
+
+  .page-header h1 {
+    font-size: 30px !important;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .live-priority-grid {
+    grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr) !important;
+  }
+}
+
+/* Tablet/mobile: keep cards readable */
+@media (max-width: 1100px) {
+  .account-grid {
+    grid-template-columns: repeat(3, minmax(110px, 1fr)) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .session-bar {
+    align-items: center !important;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .status-card {
+    min-height: 84px !important;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .account-grid .status-value,
+  .account-grid strong,
+  .account-grid .info-tile strong {
+    font-size: 22px !important;
+  }
+
+  .live-controls-grid--single {
+    max-width: none !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .account-grid .status-value,
+  .account-grid strong,
+  .account-grid .info-tile strong {
+    font-size: 20px !important;
+  }
+}
+
+@media (max-width: 360px) {
+  .account-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* =======================================================
+   WALTRADE V3.0
+   Client-first dashboard
+   ======================================================= */
+
+/* Desktop */
+@media (min-width: 901px) {
+
+  /* Runtime cards become secondary */
+
+  .status-grid {
+    grid-template-columns: repeat(4,minmax(0,1fr));
+    margin-top: 12px;
+    opacity: 0.82;
+  }
+
+  .status-card {
+    min-height: 82px !important;
+  }
+
+  .status-label {
+    font-size: 10px !important;
+  }
+
+  .status-value {
+    font-size: 20px !important;
+  }
+
+  /* Dashboard becomes hero section */
+
+  .live-priority-grid {
+    order: -100;
+  }
+
+  .dashboard-performance-panel {
+    transform: scale(1.01);
+  }
+
+  .dashboard-pnl {
+    font-size: 44px !important;
+  }
+
+  .account-total-value {
+    font-size: 52px !important;
+  }
+}
+
+/* Mobile */
+
+@media (max-width: 900px) {
+
+  /* Hide secondary runtime cards from first screen */
+
+  .status-grid .status-card:nth-child(2),
+  .status-grid .status-card:nth-child(5),
+  .status-grid .status-card:nth-child(6),
+  .status-grid .status-card:nth-child(8) {
+    display: none !important;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(2,minmax(0,1fr)) !important;
+  }
+
+  .dashboard-pnl {
+    font-size: 32px !important;
+  }
+
+  .account-total-value {
+    font-size: 40px !important;
+  }
+}
+
+/* Session card becomes tiny */
+
+.session-bar {
+  padding: 6px 10px !important;
+}
+
+.session-bar strong {
+  font-size: 12px !important;
+}
+
+.session-bar button {
+  min-height: 30px !important;
+}
+
+/* Quick actions become secondary */
+
+.live-controls-grid--single {
+  opacity: 0.92;
+}
+
+.live-controls-grid--single .panel-header h2 {
+  font-size: 16px !important;
+}
+
+/* Tables are core product */
+
+.open-positions-panel,
+.closed-positions-panel {
+  scroll-margin-top: 90px;
+}
+
+.panel:has(.positions-table) {
+  border-width: 1px;
+}
+
+/* Performance card becomes hero card */
+
+.dashboard-chart-card {
+  min-height: 230px;
+}
+
+.dashboard-chart-header {
+  font-size: 18px;
+}
+
+.dashboard-bar-row {
+  font-size: 14px;
+}
+
+
+/* =======================================================
+   WALTRADE V3.1
+   Fix dashboard section order after V3.0
+   ======================================================= */
+
+/* Undo V3.0 CSS reordering */
+.live-priority-grid {
+  order: initial !important;
+}
+
+.status-grid {
+  order: initial !important;
+}
+
+.live-controls-grid,
+.live-controls-grid--single {
+  order: initial !important;
+}
+
+/* Main dashboard stack must render naturally top-to-bottom */
+.live-home-stack {
+  display: grid !important;
+  grid-template-areas:
+    "hero"
+    "runtime"
+    "actions"
+    "open"
+    "closed" !important;
+  gap: 18px !important;
+}
+
+/* Assign known direct children by order in current App.tsx */
+.live-home-stack > .live-priority-grid {
+  grid-area: hero !important;
+}
+
+.live-home-stack > .status-grid {
+  grid-area: runtime !important;
+}
+
+.live-home-stack > .live-controls-grid,
+.live-home-stack > .live-controls-grid--single {
+  grid-area: actions !important;
+}
+
+/* Runtime cards should be secondary, not hero */
+.status-grid {
+  opacity: 0.92 !important;
+  margin-top: 0 !important;
+}
+
+/* Desktop: hero first, client-first */
+@media (min-width: 901px) {
+  .live-home-stack {
+    grid-template-areas:
+      "hero"
+      "open"
+      "closed"
+      "actions"
+      "runtime" !important;
+  }
+
+  .live-priority-grid {
+    grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr) !important;
+    align-items: stretch !important;
+  }
+
+  .dashboard-performance-panel {
+    transform: none !important;
+  }
+
+  .dashboard-pnl {
+    font-size: clamp(30px, 3vw, 42px) !important;
+  }
+
+  .account-total-value {
+    font-size: clamp(34px, 4vw, 48px) !important;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .live-controls-grid--single {
+    max-width: 520px !important;
+  }
+}
+
+/* Fix asset cards: keep values readable, not only ellipsis */
+.account-grid {
+  grid-template-columns: repeat(5, minmax(78px, 1fr)) !important;
+  gap: 10px !important;
+}
+
+.account-grid .info-tile {
+  padding: 11px !important;
+}
+
+.account-grid .status-value,
+.account-grid strong,
+.account-grid .info-tile strong {
+  font-size: clamp(15px, 1.25vw, 20px) !important;
+  letter-spacing: -0.03em !important;
+}
+
+/* On desktop, give account card a little more internal breathing room */
+@media (min-width: 901px) {
+  .account-total-card {
+    padding: 16px !important;
+  }
+
+  .account-grid .status-meta,
+  .account-grid .cell-subtext {
+    font-size: 11px !important;
+  }
+}
+
+/* Keep operational blocks visually lower priority */
+.live-controls-grid--single {
+  opacity: 0.86 !important;
+}
+
+.status-grid {
+  opacity: 0.86 !important;
+}
+
+/* Mobile: hero first, then runtime, then actions, then tables */
+@media (max-width: 900px) {
+  .live-home-stack {
+    grid-template-areas:
+      "hero"
+      "runtime"
+      "actions"
+      "open"
+      "closed" !important;
+  }
+
+  .live-priority-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .account-grid .status-value,
+  .account-grid strong,
+  .account-grid .info-tile strong {
+    font-size: 18px !important;
+  }
+}
+
+@media (max-width: 360px) {
+  .account-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* =======================================================
+   WALTRADE V3.2
+   Real client-first layout order
+   ======================================================= */
+
+.live-home-stack--client-first {
+  display: grid !important;
+  grid-template-areas: none !important;
+  grid-auto-flow: row !important;
+  gap: 18px !important;
+}
+
+.live-home-stack--client-first > * {
+  grid-area: auto !important;
+  order: initial !important;
+}
+
+/* Client dashboard hero */
+.live-home-stack--client-first .live-priority-grid {
+  order: 1 !important;
+}
+
+/* Core client tables */
+.live-home-stack--client-first .panel:has(table) {
+  order: 2 !important;
+}
+
+/* Runtime status goes below client information */
+.live-home-stack--client-first > .status-grid {
+  order: 20 !important;
+  opacity: 0.78 !important;
+}
+
+/* Operator actions last */
+.live-home-stack--client-first > .live-controls-grid,
+.live-home-stack--client-first > .live-controls-grid--single {
+  order: 30 !important;
+  opacity: 0.78 !important;
+}
+
+/* Account asset cards: no ellipsis, readable values */
+.account-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+}
+
+.account-grid .status-value,
+.account-grid strong,
+.account-grid .info-tile strong {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  font-size: clamp(15px, 1.15vw, 19px) !important;
+  line-height: 1.15 !important;
+  letter-spacing: -0.02em !important;
+}
+
+.account-grid .info-tile {
+  min-width: 0 !important;
+  padding: 11px !important;
+}
+
+/* Desktop hero balance */
+@media (min-width: 901px) {
+  .live-home-stack--client-first .live-priority-grid {
+    grid-template-columns: minmax(420px, 0.92fr) minmax(460px, 1.08fr) !important;
+    align-items: stretch !important;
+  }
+
+  .live-home-stack--client-first > .status-grid {
+    margin-top: 8px !important;
+  }
+
+  .live-home-stack--client-first > .live-controls-grid--single {
+    margin-top: 0 !important;
+    max-width: 520px !important;
+  }
+}
+
+/* Mobile client-first */
+@media (max-width: 900px) {
+  .live-home-stack--client-first .live-priority-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .live-home-stack--client-first > .status-grid {
+    order: 20 !important;
+  }
+
+  .live-home-stack--client-first > .live-controls-grid--single {
+    order: 30 !important;
+  }
+}
+
+@media (max-width: 360px) {
+  .account-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* =======================================================
+   WALTRADE V3.2.1 HOTFIX
+   Disable broken CSS ordering/overlap rules
+   ======================================================= */
+
+.live-home-stack,
+.live-home-stack--client-first {
+  display: flex !important;
+  flex-direction: column !important;
+  grid-template-areas: none !important;
+  grid-auto-flow: initial !important;
+  gap: 18px !important;
+}
+
+.live-home-stack > *,
+.live-home-stack--client-first > * {
+  grid-area: auto !important;
+  order: initial !important;
+  position: relative !important;
+  transform: none !important;
+  opacity: 1 !important;
+}
+
+.live-home-stack--client-first .panel:has(table),
+.live-home-stack--client-first > .status-grid,
+.live-home-stack--client-first > .live-controls-grid,
+.live-home-stack--client-first > .live-controls-grid--single,
+.live-home-stack--client-first .live-priority-grid {
+  order: initial !important;
+  grid-area: auto !important;
+  opacity: 1 !important;
+}
+
+.live-priority-grid,
+.status-grid,
+.live-controls-grid,
+.live-controls-grid--single {
+  position: relative !important;
+  z-index: auto !important;
+  transform: none !important;
+}
+
+.panel,
+.status-card,
+.dashboard-performance-panel,
+.account-total-card,
+.info-tile {
+  position: relative !important;
+  z-index: auto !important;
+}
+
+@media (min-width: 901px) {
+  .live-priority-grid {
+    display: grid !important;
+    grid-template-columns: minmax(420px, 0.92fr) minmax(460px, 1.08fr) !important;
+    gap: 18px !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .live-priority-grid {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 14px !important;
+  }
+}
+
+/* =======================================================
+   WALTRADE V3.3
+   Client-first refinement — keep current direction
+   ======================================================= */
+
+/* More breathing room below sticky topbar */
+.app-main {
+  padding-top: 34px !important;
+}
+
+/* Compact title/login area */
+.page-header {
+  margin-bottom: 8px !important;
+}
+
+.page-header h1 {
+  font-size: clamp(24px, 2.4vw, 34px) !important;
+}
+
+.session-bar {
+  min-height: 44px !important;
+  padding: 6px 10px !important;
+  margin-bottom: 14px !important;
+}
+
+.session-bar button,
+.session-bar .action-button {
+  min-height: 34px !important;
+  padding: 7px 14px !important;
+}
+
+/* Hero cards aligned like a product dashboard */
+.live-home-stack--client-first .live-priority-grid {
+  gap: 18px !important;
+  align-items: stretch !important;
+}
+
+.live-priority-main,
+.live-priority-side,
+.live-priority-main > *,
+.live-priority-side > * {
+  min-height: 100%;
+}
+
+.live-priority-main > .panel,
+.live-priority-side > .panel,
+.live-priority-side > .dashboard-performance-panel {
+  height: 100%;
+}
+
+/* Account card should not waste height, but must keep values readable */
+.account-total-card {
+  min-height: 118px !important;
+}
+
+.account-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+}
+
+.account-grid .info-tile {
+  min-height: 86px !important;
+}
+
+.account-grid .status-value,
+.account-grid strong,
+.account-grid .info-tile strong {
+  font-size: clamp(15px, 1.25vw, 21px) !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+/* Performance panel: prevent bottom clipping */
+.dashboard-performance-panel {
+  overflow: visible !important;
+}
+
+.dashboard-chart-card {
+  min-height: 206px !important;
+  margin-bottom: 14px !important;
+}
+
+.dashboard-kpi-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+}
+
+.dashboard-kpi-grid .info-tile {
+  min-height: 108px !important;
+  overflow: hidden;
+}
+
+.dashboard-kpi-grid .status-value {
+  font-size: clamp(20px, 1.9vw, 30px) !important;
+  line-height: 1.1 !important;
+}
+
+/* Runtime/status cards are below client sections and visually secondary */
+.live-home-stack--client-first > .status-grid {
+  margin-top: 16px !important;
+  opacity: 0.74 !important;
+}
+
+.live-home-stack--client-first > .status-grid .status-card {
+  min-height: 88px !important;
+}
+
+/* Quick actions last and compact */
+.live-home-stack--client-first > .live-controls-grid--single {
+  margin-top: 4px !important;
+  max-width: 520px !important;
+  opacity: 0.78 !important;
+}
+
+.live-home-stack--client-first > .live-controls-grid--single .panel {
+  padding: 16px !important;
+}
+
+/* Tables: product core, keep clear spacing */
+.live-home-stack--client-first .panel:has(table) {
+  margin-top: 2px !important;
+}
+
+/* Desktop layout */
+@media (min-width: 901px) {
+  .live-home-stack--client-first {
+    gap: 20px !important;
+  }
+
+  .live-home-stack--client-first .live-priority-grid {
+    grid-template-columns: minmax(420px, 0.92fr) minmax(520px, 1.08fr) !important;
+  }
+
+  .live-home-stack--client-first > .status-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+}
+
+/* Tablet */
+@media (max-width: 1100px) {
+  .live-home-stack--client-first .live-priority-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+/* Mobile */
+@media (max-width: 900px) {
+  .app-main {
+    padding-top: 18px !important;
+  }
+
+  .session-bar {
+    font-size: 12px !important;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .dashboard-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .live-home-stack--client-first > .status-grid {
+    opacity: 0.88 !important;
+  }
+
+  .live-home-stack--client-first > .live-controls-grid--single {
+    max-width: none !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .dashboard-kpi-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 360px) {
+  .account-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* WALTRADE V3.4 — client-first polish, no layout reset */
+
+/* Prevent sticky header from visually cutting sections while scrolling */
+.panel,
+.live-priority-grid,
+.status-grid,
+.live-controls-grid {
+  scroll-margin-top: 150px;
+}
+
+/* Hero cards should align and breathe */
+.live-home-stack--client-first .live-priority-grid {
+  align-items: start !important;
+}
+
+.live-priority-main > .panel,
+.live-priority-side > .panel {
+  min-height: auto !important;
+  height: auto !important;
+}
+
+/* Account snapshot slightly shorter */
+.account-total-card {
+  min-height: 108px !important;
+}
+
+.account-total-value {
+  font-size: clamp(34px, 3.6vw, 46px) !important;
+}
+
+.account-grid .info-tile {
+  min-height: 78px !important;
+}
+
+/* Performance panel must not clip KPI cards */
+.dashboard-performance-panel {
+  padding-bottom: 22px !important;
+}
+
+.dashboard-kpi-grid {
+  margin-bottom: 4px !important;
+}
+
+.dashboard-kpi-grid .info-tile {
+  min-height: 118px !important;
+}
+
+.dashboard-kpi-grid .status-meta {
+  line-height: 1.35 !important;
+}
+
+/* Compact login/session bar */
+.session-bar {
+  min-height: 38px !important;
+  padding: 5px 10px !important;
+}
+
+.session-bar button,
+.session-bar .action-button {
+  min-height: 32px !important;
+  padding: 6px 12px !important;
+}
+
+/* Runtime + Quick Actions are operator secondary */
+.live-home-stack--client-first > .status-grid,
+.live-home-stack--client-first > .live-controls-grid--single {
+  opacity: 0.66 !important;
+}
+
+.live-home-stack--client-first > .status-grid:hover,
+.live-home-stack--client-first > .live-controls-grid--single:hover {
+  opacity: 1 !important;
+}
+
+@media (max-width: 900px) {
+  .dashboard-performance-panel {
+    padding-bottom: 18px !important;
+  }
+
+  .dashboard-kpi-grid .info-tile {
+    min-height: 104px !important;
+  }
+
+  .live-home-stack--client-first > .status-grid,
+  .live-home-stack--client-first > .live-controls-grid--single {
+    opacity: 0.9 !important;
+  }
+}
+
+/* WALTRADE V3.5 — hero clipping fix + final desktop polish */
+
+.live-priority-grid {
+  overflow: visible !important;
+}
+
+.dashboard-performance-panel,
+.dashboard-performance-panel .panel,
+.live-priority-side {
+  overflow: visible !important;
+}
+
+.dashboard-performance-panel {
+  padding-bottom: 34px !important;
+}
+
+.dashboard-chart-card {
+  min-height: 190px !important;
+  margin-bottom: 16px !important;
+}
+
+.dashboard-kpi-grid {
+  align-items: stretch !important;
+  margin-bottom: 0 !important;
+}
+
+.dashboard-kpi-grid .info-tile {
+  min-height: 132px !important;
+  padding: 14px !important;
+  overflow: visible !important;
+}
+
+.dashboard-kpi-grid .status-value {
+  font-size: clamp(22px, 2vw, 32px) !important;
+  line-height: 1.12 !important;
+}
+
+.dashboard-kpi-grid .status-meta {
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+}
+
+/* Slightly reduce Account card height */
+.account-total-card {
+  min-height: 100px !important;
+}
+
+.account-total-value {
+  font-size: clamp(34px, 3.4vw, 44px) !important;
+}
+
+.account-grid .info-tile {
+  min-height: 74px !important;
+}
+
+/* Reduce vertical gap before hero */
+.app-main {
+  padding-top: 26px !important;
+}
+
+.page-header {
+  margin-bottom: 6px !important;
+}
+
+.session-bar {
+  margin-bottom: 12px !important;
+}
+
+/* Keep client-first sections visually dominant */
+.live-home-stack--client-first > .status-grid {
+  opacity: 0.60 !important;
+}
+
+.live-home-stack--client-first > .live-controls-grid--single {
+  opacity: 0.60 !important;
+}
+
+.live-home-stack--client-first > .status-grid:hover,
+.live-home-stack--client-first > .live-controls-grid--single:hover {
+  opacity: 1 !important;
+}
+
+@media (max-width: 900px) {
+  .dashboard-performance-panel {
+    padding-bottom: 24px !important;
+  }
+
+  .dashboard-kpi-grid .info-tile {
+    min-height: 112px !important;
+  }
+
+  .app-main {
+    padding-top: 16px !important;
+  }
+}

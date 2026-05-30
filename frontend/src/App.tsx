@@ -777,9 +777,7 @@ function App() {
         {loading && activeTab === "audit" && auditEvents.length === 0 ? <div className="panel">Ładowanie Audit…</div> : null}
 
         {activeTab === "live" ? (
-          <div className="live-home-stack">
-            <TopStatusBar summary={summary} onRefresh={loadLive} refreshBusy={loading || actionBusy} />
-
+          <div className="live-home-stack live-home-stack--client-first">
             <div className="live-priority-grid">
               <div className="live-priority-main">
                 <AccountSnapshotPanel account={account} />
@@ -788,6 +786,11 @@ function App() {
                 <Trading24hPanel trading24h={trading24h} />
               </div>
             </div>
+
+            <OpenPositionsTable items={openPositions} />
+            <RecentClosedTable items={recentClosed} />
+
+            <TopStatusBar summary={summary} onRefresh={loadLive} refreshBusy={loading || actionBusy} />
 
             <div className="live-controls-grid live-controls-grid--single">
               <div className="live-controls-secondary">
@@ -800,9 +803,6 @@ function App() {
                 />
               </div>
             </div>
-
-            <OpenPositionsTable items={openPositions} />
-            <RecentClosedTable items={recentClosed} />
           </div>
         ) : null}
 
