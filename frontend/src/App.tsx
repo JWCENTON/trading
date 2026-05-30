@@ -764,9 +764,21 @@ function App() {
         <span style={{ marginRight: 12 }}>
           Logged in as <strong>{currentUser?.username}</strong> · <strong>{userRoleLabel}</strong> · {userAccessLabel} ({environment})
         </span>
-        <button className="action-button secondary" onClick={() => void handleLogout()} disabled={authBusy}>
-          Logout
-        </button>
+        <div className="session-actions">
+          {activeTab === "live" ? (
+            <button
+              className="action-button session-refresh-button"
+              onClick={() => void loadLive()}
+              disabled={loading || actionBusy}
+              title="Refresh Live dashboard"
+            >
+              {loading || actionBusy ? "Refreshing..." : "Refresh"}
+            </button>
+          ) : null}
+          <button className="action-button secondary" onClick={() => void handleLogout()} disabled={authBusy}>
+            Logout
+          </button>
+        </div>
       </div>
 
       <div className="page-grid">

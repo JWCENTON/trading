@@ -4162,3 +4162,96 @@ body,
     padding-top: 16px !important;
   }
 }
+
+/* WALTRADE V3.6 — refresh in session bar + Advanced overlap fix */
+
+.session-bar {
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+
+.session-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.session-refresh-button {
+  border-color: rgba(250, 204, 21, 0.48) !important;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(250, 204, 21, 0.32), transparent 60%),
+    linear-gradient(180deg, rgba(20, 184, 166, 0.22), rgba(250, 204, 21, 0.10)) !important;
+  color: #fde68a !important;
+  font-weight: 900 !important;
+  box-shadow: 0 12px 32px rgba(250, 204, 21, 0.12) !important;
+}
+
+.session-refresh-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(250, 204, 21, 0.72) !important;
+}
+
+/* Advanced: Environment switch must reserve real space */
+.advanced-placeholder {
+  overflow: visible !important;
+}
+
+.advanced-environment-switch {
+  position: relative !important;
+  z-index: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  align-items: center !important;
+  gap: 18px !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 0 18px 0 !important;
+  padding: 18px !important;
+  overflow: visible !important;
+}
+
+.advanced-environment-switch > * {
+  position: relative !important;
+  z-index: auto !important;
+}
+
+.advanced-placeholder > .quick-actions-grid {
+  position: relative !important;
+  z-index: 0 !important;
+  clear: both !important;
+  margin-top: 18px !important;
+}
+
+/* protect inner env switch card from floating over next section */
+.advanced-environment-switch .environment-switch,
+.advanced-environment-switch .live-controls-primary,
+.advanced-environment-switch .environment-options {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  float: none !important;
+}
+
+@media (max-width: 900px) {
+  .session-bar {
+    align-items: stretch !important;
+    flex-direction: column !important;
+  }
+
+  .session-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .session-actions .action-button {
+    width: 100%;
+    min-height: 40px !important;
+  }
+
+  .advanced-environment-switch {
+    grid-template-columns: 1fr !important;
+  }
+}
