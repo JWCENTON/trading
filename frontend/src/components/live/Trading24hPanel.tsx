@@ -28,7 +28,7 @@ export function Trading24hPanel({ trading24h }: Trading24hPanelProps) {
       <div className="panel-header">
         <div>
           <h2>Performance 24h</h2>
-          <span className="panel-meta">Closed trades only · real runtime data</span>
+          <span className="panel-meta">Closed trades only · net after fees</span>
         </div>
         <strong className={`dashboard-pnl ${pnlTone}`}>{fmt(pnl)} USDC</strong>
       </div>
@@ -65,9 +65,9 @@ export function Trading24hPanel({ trading24h }: Trading24hPanelProps) {
 
       <div className="stats-grid dashboard-kpi-grid">
         <article className="info-tile">
-          <span className="status-label">Closed PnL</span>
+          <span className="status-label">Net PnL</span>
           <strong className={`status-value ${pnlTone}`}>{fmt(pnl)} USDC</strong>
-          <span className="status-meta">24h realized result</span>
+          <span className="status-meta">Realized after fees</span>
         </article>
 
         <article className="info-tile">

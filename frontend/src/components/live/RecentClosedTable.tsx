@@ -45,8 +45,8 @@ export function RecentClosedTable({ items }: RecentClosedTableProps) {
                   </div>
                   <div className="mobile-kv-grid">
                     <div><span>Exit</span><strong>{formatDateTime(item.exit_time)}</strong></div>
-                    <div><span>PnL</span><strong className={tone}>{formatNumber(item.pnl_usdc)}</strong></div>
-                    <div><span>PnL %</span><strong className={tone}>{formatPercent(item.pnl_pct)}%</strong></div>
+                    <div><span>Net PnL</span><strong className={tone}>{formatNumber(item.pnl_usdc)}</strong></div>
+                    <div><span>Net PnL %</span><strong className={tone}>{formatPercent(item.pnl_pct)}%</strong></div>
                     <div><span>Reason</span><strong>{item.exit_reason || '—'}</strong></div>
                     <div><span>Entry USDC</span><strong>{formatNumber(item.entry_notional_usdc, 2)} USDC</strong></div>
                     <div><span>Exit USDC</span><strong>{formatNumber(item.exit_notional_usdc, 2)} USDC</strong></div>
@@ -68,8 +68,8 @@ export function RecentClosedTable({ items }: RecentClosedTableProps) {
                   <th>Entry price</th>
                   <th>Exit price</th>
                   <th>Entry USDC</th>
-                  <th>PnL</th>
-                  <th>PnL %</th>
+                  <th>Net PnL</th>
+                  <th>Net PnL %</th>
                   <th>Exit reason</th>
                   <th>Result</th>
                 </tr>

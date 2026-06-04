@@ -3094,60 +3094,35 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
     try:
         with db_cursor() as (_conn, cur):
             cur.execute("""
+              WITH closed AS (
+                SELECT
+                  p.id,
+                  COALESCE(
+                    CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
+                    est.pnl_net_est_usdc,
+                    CASE
+                      WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                        THEN (p.entry_price - p.exit_price) * p.qty
+                      ELSE (p.exit_price - p.entry_price) * p.qty
+                    END
+                  ) AS pnl_net_usdc
+                FROM positions p
+                LEFT JOIN v_positions_pnl_net_real_ssot real ON real.id = p.id
+                LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
+                WHERE p.status = 'CLOSED'
+                  AND p.exit_time IS NOT NULL
+                  AND p.exit_time >= now() - INTERVAL '24 hours'
+              )
               SELECT
-                COALESCE(SUM(
-                  CASE
-                    WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                      THEN (entry_price - exit_price) * qty
-                    ELSE (exit_price - entry_price) * qty
-                  END
-                ), 0)::double precision AS closed_pnl_24h,
+                COALESCE(SUM(pnl_net_usdc), 0)::double precision AS closed_pnl_24h,
                 COUNT(*)::int AS trades_24h,
-                COALESCE(SUM(
-                  CASE
-                    WHEN (
-                      CASE
-                        WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                          THEN (entry_price - exit_price) * qty
-                        ELSE (exit_price - entry_price) * qty
-                      END
-                    ) > 0 THEN 1 ELSE 0
-                  END
-                ), 0)::int AS wins_24h,
-                COALESCE(SUM(
-                  CASE
-                    WHEN (
-                      CASE
-                        WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                          THEN (entry_price - exit_price) * qty
-                        ELSE (exit_price - entry_price) * qty
-                      END
-                    ) <= 0 THEN 1 ELSE 0
-                  END
-                ), 0)::int AS losses_24h,
+                COALESCE(SUM(CASE WHEN pnl_net_usdc > 0 THEN 1 ELSE 0 END), 0)::int AS wins_24h,
+                COALESCE(SUM(CASE WHEN pnl_net_usdc <= 0 THEN 1 ELSE 0 END), 0)::int AS losses_24h,
                 COALESCE(
-                  ROUND(
-                    (
-                      100.0 * SUM(
-                        CASE
-                          WHEN (
-                            CASE
-                              WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                                THEN (entry_price - exit_price) * qty
-                              ELSE (exit_price - entry_price) * qty
-                            END
-                          ) > 0 THEN 1 ELSE 0
-                        END
-                      )::numeric / NULLIF(COUNT(*), 0)
-                    ),
-                    2
-                  ),
+                  ROUND((100.0 * SUM(CASE WHEN pnl_net_usdc > 0 THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0)), 2),
                   0
                 )::double precision AS win_rate_24h
-              FROM positions
-              WHERE status = 'CLOSED'
-                AND exit_time IS NOT NULL
-                AND exit_time >= now() - INTERVAL '24 hours'
+              FROM closed
             """)
             row = cur.fetchone()
 
@@ -3850,40 +3825,56 @@ def ui_recent_closed(
             _conn.commit()
             cur.execute("""
               SELECT
-                id,
-                exit_time,
-                symbol,
-                interval,
-                strategy,
-                side,
-                entry_time,
-                entry_price::double precision AS entry_price,
-                exit_price::double precision AS exit_price,
-                qty::double precision AS qty,
+                p.id,
+                p.exit_time,
+                p.symbol,
+                p.interval,
+                p.strategy,
+                p.side,
+                p.entry_time,
+                p.entry_price::double precision AS entry_price,
+                p.exit_price::double precision AS exit_price,
+                p.qty::double precision AS qty,
                 CASE
-                  WHEN entry_price IS NULL OR qty IS NULL THEN NULL
-                  ELSE (entry_price * qty)::double precision
+                  WHEN p.entry_price IS NULL OR p.qty IS NULL THEN NULL
+                  ELSE (p.entry_price * p.qty)::double precision
                 END AS entry_notional_usdc,
                 CASE
-                  WHEN exit_price IS NULL OR qty IS NULL THEN NULL
-                  ELSE (exit_price * qty)::double precision
+                  WHEN p.exit_price IS NULL OR p.qty IS NULL THEN NULL
+                  ELSE (p.exit_price * p.qty)::double precision
                 END AS exit_notional_usdc,
+                COALESCE(
+                  CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
+                  est.pnl_net_est_usdc,
+                  CASE
+                    WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                      THEN (p.entry_price - p.exit_price) * p.qty
+                    ELSE (p.exit_price - p.entry_price) * p.qty
+                  END
+                )::double precision AS pnl_usdc,
                 CASE
-                  WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                    THEN ((entry_price - exit_price) * qty)::double precision
-                  ELSE ((exit_price - entry_price) * qty)::double precision
-                END AS pnl_usdc,
-                CASE
-                  WHEN entry_price IS NULL OR entry_price = 0 THEN NULL
-                  WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                    THEN (((entry_price - exit_price) / entry_price) * 100.0)::double precision
-                  ELSE (((exit_price - entry_price) / entry_price) * 100.0)::double precision
+                  WHEN COALESCE(real.entry_exec_notional_est, est.entry_notional_usdc, (p.entry_price * p.qty)) IS NULL
+                    OR COALESCE(real.entry_exec_notional_est, est.entry_notional_usdc, (p.entry_price * p.qty)) = 0
+                    THEN NULL
+                  ELSE (
+                    COALESCE(
+                      CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
+                      est.pnl_net_est_usdc,
+                      CASE
+                        WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                          THEN (p.entry_price - p.exit_price) * p.qty
+                        ELSE (p.exit_price - p.entry_price) * p.qty
+                      END
+                    ) / COALESCE(real.entry_exec_notional_est, est.entry_notional_usdc, (p.entry_price * p.qty)) * 100.0
+                  )::double precision
                 END AS pnl_pct,
-                exit_reason
-              FROM positions
-              WHERE status = 'CLOSED'
-                AND exit_time IS NOT NULL
-              ORDER BY exit_time DESC
+                p.exit_reason
+              FROM positions p
+              LEFT JOIN v_positions_pnl_net_real_ssot real ON real.id = p.id
+              LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
+              WHERE p.status = 'CLOSED'
+                AND p.exit_time IS NOT NULL
+              ORDER BY p.exit_time DESC
               LIMIT %s
             """, (limit,))
             rows = cur.fetchall()
