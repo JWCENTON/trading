@@ -404,6 +404,45 @@ def run_daily_report(conn):
 
 
 
+
+def run_market_regime_confidence_refresh(conn):
+    if os.getenv("MARKET_REGIME_CONFIDENCE_REFRESH_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_REGIME_CONFIDENCE_REFRESH_INTERVAL_SECONDS", "300"))
+    days_back = int(os.getenv("MARKET_REGIME_CONFIDENCE_REFRESH_DAYS_BACK", "2"))
+    now_ts = int(time.time())
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_proc
+                WHERE proname = 'refresh_market_regime_confidence'
+            );
+        """)
+        exists = bool(cur.fetchone()[0])
+        if not exists:
+            logging.info("market_regime_confidence_refresh: function missing, skip")
+            return
+
+        last = q1(cur, "SELECT value FROM automation_kv WHERE key='market_regime_confidence_refresh_last_ts_s';")
+        if last:
+            try:
+                if now_ts - int(last) < interval_s:
+                    return
+            except Exception:
+                pass
+
+        logging.info("market_regime_confidence_refresh: running")
+        cur.execute("SELECT refresh_market_regime_confidence(%s);", (days_back,))
+        updated = cur.fetchone()[0]
+        logging.info("market_regime_confidence_refresh: updated=%s days_back=%s", updated, days_back)
+        upsert_kv(cur, "market_regime_confidence_refresh_last_ts_s", str(now_ts))
+
+    conn.commit()
+    logging.info("market_regime_confidence_refresh: done")
+
 def run_strategy_regime_stats_refresh(conn):
     if os.getenv("STRATEGY_REGIME_STATS_REFRESH_ENABLED", "1") != "1":
         return
@@ -976,6 +1015,11 @@ def main():
                 run_strategy_regime_stats_refresh(conn)
             except Exception:
                 logging.exception("strategy_regime_stats_refresh failed")
+
+            try:
+                run_market_regime_confidence_refresh(conn)
+            except Exception:
+                logging.exception("market_regime_confidence_refresh failed")
 
             try:
                 run_mfe_mae_snapshot_refresh(conn)
