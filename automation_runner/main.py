@@ -22,8 +22,8 @@ last_reconcile_ts = 0.0
 last_ssot_watchdog_ts = 0.0
 last_disk_usage_check_ts = 0.0
 
-ORC_APPLY_VERSION = os.getenv("ORC_APPLY_VERSION", "ORC_V6_2")
-ORC_APPLY_MODE = os.getenv("ORC_APPLY_MODE", "COMPATIBILITY_GATE")
+ORC_APPLY_VERSION = os.getenv("ORC_APPLY_VERSION", "ORC_V6_3")
+ORC_APPLY_MODE = os.getenv("ORC_APPLY_MODE", "COOLDOWN_PROMOTE_HYSTERESIS")
 ORC_PICKS_VIEW = os.getenv("ORC_PICKS_VIEW", "v_orc_picks_v5")
 
 
@@ -43,10 +43,10 @@ def q1(cur, sql, params=None):
 def _is_primary_writer_v5(cur) -> bool:
     """
     Single-writer lock to prevent bot_control flapping.
-    Backward-compatible: older DBs use V5; new ORC V6.2 may use ORC_V6_2.
+    Backward-compatible: older DBs use V5; new ORC V6.2/V6.3 may use ORC_V6_2/ORC_V6_3.
     """
     v = str(q1(cur, "SELECT value FROM automation_kv WHERE key='orc_writer_primary';") or "").strip().upper()
-    allowed = {"V5", "ORC_V6_2", "V6_2", ORC_APPLY_VERSION.upper()}
+    allowed = {"V5", "ORC_V6_2", "V6_2", "ORC_V6_3", "V6_3", ORC_APPLY_VERSION.upper()}
     return v in allowed
 
 
@@ -156,7 +156,7 @@ def run_orc_v5_apply(conn):
             symbol,
             interval,
             strategy,
-            'ORC_V6_2' AS pick_source
+            'ORC_V6_3' AS pick_source
         FROM v_orc_picks_v5
 
         UNION ALL
@@ -194,8 +194,8 @@ def run_orc_v5_apply(conn):
                 WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                     THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                 WHEN d.want_on
-                    THEN 'ORC_V6_2: compatibility gate picked (entries ON, ENFORCE)'
-                ELSE 'ORC_V6_2: compatibility gate not picked (entries OFF, DRY_RUN)'
+                    THEN 'ORC_V6_3: cooldown/promote/hysteresis picked (entries ON, ENFORCE)'
+                ELSE 'ORC_V6_3: cooldown/promote/hysteresis not picked (entries OFF, DRY_RUN)'
                 END,
             live_since = CASE
               WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
@@ -220,14 +220,14 @@ def run_orc_v5_apply(conn):
                             WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                                 THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                             WHEN d.want_on
-                                THEN 'ORC_V6_2: compatibility gate picked (entries ON, ENFORCE)'
-                            ELSE 'ORC_V6_2: compatibility gate not picked (entries OFF, DRY_RUN)'
+                                THEN 'ORC_V6_3: cooldown/promote/hysteresis picked (entries ON, ENFORCE)'
+                            ELSE 'ORC_V6_3: cooldown/promote/hysteresis not picked (entries OFF, DRY_RUN)'
                             END)
             )
           RETURNING d.want_on
         )
         SELECT
-          (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_V6_2')       AS core_picks_n,
+          (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_V6_3')       AS core_picks_n,
           (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_EXPLORE_V1') AS explore_picks_n,
           (SELECT COUNT(*) FROM picks)                                   AS want_on_n,
           (SELECT COUNT(*) FROM universe)                                AS universe_n,
@@ -260,6 +260,7 @@ def run_orc_v5_apply(conn):
         upsert_kv(cur, "orc_active_version", ORC_APPLY_VERSION)
         upsert_kv(cur, "orc_active_mode", ORC_APPLY_MODE)
         upsert_kv(cur, "orc_v62_explore_enabled", "0")
+        upsert_kv(cur, "orc_v63_explore_enabled", "0")
         upsert_kv(cur, "orc_v5_apply_last_ts_s", str(now_ts))
         upsert_kv(cur, "orc_v5_apply_last_stats_json", json.dumps(stats, sort_keys=True))
 
