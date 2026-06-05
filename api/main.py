@@ -3844,6 +3844,7 @@ def ui_recent_closed(
                   ELSE (p.exit_price * p.qty)::double precision
                 END AS exit_notional_usdc,
                 COALESCE(
+                  p.net_pnl_usdc,
                   CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
                   est.pnl_net_est_usdc,
                   CASE
@@ -3858,6 +3859,7 @@ def ui_recent_closed(
                     THEN NULL
                   ELSE (
                     COALESCE(
+                      p.net_pnl_usdc,
                       CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
                       est.pnl_net_est_usdc,
                       CASE
@@ -3865,7 +3867,7 @@ def ui_recent_closed(
                           THEN (p.entry_price - p.exit_price) * p.qty
                         ELSE (p.exit_price - p.entry_price) * p.qty
                       END
-                    ) / COALESCE(real.entry_exec_notional_est, est.entry_notional_usdc, (p.entry_price * p.qty)) * 100.0
+                    ) / COALESCE((p.entry_price * p.qty), real.entry_exec_notional_est, est.entry_notional_usdc) * 100.0
                   )::double precision
                 END AS pnl_pct,
                 p.exit_reason
