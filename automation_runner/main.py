@@ -22,6 +22,11 @@ last_reconcile_ts = 0.0
 last_ssot_watchdog_ts = 0.0
 last_disk_usage_check_ts = 0.0
 
+ORC_APPLY_VERSION = os.getenv("ORC_APPLY_VERSION", "ORC_V6_2")
+ORC_APPLY_MODE = os.getenv("ORC_APPLY_MODE", "COMPATIBILITY_GATE")
+ORC_PICKS_VIEW = os.getenv("ORC_PICKS_VIEW", "v_orc_picks_v5")
+
+
 
 def _json_default(o):
     if isinstance(o, (datetime, date)):
@@ -38,10 +43,11 @@ def q1(cur, sql, params=None):
 def _is_primary_writer_v5(cur) -> bool:
     """
     Single-writer lock to prevent bot_control flapping.
-    Require: automation_kv.orc_writer_primary == 'V5'
+    Backward-compatible: older DBs use V5; new ORC V6.2 may use ORC_V6_2.
     """
-    v = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_writer_primary';")
-    return (str(v or "").strip().upper() == "V5")
+    v = str(q1(cur, "SELECT value FROM automation_kv WHERE key='orc_writer_primary';") or "").strip().upper()
+    allowed = {"V5", "ORC_V6_2", "V6_2", ORC_APPLY_VERSION.upper()}
+    return v in allowed
 
 
 def exec_sql(cur, sql, params=None):
@@ -88,8 +94,8 @@ def _get_int_kv(cur, key: str, default: int = 0) -> int:
     
 def run_orc_v5_apply(conn):
     """
-    LIVE: apply v_orc_picks_v5 -> bot_control (DB-only), idempotent + throttled.
-    Single writer of bot_control under V5 to avoid flapping and debug hell.
+    LIVE: apply ORC picks view -> bot_control (DB-only), idempotent + throttled.
+    Backward-compatible function name; active policy is logged through ORC_APPLY_VERSION.
     """
 
     # Hard enable (env) + soft enable (kv) to avoid accidental activation
@@ -107,7 +113,7 @@ def run_orc_v5_apply(conn):
         
         # HARD SAFETY: single writer lock
         if not _is_primary_writer_v5(cur):
-            logging.warning("orc_v5_apply: skip (orc_writer_primary != V5)")
+            logging.warning("orc_apply: version=%s mode=%s skip (orc_writer_primary is not active ORC writer)", ORC_APPLY_VERSION, ORC_APPLY_MODE)
             return
 
         kv_interval = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_interval_s';")
@@ -142,7 +148,7 @@ def run_orc_v5_apply(conn):
         SELECT COALESCE((
             SELECT value IN ('1','true','TRUE','yes','on')
             FROM automation_kv
-            WHERE key = 'orc_explore_enabled'
+            WHERE key = 'orc_v62_explore_enabled'
         ), false) AS enabled
         ),
         picks AS (
@@ -150,7 +156,7 @@ def run_orc_v5_apply(conn):
             symbol,
             interval,
             strategy,
-            'ORC_V5' AS pick_source
+            'ORC_V6_2' AS pick_source
         FROM v_orc_picks_v5
 
         UNION ALL
@@ -188,8 +194,8 @@ def run_orc_v5_apply(conn):
                 WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                     THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                 WHEN d.want_on
-                    THEN 'ORC_V5: picked (entries ON, ENFORCE)'
-                ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
+                    THEN 'ORC_V6_2: compatibility gate picked (entries ON, ENFORCE)'
+                ELSE 'ORC_V6_2: compatibility gate not picked (entries OFF, DRY_RUN)'
                 END,
             live_since = CASE
               WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
@@ -214,41 +220,51 @@ def run_orc_v5_apply(conn):
                             WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                                 THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                             WHEN d.want_on
-                                THEN 'ORC_V5: picked (entries ON, ENFORCE)'
-                            ELSE 'ORC_V5: not picked (entries OFF, DRY_RUN)'
+                                THEN 'ORC_V6_2: compatibility gate picked (entries ON, ENFORCE)'
+                            ELSE 'ORC_V6_2: compatibility gate not picked (entries OFF, DRY_RUN)'
                             END)
             )
           RETURNING d.want_on
         )
         SELECT
-          (SELECT COUNT(*) FROM picks)                         AS desired_on,
-          (SELECT COUNT(*) FROM universe)                      AS universe_n,
-          (SELECT COUNT(*) FROM applied)                       AS touched,
-          (SELECT COUNT(*) FROM applied WHERE want_on)         AS touched_on,
-          (SELECT COUNT(*) FROM applied WHERE NOT want_on)     AS touched_off,
+          (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_V6_2')       AS core_picks_n,
+          (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_EXPLORE_V1') AS explore_picks_n,
+          (SELECT COUNT(*) FROM picks)                                   AS want_on_n,
+          (SELECT COUNT(*) FROM universe)                                AS universe_n,
+          (SELECT COUNT(*) FROM applied)                                 AS touched,
+          (SELECT COUNT(*) FROM applied WHERE want_on)                   AS touched_on,
+          (SELECT COUNT(*) FROM applied WHERE NOT want_on)               AS touched_off,
           (SELECT md5(string_agg(symbol||'|'||interval||'|'||strategy||'|'||pick_source, ',' ORDER BY symbol, interval, strategy, pick_source)) FROM picks) AS picks_hash;
         """
 
         cur.execute(sql)
         row = cur.fetchone()
-        desired_on, universe_n, touched, touched_on, touched_off, picks_hash = row
+        core_picks_n, explore_picks_n, want_on_n, universe_n, touched, touched_on, touched_off, picks_hash = row
 
         stats = {
-            "desired_on": int(desired_on or 0),
+            "core_picks_n": int(core_picks_n or 0),
+            "explore_picks_n": int(explore_picks_n or 0),
+            "want_on_n": int(want_on_n or 0),
             "universe_n": int(universe_n or 0),
             "touched": int(touched or 0),
             "touched_on": int(touched_on or 0),
             "touched_off": int(touched_off or 0),
             "picks_hash": str(picks_hash or ""),
             "applied_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
+            "orc_version": ORC_APPLY_VERSION,
+            "orc_mode": ORC_APPLY_MODE,
+            "picks_view": ORC_PICKS_VIEW,
         }
 
         upsert_kv(cur, "orc_v5_apply_mode", "automation_runner")
+        upsert_kv(cur, "orc_active_version", ORC_APPLY_VERSION)
+        upsert_kv(cur, "orc_active_mode", ORC_APPLY_MODE)
+        upsert_kv(cur, "orc_v62_explore_enabled", "0")
         upsert_kv(cur, "orc_v5_apply_last_ts_s", str(now_ts))
         upsert_kv(cur, "orc_v5_apply_last_stats_json", json.dumps(stats, sort_keys=True))
 
     conn.commit()
-    logging.info("orc_v5_apply: %s", stats)
+    logging.info("orc_apply: version=%s mode=%s stats=%s", ORC_APPLY_VERSION, ORC_APPLY_MODE, stats)
 
 
 
