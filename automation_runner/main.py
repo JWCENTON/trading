@@ -403,6 +403,42 @@ def run_daily_report(conn):
     logging.info("daily_report: done")
 
 
+
+def run_strategy_regime_stats_refresh(conn):
+    if os.getenv("STRATEGY_REGIME_STATS_REFRESH_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("STRATEGY_REGIME_STATS_REFRESH_INTERVAL_SECONDS", "3600"))
+    now_ts = int(time.time())
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_proc
+                WHERE proname = 'refresh_strategy_regime_stats'
+            );
+        """)
+        exists = bool(cur.fetchone()[0])
+        if not exists:
+            logging.info("strategy_regime_stats_refresh: function missing, skip")
+            return
+
+        last = q1(cur, "SELECT value FROM automation_kv WHERE key='strategy_regime_stats_refresh_last_ts_s';")
+        if last:
+            try:
+                if now_ts - int(last) < interval_s:
+                    return
+            except Exception:
+                pass
+
+        logging.info("strategy_regime_stats_refresh: running")
+        cur.execute("SELECT refresh_strategy_regime_stats();")
+        upsert_kv(cur, "strategy_regime_stats_refresh_last_ts_s", str(now_ts))
+
+    conn.commit()
+    logging.info("strategy_regime_stats_refresh: done")
+
 def ensure_ui_notifications_table(cur):
     cur.execute(
         """
@@ -935,6 +971,11 @@ def main():
             now = time.time()
 
             run_daily_report(conn)
+
+            try:
+                run_strategy_regime_stats_refresh(conn)
+            except Exception:
+                logging.exception("strategy_regime_stats_refresh failed")
 
             try:
                 run_mfe_mae_snapshot_refresh(conn)
