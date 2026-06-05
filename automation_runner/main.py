@@ -22,6 +22,7 @@ last_reconcile_ts = 0.0
 last_ssot_watchdog_ts = 0.0
 last_disk_usage_check_ts = 0.0
 
+
 def _json_default(o):
     if isinstance(o, (datetime, date)):
         return o.isoformat()
@@ -248,6 +249,68 @@ def run_orc_v5_apply(conn):
 
     conn.commit()
     logging.info("orc_v5_apply: %s", stats)
+
+
+
+def run_mfe_mae_snapshot_refresh(conn):
+    """
+    Periodically refreshes read-optimized MFE/MAE/Profit Giveback snapshot.
+    This is analytics-only: it does not change trading, ORC picks, bot_control,
+    positions, orders, or risk state.
+    """
+    if os.getenv("MFE_MAE_SNAPSHOT_REFRESH_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MFE_MAE_SNAPSHOT_REFRESH_INTERVAL_SECONDS", "300"))
+    days_back = int(os.getenv("MFE_MAE_SNAPSHOT_DAYS_BACK", "30"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='mfe_mae_snapshot_refresh_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_trade_mfe_mae_snapshot'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("mfe_mae_snapshot: refresh function missing; skip")
+            upsert_kv(cur, "mfe_mae_snapshot_refresh_last_ts_s", str(now_ts))
+            upsert_kv(cur, "mfe_mae_snapshot_refresh_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT * FROM refresh_trade_mfe_mae_snapshot(%s);", (days_back,))
+        row = cur.fetchone()
+        refreshed_rows = int(row[0] or 0) if row else 0
+        min_exit_time = row[1] if row else None
+        max_exit_time = row[2] if row else None
+
+        stats = {
+            "days_back": days_back,
+            "refreshed_rows": refreshed_rows,
+            "min_exit_time": min_exit_time,
+            "max_exit_time": max_exit_time,
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "mfe_mae_snapshot_refresh_last_ts_s", str(now_ts))
+        upsert_kv(cur, "mfe_mae_snapshot_refresh_last_status", "ok")
+        upsert_kv(cur, "mfe_mae_snapshot_refresh_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info(
+        "mfe_mae_snapshot: refreshed rows=%s days_back=%s min_exit_time=%s max_exit_time=%s",
+        refreshed_rows,
+        days_back,
+        min_exit_time,
+        max_exit_time,
+    )
 
 
 def run_ssot_watchdog(conn):
@@ -872,6 +935,15 @@ def main():
             now = time.time()
 
             run_daily_report(conn)
+
+            try:
+                run_mfe_mae_snapshot_refresh(conn)
+            except Exception:
+                logging.exception("mfe_mae_snapshot: refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             if now - last_disk_usage_check_ts >= disk_int:
                 try:
