@@ -719,8 +719,49 @@ def execute_and_record(
         info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
     )
 
-    # PAPER => traktujemy jako wykonane
+    # PAPER => simulated fill + positions lifecycle.
+    # Without this, BBRANGE writes only simulated_orders/events and UI/PNL/MFE/MAE/ORC cannot learn from it.
     if cfg_used.trading_mode != "LIVE":
+        try:
+            if not is_exit:
+                pos_id = open_position("LONG", qty_btc, price, None)
+                emit_strategy_event(
+                    event_type="PAPER_POSITION_OPENED",
+                    decision=side,
+                    reason="POSITIONS_OPEN_OK" if pos_id else "POSITIONS_OPEN_SKIPPED",
+                    price=price,
+                    candle_open_time=candle_open_time,
+                    info={"pos_id": pos_id, "qty_btc": float(qty_btc), "reason_text": reason},
+                )
+            else:
+                closed_ok = close_position(price, reason, candle_open_time)
+                emit_strategy_event(
+                    event_type="PAPER_POSITION_CLOSED",
+                    decision=side,
+                    reason="POSITIONS_CLOSE_OK" if closed_ok else "POSITIONS_CLOSE_SKIPPED",
+                    price=price,
+                    candle_open_time=candle_open_time,
+                    info={"qty_btc": float(qty_btc), "reason_text": reason},
+                )
+        except Exception as e:
+            logging.exception("BBRANGE PAPER positions lifecycle failed is_exit=%s", bool(is_exit))
+            emit_strategy_event(
+                event_type="ERROR",
+                decision=side,
+                reason="PAPER_POSITIONS_LIFECYCLE_FAILED",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={"error": str(e), "is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
+            )
+            return {
+                "ledger_ok": True,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "PAPER_POSITIONS_LIFECYCLE_FAILED",
+                "client_order_id": None,
+                "resp": None,
+            }
+
         return {
             "ledger_ok": True,
             "live_attempted": False,
