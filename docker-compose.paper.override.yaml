@@ -35,6 +35,9 @@ services:
       BOT_RUNNER_GRACE_SECONDS: 20
       BOT_RUNNER_RESTART_BACKOFF_SECONDS: 15
       BOT_VERSION: 2026-02-25_a_paper
+      BBRANGE_EXPLORE_ENABLED: "true"
+      BBRANGE_EXPLORE_MAX_TREND: "WEAK"
+      BBRANGE_ENTRY_BB_OFFSET_PCT: "0.0003"
     depends_on:
       - db
     restart: unless-stopped

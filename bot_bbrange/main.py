@@ -84,6 +84,12 @@ BB_PERIOD = int(os.environ.get("BB_PERIOD", "20"))
 BB_STD = float(os.environ.get("BB_STD", "2.0"))
 MIN_BB_WIDTH_PCT = float(os.environ.get("MIN_BB_WIDTH_PCT", "0.0015"))  # fraction
 
+# PAPER-only exploration knobs for BBRANGE sample generation.
+# Defaults keep legacy behaviour. Enable only in paper override.
+BBRANGE_EXPLORE_ENABLED = os.environ.get("BBRANGE_EXPLORE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+BBRANGE_EXPLORE_MAX_TREND = os.environ.get("BBRANGE_EXPLORE_MAX_TREND", "FLAT").upper()
+BBRANGE_ENTRY_BB_OFFSET_PCT = float(os.environ.get("BBRANGE_ENTRY_BB_OFFSET_PCT", "0.0"))
+
 # RSI filters for BBRANGE
 RSI_LONG_MAX = float(os.environ.get("RSI_LONG_MAX", "45"))
 RSI_BLOCK_EXTREME_LOW = float(os.environ.get("RSI_BLOCK_EXTREME_LOW", "10"))
@@ -587,12 +593,14 @@ def load_runtime_params():
         "RUNTIME_PARAMS|symbol=%s|strategy=%s|STOP_LOSS_PCT=%.3f|TAKE_PROFIT_PCT=%.3f|MAX_POSITION_MINUTES=%d|"
         "DAILY_MAX_LOSS_PCT=%.3f|TREND_BUFFER=%.5f|ORDER_NOTIONAL_USDC=%.2f|MIN_QTY_BTC=%.8f|QTY_STEP_BTC=%.8f|BB_PERIOD=%d|BB_STD=%.2f|MIN_BB_WIDTH_PCT=%.5f|"
         "RSI_LONG_MAX=%.2f|RSI_BLOCK_EXTREME_LOW=%.2f|RSI_BLOCK_EXTREME_HIGH=%.2f|MIN_NOTIONAL_BUFFER_PCT=%.3f|"
+        "BBRANGE_EXPLORE_ENABLED=%s|BBRANGE_EXPLORE_MAX_TREND=%s|BBRANGE_ENTRY_BB_OFFSET_PCT=%.5f|"
         "PROFIT_LOCK_ENABLED=%s|PROFIT_LOCK_ARM_PCT=%.3f|PROFIT_LOCK_FLOOR_PCT=%.3f|PROFIT_LOCK_TRAIL_DROP_PCT=%.3f|PROFIT_LOCK_MIN_AGE_MINUTES=%.1f|PROFIT_LOCK_STRATEGIES=%s",
         SYMBOL, STRATEGY_NAME,
         STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_MINUTES,
         DAILY_MAX_LOSS_PCT, TREND_BUFFER, ORDER_NOTIONAL_USDC, MIN_QTY_BTC, QTY_STEP_BTC,
         BB_PERIOD, BB_STD, MIN_BB_WIDTH_PCT,
         RSI_LONG_MAX, RSI_BLOCK_EXTREME_LOW, RSI_BLOCK_EXTREME_HIGH, MIN_NOTIONAL_BUFFER_PCT,
+        bool(BBRANGE_EXPLORE_ENABLED), BBRANGE_EXPLORE_MAX_TREND, float(BBRANGE_ENTRY_BB_OFFSET_PCT),
         bool(PROFIT_LOCK_CONFIG.enabled), float(PROFIT_LOCK_CONFIG.arm_pct), float(PROFIT_LOCK_CONFIG.floor_pct),
         float(PROFIT_LOCK_CONFIG.trail_drop_pct), float(PROFIT_LOCK_CONFIG.min_age_minutes),
         ",".join(sorted(PROFIT_LOCK_CONFIG.strategies)),
@@ -1707,14 +1715,45 @@ def run_strategy(row):
             )
             return
 
-        # BBRANGE entries only in FLAT trend
-        if trend != "FLAT":
-            emit_blocked(reason="TREND_NOT_FLAT", decision=None, price=price, candle_open_time=open_time, info={"trend": trend})
+        # BBRANGE entries normally only in FLAT trend.
+        # PAPER-only explore mode allows weak trend buckets to generate more samples.
+        explore_enabled = bool(BBRANGE_EXPLORE_ENABLED and cfg_effective.trading_mode != "LIVE")
+        allowed_trends = {"FLAT"}
+        if explore_enabled and BBRANGE_EXPLORE_MAX_TREND == "WEAK":
+            allowed_trends.update({"UP", "DOWN"})
+
+        if trend not in allowed_trends:
+            emit_blocked(
+                reason="TREND_NOT_FLAT",
+                decision=None,
+                price=price,
+                candle_open_time=open_time,
+                info={
+                    "trend": trend,
+                    "explore_enabled": bool(explore_enabled),
+                    "allowed_trends": sorted(allowed_trends),
+                },
+            )
             return
 
-        # Long entry signal only: price < lower
-        if price >= bb_lower:
-            emit_blocked(reason="NO_SIGNAL", decision=None, price=price, candle_open_time=open_time, info={"bb_lower": bb_lower})
+        entry_threshold = bb_lower
+        if explore_enabled and BBRANGE_ENTRY_BB_OFFSET_PCT > 0:
+            entry_threshold = bb_lower * (1.0 + float(BBRANGE_ENTRY_BB_OFFSET_PCT))
+
+        # Long entry signal only: price below lower band, with optional PAPER-only offset.
+        if price > entry_threshold:
+            emit_blocked(
+                reason="NO_SIGNAL",
+                decision=None,
+                price=price,
+                candle_open_time=open_time,
+                info={
+                    "bb_lower": bb_lower,
+                    "entry_threshold": entry_threshold,
+                    "explore_enabled": bool(explore_enabled),
+                    "bb_entry_offset_pct": float(BBRANGE_ENTRY_BB_OFFSET_PCT),
+                },
+            )
             return
 
         # RSI filters
@@ -1738,7 +1777,10 @@ def run_strategy(row):
             return
 
         decision = "BUY"
-        reason = f"BBRANGE LONG: price {price:.2f} < lower {bb_lower:.2f} (trend=FLAT)"
+        reason = (
+            f"BBRANGE LONG: price {price:.2f} <= threshold {entry_threshold:.2f} "
+            f"(lower={bb_lower:.2f}, trend={trend}, explore={explore_enabled})"
+        )
 
         # SPOT short block (defensive; here decision is BUY anyway)
         if decision == "SELL" and cfg_effective.spot_mode:
