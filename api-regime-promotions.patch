@@ -1,0 +1,147 @@
+--- api/main.py
++++ api/main.py
+@@ -5064,6 +5064,33 @@
+     rows: List[PromotionRow]
+ 
+ 
++class RegimePromotionRow(BaseModel):
++    symbol: str
++    interval: str
++    strategy: str
++    market_regime: str
++    paper_score: float
++    n_trades: Optional[int] = None
++    win_rate: Optional[float] = None
++    net_sum: Optional[float] = None
++    profit_factor: Optional[float] = None
++    fee_pressure_pct: Optional[float] = None
++    window_name: Optional[str] = None
++    policy_version: Optional[str] = None
++    source_ts: Optional[datetime] = None
++    meta: Optional[dict] = None
++    eligible_live: Optional[bool] = None
++    elig_reason: Optional[str] = None
++
++
++class RegimePromotionsUpsertRequest(BaseModel):
++    policy_version: str
++    window_name: str
++    source_ts: datetime
++    hash: str
++    rows: List[RegimePromotionRow]
++
++
+ @app.post("/internal/promotions/upsert")
+ def internal_promotions_upsert(
+     req: PromotionsUpsertRequest,
+@@ -5153,6 +5180,112 @@
+         conn.commit()
+ 
+     return {"status": "ok", "idempotent": False, "inserted": n, "hash": req.hash}
++
++
++@app.post("/internal/regime-promotions/upsert")
++def internal_regime_promotions_upsert(
++    req: RegimePromotionsUpsertRequest,
++    x_internal_token: Optional[str] = Header(default=None, alias="X-Internal-Token"),
++):
++    internal_token = os.environ.get("INTERNAL_API_TOKEN")
++    if internal_token:
++        if not x_internal_token or x_internal_token != internal_token:
++            raise HTTPException(
++                status_code=status.HTTP_401_UNAUTHORIZED,
++                detail="invalid internal token",
++            )
++
++    if not req.rows:
++        raise HTTPException(status_code=400, detail="rows empty")
++
++    event_hash = f"regime:{req.hash}"
++
++    with db_cursor() as (conn, cur):
++        cur.execute(
++            "SELECT 1 FROM promotion_events WHERE hash=%s LIMIT 1",
++            (event_hash,),
++        )
++        if cur.fetchone():
++            return {"status": "ok", "idempotent": True, "hash": event_hash}
++
++        batch_published_at = datetime.now(timezone.utc).replace(microsecond=0)
++
++        upsert_sql = """
++        INSERT INTO promoted_regime_candidates (
++            symbol, interval, strategy, market_regime,
++            paper_score, n_trades, win_rate, net_sum,
++            profit_factor, fee_pressure_pct,
++            window_name, policy_version, source_ts,
++            published_at, meta,
++            eligible_live, elig_reason
++        )
++        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
++        ON CONFLICT (symbol, interval, strategy, market_regime)
++        DO UPDATE SET
++            paper_score=EXCLUDED.paper_score,
++            n_trades=EXCLUDED.n_trades,
++            win_rate=EXCLUDED.win_rate,
++            net_sum=EXCLUDED.net_sum,
++            profit_factor=EXCLUDED.profit_factor,
++            fee_pressure_pct=EXCLUDED.fee_pressure_pct,
++            window_name=EXCLUDED.window_name,
++            policy_version=EXCLUDED.policy_version,
++            source_ts=EXCLUDED.source_ts,
++            published_at=EXCLUDED.published_at,
++            meta=EXCLUDED.meta,
++            eligible_live=EXCLUDED.eligible_live,
++            elig_reason=EXCLUDED.elig_reason
++        """
++
++        n = 0
++        for r in req.rows:
++            meta = r.meta if isinstance(r.meta, dict) else {}
++            eligible_live = bool(r.eligible_live) if r.eligible_live is not None else False
++            elig_reason = r.elig_reason
++
++            cur.execute(
++                upsert_sql,
++                (
++                    r.symbol,
++                    r.interval,
++                    r.strategy,
++                    r.market_regime,
++                    float(r.paper_score),
++                    r.n_trades,
++                    r.win_rate,
++                    r.net_sum,
++                    r.profit_factor,
++                    r.fee_pressure_pct,
++                    r.window_name or req.window_name,
++                    r.policy_version or req.policy_version,
++                    r.source_ts or req.source_ts,
++                    batch_published_at,
++                    json.dumps(meta),
++                    eligible_live,
++                    elig_reason,
++                ),
++            )
++            n += 1
++
++        cur.execute(
++            """
++            INSERT INTO promotion_events (source_ts, window_name, policy_version, n_rows, hash, meta)
++            VALUES (%s,%s,%s,%s,%s,%s::jsonb)
++            """,
++            (
++                req.source_ts,
++                req.window_name,
++                req.policy_version,
++                n,
++                event_hash,
++                json.dumps({"rows": n, "kind": "regime_promotions"}),
++            ),
++        )
++        conn.commit()
++
++    return {"status": "ok", "idempotent": False, "inserted": n, "hash": event_hash}
+ 
+ 
+ 
