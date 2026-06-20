@@ -155,6 +155,63 @@ def load_promoted_candidates_latest(conn) -> Dict[BotKey, dict]:
             bk = BotKey(r["symbol"], r["interval"], r["strategy"])
             out[bk] = dict(r)
         return out
+
+
+
+def load_promoted_regime_candidates_latest(conn) -> Dict[tuple, dict]:
+    """
+    Latest promoted_regime_candidates row per (symbol, interval, strategy, market_regime).
+    Used as regime-aware override when global promoted_candidates blocks a slot.
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (symbol, interval, strategy, market_regime)
+                symbol, interval, strategy, market_regime,
+                eligible_live, elig_reason,
+                paper_score, n_trades, win_rate, net_sum,
+                profit_factor, fee_pressure_pct,
+                policy_version, published_at, source_ts,
+                meta
+            FROM promoted_regime_candidates
+            ORDER BY symbol, interval, strategy, market_regime, published_at DESC
+        """)
+        out: Dict[tuple, dict] = {}
+        for r in cur.fetchall():
+            key = (
+                r["symbol"],
+                r["interval"],
+                r["strategy"],
+                r["market_regime"],
+            )
+            out[key] = dict(r)
+        return out
+
+
+def current_regime_for_slot(bk: BotKey, last_rg: Dict[BotKey, dict]) -> str | None:
+    row = last_rg.get(bk)
+    if not row:
+        return None
+    value = row.get("regime") or row.get("current_regime") or row.get("hysteresis_regime")
+    return str(value) if value else None
+
+
+def regime_promotion_allows(
+    bk: BotKey,
+    last_rg: Dict[BotKey, dict],
+    promoted_regime: Dict[tuple, dict],
+) -> tuple[bool, str | None]:
+    rg = current_regime_for_slot(bk, last_rg)
+    if not rg:
+        return False, None
+
+    pr = promoted_regime.get((bk.symbol, bk.interval, bk.strategy, rg))
+    if not pr:
+        return False, rg
+
+    if bool(pr.get("eligible_live", False)):
+        return True, rg
+
+    return False, rg
     
 
 def get_panic(conn) -> dict:
@@ -872,6 +929,7 @@ def allocator_pick(
     candles: Dict[Tuple[str, str], dict],
     last_rg: Dict[BotKey, dict],
     promoted: Dict[BotKey, dict],
+    promoted_regime: Dict[tuple, dict],
     open_pos: Set[BotKey],
     open_sym_itv: Set[Tuple[str, str]],
     sym_exposure: Dict[str, Decimal],
@@ -893,17 +951,25 @@ def allocator_pick(
         if not bc.get("enabled", False):
             continue
         
-        # HARD: promotion eligibility gate (paper_rank_v2 / promoted_candidates)
+        # HARD: promotion eligibility gate.
+        # Legacy gate works on (symbol, interval, strategy).
+        # Regime-aware gate may override a legacy block only for the current market regime.
         pr = promoted.get(bk)
         if pr is not None:
             if not bool(pr.get("eligible_live", False)):
-                # keep elig_reason for observability
-                elig_reason = (pr.get("elig_reason") or "").strip()
-                reject_reason[bk] = f"not_eligible:{elig_reason}" if elig_reason else "not_eligible"
-                continue
+                regime_allowed, regime_name = regime_promotion_allows(bk, last_rg, promoted_regime)
+                if not regime_allowed:
+                    elig_reason = (pr.get("elig_reason") or "").strip()
+                    if regime_name:
+                        reject_reason[bk] = (
+                            f"not_eligible:{elig_reason};regime_no_edge:{regime_name}"
+                            if elig_reason else f"not_eligible;regime_no_edge:{regime_name}"
+                        )
+                    else:
+                        reject_reason[bk] = f"not_eligible:{elig_reason}" if elig_reason else "not_eligible"
+                    continue
+                reject_reason[bk] = f"regime_promotion_override:{regime_name}"
         else:
-            # Optional: if you require promo for everyone, you can block here.
-            # For now we don't block when missing.
             pass
 
         # HARD: per-symbol exposure cap (across ALL OPEN positions) — eligibility gate
@@ -1024,6 +1090,7 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
     candles = load_candles_latest(conn)
     last_rg = load_last_regime_gate(conn, window_minutes=REGIME_LOOKBACK_MIN)
     promoted = load_promoted_candidates_latest(conn)
+    promoted_regime = load_promoted_regime_candidates_latest(conn)
 
     pref = preferred_strategy_by_symbol(last_rg)
 
@@ -1123,6 +1190,7 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
             promoted=promoted,
             open_pos=open_pos, open_sym_itv=open_sym_itv,
             sym_exposure=sym_exposure,
+            promoted_regime=promoted_regime,
             max_picks=MAX_PICKS, max_per_symbol=max_per_symbol
         )
         reject_reason.update(rr)
@@ -1141,12 +1209,16 @@ def run_allocator_phase_a(conn, effective_actions_enabled: bool) -> None:
 
         pr = promoted.get(bk)
         if pr is not None and not bool(pr.get("eligible_live", False)):
-            detail = (pr.get("elig_reason") or "").strip()
-            reason = f"ORC_ALLOC_A: not eligible ({detail}) (entries OFF, DRY_RUN)" if detail else \
-                    "ORC_ALLOC_A: not eligible (entries OFF, DRY_RUN)"
-            set_entries_and_regime(conn, bk, entries_enabled=False, regime_mode="DRY_RUN", reason=reason)
-            n_off += 1
-            continue
+            regime_allowed, regime_name = regime_promotion_allows(bk, last_rg, promoted_regime)
+            if not regime_allowed:
+                detail = (pr.get("elig_reason") or "").strip()
+                reason = f"ORC_ALLOC_A: not eligible ({detail}) (entries OFF, DRY_RUN)" if detail else \
+                        "ORC_ALLOC_A: not eligible (entries OFF, DRY_RUN)"
+                if regime_name:
+                    reason = reason.replace(")", f"; regime_no_edge={regime_name})", 1)
+                set_entries_and_regime(conn, bk, entries_enabled=False, regime_mode="DRY_RUN", reason=reason)
+                n_off += 1
+                continue
 
         # HARD: per-symbol exposure cap (across ALL OPEN positions) — enforced at apply stage
         if SYMBOL_EXPOSURE_CAP > 0:
