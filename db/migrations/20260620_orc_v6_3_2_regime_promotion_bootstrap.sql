@@ -1,6 +1,6 @@
 BEGIN;
 
-CREATE VIEW IF NOT EXISTS v_orc_v63_candidates_core AS
+CREATE OR REPLACE VIEW v_orc_v63_candidates_core AS
 SELECT *
 FROM v_orc_v63_candidates;
 
