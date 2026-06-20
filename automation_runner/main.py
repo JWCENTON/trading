@@ -943,6 +943,105 @@ def publish_promotions(conn):
                 }}
             })
 
+        # Regime-aware promotions v1: publish positive slot+regime edges separately.
+        # This does not replace legacy promoted_candidates; it feeds promoted_regime_candidates.
+        try:
+            cur.execute("""
+                SELECT
+                  symbol,
+                  interval,
+                  strategy,
+                  market_regime,
+                  net_pnl AS paper_score,
+                  trades AS n_trades,
+                  win_rate_pct / 100.0 AS win_rate,
+                  net_pnl AS net_sum,
+                  profit_factor_net AS profit_factor,
+                  fee_pressure_pct
+                FROM v_slot_profile_v1_14d
+                WHERE edge_status = 'ALLOW_LIVE_CANDIDATE'
+                ORDER BY net_pnl DESC
+                LIMIT %s
+            """, (top_k,))
+            regime_rows = cur.fetchall()
+        except Exception:
+            logging.exception("regime-promotions: failed to query v_slot_profile_v1_14d")
+            regime_rows = []
+
+        if regime_rows:
+            regime_rows_payload = []
+            for (
+                symbol,
+                interval,
+                strategy,
+                market_regime,
+                paper_score,
+                n_trades,
+                win_rate,
+                net_sum,
+                profit_factor,
+                fee_pressure_pct,
+            ) in regime_rows:
+                regime_rows_payload.append({
+                    "symbol": symbol,
+                    "interval": interval,
+                    "strategy": strategy,
+                    "market_regime": market_regime,
+                    "paper_score": float(paper_score) if paper_score is not None else 0.0,
+                    "n_trades": int(n_trades) if n_trades is not None else 0,
+                    "win_rate": float(win_rate) if win_rate is not None else None,
+                    "net_sum": float(net_sum) if net_sum is not None else None,
+                    "profit_factor": float(profit_factor) if profit_factor is not None else None,
+                    "fee_pressure_pct": float(fee_pressure_pct) if fee_pressure_pct is not None else None,
+                    "eligible_live": True,
+                    "elig_reason": "OK",
+                    "meta": {
+                        "publisher": "paper_automation_runner",
+                        "mode": "REGIME_AWARE_SLOT_PROFILE_V1",
+                        "source_view": "v_slot_profile_v1_14d",
+                        "edge_status": "ALLOW_LIVE_CANDIDATE",
+                    },
+                })
+
+            regime_payload = {
+                "policy_version": f"{policy_version}_regime_v1",
+                "window_name": "14d_regime",
+                "source_ts": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
+                "rows": regime_rows_payload,
+            }
+            regime_payload_hash = _sha256_canon(regime_payload)
+            regime_payload["hash"] = regime_payload_hash
+
+            last_regime_hash = get_kv(cur, "regime_promotions_last_hash")
+            if last_regime_hash == regime_payload_hash:
+                logging.info(
+                    "regime-promotions: idempotent (same hash), skipping POST (hash=%s)",
+                    regime_payload_hash[:12],
+                )
+            else:
+                try:
+                    resp = requests.post(
+                        f"{promotions_api_url.rstrip('/')}/internal/regime-promotions/upsert",
+                        json=regime_payload,
+                        headers=promotions_headers,
+                        timeout=10,
+                    )
+                    if resp.status_code >= 300:
+                        logging.warning(
+                            "regime-promotions: POST failed status=%s body=%s",
+                            resp.status_code,
+                            resp.text[:500],
+                        )
+                    else:
+                        logging.info(
+                            "regime-promotions: published rows=%s hash=%s",
+                            len(regime_rows_payload),
+                            regime_payload_hash[:12],
+                        )
+                        set_kv(cur, "regime_promotions_last_hash", regime_payload_hash)
+                except Exception:
+                    logging.exception("regime-promotions: POST failed")
+
         payload = {
             "policy_version": policy_version,
             "window_name": window_name,
