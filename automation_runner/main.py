@@ -1020,10 +1020,24 @@ def publish_promotions(conn):
                 )
             else:
                 try:
+                    regime_promotions_api_url = os.environ.get(
+                        "PROMOTIONS_API_BASE",
+                        os.environ.get("INTERNAL_API_BASE", "http://api:8000"),
+                    )
+                    # PAPER publishes promotions to LIVE API. Existing legacy publisher resolves this to live-api;
+                    # keep the same behavior here when INTERNAL_API_BASE points at paper-api.
+                    if "paper-api" in regime_promotions_api_url:
+                        regime_promotions_api_url = regime_promotions_api_url.replace("paper-api", "live-api")
+
+                    regime_promotions_token = os.environ.get("INTERNAL_API_TOKEN", "")
+                    regime_promotions_headers = {}
+                    if regime_promotions_token:
+                        regime_promotions_headers["X-Internal-Token"] = regime_promotions_token
+
                     resp = requests.post(
-                        f"{promotions_api_url.rstrip('/')}/internal/regime-promotions/upsert",
+                        f"{regime_promotions_api_url.rstrip('/')}/internal/regime-promotions/upsert",
                         json=regime_payload,
-                        headers=promotions_headers,
+                        headers=regime_promotions_headers,
                         timeout=10,
                     )
                     if resp.status_code >= 300:
