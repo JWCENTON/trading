@@ -135,14 +135,25 @@ def run_orc_v5_apply(conn):
             return
 
         sql = """
-        WITH universe AS (
+        WITH picks_base AS (
           SELECT symbol, interval, strategy
-          FROM bot_control
-          WHERE enabled = true
-            AND COALESCE(control_mode, 'AUTO') = 'AUTO'
-            AND symbol IN ('BTCUSDC','ETHUSDC','SOLUSDC','BNBUSDC')
-            AND interval IN ('1m','5m')
-            AND strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
+          FROM v_orc_picks_v5
+        ),
+        universe AS (
+          SELECT bc.symbol, bc.interval, bc.strategy
+          FROM bot_control bc
+          LEFT JOIN picks_base pb
+            ON pb.symbol = bc.symbol
+           AND pb.interval = bc.interval
+           AND pb.strategy = bc.strategy
+          WHERE (
+              bc.enabled = true
+              OR pb.symbol IS NOT NULL
+            )
+            AND COALESCE(bc.control_mode, 'AUTO') = 'AUTO'
+            AND bc.symbol IN ('BTCUSDC','ETHUSDC','SOLUSDC','BNBUSDC')
+            AND bc.interval IN ('1m','5m')
+            AND bc.strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
         ),
         explore_enabled AS (
         SELECT COALESCE((
