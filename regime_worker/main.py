@@ -175,6 +175,28 @@ def write_regime(symbol: str, interval: str, ts, payload: dict, lookback: int):
             ),
         ),
     )
+    try:
+        cur.execute(
+            """
+            UPDATE market_regime mr
+            SET confidence = v.calculated_confidence
+            FROM v_market_regime_confidence v
+            WHERE mr.symbol = v.symbol
+              AND mr.interval = v.interval
+              AND mr.ts = v.ts
+              AND mr.symbol = %s
+              AND mr.interval = %s
+              AND mr.ts = %s
+              AND v.calculated_confidence IS NOT NULL;
+            """,
+            (symbol, interval, ts),
+        )
+    except Exception:
+        logging.exception(
+            "write_regime: inline confidence update failed symbol=%s interval=%s ts=%s",
+            symbol, interval, ts,
+        )
+
     conn.commit()
     cur.close()
     conn.close()
