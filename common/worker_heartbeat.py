@@ -90,6 +90,10 @@ def record_worker_heartbeat(
                 cur.execute("SELECT pg_advisory_xact_lock(917263001)")
                 ensure_worker_heartbeats_table(cur)
                 _HEARTBEAT_SCHEMA_READY = True
+            # Serialize heartbeat writes to avoid PostgreSQL deadlocks during concurrent
+            # INSERT ... ON CONFLICT updates from multiple workers.
+            cur.execute("SELECT pg_advisory_xact_lock(917263002)")
+
             cur.execute(
                 """
                 INSERT INTO worker_heartbeats (
