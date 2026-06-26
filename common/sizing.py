@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional, Tuple
+import os
 import time
 
 
@@ -49,14 +50,39 @@ def get_symbol_filters(
     cache_ttl_seconds: int = 3600,
 ) -> SymbolFilters:
     """
-    Fetch symbol filters from Binance and cache them in-process.
+    Fetch symbol filters and cache them in-process.
 
-    Requires client.get_symbol_info(symbol) compatible with python-binance.
+    Binance path:
+      client.get_symbol_info(symbol)
+
+    OKX path:
+      public /api/v5/public/instruments
+      lotSz  -> quantity step
+      minSz  -> minimum quantity
+      minSz * px is used as conservative min_notional fallback later in compute flow
     """
+    ex = os.environ.get("EXCHANGE", "BINANCE").strip().upper()
     now = time.time()
-    cached = _FILTERS_CACHE.get(symbol)
+    cache_key = f"{ex}:{symbol}"
+    cached = _FILTERS_CACHE.get(cache_key)
     if cached and (now - cached.ts) < cache_ttl_seconds:
         return cached
+
+    if ex == "OKX":
+        from common.exchange_client import get_okx_spot_instrument
+
+        inst = get_okx_spot_instrument(symbol)
+        step = _to_float(inst.get("lotSz"), 0.0)
+        min_qty = _to_float(inst.get("minSz"), 0.0)
+
+        # OKX spot instrument metadata commonly gives minSz, lotSz, tickSz.
+        # It may not expose Binance-style minNotional, so keep min_notional=0
+        # and enforce min_qty. Notional will still be logged in sizing info.
+        min_notional = _to_float(inst.get("minNotional"), 0.0)
+
+        sf = SymbolFilters(step=step, min_qty=min_qty, min_notional=min_notional, ts=now)
+        _FILTERS_CACHE[cache_key] = sf
+        return sf
 
     info = client.get_symbol_info(symbol)
     if not info:
@@ -73,7 +99,7 @@ def get_symbol_filters(
     min_notional = _to_float(mn.get("minNotional") if mn else 0.0, 0.0)
 
     sf = SymbolFilters(step=step, min_qty=min_qty, min_notional=min_notional, ts=now)
-    _FILTERS_CACHE[symbol] = sf
+    _FILTERS_CACHE[cache_key] = sf
     return sf
 
 

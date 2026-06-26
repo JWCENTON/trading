@@ -114,3 +114,33 @@ def get_market_data_client():
         return OkxMarketDataAdapter()
     logging.info("exchange_client: using Binance market data adapter")
     return BinanceMarketDataAdapter()
+
+def get_okx_spot_instrument(symbol: str) -> dict:
+    """
+    Public OKX instrument metadata for spot sizing.
+    Returns one instrument dict for internal symbol like BTCUSDC.
+    """
+    base_url = os.environ.get("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
+    timeout = float(os.environ.get("OKX_HTTP_TIMEOUT_SECONDS", "10"))
+    inst_id = to_exchange_symbol(symbol, "OKX")
+
+    params = {
+        "instType": "SPOT",
+        "instId": inst_id,
+    }
+    url = f"{base_url}/api/v5/public/instruments?{urlencode(params)}"
+    req = Request(url, headers={"User-Agent": "waltrade-bot/okx-instruments"})
+
+    with urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+
+    data = json.loads(raw)
+    if str(data.get("code")) != "0":
+        raise RuntimeError(f"OKX instruments failed code={data.get('code')} msg={data.get('msg')}")
+
+    rows = data.get("data") or []
+    if not rows:
+        raise RuntimeError(f"OKX instruments returned no data for {inst_id}")
+
+    return rows[0]
+
