@@ -218,13 +218,21 @@ def place_live_exit_maker_then_market(
     if remaining > 0.0:
         mkt_cid = mk_child_client_order_id(base_client_order_id, "MKT")
         try:
-            resp_mkt = client.create_order(
-                symbol=symbol,
-                side=side_u,
-                type="MARKET",
-                quantity=f"{remaining:.8f}",
-                newClientOrderId=mkt_cid,
-            )
+            if hasattr(client, "place_market_order"):
+                resp_mkt = client.place_market_order(
+                    symbol=symbol,
+                    side=side_u,
+                    quantity=f"{remaining:.8f}",
+                    client_order_id=mkt_cid,
+                )
+            else:
+                resp_mkt = client.create_order(
+                    symbol=symbol,
+                    side=side_u,
+                    type="MARKET",
+                    quantity=f"{remaining:.8f}",
+                    newClientOrderId=mkt_cid,
+                )
             mkt_status = str(resp_mkt.get("status", "")).upper()
             mkt_exec = _safe_float(resp_mkt.get("executedQty"), 0.0)
             live_ok = (mkt_status == "FILLED") or (mkt_exec > 0.0)
