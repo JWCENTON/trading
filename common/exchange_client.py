@@ -24,6 +24,13 @@ class ExchangeAPIException(Exception):
         self.raw = raw
 
 
+def _okx_client_order_id(client_order_id: str | None) -> str | None:
+    if not client_order_id:
+        return None
+    clean = "".join(ch for ch in str(client_order_id) if ch.isalnum())
+    return clean[:32] if clean else None
+
+
 
 class BinanceMarketDataAdapter:
     def __init__(self):
@@ -355,16 +362,32 @@ class OkxMarketDataAdapter:
         inst_id = to_exchange_symbol(symbol, "OKX")
         side_l = str(side).lower()
 
-        body = {
-            "instId": inst_id,
-            "tdMode": "cash",
-            "side": side_l,
-            "ordType": "market",
-            "sz": str(quantity),
-        }
+        if side_l == "buy":
+            # Internal execution passes base quantity. OKX market BUY is safest
+            # as quote currency amount with tgtCcy=quote_ccy.
+            px = self.get_last_price(symbol)
+            quote_sz = float(quantity) * float(px)
+            body = {
+                "instId": inst_id,
+                "tdMode": "cash",
+                "side": side_l,
+                "ordType": "market",
+                "sz": f"{quote_sz:.8f}",
+                "tgtCcy": "quote_ccy",
+            }
+        else:
+            body = {
+                "instId": inst_id,
+                "tdMode": "cash",
+                "side": side_l,
+                "ordType": "market",
+                "sz": str(quantity),
+                "tgtCcy": "base_ccy",
+            }
 
-        if client_order_id:
-            body["clOrdId"] = str(client_order_id)
+        okx_client_order_id = _okx_client_order_id(client_order_id)
+        if okx_client_order_id:
+            body["clOrdId"] = okx_client_order_id
 
         data = self._private_request("POST", "/api/v5/trade/order", body=body)
         rows = data.get("data") or []
@@ -385,7 +408,7 @@ class OkxMarketDataAdapter:
             "symbol": symbol,
             "exchange_symbol": inst_id,
             "orderId": okx_ord_id,
-            "clientOrderId": raw.get("clOrdId") or client_order_id,
+            "clientOrderId": raw.get("clOrdId") or _okx_client_order_id(client_order_id),
             "status": "NEW",
             "executedQty": "0",
             "raw": raw,
