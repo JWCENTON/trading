@@ -187,7 +187,10 @@ def place_live_exit_maker_then_market(
     while time.time() < deadline:
         time.sleep(max(0.1, float(poll_sec)))
         try:
-            o = client.get_order(symbol=symbol, orderId=order_id)
+            if hasattr(client, "get_order_status"):
+                o = client.get_order_status(symbol=symbol, order_id=order_id)
+            else:
+                o = client.get_order(symbol=symbol, orderId=order_id)
         except Exception:
             continue
 
@@ -209,7 +212,10 @@ def place_live_exit_maker_then_market(
 
     # timeout -> cancel
     try:
-        cancel_resp = client.cancel_order(symbol=symbol, orderId=order_id)
+        if hasattr(client, "cancel_order_by_id"):
+            cancel_resp = client.cancel_order_by_id(symbol=symbol, order_id=order_id)
+        else:
+            cancel_resp = client.cancel_order(symbol=symbol, orderId=order_id)
     except Exception as e:
         cancel_resp = {"error": str(e)}
 

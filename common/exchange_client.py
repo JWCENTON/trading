@@ -74,8 +74,14 @@ class BinanceMarketDataAdapter:
     def get_order(self, **kwargs):
         return self.client.get_order(**kwargs)
 
+    def get_order_status(self, *, symbol: str, order_id):
+        return self.get_order(symbol=symbol, orderId=order_id)
+
     def cancel_order(self, **kwargs):
         return self.client.cancel_order(**kwargs)
+
+    def cancel_order_by_id(self, *, symbol: str, order_id):
+        return self.cancel_order(symbol=symbol, orderId=order_id)
 
     def get_my_trades(self, **kwargs):
         return self.client.get_my_trades(**kwargs)
@@ -216,8 +222,14 @@ class OkxMarketDataAdapter:
     def get_order(self, **kwargs):
         self._execution_blocked("get_order")
 
+    def get_order_status(self, *, symbol: str, order_id):
+        self._execution_blocked("get_order_status")
+
     def cancel_order(self, **kwargs):
         self._execution_blocked("cancel_order")
+
+    def cancel_order_by_id(self, *, symbol: str, order_id):
+        self._execution_blocked("cancel_order_by_id")
 
     def get_my_trades(self, **kwargs):
         self._execution_blocked("get_my_trades")
