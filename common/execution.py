@@ -571,13 +571,21 @@ def place_live_order(
             symbol, side, qty, client_order_id
         )
 
-        resp = client.create_order(
-            symbol=symbol,
-            side=side,
-            type="MARKET",
-            quantity=_qty_to_plain_str(qty),
-            newClientOrderId=client_order_id,
-        )
+        if hasattr(client, "place_market_order"):
+            resp = client.place_market_order(
+                symbol=symbol,
+                side=side,
+                quantity=_qty_to_plain_str(qty),
+                client_order_id=client_order_id,
+            )
+        else:
+            resp = client.create_order(
+                symbol=symbol,
+                side=side,
+                type="MARKET",
+                quantity=_qty_to_plain_str(qty),
+                newClientOrderId=client_order_id,
+            )
 
         status = str(resp.get("status", "")).upper()
         executed_qty = _safe_float(resp.get("executedQty"), 0.0)
