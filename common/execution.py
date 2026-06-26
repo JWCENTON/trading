@@ -270,7 +270,7 @@ def compute_live_qty_from_notional(
 ):
     step_size, min_qty, min_notional = _get_symbol_filters(client, symbol)
 
-    px = float(client.get_symbol_ticker(symbol=symbol)["price"])
+    px = float(client.get_last_price(symbol) if hasattr(client, "get_last_price") else client.get_symbol_ticker(symbol=symbol)["price"])
 
     # docelowy notional: max z target i minNotional*(1+bufor)
     want_notional = float(target_notional)
@@ -419,7 +419,7 @@ def preflight_live_order(
                 step=float(step_size),
             )
 
-        px = float(client.get_symbol_ticker(symbol=symbol)["price"])
+        px = float(client.get_last_price(symbol) if hasattr(client, "get_last_price") else client.get_symbol_ticker(symbol=symbol)["price"])
         notional = float(px * qty_adj)
 
         if min_notional and notional < min_notional:

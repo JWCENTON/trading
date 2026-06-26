@@ -26,6 +26,9 @@ class BinanceMarketDataAdapter:
     def get_symbol_ticker(self, *, symbol: str):
         return self.client.get_symbol_ticker(symbol=symbol)
 
+    def get_last_price(self, symbol: str) -> float:
+        return float(self.get_symbol_ticker(symbol=symbol)["price"])
+
     def get_account(self):
         return self.client.get_account()
 
@@ -143,6 +146,9 @@ class OkxMarketDataAdapter:
         if not rows:
             raise RuntimeError(f"OKX ticker returned no data for {inst_id}")
         return {"symbol": symbol, "price": rows[0].get("last"), "raw": rows[0]}
+
+    def get_last_price(self, symbol: str) -> float:
+        return float(self.get_symbol_ticker(symbol=symbol)["price"])
 
     def get_order_book(self, *, symbol: str, limit: int = 5):
         inst_id = to_exchange_symbol(symbol, "OKX")
