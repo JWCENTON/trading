@@ -59,6 +59,18 @@ class BinanceMarketDataAdapter:
             kwargs["newClientOrderId"] = client_order_id
         return self.create_order(**kwargs)
 
+    def place_limit_maker_order(self, *, symbol: str, side: str, quantity: str, price: str, client_order_id: str | None = None):
+        kwargs = {
+            "symbol": symbol,
+            "side": str(side).upper(),
+            "type": "LIMIT_MAKER",
+            "quantity": quantity,
+            "price": price,
+        }
+        if client_order_id:
+            kwargs["newClientOrderId"] = client_order_id
+        return self.create_order(**kwargs)
+
     def get_order(self, **kwargs):
         return self.client.get_order(**kwargs)
 
@@ -197,6 +209,9 @@ class OkxMarketDataAdapter:
 
     def place_market_order(self, *, symbol: str, side: str, quantity: str, client_order_id: str | None = None):
         self._execution_blocked("place_market_order")
+
+    def place_limit_maker_order(self, *, symbol: str, side: str, quantity: str, price: str, client_order_id: str | None = None):
+        self._execution_blocked("place_limit_maker_order")
 
     def get_order(self, **kwargs):
         self._execution_blocked("get_order")

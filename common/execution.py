@@ -158,14 +158,23 @@ def place_live_exit_maker_then_market(
     maker_cid = mk_child_client_order_id(base_client_order_id, "MKR")
 
     try:
-        resp_maker = client.create_order(
-            symbol=symbol,
-            side=side_u,
-            type="LIMIT_MAKER",
-            quantity=f"{qty_f:.8f}",
-            price=f"{maker_price:.2f}",
-            newClientOrderId=maker_cid,
-        )
+        if hasattr(client, "place_limit_maker_order"):
+            resp_maker = client.place_limit_maker_order(
+                symbol=symbol,
+                side=side_u,
+                quantity=f"{qty_f:.8f}",
+                price=f"{maker_price:.2f}",
+                client_order_id=maker_cid,
+            )
+        else:
+            resp_maker = client.create_order(
+                symbol=symbol,
+                side=side_u,
+                type="LIMIT_MAKER",
+                quantity=f"{qty_f:.8f}",
+                price=f"{maker_price:.2f}",
+                newClientOrderId=maker_cid,
+            )
     except Exception as e:
         return {"ok": False, "live_ok": False, "status": "MAKER_CREATE_FAILED", "executed_qty": 0.0, "filled_as": None, "resp": {"error": str(e)}, "maker_price": float(maker_price), "best_bid": best_bid, "best_ask": best_ask}
 
