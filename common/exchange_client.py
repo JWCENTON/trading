@@ -350,10 +350,47 @@ class OkxMarketDataAdapter:
         self._execution_blocked("create_order")
 
     def place_market_order(self, *, symbol: str, side: str, quantity: str, client_order_id: str | None = None):
-        self._execution_blocked("place_market_order")
+        if not self._execution_enabled():
+            self._execution_blocked("place_market_order")
 
-    def place_limit_maker_order(self, *, symbol: str, side: str, quantity: str, price: str, client_order_id: str | None = None):
-        self._execution_blocked("place_limit_maker_order")
+        inst_id = to_exchange_symbol(symbol, "OKX")
+        side_l = str(side).lower()
+
+        body = {
+            "instId": inst_id,
+            "tdMode": "cash",
+            "side": side_l,
+            "ordType": "market",
+            "sz": str(quantity),
+        }
+
+        if client_order_id:
+            body["clOrdId"] = str(client_order_id)
+
+        data = self._private_request("POST", "/api/v5/trade/order", body=body)
+        rows = data.get("data") or []
+        raw = rows[0] if rows else {}
+
+        okx_ord_id = raw.get("ordId")
+        okx_s_code = str(raw.get("sCode", "0"))
+        okx_s_msg = raw.get("sMsg", "")
+
+        if okx_s_code != "0":
+            raise ExchangeAPIException(
+                f"OKX market order rejected sCode={okx_s_code} sMsg={okx_s_msg}",
+                code=okx_s_code,
+                raw=raw,
+            )
+
+        return {
+            "symbol": symbol,
+            "exchange_symbol": inst_id,
+            "orderId": okx_ord_id,
+            "clientOrderId": raw.get("clOrdId") or client_order_id,
+            "status": "NEW",
+            "executedQty": "0",
+            "raw": raw,
+        }
 
     def get_order(self, **kwargs):
         self._execution_blocked("get_order")
