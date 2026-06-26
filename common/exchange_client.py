@@ -32,6 +32,10 @@ class BinanceMarketDataAdapter:
     def get_account(self):
         return self.client.get_account()
 
+    def get_balances(self) -> dict:
+        acct = self.get_account()
+        return {b["asset"].upper(): float(b["free"]) for b in acct.get("balances", [])}
+
     def get_order_book(self, *, symbol: str, limit: int = 5):
         return self.client.get_order_book(symbol=symbol, limit=limit)
 
@@ -173,6 +177,9 @@ class OkxMarketDataAdapter:
 
     def get_account(self):
         self._execution_blocked("get_account")
+
+    def get_balances(self) -> dict:
+        self._execution_blocked("get_balances")
 
     def create_order(self, **kwargs):
         self._execution_blocked("create_order")

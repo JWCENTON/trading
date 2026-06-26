@@ -350,8 +350,11 @@ def compute_sellable_asset_qty(
     reserve_step_count: int = 1,
 ):
     step_size, min_qty, _ = _get_symbol_filters(client, symbol)
-    acct = client.get_account()
-    bals = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
+    if hasattr(client, "get_balances"):
+        bals = client.get_balances()
+    else:
+        acct = client.get_account()
+        bals = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
 
     base_asset = _base_asset_from_symbol(symbol, quote_asset)
     free_qty = float(bals.get(base_asset.upper(), 0.0))
@@ -434,8 +437,11 @@ def preflight_live_order(
         if (not skip_balance_precheck) and side == "BUY":
             # zostaw obecną logikę balance check, tylko bez exceptionów
             try:
-                acct = client.get_account()
-                bals = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
+                if hasattr(client, "get_balances"):
+                    bals = client.get_balances()
+                else:
+                    acct = client.get_account()
+                    bals = {b["asset"]: float(b["free"]) for b in acct.get("balances", [])}
                 free_quote = float(bals.get(str(quote_asset).upper(), 0.0))
                 if free_quote + 1e-9 < notional:
                     return _blocked(
