@@ -392,6 +392,9 @@ class OkxMarketDataAdapter:
             "raw": raw,
         }
 
+    def place_limit_maker_order(self, *, symbol: str, side: str, quantity: str, price: str, client_order_id: str | None = None):
+        self._execution_blocked("place_limit_maker_order")
+
     def get_order(self, **kwargs):
         self._execution_blocked("get_order")
 
