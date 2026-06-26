@@ -262,3 +262,5 @@ paper.cookies
 cookies.txt
 
 !scripts/cleanup.sql
+.env.okx.live
+.env.okx.live.bak.*
