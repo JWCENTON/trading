@@ -399,13 +399,80 @@ class OkxMarketDataAdapter:
         self._execution_blocked("get_order")
 
     def get_order_status(self, *, symbol: str, order_id):
-        self._execution_blocked("get_order_status")
+        if not self._execution_enabled():
+            self._execution_blocked("get_order_status")
+
+        inst_id = to_exchange_symbol(symbol, "OKX")
+        data = self._private_request(
+            "GET",
+            "/api/v5/trade/order",
+            params={
+                "instId": inst_id,
+                "ordId": str(order_id),
+            },
+        )
+
+        rows = data.get("data") or []
+        raw = rows[0] if rows else {}
+
+        state = str(raw.get("state", "")).lower()
+        acc_fill_sz = raw.get("accFillSz", "0")
+
+        status_map = {
+            "live": "NEW",
+            "partially_filled": "PARTIALLY_FILLED",
+            "filled": "FILLED",
+            "canceled": "CANCELED",
+        }
+
+        return {
+            "symbol": symbol,
+            "exchange_symbol": inst_id,
+            "orderId": raw.get("ordId") or str(order_id),
+            "clientOrderId": raw.get("clOrdId"),
+            "status": status_map.get(state, state.upper() if state else "UNKNOWN"),
+            "executedQty": acc_fill_sz,
+            "raw": raw,
+        }
 
     def cancel_order(self, **kwargs):
         self._execution_blocked("cancel_order")
 
     def cancel_order_by_id(self, *, symbol: str, order_id):
-        self._execution_blocked("cancel_order_by_id")
+        if not self._execution_enabled():
+            self._execution_blocked("cancel_order_by_id")
+
+        inst_id = to_exchange_symbol(symbol, "OKX")
+        data = self._private_request(
+            "POST",
+            "/api/v5/trade/cancel-order",
+            body={
+                "instId": inst_id,
+                "ordId": str(order_id),
+            },
+        )
+
+        rows = data.get("data") or []
+        raw = rows[0] if rows else {}
+
+        s_code = str(raw.get("sCode", "0"))
+        s_msg = raw.get("sMsg", "")
+
+        if s_code != "0":
+            raise ExchangeAPIException(
+                f"OKX cancel rejected sCode={s_code} sMsg={s_msg}",
+                code=s_code,
+                raw=raw,
+            )
+
+        return {
+            "symbol": symbol,
+            "exchange_symbol": inst_id,
+            "orderId": raw.get("ordId") or str(order_id),
+            "clientOrderId": raw.get("clOrdId"),
+            "status": "CANCELED",
+            "raw": raw,
+        }
 
     def get_my_trades(self, **kwargs):
         self._execution_blocked("get_my_trades")
