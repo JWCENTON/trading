@@ -219,12 +219,11 @@ class OkxMarketDataAdapter:
 
         method_u = str(method).upper()
         query = f"?{urlencode(params)}" if params else ""
-        request_path = path
         url_path = f"{path}{query}"
         body_s = self._json_body(body)
 
         ts = self._okx_timestamp()
-        sign_payload = f"{ts}{method_u}{request_path}{body_s}"
+        sign_payload = f"{ts}{method_u}{url_path}{body_s}"
         sign = self._sign(api_secret, sign_payload)
 
         headers = {
@@ -475,7 +474,72 @@ class OkxMarketDataAdapter:
         }
 
     def get_my_trades(self, **kwargs):
-        self._execution_blocked("get_my_trades")
+        """
+        OKX fills adapter.
+
+        Binance-compatible input usually passes:
+          symbol=BTCUSDC
+
+        Optional:
+          orderId / ordId
+          after
+          before
+          limit
+        """
+        symbol = kwargs.get("symbol")
+        if not symbol:
+            raise ValueError("get_my_trades requires symbol")
+
+        inst_id = to_exchange_symbol(symbol, "OKX")
+
+        params = {
+            "instType": "SPOT",
+            "instId": inst_id,
+            "limit": int(kwargs.get("limit", 100)),
+        }
+
+        order_id = kwargs.get("orderId") or kwargs.get("ordId")
+        if order_id:
+            params["ordId"] = str(order_id)
+
+        if kwargs.get("after") is not None:
+            params["after"] = str(kwargs.get("after"))
+        if kwargs.get("before") is not None:
+            params["before"] = str(kwargs.get("before"))
+
+        data = self._private_request(
+            "GET",
+            "/api/v5/trade/fills-history",
+            params=params,
+        )
+
+        rows = data.get("data") or []
+        out = []
+
+        for r in rows:
+            fill_sz = r.get("fillSz", "0")
+            fill_px = r.get("fillPx", "0")
+            fee = r.get("fee", "0")
+            fee_ccy = r.get("feeCcy")
+            ts = r.get("ts")
+
+            # Binance-like normalized shape plus raw OKX.
+            out.append({
+                "symbol": symbol,
+                "id": r.get("tradeId"),
+                "orderId": r.get("ordId"),
+                "price": fill_px,
+                "qty": fill_sz,
+                "quoteQty": None,
+                "commission": str(abs(float(fee or 0.0))),
+                "commissionAsset": fee_ccy,
+                "time": int(ts) if ts else None,
+                "isBuyer": str(r.get("side", "")).lower() == "buy",
+                "isMaker": str(r.get("execType", "")).upper() == "M",
+                "raw": r,
+            })
+
+        return out
 
     def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}{path}?{urlencode(params)}"
