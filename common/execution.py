@@ -2,12 +2,7 @@
 import uuid
 import time
 import logging
-try:
-    from binance.exceptions import BinanceAPIException
-except Exception:
-    class BinanceAPIException(Exception):
-        pass
-
+from common.exchange_client import ExchangeAPIException
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import re
@@ -640,7 +635,7 @@ def place_live_order(
             "client_order_id": client_order_id,
         }
 
-    except BinanceAPIException as e:
+    except ExchangeAPIException as e:
         logging.error(
             "LIVE ORDER REJECTED symbol=%s side=%s qty=%.8f code=%s msg=%s clientOrderId=%s",
             symbol, side, qty,
@@ -652,7 +647,7 @@ def place_live_order(
             "ok": False,
             "live_ok": False,
             "blocked": False,
-            "reason": "BINANCE_API_EXCEPTION",
+            "reason": "EXCHANGE_API_EXCEPTION",
             "meta": {"code": getattr(e, "code", None), "msg": getattr(e, "message", str(e))},
             "resp": None,
         }

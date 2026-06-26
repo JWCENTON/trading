@@ -12,6 +12,15 @@ import json
 from common.exchange_symbols import to_exchange_symbol
 
 
+class ExchangeAPIException(Exception):
+    def __init__(self, message: str, *, code=None, raw=None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.raw = raw
+
+
+
 class BinanceMarketDataAdapter:
     def __init__(self):
         from binance.client import Client
@@ -46,7 +55,14 @@ class BinanceMarketDataAdapter:
         return best_bid, best_ask
 
     def create_order(self, **kwargs):
-        return self.client.create_order(**kwargs)
+        try:
+            return self.client.create_order(**kwargs)
+        except Exception as e:
+            raise ExchangeAPIException(
+                str(getattr(e, "message", str(e))),
+                code=getattr(e, "code", None),
+                raw=e,
+            ) from e
 
     def place_market_order(self, *, symbol: str, side: str, quantity: str, client_order_id: str | None = None):
         kwargs = {
@@ -72,13 +88,27 @@ class BinanceMarketDataAdapter:
         return self.create_order(**kwargs)
 
     def get_order(self, **kwargs):
-        return self.client.get_order(**kwargs)
+        try:
+            return self.client.get_order(**kwargs)
+        except Exception as e:
+            raise ExchangeAPIException(
+                str(getattr(e, "message", str(e))),
+                code=getattr(e, "code", None),
+                raw=e,
+            ) from e
 
     def get_order_status(self, *, symbol: str, order_id):
         return self.get_order(symbol=symbol, orderId=order_id)
 
     def cancel_order(self, **kwargs):
-        return self.client.cancel_order(**kwargs)
+        try:
+            return self.client.cancel_order(**kwargs)
+        except Exception as e:
+            raise ExchangeAPIException(
+                str(getattr(e, "message", str(e))),
+                code=getattr(e, "code", None),
+                raw=e,
+            ) from e
 
     def cancel_order_by_id(self, *, symbol: str, order_id):
         return self.cancel_order(symbol=symbol, orderId=order_id)
