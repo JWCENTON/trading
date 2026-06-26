@@ -11,6 +11,7 @@ except Exception:
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import re
+from common.sizing import get_symbol_filters as sizing_get_symbol_filters
 
 _CID_RE = re.compile(r"[^A-Za-z0-9\-_]")
 
@@ -328,17 +329,16 @@ def _floor_to_step(qty: float, step: str) -> Decimal:
 
 
 def _get_symbol_filters(client, symbol: str):
-    info = client.get_symbol_info(symbol)
-    if not info:
-        raise RuntimeError(f"Symbol info not found for {symbol}")
+    """
+    Execution-compatible wrapper over common.sizing.get_symbol_filters().
 
-    lot = next((f for f in info["filters"] if f["filterType"] == "LOT_SIZE"), None)
-    min_notional = next((f for f in info["filters"] if f["filterType"] in ("MIN_NOTIONAL","NOTIONAL")), None)
+    Keeps the legacy return shape:
+      step_size, min_qty, min_notional
 
-    step_size = lot["stepSize"] if lot else "0.00000001"
-    min_qty = float(lot["minQty"]) if lot else 0.0
-    min_notional_val = float(min_notional.get("minNotional", 0.0)) if min_notional else 0.0
-    return step_size, min_qty, min_notional_val
+    but moves exchange-specific filter resolution to the shared sizing layer.
+    """
+    sf = sizing_get_symbol_filters(client, symbol)
+    return str(sf.step), float(sf.min_qty), float(sf.min_notional)
 
 
 def compute_sellable_asset_qty(
