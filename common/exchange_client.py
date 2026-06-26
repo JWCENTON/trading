@@ -4,6 +4,10 @@ from __future__ import annotations
 import os
 import time
 import logging
+import hmac
+import hashlib
+import base64
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -172,6 +176,84 @@ class OkxMarketDataAdapter:
         close_time = ts + cls._interval_to_ms(interval) - 1
         trades = 0
         return [ts, open_px, high, low, close, volume, close_time, None, trades]
+
+    def _okx_credentials(self) -> tuple[str, str, str]:
+        api_key = os.environ.get("OKX_API_KEY", "").strip()
+        api_secret = os.environ.get("OKX_API_SECRET", "").strip()
+        passphrase = os.environ.get("OKX_API_PASSPHRASE", "").strip()
+
+        if not api_key or not api_secret or not passphrase:
+            raise RuntimeError("Missing OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE")
+
+        return api_key, api_secret, passphrase
+
+    @staticmethod
+    def _okx_timestamp() -> str:
+        # OKX accepts ISO-8601 UTC timestamp with milliseconds, e.g. 2020-12-08T09:08:57.715Z
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    @staticmethod
+    def _json_body(payload: Optional[Dict[str, Any]]) -> str:
+        if not payload:
+            return ""
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _sign(secret: str, message: str) -> str:
+        digest = hmac.new(
+            secret.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        return base64.b64encode(digest).decode("utf-8")
+
+    def _private_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        api_key, api_secret, passphrase = self._okx_credentials()
+
+        method_u = str(method).upper()
+        query = f"?{urlencode(params)}" if params else ""
+        request_path = path
+        url_path = f"{path}{query}"
+        body_s = self._json_body(body)
+
+        ts = self._okx_timestamp()
+        sign_payload = f"{ts}{method_u}{request_path}{body_s}"
+        sign = self._sign(api_secret, sign_payload)
+
+        headers = {
+            "User-Agent": "waltrade-bot/okx-private",
+            "Content-Type": "application/json",
+            "OK-ACCESS-KEY": api_key,
+            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-TIMESTAMP": ts,
+            "OK-ACCESS-PASSPHRASE": passphrase,
+        }
+
+        if os.environ.get("OKX_TESTNET", "false").strip().lower() in ("1", "true", "yes", "on"):
+            headers["x-simulated-trading"] = "1"
+
+        data_bytes = body_s.encode("utf-8") if body_s else None
+        url = f"{self.base_url}{url_path}"
+        req = Request(url, data=data_bytes, headers=headers, method=method_u)
+
+        with urlopen(req, timeout=self.timeout) as resp:
+            raw = resp.read().decode("utf-8")
+
+        data = json.loads(raw)
+        if str(data.get("code")) != "0":
+            raise ExchangeAPIException(
+                f"OKX private request failed code={data.get('code')} msg={data.get('msg')}",
+                code=data.get("code"),
+                raw=data,
+            )
+        return data
 
     def _execution_enabled(self) -> bool:
         return os.environ.get("OKX_EXECUTION_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
