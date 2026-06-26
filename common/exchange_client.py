@@ -20,6 +20,30 @@ class BinanceMarketDataAdapter:
         api_secret = os.environ.get("BINANCE_API_SECRET")
         self.client = Client(api_key=api_key, api_secret=api_secret)
 
+    def get_symbol_info(self, symbol: str):
+        return self.client.get_symbol_info(symbol)
+
+    def get_symbol_ticker(self, *, symbol: str):
+        return self.client.get_symbol_ticker(symbol=symbol)
+
+    def get_account(self):
+        return self.client.get_account()
+
+    def get_order_book(self, *, symbol: str, limit: int = 5):
+        return self.client.get_order_book(symbol=symbol, limit=limit)
+
+    def create_order(self, **kwargs):
+        return self.client.create_order(**kwargs)
+
+    def get_order(self, **kwargs):
+        return self.client.get_order(**kwargs)
+
+    def cancel_order(self, **kwargs):
+        return self.client.cancel_order(**kwargs)
+
+    def get_my_trades(self, **kwargs):
+        return self.client.get_my_trades(**kwargs)
+
     def get_klines(self, *, symbol: str, interval: str, limit: int = 1000, start_ms: Optional[int] = None) -> List[list]:
         kwargs: Dict[str, Any] = {
             "symbol": symbol,
@@ -76,6 +100,73 @@ class OkxMarketDataAdapter:
         close_time = ts + cls._interval_to_ms(interval) - 1
         trades = 0
         return [ts, open_px, high, low, close, volume, close_time, None, trades]
+
+    def _execution_enabled(self) -> bool:
+        return os.environ.get("OKX_EXECUTION_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+    def _execution_blocked(self, method: str):
+        raise RuntimeError(f"OKX execution method blocked: {method}; set OKX_EXECUTION_ENABLED=1 only after explicit canary approval")
+
+    def get_symbol_info(self, symbol: str):
+        inst = get_okx_spot_instrument(symbol)
+        lot_sz = inst.get("lotSz", "0.00000001")
+        min_sz = inst.get("minSz", "0")
+        return {
+            "symbol": symbol,
+            "exchange_symbol": to_exchange_symbol(symbol, "OKX"),
+            "filters": [
+                {
+                    "filterType": "LOT_SIZE",
+                    "stepSize": lot_sz,
+                    "minQty": min_sz,
+                },
+                {
+                    "filterType": "MIN_NOTIONAL",
+                    "minNotional": inst.get("minNotional", "0"),
+                },
+            ],
+            "raw": inst,
+        }
+
+    def get_symbol_ticker(self, *, symbol: str):
+        inst_id = to_exchange_symbol(symbol, "OKX")
+        data = self._request("/api/v5/market/ticker", {"instId": inst_id})
+        if str(data.get("code")) != "0":
+            raise RuntimeError(f"OKX ticker failed code={data.get('code')} msg={data.get('msg')}")
+        rows = data.get("data") or []
+        if not rows:
+            raise RuntimeError(f"OKX ticker returned no data for {inst_id}")
+        return {"symbol": symbol, "price": rows[0].get("last"), "raw": rows[0]}
+
+    def get_order_book(self, *, symbol: str, limit: int = 5):
+        inst_id = to_exchange_symbol(symbol, "OKX")
+        data = self._request("/api/v5/market/books", {"instId": inst_id, "sz": int(limit)})
+        if str(data.get("code")) != "0":
+            raise RuntimeError(f"OKX order book failed code={data.get('code')} msg={data.get('msg')}")
+        rows = data.get("data") or []
+        if not rows:
+            return {"bids": [], "asks": []}
+        book = rows[0]
+        return {
+            "bids": [[x[0], x[1]] for x in book.get("bids", [])],
+            "asks": [[x[0], x[1]] for x in book.get("asks", [])],
+            "raw": book,
+        }
+
+    def get_account(self):
+        self._execution_blocked("get_account")
+
+    def create_order(self, **kwargs):
+        self._execution_blocked("create_order")
+
+    def get_order(self, **kwargs):
+        self._execution_blocked("get_order")
+
+    def cancel_order(self, **kwargs):
+        self._execution_blocked("cancel_order")
+
+    def get_my_trades(self, **kwargs):
+        self._execution_blocked("get_my_trades")
 
     def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}{path}?{urlencode(params)}"
