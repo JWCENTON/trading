@@ -32,6 +32,12 @@ class BinanceMarketDataAdapter:
     def get_order_book(self, *, symbol: str, limit: int = 5):
         return self.client.get_order_book(symbol=symbol, limit=limit)
 
+    def get_best_bid_ask(self, symbol: str):
+        ob = self.get_order_book(symbol=symbol, limit=5)
+        best_bid = float(ob["bids"][0][0]) if ob.get("bids") else None
+        best_ask = float(ob["asks"][0][0]) if ob.get("asks") else None
+        return best_bid, best_ask
+
     def create_order(self, **kwargs):
         return self.client.create_order(**kwargs)
 
@@ -152,6 +158,12 @@ class OkxMarketDataAdapter:
             "asks": [[x[0], x[1]] for x in book.get("asks", [])],
             "raw": book,
         }
+
+    def get_best_bid_ask(self, symbol: str):
+        ob = self.get_order_book(symbol=symbol, limit=5)
+        best_bid = float(ob["bids"][0][0]) if ob.get("bids") else None
+        best_ask = float(ob["asks"][0][0]) if ob.get("asks") else None
+        return best_bid, best_ask
 
     def get_account(self):
         self._execution_blocked("get_account")

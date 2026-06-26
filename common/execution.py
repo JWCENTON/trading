@@ -2,7 +2,12 @@
 import uuid
 import time
 import logging
-from binance.exceptions import BinanceAPIException
+try:
+    from binance.exceptions import BinanceAPIException
+except Exception:
+    class BinanceAPIException(Exception):
+        pass
+
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import re
@@ -94,6 +99,13 @@ def _safe_float(x, default=0.0):
 
 
 def get_best_bid_ask(client, symbol: str):
+    """
+    Exchange adapter compatible best bid/ask.
+    Prefer adapter method; fallback to Binance-like get_order_book().
+    """
+    if hasattr(client, "get_best_bid_ask"):
+        return client.get_best_bid_ask(symbol)
+
     ob = client.get_order_book(symbol=symbol, limit=5)
     best_bid = _safe_float(ob["bids"][0][0]) if ob.get("bids") else None
     best_ask = _safe_float(ob["asks"][0][0]) if ob.get("asks") else None
