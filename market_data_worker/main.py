@@ -5,15 +5,13 @@ from datetime import datetime, timezone
 import psycopg2
 from common.db import get_db_conn
 from psycopg2.extras import execute_batch
-from binance.client import Client
+from common.exchange_client import get_market_data_client
 
 from common.schema import ensure_schema
 from common.worker_heartbeat import record_worker_heartbeat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-API_KEY = os.environ.get("BINANCE_API_KEY")
-API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 QUOTE_ASSET = os.environ.get("QUOTE_ASSET", "USDC").upper()
 
@@ -25,13 +23,13 @@ MD_MAX_LIMIT = int(os.environ.get("MD_MAX_LIMIT", "1000"))  # Binance max is 100
 MD_BACKFILL_CANDLES = int(os.environ.get("MD_BACKFILL_CANDLES", "500"))  # per symbol/interval on cold start
 MD_LAG_TOLERANCE_SECONDS = int(os.environ.get("MD_LAG_TOLERANCE_SECONDS", "120"))
 
-client = Client(api_key=API_KEY, api_secret=API_SECRET)
+client = get_market_data_client()
 
 def parse_list(s: str):
     return [x.strip().upper() for x in s.split(",") if x.strip()]
 
 def interval_to_ms(interval: str) -> int:
-    # Binance intervals: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d...
+    # Internal intervals: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 1d...
     unit = interval[-1]
     n = int(interval[:-1])
     if unit == "m":
