@@ -317,10 +317,34 @@ class OkxMarketDataAdapter:
         return best_bid, best_ask
 
     def get_account(self):
-        self._execution_blocked("get_account")
+        data = self._private_request("GET", "/api/v5/account/balance")
+        return {"raw": data}
 
     def get_balances(self) -> dict:
-        self._execution_blocked("get_balances")
+        data = self._private_request("GET", "/api/v5/account/balance")
+        balances: dict[str, float] = {}
+
+        for account_row in data.get("data") or []:
+            for detail in account_row.get("details") or []:
+                ccy = str(detail.get("ccy", "")).upper()
+                if not ccy:
+                    continue
+
+                # OKX fields:
+                # availBal = available balance
+                # cashBal  = cash balance fallback
+                raw_free = detail.get("availBal")
+                if raw_free in (None, ""):
+                    raw_free = detail.get("cashBal")
+
+                try:
+                    free = float(raw_free or 0.0)
+                except Exception:
+                    free = 0.0
+
+                balances[ccy] = balances.get(ccy, 0.0) + free
+
+        return balances
 
     def create_order(self, **kwargs):
         self._execution_blocked("create_order")
