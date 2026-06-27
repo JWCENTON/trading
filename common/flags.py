@@ -13,6 +13,13 @@ def trading_mode() -> str:
 def is_live_mode() -> bool:
     return trading_mode() == "LIVE"
 
-def binance_mytrades_enabled() -> bool:
+def exchange_mytrades_enabled() -> bool:
     # Safety: only allow in LIVE, AND only if flag explicitly enabled.
-    return is_live_mode() and env_flag("BINANCE_MYTRADES_ENABLED", "0")
+    return is_live_mode() and (
+        env_flag("EXCHANGE_MYTRADES_ENABLED", "0")
+        or env_flag("BINANCE_MYTRADES_ENABLED", "0")  # legacy compat
+    )
+
+def binance_mytrades_enabled() -> bool:
+    # Backward-compatible alias. New code should use exchange_mytrades_enabled().
+    return exchange_mytrades_enabled()

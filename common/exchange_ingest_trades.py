@@ -2,6 +2,7 @@
 import json
 import time
 import logging
+import os
 from common.exchange_client import get_market_data_client
 from typing import Iterable, Dict, Any, Tuple, Optional
 
@@ -27,7 +28,7 @@ INSERT INTO binance_order_fills (
   raw
 )
 VALUES (
-  'binance',
+  %(source)s,
   %(trade_id)s,
   %(order_id)s,
   %(symbol)s,
@@ -96,11 +97,12 @@ def _mk_dsn(*, host: str, port: int, dbname: str, user: str, password: str) -> s
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
 
-def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0) -> Dict[str, Any]:
+def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str = "binance") -> Dict[str, Any]:
     # myTrades: id, orderId, price, qty, quoteQty, commission, commissionAsset, time, isBuyer, isMaker
     side = "BUY" if t.get("isBuyer") else "SELL"
     role = "MAKER" if t.get("isMaker") else "TAKER"
     return {
+        "source": str(source).lower(),
         "trade_id": int(t["id"]),
         "order_id": str(t["orderId"]),
         "symbol": symbol,
@@ -131,12 +133,15 @@ def ingest_my_trades(
 ) -> Tuple[int, int]:
     """
     Ingestuje fill-level z configured exchange (client.get_my_trades) do binance_order_fills.
+    Historyczna nazwa tabeli zostaje, ale source musi być exchange-neutral:
+    binance / okx / ...
     Idempotencja: UNIQUE(source, trade_id).
 
     Returns: (n_trades_fetched, n_fee_rows_priced)
     """
     dsn = _mk_dsn(host=db_host, port=db_port, dbname=db_name, user=db_user, password=db_pass)
     now_ms = int(time.time() * 1000)
+    source = (os.getenv("EXCHANGE", "BINANCE") or "BINANCE").strip().lower()
 
     total_fetched = 0
     min_event_time_ms_seen: Optional[int] = None
@@ -146,11 +151,12 @@ def ingest_my_trades(
 
         for symbol in symbols:
             with conn.cursor() as cur:
-                cur.execute(READ_STATE_SQL, (symbol,))
+                state_symbol = f"{source}:{symbol}"
+                cur.execute(READ_STATE_SQL, (state_symbol,))
                 row = cur.fetchone()
                 if row is None:
                     start_ms = now_ms - lookback_ms_default
-                    cur.execute(UPSERT_STATE_SQL, (symbol, start_ms))
+                    cur.execute(UPSERT_STATE_SQL, (state_symbol, start_ms))
                 else:
                     start_ms = int(row[0])
 
@@ -165,7 +171,7 @@ def ingest_my_trades(
             if not trades:
                 continue
 
-            rows = [_trade_to_row(symbol, t, fill_idx=0) for t in trades]
+            rows = [_trade_to_row(symbol, t, fill_idx=0, source=source) for t in trades]
             total_fetched += len(rows)
 
             min_t = min(r["event_time_ms"] for r in rows)
@@ -176,7 +182,7 @@ def ingest_my_trades(
 
             max_time = max(r["event_time_ms"] for r in rows)
             with conn.cursor() as cur:
-                cur.execute(UPSERT_STATE_SQL, (symbol, max_time))
+                cur.execute(UPSERT_STATE_SQL, (state_symbol, max_time))
 
         priced_updated = 0
         if min_event_time_ms_seen is not None:

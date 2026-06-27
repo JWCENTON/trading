@@ -4,7 +4,7 @@ import json
 import logging
 import psycopg2
 import pandas as pd
-from common.flags import binance_mytrades_enabled
+from common.flags import exchange_mytrades_enabled
 from common.schema import ensure_schema
 from common.exchange_ingest_trades import ingest_my_trades
 from dataclasses import replace
@@ -2957,8 +2957,8 @@ def main_loop():
         loop_start = time.perf_counter()
         try:
             # --- Exchange fills ingest (LIVE ONLY) ---
-            # co 60s: pobierz myTrades i zasil binance_order_fills + wyceń fee w USDC przez BNBUSDC candles
-            if binance_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
+            # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
+            if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(
                     client=client,
                     symbols=[SYMBOL],         
@@ -2974,7 +2974,7 @@ def main_loop():
                 emit_strategy_event(
                     event_type="INGEST",
                     decision=None,
-                    reason="BINANCE_MYTRADES",
+                    reason="EXCHANGE_MYTRADES",
                     price=None,
                     candle_open_time=None,
                     info={"symbol": SYMBOL, "n_trades": int(n_trades), "n_fee_priced": int(n_priced)},
