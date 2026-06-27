@@ -45,7 +45,7 @@ services:
 
   automation-runner:
     env_file:
-      - .env.live
+      - ${TRADING_ENV_FILE:-.env.live}
 
   bot-runner-orchestrator:
     build:

@@ -324,7 +324,46 @@ class OkxMarketDataAdapter:
 
     def get_account(self):
         data = self._private_request("GET", "/api/v5/account/balance")
-        return {"raw": data}
+
+        balances = []
+        for account_row in data.get("data") or []:
+            for detail in account_row.get("details") or []:
+                asset = str(detail.get("ccy", "")).upper()
+                if not asset:
+                    continue
+
+                raw_free = detail.get("availBal")
+                if raw_free in (None, ""):
+                    raw_free = detail.get("cashBal")
+
+                raw_total = detail.get("cashBal")
+                if raw_total in (None, ""):
+                    raw_total = detail.get("eq")
+                if raw_total in (None, ""):
+                    raw_total = raw_free
+
+                try:
+                    free = float(raw_free or 0.0)
+                except Exception:
+                    free = 0.0
+
+                try:
+                    total = float(raw_total or 0.0)
+                except Exception:
+                    total = free
+
+                locked = max(total - free, 0.0)
+
+                balances.append({
+                    "asset": asset,
+                    "free": str(free),
+                    "locked": str(locked),
+                })
+
+        return {
+            "balances": balances,
+            "raw": data,
+        }
 
     def get_balances(self) -> dict:
         data = self._private_request("GET", "/api/v5/account/balance")
