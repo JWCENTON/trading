@@ -4,8 +4,6 @@ import time
 import logging
 import os
 from decimal import Decimal
-import os
-from decimal import Decimal
 from common.exchange_client import get_market_data_client
 from typing import Iterable, Dict, Any, Tuple, Optional
 
