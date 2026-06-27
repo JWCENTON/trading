@@ -49,7 +49,7 @@ services:
 
   automation-runner:
     env_file:
-      - .env.paper
+      - ${ENV_FILE}
     networks:
       - default
       - trading-edge

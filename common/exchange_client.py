@@ -554,10 +554,16 @@ class OkxMarketDataAdapter:
 
         inst_id = to_exchange_symbol(symbol, "OKX")
 
+        try:
+            limit = int(kwargs.get("limit", 100))
+        except Exception:
+            limit = 100
+        limit = max(1, min(limit, 100))
+
         params = {
             "instType": "SPOT",
             "instId": inst_id,
-            "limit": int(kwargs.get("limit", 100)),
+            "limit": limit,
         }
 
         order_id = kwargs.get("orderId") or kwargs.get("ordId")

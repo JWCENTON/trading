@@ -70,7 +70,7 @@ def load_orc_cfg(conn) -> dict:
         "unrealized_in_risk": True,
         "exposure_max_quote": Decimal("25"),
         "daily_max_loss_quote": None,  # Decimal("2.5") recommended for LIVE micro; None disables this check
-        "policy_version": "orc_v1",
+        "policy_version": "orc_safety_v1",
         "actions_enabled": False,
     }
 
@@ -815,7 +815,7 @@ def insert_risk_metrics(conn, bk: BotKey, realized_pnl: Decimal, unrealized: Dec
                         exposure: Decimal, last_price: Optional[Decimal], n_closed_today: int, has_open: bool,
                         cfg: dict, effective_actions_enabled: bool):
     meta = {
-        "note": "orc_v1",
+        "note": "orc_safety_v1",
         "source": "positions",
         "policy_version": cfg.get("policy_version"),
         "actions_enabled": bool(effective_actions_enabled),
@@ -844,7 +844,7 @@ def upsert_bot_state(conn, bk: BotKey, bc: dict, hb_row: Optional[dict], c_row: 
                      realized_pnl: Decimal, unrealized: Decimal, pnl_total: Decimal, exposure: Decimal,
                      last_price: Optional[Decimal], policy_version: str):
     meta = {
-        "note": "orc_v1",
+        "note": "orc_safety_v1",
         "hb_info": hb_row.get("hb_info") if hb_row else None,
     }
 
@@ -893,7 +893,7 @@ def upsert_bot_state(conn, bk: BotKey, bc: dict, hb_row: Optional[dict], c_row: 
 def insert_decision_log(conn, bk: BotKey, state_before: Optional[str], state_after: str,
                         action: str, executed: bool, reason_code: Optional[str], reason_detail: Optional[str],
                         meta: Optional[dict] = None):
-    meta = meta or {"note": "orc_v1"}
+    meta = meta or {"note": "orc_safety_v1"}
     params = {
         "symbol": bk.symbol,
         "interval": bk.interval,
@@ -1376,7 +1376,7 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
         upsert_bot_state(conn, bk, bc, hb_row, c_row, op_row,
                          state, blocker_primary, blocker_detail,
                          realized_pnl, unrealized, pnl_total, exposure, last_price,
-                         str(cfg.get("policy_version", "orc_v1")))
+                         str(cfg.get("policy_version", "orc_safety_v1")))
 
         # Decide action (DISABLE_ONLY)
         ACTIONS_ALLOWED_STATES = {"PANIC", "HEARTBEAT_STALE", "CANDLES_STALE"}
@@ -1403,7 +1403,7 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
     panic_enabled = bool(panic.get("panic_enabled"))
 
     # policy switch (from automation_kv)
-    policy = (kv_get(conn, "orc_policy_version") or "").strip() or str(cfg.get("policy_version") or "orc_v1")
+    policy = (kv_get(conn, "orc_policy_version") or "").strip() or str(cfg.get("policy_version") or "orc_safety_v1")
     policy = policy.strip()
 
     if (not panic_enabled) and TRADING_MODE == "LIVE":
