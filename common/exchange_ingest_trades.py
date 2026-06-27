@@ -3,7 +3,9 @@ import json
 import time
 import logging
 import os
+from decimal import Decimal
 import os
+from decimal import Decimal
 from common.exchange_client import get_market_data_client
 from typing import Iterable, Dict, Any, Tuple, Optional
 
@@ -98,6 +100,49 @@ def _mk_dsn(*, host: str, port: int, dbname: str, user: str, password: str) -> s
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
 
+
+def _to_decimal_or_none(v):
+    if v is None or v == "":
+        return None
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return None
+
+def _base_asset_from_symbol(symbol: str) -> str:
+    s = str(symbol or "").upper()
+    for q in ("USDC", "USDT", "USD", "EUR"):
+        if s.endswith(q):
+            return s[:-len(q)]
+    return s[:3]
+
+def _quote_notional_usdc(symbol: str, qty, price, quote_qty=None):
+    q = _to_decimal_or_none(quote_qty)
+    if q is not None:
+        return q
+    q_qty = _to_decimal_or_none(qty)
+    q_price = _to_decimal_or_none(price)
+    if q_qty is None or q_price is None:
+        return Decimal("0")
+    return abs(q_qty * q_price)
+
+def _commission_usdc(symbol: str, commission, commission_asset, price):
+    c = _to_decimal_or_none(commission)
+    if c is None:
+        return None
+
+    asset = str(commission_asset or "").upper()
+    if asset in ("USDC", "USDT", "USD"):
+        return abs(c)
+
+    base = _base_asset_from_symbol(symbol)
+    px = _to_decimal_or_none(price)
+    if asset == base and px is not None:
+        return abs(c * px)
+
+    return None
+
+
 def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str = "binance") -> Dict[str, Any]:
     # myTrades: id, orderId, price, qty, quoteQty, commission, commissionAsset, time, isBuyer, isMaker
     side = "BUY" if t.get("isBuyer") else "SELL"
@@ -111,9 +156,10 @@ def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str
         "role": role,
         "executed_qty": t.get("qty"),
         "avg_price": t.get("price"),
-        "quote_notional_usdc": t.get("quoteQty"),
+        "quote_notional_usdc": _quote_notional_usdc(symbol, t.get("qty"), t.get("price"), t.get("quoteQty")),
         "commission_amount": t.get("commission"),
         "commission_asset": t.get("commissionAsset"),
+        "commission_usdc": _commission_usdc(symbol, t.get("commission"), t.get("commissionAsset"), t.get("price")),
         "event_time_ms": int(t.get("time")),
         "fill_idx": int(fill_idx),
         "raw": json.dumps(t),
