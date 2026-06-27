@@ -1,12 +1,12 @@
-# common/binance_ingest_trades.py
+# common/exchange_ingest_trades.py
 import json
 import time
 import logging
+from common.exchange_client import get_market_data_client
 from typing import Iterable, Dict, Any, Tuple, Optional
 
 import psycopg2
 from psycopg2.extras import execute_batch
-from binance.client import Client
 
 
 UPSERT_TRADE_SQL = """
@@ -130,7 +130,7 @@ def ingest_my_trades(
     api_limit: int = 1000,
 ) -> Tuple[int, int]:
     """
-    Ingestuje fill-level z Binance (client.get_my_trades) do binance_order_fills.
+    Ingestuje fill-level z configured exchange (client.get_my_trades) do binance_order_fills.
     Idempotencja: UNIQUE(source, trade_id).
 
     Returns: (n_trades_fetched, n_fee_rows_priced)
@@ -159,7 +159,7 @@ def ingest_my_trades(
             try:
                 trades = client.get_my_trades(symbol=symbol, startTime=fetch_start, limit=api_limit)
             except Exception as e:
-                logging.exception("BINANCE_INGEST|get_my_trades failed symbol=%s err=%s", symbol, str(e))
+                logging.exception("EXCHANGE_INGEST|get_my_trades failed symbol=%s err=%s", symbol, str(e))
                 continue
 
             if not trades:
