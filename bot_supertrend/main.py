@@ -7,6 +7,7 @@ import hashlib
 from decimal import Decimal, ROUND_DOWN
 from dataclasses import replace
 from datetime import datetime, timezone, date
+from common.safe_json import sanitize_json
 from common.flags import exchange_mytrades_enabled
 from common.execution import place_live_exit_maker_then_market
 from common.daily_loss import should_emit_daily_loss_shadow
@@ -252,7 +253,7 @@ def emit_strategy_event(
                         reason,
                         float(price) if price is not None else None,
                         candle_open_time,
-                        json.dumps(info or {}, default=_json_default),
+                        json.dumps(sanitize_json(info or {}), default=_json_default, allow_nan=False),
                     ),
                 )
             conn.commit()
@@ -292,7 +293,7 @@ def emit_strategy_event_with_conn(
                 reason,
                 float(price) if price is not None else None,
                 candle_open_time,
-                json.dumps(info or {}, default=_json_default),
+                json.dumps(sanitize_json(info or {}), default=_json_default, allow_nan=False),
             ),
         )
     conn.commit()
@@ -311,7 +312,7 @@ def heartbeat(info: dict):
         ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
         DO UPDATE SET last_seen=now(), info=EXCLUDED.info;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(info, default=_json_default)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, json.dumps(sanitize_json(info), default=_json_default, allow_nan=False)),
     )
     conn.commit()
     cur.close()
