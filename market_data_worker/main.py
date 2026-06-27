@@ -86,7 +86,7 @@ def insert_candles(rows):
 def fetch_klines(symbol: str, interval: str, *, start_ms: int = None, limit: int = 1000):
     kwargs = {"symbol": symbol, "interval": interval, "limit": limit}
     if start_ms is not None:
-        kwargs["startTime"] = int(start_ms)
+        kwargs["start_ms"] = int(start_ms)
     klines = client.get_klines(**kwargs)
 
     rows = []
