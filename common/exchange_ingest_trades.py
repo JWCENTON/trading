@@ -119,7 +119,7 @@ def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0) -> Dict[str
 
 def ingest_my_trades(
     *,
-    client: Client,
+    client: Any,
     symbols: Iterable[str],
     db_host: str,
     db_port: int,

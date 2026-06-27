@@ -21,6 +21,7 @@ from openai import OpenAI
 import secrets
 import hashlib
 import pyotp
+from common.exchange_client import get_market_data_client
 
 
 DB_HOST = os.environ.get("DB_HOST", "db")
