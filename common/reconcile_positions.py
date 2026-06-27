@@ -1,7 +1,7 @@
 # common/reconcile_positions.py
 import json
 import logging
-from binance.exceptions import BinanceAPIException
+from common.exchange_client import ExchangeAPIException
 
 def _wd(conn, symbol, interval, strategy, severity, event, details: dict):
     with conn.cursor() as cur:
@@ -30,7 +30,7 @@ def _delete_orphan_open(conn, pos_id: int):
 def reconcile_positions(conn, client, *, min_age_s: int = 60, limit: int = 200) -> None:
     """
     Deterministic reconcile:
-      positions.*_client_order_id -> Binance get_order(origClientOrderId=...) -> positions.*_order_id
+      positions.*_client_order_id -> exchange get_order(origClientOrderId=...) -> positions.*_order_id
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -80,7 +80,7 @@ def reconcile_positions(conn, client, *, min_age_s: int = 60, limit: int = 200) 
                 )
             conn.commit()
             _wd(conn, symbol, interval, strategy, "INFO", "RECONCILE_ENTRY_OK", {"pos_id": pos_id, "cid": cid, "order_id": oid})
-        except BinanceAPIException as e:
+        except ExchangeAPIException as e:
             code = getattr(e, "code", None)
             if code == -2013:
                 logging.error(

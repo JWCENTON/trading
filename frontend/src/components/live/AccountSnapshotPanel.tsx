@@ -23,7 +23,7 @@ export function AccountSnapshotPanel({ account }: AccountSnapshotPanelProps) {
     <section className="panel">
       <div className="panel-header">
         <h2>Account snapshot</h2>
-        <span className="panel-meta">Binance truth</span>
+        <span className="panel-meta">Exchange truth</span>
       </div>
 
       <div className="account-total-card">

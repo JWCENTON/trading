@@ -8,8 +8,8 @@ from datetime import datetime, timezone, date
 from pathlib import Path
 from common.reconcile_positions import reconcile_positions
 from common.db import get_db_conn
-from binance.client import Client
 from common.runtime import RuntimeConfig
+from common.exchange_client import get_market_data_client
 from common.worker_heartbeat import record_worker_heartbeat
 
 cfg = RuntimeConfig.from_env()
@@ -17,7 +17,7 @@ API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] automation-runner: %(message)s")
-client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
+client = get_market_data_client()
 last_reconcile_ts = 0.0
 last_ssot_watchdog_ts = 0.0
 last_disk_usage_check_ts = 0.0

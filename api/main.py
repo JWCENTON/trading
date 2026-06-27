@@ -10,7 +10,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, HTTPException, Query, Request, Response, Depends, Cookie, Header, status
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from binance.client import Client
 from contextlib import contextmanager
 
 import logging
@@ -152,11 +151,7 @@ TRADING_MODE = os.environ.get("TRADING_MODE", "").upper()
 
 ALLOW_AI_DB_WRITES = (ENVIRONMENT == "paper" and TRADING_MODE == "PAPER" and AI_AUTO_APPLY)
 
-binance_client = (
-    Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
-    if BINANCE_API_KEY and BINANCE_API_SECRET
-    else None
-)
+exchange_client = get_market_data_client()
 
 app = FastAPI(title="Trading Bot API", version="0.1.0")
 
@@ -1951,11 +1946,11 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
         status_payload["safety_confirmed"] = False
         status_payload["safety_confirmed_at"] = None
 
-    if not configured or binance_client is None:
+    if not configured or exchange_client is None:
         return status_payload
 
     try:
-        account = binance_client.get_account()
+        account = exchange_client.get_account()
         status_payload["can_read_account"] = True
         status_payload["account_read_check"] = "OK"
 
@@ -1965,9 +1960,9 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
         status_payload["spot_trading_check"] = "OK" if can_trade else "FAIL"
         status_payload["binance_can_trade"] = can_trade
 
-        # Binance account.canWithdraw is account-level/capability-style data and is not a reliable
+        # Exchange account canWithdraw is account-level/capability-style data and is not a reliable
         # proof that this specific API key has withdrawal permission enabled.
-        # Withdrawal permission must be confirmed by the user in Binance API Management UI.
+        # Withdrawal permission must be confirmed by the user in exchange API management UI.
         status_payload["account_can_withdraw_reported"] = account_can_withdraw_reported
         status_payload["withdraw_permission"] = "USER_CONFIRMATION_REQUIRED"
         status_payload["required_user_confirmation"] = {
@@ -1995,8 +1990,8 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
                     cur,
                     failure_event_type="binance_api_invalid",
                     recovered_event_type="binance_api_recovered",
-                    title="Binance API recovered",
-                    message="Binance account/API validation is healthy again.",
+                    title="Exchange API recovered",
+                    message="Exchange account/API validation is healthy again.",
                     source="security",
                     meta={"environment": ENVIRONMENT, "trading_mode": TRADING_MODE},
                     dedupe_minutes=60,
@@ -2004,7 +1999,7 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
                 status_payload.update(load_api_key_validation_summary(cur))
                 conn.commit()
         except Exception as notify_error:
-            logging.warning("Binance API validation history/recovery notification failed: %s", str(notify_error))
+            logging.warning("Exchange API validation history/recovery notification failed: %s", str(notify_error))
 
     except Exception as e:
         logging.warning("API key status check failed: %s", str(e))
@@ -2027,8 +2022,8 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
                     cur,
                     event_type="binance_api_invalid",
                     severity="danger",
-                    title="Binance API check failed",
-                    message="Binance account/API validation failed. Check API key, permissions, IP whitelist and Binance connectivity.",
+                    title="Exchange API check failed",
+                    message="Exchange account/API validation failed. Check API key, permissions, IP whitelist and exchange connectivity.",
                     source="security",
                     meta={
                         "environment": ENVIRONMENT,
@@ -2041,14 +2036,14 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
                 status_payload.update(load_api_key_validation_summary(cur))
                 conn.commit()
         except Exception as notify_error:
-            logging.warning("Binance API validation history/invalid notification failed: %s", str(notify_error))
+            logging.warning("Exchange API validation history/invalid notification failed: %s", str(notify_error))
 
     if "validation_history" not in status_payload:
         try:
             with db_cursor() as (_conn, cur):
                 status_payload.update(load_api_key_validation_summary(cur))
         except Exception as history_error:
-            logging.warning("Binance API validation history lookup failed: %s", str(history_error))
+            logging.warning("Exchange API validation history lookup failed: %s", str(history_error))
 
     return status_payload
 
@@ -2151,7 +2146,7 @@ def post_api_key_safety_confirmation(
                 "withdrawals_disabled": payload.withdrawals_disabled,
             },
             source=source,
-            note="User confirmed Binance API key safety checklist",
+            note="User confirmed exchange API key safety checklist",
         )
 
         conn.commit()
@@ -2938,13 +2933,13 @@ def get_summary(
 
 
 def _load_account_summary() -> AccountSummary:
-    if binance_client is None:
-        raise HTTPException(status_code=500, detail="Binance API keys not configured for API service")
+    if exchange_client is None:
+        raise HTTPException(status_code=500, detail="Exchange API credentials not configured for API service")
 
     try:
-        info = binance_client.get_account()
+        info = exchange_client.get_account()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Binance error: {e}")
+        raise HTTPException(status_code=500, detail=f"Exchange API error: {e}")
 
     balances = info.get("balances", [])
     prices_cache: dict[str, float] = {}
@@ -2955,7 +2950,7 @@ def _load_account_summary() -> AccountSummary:
         symbol = f"{asset}{QUOTE_ASSET}"
         if symbol in prices_cache:
             return prices_cache[symbol]
-        ticker = binance_client.get_symbol_ticker(symbol=symbol)
+        ticker = exchange_client.get_symbol_ticker(symbol=symbol)
         price = float(ticker["price"])
         prices_cache[symbol] = price
         return price
@@ -3008,8 +3003,8 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
     assets = {asset: 0.0 for asset in tracked_assets}
     asset_values_usdc = {asset: 0.0 for asset in tracked_assets}
 
-    # LIVE: real Binance balances
-    if binance_client is not None:
+    # LIVE: balances from configured exchange
+    if exchange_client is not None:
         summary = _load_account_summary()
 
         for balance in summary.balances:

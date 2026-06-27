@@ -11,16 +11,16 @@ from common.flags import binance_mytrades_enabled
 from common.execution import place_live_exit_maker_then_market
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
-from common.binance_ingest_trades import ingest_my_trades
+from common.exchange_ingest_trades import ingest_my_trades
 from common.execution import build_live_client_order_id, build_live_entry_intent_client_order_id
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_batch
-from binance.client import Client
 from common.db import get_db_conn
 from common.schema import ensure_schema
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
+from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.execution import place_live_order
@@ -61,7 +61,7 @@ API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 cfg = RuntimeConfig.from_env()
-client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
+client = get_market_data_client()
 
 # =========================
 # Strategy Params (defaults)
@@ -2106,7 +2106,7 @@ def main_loop():
     while True:
         loop_start = time.perf_counter()
         try:
-            # --- Binance fills ingest (LIVE ONLY) ---
+            # --- Exchange fills ingest (LIVE ONLY) ---
             # co 60s: pobierz myTrades i zasil binance_order_fills + wyceń fee w USDC przez BNBUSDC candles
             if binance_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(

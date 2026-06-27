@@ -6,14 +6,14 @@ import psycopg2
 import pandas as pd
 from common.flags import binance_mytrades_enabled
 from common.schema import ensure_schema
-from common.binance_ingest_trades import ingest_my_trades
+from common.exchange_ingest_trades import ingest_my_trades
 from dataclasses import replace
 from datetime import datetime, timezone, date
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
 from psycopg2.extras import execute_batch
-from binance.client import Client
 from common.runtime import RuntimeConfig
+from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.bot_control import upsert_defaults, read as read_bot_control
@@ -26,6 +26,7 @@ from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.position_path import load_position_path_snapshot
 from common.execution import (
     place_live_order,
+    place_live_exit_maker_then_market as exchange_place_live_exit_maker_then_market,
     compute_live_qty_from_notional,
     build_live_client_order_id,
     build_live_entry_intent_client_order_id,
@@ -124,7 +125,7 @@ ORDER_NOTIONAL_USDC = float(os.environ.get("ORDER_NOTIONAL_USDC", "6.0"))
 MIN_NOTIONAL_BUFFER_PCT = float(os.environ.get("MIN_NOTIONAL_BUFFER_PCT", "0.05"))
 LIVE_TARGET_NOTIONAL = float(os.environ.get("LIVE_TARGET_NOTIONAL", "6.0"))
 
-client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
+client = get_market_data_client()
 
 # ========================
 # Regime gating
@@ -182,14 +183,12 @@ def _safe_float(x, default=0.0):
 
 
 def get_best_bid_ask(sym: str):
-    ob = client.get_order_book(symbol=sym, limit=5)
-    best_bid = _safe_float(ob["bids"][0][0]) if ob.get("bids") else None
-    best_ask = _safe_float(ob["asks"][0][0]) if ob.get("asks") else None
-    return best_bid, best_ask
+    return client.get_best_bid_ask(symbol=sym)
+
 
 
 def _mk_child_client_order_id(base_id: str, suffix: str) -> str:
-    # Binance max 36 chars for newClientOrderId
+    # Exchange client order id limit
     s = str(suffix).upper()[:3]
     if len(base_id) <= 32:
         return f"{base_id}-{s}"[:36]
@@ -222,167 +221,16 @@ def place_live_exit_maker_then_market(
     poll_sec: float,
     base_client_order_id: str,
 ):
-    """
-    LIVE EXIT execution:
-    1) LIMIT_MAKER (post-only) near top-of-book
-    2) poll up to timeout_sec
-    3) if not fully filled -> cancel + MARKET for remaining
-    Returns dict: {ok, live_ok, status, executed_qty, filled_as, resp, maker_price, best_bid, best_ask}
-    """
-
-    side_u = str(side).upper()
-    qty_f = float(qty_btc)
-
-    best_bid, best_ask = get_best_bid_ask(symbol)
-    if best_bid is None or best_ask is None:
-        return {
-            "ok": False,
-            "live_ok": False,
-            "status": "NO_BOOK",
-            "executed_qty": 0.0,
-            "filled_as": None,
-            "resp": {"error": "order_book_empty"},
-            "maker_price": None,
-            "best_bid": best_bid,
-            "best_ask": best_ask,
-        }
-
-    # For EXIT:
-    # SELL (close LONG): set maker price slightly ABOVE best_bid to avoid taking (remain maker)
-    # BUY (close SHORT): set maker price slightly BELOW best_ask to avoid taking
-    if side_u == "SELL":
-        maker_price = best_bid * (1.0 + maker_offset_bps / 10_000.0)
-    else:
-        maker_price = best_ask * (1.0 - maker_offset_bps / 10_000.0)
-
-    maker_cid = _mk_child_client_order_id(base_client_order_id, "MKR")
-
-    # Spot post-only: type='LIMIT_MAKER'
-    try:
-        resp_maker = client.create_order(
-            symbol=symbol,
-            side=side_u,
-            type="LIMIT_MAKER",
-            quantity=f"{qty_f:.8f}",
-            price=f"{maker_price:.2f}",
-            newClientOrderId=maker_cid,
-        )
-    except Exception as e:
-        return {
-            "ok": False,
-            "live_ok": False,
-            "status": "MAKER_CREATE_FAILED",
-            "executed_qty": 0.0,
-            "filled_as": None,
-            "resp": {"error": str(e)},
-            "maker_price": float(maker_price),
-            "best_bid": best_bid,
-            "best_ask": best_ask,
-        }
-
-    order_id = resp_maker.get("orderId")
-    executed_qty = 0.0
-    status = None
-
-    # poll
-    deadline = time.time() + max(0, int(timeout_sec))
-    while time.time() < deadline:
-        time.sleep(max(0.1, float(poll_sec)))
-        try:
-            o = client.get_order(symbol=symbol, orderId=order_id)
-        except Exception:
-            continue
-
-        status = str(o.get("status", "")).upper()
-        executed_qty = _safe_float(o.get("executedQty"), 0.0)
-
-        # If FILLED -> done
-        if status == "FILLED":
-            return {
-                "ok": True,
-                "live_ok": True,
-                "status": status,
-                "executed_qty": float(executed_qty),
-                "filled_as": "MAKER",
-                "resp": {"maker_create": resp_maker, "maker_final": o},
-                "maker_price": float(maker_price),
-                "best_bid": best_bid,
-                "best_ask": best_ask,
-            }
-
-        # If already fully executed but status lagging
-        if executed_qty >= qty_f * 0.999:
-            return {
-                "ok": True,
-                "live_ok": True,
-                "status": status or "FILLED_BY_QTY",
-                "executed_qty": float(executed_qty),
-                "filled_as": "MAKER",
-                "resp": {"maker_create": resp_maker, "maker_final": o},
-                "maker_price": float(maker_price),
-                "best_bid": best_bid,
-                "best_ask": best_ask,
-            }
-
-    # timeout -> cancel
-    try:
-        cancel_resp = client.cancel_order(symbol=symbol, orderId=order_id)
-    except Exception as e:
-        cancel_resp = {"error": str(e)}
-
-    remaining = max(0.0, qty_f - float(executed_qty))
-
-    # If partially filled, close remainder by MARKET
-    if remaining > 0.0:
-        mkt_cid = _mk_child_client_order_id(base_client_order_id, "MKT")
-        try:
-            resp_mkt = client.create_order(
-                symbol=symbol,
-                side=side_u,
-                type="MARKET",
-                quantity=f"{remaining:.8f}",
-                newClientOrderId=mkt_cid,
-            )
-            mkt_status = str(resp_mkt.get("status", "")).upper()
-            mkt_exec = _safe_float(resp_mkt.get("executedQty"), 0.0)
-            live_ok = (mkt_status == "FILLED") or (mkt_exec > 0.0)
-            return {
-                "ok": True,
-                "live_ok": bool(live_ok),
-                "status": "FALLBACK_MARKET",
-                "executed_qty": float(executed_qty) + float(mkt_exec),
-                "filled_as": "MARKET_FALLBACK",
-                "resp": {"maker_create": resp_maker, "cancel": cancel_resp, "market": resp_mkt},
-                "maker_price": float(maker_price),
-                "best_bid": best_bid,
-                "best_ask": best_ask,
-            }
-        except Exception as e:
-            return {
-                "ok": False,
-                "live_ok": False,
-                "status": "FALLBACK_MARKET_FAILED",
-                "executed_qty": float(executed_qty),
-                "filled_as": None,
-                "resp": {"maker_create": resp_maker, "cancel": cancel_resp, "error": str(e)},
-                "maker_price": float(maker_price),
-                "best_bid": best_bid,
-                "best_ask": best_ask,
-            }
-
-    # nothing remaining (rare) but not marked filled
-    return {
-        "ok": True,
-        "live_ok": float(executed_qty) > 0.0,
-        "status": "MAKER_TIMEOUT_NO_REMAIN",
-        "executed_qty": float(executed_qty),
-        "filled_as": "MAKER_TIMEOUT",
-        "resp": {"maker_create": resp_maker, "cancel": cancel_resp},
-        "maker_price": float(maker_price),
-        "best_bid": best_bid,
-        "best_ask": best_ask,
-    }
-
+    return exchange_place_live_exit_maker_then_market(
+        client,
+        symbol=symbol,
+        side=side,
+        qty=float(qty_btc),
+        maker_offset_bps=float(maker_offset_bps),
+        timeout_sec=int(timeout_sec),
+        poll_sec=float(poll_sec),
+        base_client_order_id=base_client_order_id,
+    )
 
 def execute_and_record(
     side: str,
@@ -908,7 +756,7 @@ def execute_and_record_soft_exit_maker_then_market(
     )
 
     # IMPORTANT: persist exit_client_order_id BEFORE sending orders
-    # reconcile_positions uses origClientOrderId -> must match a REAL Binance order CID
+    # reconcile_positions uses origClientOrderId -> must match a real exchange order client id
     maker_cid = _mk_child_client_order_id(base_client_order_id, "MKR")
     try:
         conn2 = get_db_conn()
@@ -3108,7 +2956,7 @@ def main_loop():
     while True:
         loop_start = time.perf_counter()
         try:
-            # --- Binance fills ingest (LIVE ONLY) ---
+            # --- Exchange fills ingest (LIVE ONLY) ---
             # co 60s: pobierz myTrades i zasil binance_order_fills + wyceń fee w USDC przez BNBUSDC candles
             if binance_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(

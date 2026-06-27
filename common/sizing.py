@@ -52,7 +52,7 @@ def get_symbol_filters(
     """
     Fetch symbol filters and cache them in-process.
 
-    Binance path:
+    Exchange filter path:
       client.get_symbol_info(symbol)
 
     OKX path:
@@ -76,7 +76,7 @@ def get_symbol_filters(
         min_qty = _to_float(inst.get("minSz"), 0.0)
 
         # OKX spot instrument metadata commonly gives minSz, lotSz, tickSz.
-        # It may not expose Binance-style minNotional, so keep min_notional=0
+        # It may not expose minNotional, so keep min_notional=0
         # and enforce min_qty. Notional will still be logged in sizing info.
         min_notional = _to_float(inst.get("minNotional"), 0.0)
 
@@ -89,7 +89,7 @@ def get_symbol_filters(
         raise RuntimeError(f"Cannot fetch symbol_info for {symbol}")
 
     lot = next((f for f in info.get("filters", []) if f.get("filterType") == "LOT_SIZE"), None)
-    # Binance can expose min notional under MIN_NOTIONAL (spot) or NOTIONAL in some cases
+    # Some exchanges expose min notional under MIN_NOTIONAL or NOTIONAL
     mn = next((f for f in info.get("filters", []) if f.get("filterType") in ("MIN_NOTIONAL", "NOTIONAL")), None)
 
     step = _to_float(lot.get("stepSize") if lot else 0.0, 0.0)

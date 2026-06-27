@@ -19,7 +19,7 @@ REGIME_SYMBOLS = os.environ.get("REGIME_SYMBOLS", "BTCUSDC").strip()
 MD_INTERVALS = os.environ.get("MD_INTERVALS", os.environ.get("REGIME_INTERVAL", "1m")).strip()
 
 MD_SLEEP_SECONDS = int(os.environ.get("MD_SLEEP_SECONDS", "10"))
-MD_MAX_LIMIT = int(os.environ.get("MD_MAX_LIMIT", "1000"))  # Binance max is 1000 for most endpoints
+MD_MAX_LIMIT = int(os.environ.get("MD_MAX_LIMIT", "1000"))  # Conservative candle API max is 1000 for most endpoints
 MD_BACKFILL_CANDLES = int(os.environ.get("MD_BACKFILL_CANDLES", "500"))  # per symbol/interval on cold start
 MD_LAG_TOLERANCE_SECONDS = int(os.environ.get("MD_LAG_TOLERANCE_SECONDS", "120"))
 
@@ -144,7 +144,7 @@ def catch_up(symbol: str, interval: str):
         last_k_open_ms = klines[-1][0]
         next_start = last_k_open_ms + ms
 
-        # If Binance returned only 1 candle and it's the same start, avoid infinite loop
+        # If exchange returned only 1 candle and it's the same start, avoid infinite loop
         if next_start <= start_ms:
             break
 

@@ -12,7 +12,7 @@ _CID_RE = re.compile(r"[^A-Za-z0-9\-_]")
 
 def build_live_client_order_id(symbol: str, pos_id: int, leg: str) -> str:
     """
-    Binance SPOT newClientOrderId: ^[a-zA-Z0-9-_]{1,36}$
+    Exchange clientOrderId compatibility: keep alphanumeric/underscore/dash and <=36 chars
     Deterministic + short.
     Format: ORC-L-{SYMBOL}-P{pos}-{E|X}-{h6}
     """
@@ -40,7 +40,7 @@ def build_live_entry_intent_client_order_id(
 ) -> str:
     """
     CID for LIVE ENTRY before position row exists.
-    Must fit Binance <= 36 chars.
+    Must fit conservative exchange client order id limits.
     """
     sym = str(symbol).upper()
     strat = str(strategy).upper()[:4]
@@ -97,7 +97,7 @@ def _safe_float(x, default=0.0):
 def get_best_bid_ask(client, symbol: str):
     """
     Exchange adapter compatible best bid/ask.
-    Prefer adapter method; fallback to Binance-like get_order_book().
+    Prefer adapter method; fallback to order book shape with bids/asks.
     """
     if hasattr(client, "get_best_bid_ask"):
         return client.get_best_bid_ask(symbol)
@@ -109,7 +109,7 @@ def get_best_bid_ask(client, symbol: str):
 
 
 def mk_child_client_order_id(base_id: str, suffix: str) -> str:
-    # Binance max 36 chars for newClientOrderId
+    # Exchange client order id limit
     s = str(suffix).upper()[:3]
     b = str(base_id)
     if len(b) > 32:
@@ -310,7 +310,7 @@ def compute_live_qty_from_notional(
 
 def _qty_to_plain_str(qty) -> str:
     """
-    Binance expects: ^([0-9]{1,20})(\.[0-9]{1,20})?$
+    Exchange quantity format should be decimal string without scientific notation.
     so: no exponent, no commas, no spaces.
     """
     d = Decimal(str(qty))  # str() to avoid numpy repr issues

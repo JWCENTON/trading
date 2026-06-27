@@ -1126,7 +1126,7 @@ function App() {
               </div>
 
               <div className="info-tile" style={{ marginTop: 16 }}>
-                <strong>Binance API key safety</strong><br />
+                <strong>Exchange API key safety</strong><br />
                 Configured: {apiKeyStatus?.configured ? "YES" : "NO"}<br />
                 Account read: {apiKeyStatus?.account_read_check ?? "-"}<br />
                 Spot trading: {apiKeyStatus?.spot_trading_check ?? "-"}<br />
@@ -1135,13 +1135,13 @@ function App() {
                 Last successful validation: {apiKeyStatus?.last_successful_validation_at ?? "-"}<br />
                 Last failed validation: {apiKeyStatus?.last_failed_validation_at ?? "-"}<br />
                 Last failed error: {apiKeyStatus?.last_failed_validation_error ?? "-"}<br />
-                Withdraw permission: must be disabled in Binance API Management.<br />
+                Withdraw permission: must be disabled in exchange API management.<br />
                 IP whitelist: required/recommended.
               </div>
 
               {apiKeyStatus?.validation_history?.length ? (
                 <div className="info-tile" style={{ marginTop: 10 }}>
-                  <strong>Binance API validation history</strong>
+                  <strong>Exchange API validation history</strong>
                   <ul>
                     {apiKeyStatus.validation_history.map((item, idx) => (
                       <li key={`${item.created_at ?? "validation"}-${idx}`}>
@@ -1165,7 +1165,7 @@ function App() {
                   <li>IP whitelist is enabled for this VPS.</li>
                   <li>I understand crypto trading risk and possible losses.</li>
                   <li>This software is not investment advice.</li>
-                  <li>I control the Binance account and API key.</li>
+                  <li>I control the exchange account and API key.</li>
                 </ul>
 
                 <button

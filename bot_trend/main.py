@@ -11,8 +11,8 @@ from common.flags import binance_mytrades_enabled
 from common.schema import ensure_schema
 from dataclasses import replace
 from common.bot_control import upsert_defaults, read as read_bot_control
-from binance.client import Client
 from common.runtime import RuntimeConfig
+from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from datetime import datetime, timezone, date
@@ -20,7 +20,7 @@ from psycopg2.extras import execute_batch
 from common.sizing import compute_qty_from_notional
 from common.telemetry_throttle import should_emit_throttled_event
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
-from common.binance_ingest_trades import ingest_my_trades
+from common.exchange_ingest_trades import ingest_my_trades
 from common.db import get_db_conn
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
@@ -86,7 +86,7 @@ API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 cfg = RuntimeConfig.from_env()
-client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
+client = get_market_data_client()
 
 TREND_BUFFER = float(os.environ.get("TREND_BUFFER", "0.001"))  # 0.1%
 MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
@@ -2997,7 +2997,7 @@ def main_loop():
     while True:
         loop_start = time.perf_counter()
         try:
-            # --- Binance fills ingest (LIVE ONLY) ---
+            # --- Exchange fills ingest (LIVE ONLY) ---
             # co 60s: pobierz myTrades i zasil binance_order_fills + wyceń fee w USDC przez BNBUSDC candles
             if binance_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(

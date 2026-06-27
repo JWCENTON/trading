@@ -10,15 +10,15 @@ from common.execution import build_live_client_order_id, build_live_entry_intent
 from dataclasses import replace
 from datetime import datetime, timezone, date
 from psycopg2.extras import execute_batch
-from binance.client import Client
 from common.execution import place_live_exit_maker_then_market
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
-from common.binance_ingest_trades import ingest_my_trades
+from common.exchange_ingest_trades import ingest_my_trades
 from common.flags import binance_mytrades_enabled
 from common.db import get_db_conn
 from common.schema import ensure_schema
 from common.runtime import RuntimeConfig
+from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
 from common.execution import place_live_order
 from common.bot_control import upsert_defaults, read as read_bot_control
@@ -97,7 +97,7 @@ RSI_BLOCK_EXTREME_HIGH = float(os.environ.get("RSI_BLOCK_EXTREME_HIGH", "90"))
 
 API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
-client = Client(api_key=API_KEY, api_secret=API_SECRET) if cfg.trading_mode == "LIVE" else Client()
+client = get_market_data_client()
 
 logging.info(
     "CONFIG|SYMBOL=%s|INTERVAL=%s|SPOT_MODE=%s|cfg_trading_mode=%s",
@@ -2023,7 +2023,7 @@ def main_loop():
     while True:
         loop_start = time.perf_counter()
         try:
-            # --- Binance fills ingest (LIVE ONLY) ---
+            # --- Exchange fills ingest (LIVE ONLY) ---
             # co 60s: pobierz myTrades i zasil binance_order_fills + wyceń fee w USDC przez BNBUSDC candles
             if binance_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(
