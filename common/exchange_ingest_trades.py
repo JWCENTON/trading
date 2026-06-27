@@ -24,6 +24,7 @@ INSERT INTO binance_order_fills (
   quote_notional_usdc,
   commission_amount,
   commission_asset,
+  commission_usdc,
   event_time,
   fill_idx,
   raw
@@ -40,6 +41,7 @@ VALUES (
   %(quote_notional_usdc)s,
   %(commission_amount)s,
   %(commission_asset)s,
+  %(commission_usdc)s,
   to_timestamp(%(event_time_ms)s / 1000.0),
   %(fill_idx)s,
   %(raw)s::jsonb
