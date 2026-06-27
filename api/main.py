@@ -3004,8 +3004,9 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
     assets = {asset: 0.0 for asset in tracked_assets}
     asset_values_usdc = {asset: 0.0 for asset in tracked_assets}
 
-    # LIVE: balances from configured exchange
-    if exchange_client is not None:
+    # LIVE: balances from configured exchange.
+    # PAPER must not require real exchange account access.
+    if TRADING_MODE == "LIVE" and exchange_client is not None:
         summary = _load_account_summary()
 
         for balance in summary.balances:
