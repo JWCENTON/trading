@@ -137,7 +137,8 @@ def run_orc_v5_apply(conn):
         sql = """
         WITH picks_base AS (
           SELECT symbol, interval, strategy
-          FROM v_orc_picks_v5
+          FROM v_orc_v7_shadow_picks
+          WHERE eligible_v7_shadow = true
         ),
         universe AS (
           SELECT bc.symbol, bc.interval, bc.strategy
@@ -168,7 +169,8 @@ def run_orc_v5_apply(conn):
             interval,
             strategy,
             'ORC_V6_3' AS pick_source
-        FROM v_orc_picks_v5
+        FROM v_orc_v7_shadow_picks
+        WHERE eligible_v7_shadow = true
 
         UNION ALL
 
@@ -205,8 +207,8 @@ def run_orc_v5_apply(conn):
                 WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                     THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                 WHEN d.want_on
-                    THEN 'ORC_V6_3: cooldown/promote/hysteresis picked (entries ON, ENFORCE)'
-                ELSE 'ORC_V6_3: cooldown/promote/hysteresis not picked (entries OFF, DRY_RUN)'
+                    THEN 'ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)'
+                ELSE 'ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)'
                 END,
             live_since = CASE
               WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
@@ -231,8 +233,8 @@ def run_orc_v5_apply(conn):
                             WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                                 THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                             WHEN d.want_on
-                                THEN 'ORC_V6_3: cooldown/promote/hysteresis picked (entries ON, ENFORCE)'
-                            ELSE 'ORC_V6_3: cooldown/promote/hysteresis not picked (entries OFF, DRY_RUN)'
+                                THEN 'ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)'
+                            ELSE 'ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)'
                             END)
             )
           RETURNING d.want_on
@@ -264,7 +266,7 @@ def run_orc_v5_apply(conn):
             "applied_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
             "orc_version": ORC_APPLY_VERSION,
             "orc_mode": ORC_APPLY_MODE,
-            "picks_view": ORC_PICKS_VIEW,
+            "picks_view": "v_orc_v7_shadow_picks",
         }
 
         upsert_kv(cur, "orc_v5_apply_mode", "automation_runner")
