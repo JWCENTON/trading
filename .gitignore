@@ -235,6 +235,9 @@ logs/
 .env.paper
 .env.live
 .env.edge
+.env.okx.paper
+.env.okx.live
+.env.okx.edge
 *.pem
 *.key
 *.crt
