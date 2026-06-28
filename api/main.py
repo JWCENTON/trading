@@ -55,6 +55,16 @@ SLIPPAGE_RATE = float(os.environ.get("PAPER_SLIPPAGE_RATE", "0.0002"))  # 0.02%
 
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET")
+EXCHANGE_NAME = os.environ.get("EXCHANGE", "BINANCE").strip().upper()
+
+def exchange_api_configured() -> bool:
+    if EXCHANGE_NAME == "OKX":
+        return bool(
+            os.environ.get("OKX_API_KEY")
+            and os.environ.get("OKX_API_SECRET")
+            and os.environ.get("OKX_API_PASSPHRASE")
+        )
+    return bool(BINANCE_API_KEY and BINANCE_API_SECRET)
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Jeśli będziesz kiedyś odpalał API na innym porcie/host, ustaw ENV.
@@ -1913,7 +1923,7 @@ def auth_me(
 
 @app.get("/ui/api-key-status")
 def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
-    configured = bool(BINANCE_API_KEY and BINANCE_API_SECRET)
+    configured = exchange_api_configured()
 
     status_payload = {
         "configured": configured,
@@ -1960,6 +1970,7 @@ def ui_api_key_status(user: CurrentUser = Depends(require_auth)):
 
         status_payload["spot_trading_check"] = "OK" if can_trade else "FAIL"
         status_payload["binance_can_trade"] = can_trade
+        status_payload["exchange"] = EXCHANGE_NAME
 
         # Exchange account canWithdraw is account-level/capability-style data and is not a reliable
         # proof that this specific API key has withdrawal permission enabled.

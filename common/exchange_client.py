@@ -361,6 +361,10 @@ class OkxMarketDataAdapter:
                 })
 
         return {
+            "canTrade": True,
+            "canWithdraw": False,
+            "exchange": "OKX",
+            "account_read_ok": True,
             "balances": balances,
             "raw": data,
         }
