@@ -287,6 +287,118 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_opportunity_refresh(conn):
+    """
+    Refresh Market Memory opportunity / stage engine.
+    Analytics-only: writes market_memory_opportunity; does not change trading state.
+    """
+    if os.getenv("MARKET_MEMORY_OPPORTUNITY_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_OPPORTUNITY_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_opportunity_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_opportunity_v1'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_opportunity: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_opportunity_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_opportunity_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT refresh_market_memory_opportunity_v1();")
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS active_opportunities,
+              COUNT(*) FILTER (WHERE action_hint='PRIORITY_WATCH') AS priority_watch,
+              COUNT(*) FILTER (WHERE action_hint='WATCH') AS watch,
+              COUNT(*) FILTER (WHERE action_hint='LATE_OR_RISKY') AS late_or_risky,
+              ROUND(MAX(opportunity_score), 4) AS max_opportunity_score,
+              ROUND(MAX(exhaustion_risk), 4) AS max_exhaustion_risk
+            FROM v_market_memory_opportunity_active;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              opportunity_type,
+              stage,
+              direction,
+              ROUND(opportunity_score, 4),
+              ROUND(confidence_score, 4),
+              ROUND(urgency_score, 4),
+              ROUND(exhaustion_risk, 4),
+              action_hint,
+              timeline_type,
+              chain_length,
+              chain_age_minutes,
+              long_context,
+              short_context,
+              expires_at,
+              reason
+            FROM v_market_memory_opportunity_active
+            ORDER BY opportunity_score DESC NULLS LAST, urgency_score DESC NULLS LAST
+            LIMIT 20;
+        """)
+        top_rows = cur.fetchall()
+
+        stats = {
+            "active_opportunities": int(r[0] or 0),
+            "priority_watch": int(r[1] or 0),
+            "watch": int(r[2] or 0),
+            "late_or_risky": int(r[3] or 0),
+            "max_opportunity_score": float(r[4] or 0),
+            "max_exhaustion_risk": float(r[5] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "opportunity_type": x[2],
+                    "stage": x[3],
+                    "direction": x[4],
+                    "opportunity_score": float(x[5] or 0),
+                    "confidence_score": float(x[6] or 0),
+                    "urgency_score": float(x[7] or 0),
+                    "exhaustion_risk": float(x[8] or 0),
+                    "action_hint": x[9],
+                    "timeline_type": x[10],
+                    "chain_length": int(x[11] or 0),
+                    "chain_age_minutes": float(x[12] or 0),
+                    "long_context": x[13],
+                    "short_context": x[14],
+                    "expires_at": x[15].isoformat() if x[15] else None,
+                    "reason": x[16],
+                }
+                for x in top_rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_opportunity_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_opportunity_last_status", "ok")
+        upsert_kv(cur, "market_memory_opportunity_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info("market_memory_opportunity: active=%s priority=%s max_score=%s",
+                 stats["active_opportunities"], stats["priority_watch"], stats["max_opportunity_score"])
+
+
 def run_market_memory_timeline_refresh(conn):
     """
     Refresh Market Memory event timeline / early reversal chain.
@@ -1710,6 +1822,15 @@ def main():
                 run_market_memory_timeline_refresh(conn)
             except Exception:
                 logging.exception("market_memory_timeline_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            try:
+                run_market_memory_opportunity_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_opportunity_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
