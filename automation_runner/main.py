@@ -289,6 +289,121 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_sequence_refresh(conn):
+    """
+    Refresh MME V1.6 sequence engine.
+    Shadow-only: writes market_memory_sequence; does not touch bot_control/ORC/orders.
+    """
+    if os.getenv("MARKET_MEMORY_SEQUENCE_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_SEQUENCE_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_sequence_v16_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_sequence_v16'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_sequence_v16: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_sequence_v16_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_sequence_v16_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT refresh_market_memory_sequence_v16();")
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS active_sequences,
+              COUNT(*) FILTER (WHERE orc_hint='ORC_PRIORITY_CANDIDATE') AS priority,
+              COUNT(*) FILTER (WHERE orc_hint='ORC_WATCH_CANDIDATE') AS watch,
+              COUNT(*) FILTER (WHERE orc_hint='ORC_AVOID_LATE_ENTRY') AS avoid_late,
+              ROUND(MAX(orc_readiness_score), 4) AS max_orc_readiness,
+              ROUND(MAX(sequence_quality), 4) AS max_sequence_quality
+            FROM v_market_memory_sequence_current;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              sequence_type,
+              sequence_stage,
+              direction,
+              ROUND(sequence_quality, 4),
+              ROUND(continuation_score, 4),
+              ROUND(reversal_score, 4),
+              ROUND(late_entry_risk, 4),
+              ROUND(orc_readiness_score, 4),
+              orc_hint,
+              reason,
+              ranking_status,
+              global_rank,
+              chain_age_minutes,
+              expires_at
+            FROM v_market_memory_sequence_current
+            ORDER BY orc_readiness_score DESC NULLS LAST,
+                     sequence_quality DESC NULLS LAST
+            LIMIT 20;
+        """)
+        top_rows = cur.fetchall()
+
+        stats = {
+            "active_sequences": int(r[0] or 0),
+            "priority": int(r[1] or 0),
+            "watch": int(r[2] or 0),
+            "avoid_late": int(r[3] or 0),
+            "max_orc_readiness": float(r[4] or 0),
+            "max_sequence_quality": float(r[5] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "sequence_type": x[2],
+                    "sequence_stage": x[3],
+                    "direction": x[4],
+                    "sequence_quality": float(x[5] or 0),
+                    "continuation_score": float(x[6] or 0),
+                    "reversal_score": float(x[7] or 0),
+                    "late_entry_risk": float(x[8] or 0),
+                    "orc_readiness_score": float(x[9] or 0),
+                    "orc_hint": x[10],
+                    "reason": x[11],
+                    "ranking_status": x[12],
+                    "global_rank": int(x[13] or 0),
+                    "chain_age_minutes": float(x[14] or 0),
+                    "expires_at": x[15].isoformat() if x[15] else None,
+                }
+                for x in top_rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_sequence_v16_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_sequence_v16_last_status", "ok")
+        upsert_kv(cur, "market_memory_sequence_v16_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info(
+        "market_memory_sequence_v16: active=%s priority=%s max_orc_ready=%s",
+        stats["active_sequences"],
+        stats["priority"],
+        stats["max_orc_readiness"],
+    )
+
+
 def run_market_memory_ranking_refresh(conn):
     """
     Refresh MME V1.5 opportunity ranking.
@@ -1954,6 +2069,15 @@ def main():
                 run_market_memory_ranking_refresh(conn)
             except Exception:
                 logging.exception("market_memory_ranking_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            try:
+                run_market_memory_sequence_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_sequence_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
