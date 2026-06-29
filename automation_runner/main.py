@@ -342,17 +342,28 @@ def run_slot_brain_snapshot_refresh(conn):
         """)
         rows = cur.fetchall()
 
+        summary_by_window = {
+            r[0]: {
+                "window_label": r[0],
+                "rows": int(r[1] or 0),
+                "allow_live": int(r[2] or 0),
+                "observe": int(r[3] or 0),
+                "block_live": int(r[4] or 0),
+            }
+            for r in rows
+        }
+
         stats = {
             "windows": refreshed,
             "summary": [
-                {
-                    "window_label": r[0],
-                    "rows": int(r[1] or 0),
-                    "allow_live": int(r[2] or 0),
-                    "observe": int(r[3] or 0),
-                    "block_live": int(r[4] or 0),
-                }
-                for r in rows
+                summary_by_window.get(label, {
+                    "window_label": label,
+                    "rows": 0,
+                    "allow_live": 0,
+                    "observe": 0,
+                    "block_live": 0,
+                })
+                for label, _minutes in windows
             ],
             "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }
