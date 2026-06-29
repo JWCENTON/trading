@@ -283,6 +283,106 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_snapshot_refresh(conn):
+    """
+    Refresh Market Memory snapshots for multiple windows.
+    Analytics-only: does not change bot_control, orders, positions, ORC picks or risk.
+    """
+    if os.getenv("MARKET_MEMORY_REFRESH_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_REFRESH_INTERVAL_SECONDS", "300"))
+    now_ts = time.time()
+
+    windows = [
+        ("15m", 15),
+        ("1h", 60),
+        ("6h", 360),
+        ("24h", 1440),
+        ("7d", 10080),
+        ("30d", 43200),
+        ("90d", 129600),
+    ]
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_refresh_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_snapshot'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_refresh: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_refresh_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_refresh_last_status", "missing_function")
+            conn.commit()
+            return
+
+        refreshed = []
+        for label, minutes in windows:
+            cur.execute("SELECT refresh_market_memory_snapshot(%s, %s);", (label, minutes))
+            refreshed.append(label)
+
+        cur.execute("""
+            SELECT
+              window_label,
+              COUNT(*) AS rows,
+              COUNT(*) FILTER (WHERE status='HOT') AS hot,
+              COUNT(*) FILTER (WHERE status='ACTIVE') AS active,
+              COUNT(*) FILTER (WHERE status='OBSERVE') AS observe,
+              COUNT(*) FILTER (WHERE status='NO_DATA') AS no_data,
+              ROUND(MAX(realtime_score), 4) AS max_realtime_score
+            FROM market_memory_snapshot
+            GROUP BY window_label
+            ORDER BY window_label;
+        """)
+        rows = cur.fetchall()
+
+        summary_by_window = {
+            r[0]: {
+                "window_label": r[0],
+                "rows": int(r[1] or 0),
+                "hot": int(r[2] or 0),
+                "active": int(r[3] or 0),
+                "observe": int(r[4] or 0),
+                "no_data": int(r[5] or 0),
+                "max_realtime_score": float(r[6] or 0),
+            }
+            for r in rows
+        }
+
+        stats = {
+            "windows": refreshed,
+            "summary": [
+                summary_by_window.get(label, {
+                    "window_label": label,
+                    "rows": 0,
+                    "hot": 0,
+                    "active": 0,
+                    "observe": 0,
+                    "no_data": 0,
+                    "max_realtime_score": 0,
+                })
+                for label, _minutes in windows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_refresh_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_refresh_last_status", "ok")
+        upsert_kv(cur, "market_memory_refresh_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info("market_memory_refresh: refreshed windows=%s", ",".join(refreshed))
+
+
 def run_slot_brain_snapshot_refresh(conn):
     """
     Refresh Slot Brain snapshots for multiple windows.
@@ -1257,6 +1357,15 @@ def main():
                 run_market_regime_confidence_refresh(conn)
             except Exception:
                 logging.exception("market_regime_confidence_refresh failed")
+
+            try:
+                run_market_memory_snapshot_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             try:
                 run_slot_brain_snapshot_refresh(conn)
