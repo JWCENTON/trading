@@ -286,6 +286,122 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_timeline_refresh(conn):
+    """
+    Refresh Market Memory event timeline / early reversal chain.
+    Analytics-only: writes market_memory_timeline; does not change trading state.
+    """
+    if os.getenv("MARKET_MEMORY_TIMELINE_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_TIMELINE_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_timeline_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_timeline_v1'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_timeline: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_timeline_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_timeline_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT refresh_market_memory_timeline_v1();")
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS active_timelines,
+              COUNT(*) FILTER (WHERE timeline_type='EARLY_REVERSAL_UP') AS early_reversal_up,
+              COUNT(*) FILTER (WHERE timeline_type='FULL_IMPULSE_UP_CHAIN') AS full_impulse_up,
+              COUNT(*) FILTER (WHERE chain_importance='EXTREME') AS extreme_chains,
+              COUNT(*) FILTER (WHERE chain_importance='HIGH') AS high_chains,
+              COUNT(*) FILTER (WHERE chain_importance='MEDIUM') AS medium_chains,
+              ROUND(MAX(chain_score), 4) AS max_chain_score
+            FROM v_market_memory_timeline_active;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              timeline_type,
+              direction,
+              chain_importance,
+              ROUND(chain_score, 4) AS chain_score,
+              chain_length,
+              long_context,
+              short_context,
+              has_volume_spike,
+              has_atr_expansion,
+              has_breakout_up,
+              has_momentum_up,
+              first_event_at,
+              last_event_at,
+              chain_age_minutes,
+              expires_at,
+              reason
+            FROM v_market_memory_timeline_active
+            ORDER BY chain_score DESC NULLS LAST, last_event_at DESC
+            LIMIT 20;
+        """)
+        top_rows = cur.fetchall()
+
+        stats = {
+            "active_timelines": int(r[0] or 0),
+            "early_reversal_up": int(r[1] or 0),
+            "full_impulse_up": int(r[2] or 0),
+            "extreme_chains": int(r[3] or 0),
+            "high_chains": int(r[4] or 0),
+            "medium_chains": int(r[5] or 0),
+            "max_chain_score": float(r[6] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "timeline_type": x[2],
+                    "direction": x[3],
+                    "chain_importance": x[4],
+                    "chain_score": float(x[5] or 0),
+                    "chain_length": int(x[6] or 0),
+                    "long_context": x[7],
+                    "short_context": x[8],
+                    "has_volume_spike": bool(x[9]),
+                    "has_atr_expansion": bool(x[10]),
+                    "has_breakout_up": bool(x[11]),
+                    "has_momentum_up": bool(x[12]),
+                    "first_event_at": x[13].isoformat() if x[13] else None,
+                    "last_event_at": x[14].isoformat() if x[14] else None,
+                    "chain_age_minutes": float(x[15] or 0),
+                    "expires_at": x[16].isoformat() if x[16] else None,
+                    "reason": x[17],
+                }
+                for x in top_rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_timeline_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_timeline_last_status", "ok")
+        upsert_kv(cur, "market_memory_timeline_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info("market_memory_timeline: active=%s max_score=%s early_reversal=%s",
+                 stats["active_timelines"], stats["max_chain_score"], stats["early_reversal_up"])
+
+
 def run_market_memory_clusters_refresh(conn):
     """
     Refresh Market Memory event clusters.
