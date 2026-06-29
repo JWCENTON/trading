@@ -1707,6 +1707,15 @@ def main():
                     pass
 
             try:
+                run_market_memory_timeline_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_timeline_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            try:
                 run_market_memory_snapshot_refresh(conn)
             except Exception:
                 logging.exception("market_memory_refresh failed")
