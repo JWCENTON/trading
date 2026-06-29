@@ -284,6 +284,107 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_events_refresh(conn):
+    """
+    Refresh short-term Market Memory events.
+    Analytics-only: writes market_memory_events; does not change trading state.
+    """
+    if os.getenv("MARKET_MEMORY_EVENTS_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_EVENTS_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_events_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_events_v1'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_events: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_events_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_events_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT refresh_market_memory_events_v1();")
+
+        cur.execute("""
+            SELECT
+              COUNT(*) FILTER (WHERE expires_at > now()) AS active_events,
+              COUNT(*) FILTER (WHERE event_type='REVERSAL_UP_CANDIDATE' AND expires_at > now()) AS reversal_up,
+              COUNT(*) FILTER (WHERE event_type='BREAKOUT_UP' AND expires_at > now()) AS breakout_up,
+              COUNT(*) FILTER (WHERE event_type='MOMENTUM_UP' AND expires_at > now()) AS momentum_up,
+              COUNT(*) FILTER (WHERE event_type='VOLUME_SPIKE' AND expires_at > now()) AS volume_spike,
+              COUNT(*) FILTER (WHERE event_type='ATR_EXPANSION' AND expires_at > now()) AS atr_expansion,
+              ROUND(MAX(score) FILTER (WHERE expires_at > now()), 4) AS max_score
+            FROM market_memory_events;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              event_type,
+              ROUND(score, 4) AS score,
+              direction,
+              regime,
+              ROUND(confidence, 4) AS confidence,
+              window_label,
+              observed_at,
+              expires_at,
+              reason
+            FROM v_market_memory_events_active
+            ORDER BY score DESC NULLS LAST, observed_at DESC
+            LIMIT 20;
+        """)
+        top_rows = cur.fetchall()
+
+        stats = {
+            "active_events": int(r[0] or 0),
+            "reversal_up": int(r[1] or 0),
+            "breakout_up": int(r[2] or 0),
+            "momentum_up": int(r[3] or 0),
+            "volume_spike": int(r[4] or 0),
+            "atr_expansion": int(r[5] or 0),
+            "max_score": float(r[6] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "event_type": x[2],
+                    "score": float(x[3] or 0),
+                    "direction": x[4],
+                    "regime": x[5],
+                    "confidence": float(x[6] or 0),
+                    "window_label": x[7],
+                    "observed_at": x[8].isoformat() if x[8] else None,
+                    "expires_at": x[9].isoformat() if x[9] else None,
+                    "reason": x[10],
+                }
+                for x in top_rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_events_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_events_last_status", "ok")
+        upsert_kv(cur, "market_memory_events_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info("market_memory_events: active=%s max_score=%s", stats["active_events"], stats["max_score"])
+
+
 def run_market_memory_snapshot_refresh(conn):
     """
     Refresh Market Memory snapshots for multiple windows.
@@ -1357,6 +1458,15 @@ def main():
                 run_market_regime_confidence_refresh(conn)
             except Exception:
                 logging.exception("market_regime_confidence_refresh failed")
+
+            try:
+                run_market_memory_events_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_events_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             try:
                 run_market_memory_snapshot_refresh(conn)
