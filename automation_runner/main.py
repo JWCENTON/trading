@@ -25,6 +25,7 @@ last_disk_usage_check_ts = 0.0
 ORC_APPLY_VERSION = os.getenv("ORC_APPLY_VERSION", "ORC_V6_3")
 ORC_APPLY_MODE = os.getenv("ORC_APPLY_MODE", "COOLDOWN_PROMOTE_HYSTERESIS")
 ORC_PICKS_VIEW = os.getenv("ORC_PICKS_VIEW", "v_orc_picks_v5")
+ORC_INTEGRATION_V2_APPLY_ENABLED = os.getenv("ORC_INTEGRATION_V2_APPLY_ENABLED", "0") == "1"
 
 
 
@@ -134,11 +135,32 @@ def run_orc_v5_apply(conn):
         if cfg.trading_mode != "LIVE":
             return
 
-        sql = """
+        active_picks_view = "v_orc_integration_v2_picks" if ORC_INTEGRATION_V2_APPLY_ENABLED else "v_orc_v7_shadow_picks"
+        active_picks_eligible_sql = "context_v2_ready_now = true" if ORC_INTEGRATION_V2_APPLY_ENABLED else "eligible_v7_shadow = true"
+        active_pick_reason = (
+            "ORC_INTEGRATION_V2: V7 readiness + MME context picked (entries ON, ENFORCE)"
+            if ORC_INTEGRATION_V2_APPLY_ENABLED
+            else "ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)"
+        )
+        active_off_reason = (
+            "ORC_INTEGRATION_V2: not ready, late/exhausted, or not picked (entries OFF, DRY_RUN)"
+            if ORC_INTEGRATION_V2_APPLY_ENABLED
+            else "ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)"
+        )
+
+        cur.execute("SELECT to_regclass(%s);", (active_picks_view,))
+        if cur.fetchone()[0] is None:
+            logging.warning("orc_apply: requested picks view %s missing; fallback to v_orc_v7_shadow_picks", active_picks_view)
+            active_picks_view = "v_orc_v7_shadow_picks"
+            active_picks_eligible_sql = "eligible_v7_shadow = true"
+            active_pick_reason = "ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)"
+            active_off_reason = "ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)"
+
+        sql = f"""
         WITH picks_base AS (
           SELECT symbol, interval, strategy
-          FROM v_orc_v7_shadow_picks
-          WHERE eligible_v7_shadow = true
+          FROM {active_picks_view}
+          WHERE {active_picks_eligible_sql}
         ),
         universe AS (
           SELECT bc.symbol, bc.interval, bc.strategy
@@ -169,8 +191,8 @@ def run_orc_v5_apply(conn):
             interval,
             strategy,
             'ORC_V6_3' AS pick_source
-        FROM v_orc_v7_shadow_picks
-        WHERE eligible_v7_shadow = true
+        FROM {active_picks_view}
+        WHERE {active_picks_eligible_sql}
 
         UNION ALL
 
@@ -266,7 +288,8 @@ def run_orc_v5_apply(conn):
             "applied_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
             "orc_version": ORC_APPLY_VERSION,
             "orc_mode": ORC_APPLY_MODE,
-            "picks_view": "v_orc_v7_shadow_picks",
+            "picks_view": active_picks_view,
+            "orc_integration_v2_apply_enabled": bool(ORC_INTEGRATION_V2_APPLY_ENABLED),
         }
 
         upsert_kv(cur, "orc_v5_apply_mode", "automation_runner")

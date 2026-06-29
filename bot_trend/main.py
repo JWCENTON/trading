@@ -5,6 +5,7 @@ import logging
 import psycopg2
 import hashlib
 import pandas as pd
+from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
@@ -1678,7 +1679,7 @@ def run_trend_strategy():
     try:
         bc = snap["bc"]
         cfg_effective = snap["cfg_effective"]
-        time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
+        time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True)) and hard_time_exit_enabled()
         max_pos_minutes = int(getattr(cfg_effective, "max_position_minutes", MAX_POSITION_MINUTES))
 
         if bc.mode == "HALT":

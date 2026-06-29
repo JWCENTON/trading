@@ -4,6 +4,7 @@ import json
 import logging
 import psycopg2
 import pandas as pd
+from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.flags import exchange_mytrades_enabled
 from common.schema import ensure_schema
@@ -2023,7 +2024,7 @@ def run_strategy(row, prev_row=None):
         )
 
         cfg_effective = snap["cfg_effective"]
-        time_exit_enabled = TIME_EXIT_ENABLED
+        time_exit_enabled = bool(TIME_EXIT_ENABLED) and hard_time_exit_enabled()
         max_pos_minutes = int(MAX_POSITION_MINUTES)
 
         # HARD stop
@@ -2530,6 +2531,7 @@ def run_strategy(row, prev_row=None):
                     "tp_pct": float(TAKE_PROFIT_PCT),
                     "sl_pct": float(STOP_LOSS_PCT),
                     "time_exit_enabled": bool(time_exit_enabled),
+                    "time_exit_policy": time_exit_policy_name(),
                     "max_position_minutes": int(max_pos_minutes),
                     "rsi_14": float(rsi_val),
                     "ema_21": float(ema_val),

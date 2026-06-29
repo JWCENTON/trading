@@ -7,6 +7,7 @@ import hashlib
 from decimal import Decimal, ROUND_DOWN
 from dataclasses import replace
 from datetime import datetime, timezone, date
+from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.flags import exchange_mytrades_enabled
 from common.execution import place_live_exit_maker_then_market
@@ -1397,7 +1398,7 @@ def run_strategy(latest, prev):
         )
         
         cfg_effective = snap["cfg_effective"]
-        time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True))
+        time_exit_enabled = bool(getattr(cfg_effective, "time_exit_enabled", True)) and hard_time_exit_enabled()
         max_pos_minutes = int(getattr(cfg_effective, "max_position_minutes", MAX_POSITION_MINUTES))
 
         emit_strategy_event(

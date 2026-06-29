@@ -6,6 +6,7 @@ import hashlib
 import logging
 import psycopg2
 import pandas as pd
+from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.execution import build_live_client_order_id, build_live_entry_intent_client_order_id
 from dataclasses import replace
@@ -1335,7 +1336,7 @@ def run_strategy(row):
         )
         
         cfg_effective = snap["cfg_effective"]
-        time_exit_enabled = True
+        time_exit_enabled = hard_time_exit_enabled()
         max_pos_minutes = int(MAX_POSITION_MINUTES)
 
         # heartbeat always
