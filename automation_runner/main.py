@@ -291,6 +291,124 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_orc_candidate_context_refresh(conn):
+    """
+    ORC Candidate Context V1.
+    Shadow-only: reads v_orc_candidate_context_v1 and writes automation_kv.
+    Does not touch bot_control/orders.
+    """
+    if os.getenv("ORC_CANDIDATE_CONTEXT_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("ORC_CANDIDATE_CONTEXT_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_candidate_context_v1_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.views
+            WHERE table_schema = current_schema()
+              AND table_name = 'v_orc_candidate_context_v1';
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            upsert_kv(cur, "orc_candidate_context_v1_last_ts_s", str(now_ts))
+            upsert_kv(cur, "orc_candidate_context_v1_last_status", "missing_view")
+            conn.commit()
+            return
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS candidates,
+              COUNT(*) FILTER (WHERE context_ready_now) AS context_ready,
+              COUNT(*) FILTER (WHERE mme_context_status='MME_PRIORITY_CONTEXT') AS mme_priority,
+              COUNT(*) FILTER (WHERE mme_context_status='MME_WATCH_CONTEXT') AS mme_watch,
+              COUNT(*) FILTER (WHERE mme_context_status='MME_AVOID_CONTEXT') AS mme_avoid,
+              ROUND(MAX(orc_context_score), 4) AS max_context_score
+            FROM v_orc_candidate_context_v1;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              strategy,
+              context_ready_now,
+              ROUND(orc_context_score, 4),
+              picked_v63_now,
+              orc_v7_ready,
+              readiness_reason,
+              v7_reason,
+              mme_context_status,
+              mme_orc_status,
+              mme_orc_hint,
+              ROUND(mme_orc_readiness_score, 4),
+              mme_sequence_type,
+              mme_sequence_stage,
+              mme_long_context,
+              mme_short_context,
+              ROUND(mme_score_bonus, 4)
+            FROM v_orc_candidate_context_v1
+            ORDER BY
+              context_ready_now DESC,
+              orc_context_score DESC NULLS LAST,
+              mme_orc_readiness_score DESC NULLS LAST
+            LIMIT 20;
+        """)
+        rows = cur.fetchall()
+
+        stats = {
+            "candidates": int(r[0] or 0),
+            "context_ready": int(r[1] or 0),
+            "mme_priority": int(r[2] or 0),
+            "mme_watch": int(r[3] or 0),
+            "mme_avoid": int(r[4] or 0),
+            "max_context_score": float(r[5] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "strategy": x[2],
+                    "context_ready_now": bool(x[3]),
+                    "orc_context_score": float(x[4] or 0),
+                    "picked_v63_now": bool(x[5]),
+                    "orc_v7_ready": bool(x[6]),
+                    "readiness_reason": x[7],
+                    "v7_reason": x[8],
+                    "mme_context_status": x[9],
+                    "mme_orc_status": x[10],
+                    "mme_orc_hint": x[11],
+                    "mme_orc_readiness_score": float(x[12] or 0),
+                    "mme_sequence_type": x[13],
+                    "mme_sequence_stage": x[14],
+                    "mme_long_context": x[15],
+                    "mme_short_context": x[16],
+                    "mme_score_bonus": float(x[17] or 0),
+                }
+                for x in rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "orc_candidate_context_v1_last_ts_s", str(now_ts))
+        upsert_kv(cur, "orc_candidate_context_v1_last_status", "ok")
+        upsert_kv(cur, "orc_candidate_context_v1_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info(
+        "orc_candidate_context_v1: candidates=%s ready=%s max_score=%s",
+        stats["candidates"],
+        stats["context_ready"],
+        stats["max_context_score"],
+    )
+
+
 def run_market_memory_orc_context_refresh(conn):
     """
     Refresh/log MME V1.7 ORC context view.
@@ -2205,6 +2323,15 @@ def main():
                 run_market_memory_orc_context_refresh(conn)
             except Exception:
                 logging.exception("market_memory_orc_context_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            try:
+                run_orc_candidate_context_refresh(conn)
+            except Exception:
+                logging.exception("orc_candidate_context_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
