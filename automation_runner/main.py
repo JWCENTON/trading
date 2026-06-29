@@ -1574,17 +1574,17 @@ def main():
 
             try:
                 run_market_memory_events_refresh(conn)
-            try:
-                run_market_memory_clusters_refresh(conn)
             except Exception:
-                logging.exception("market_memory_clusters_refresh failed")
+                logging.exception("market_memory_events_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
                     pass
 
+            try:
+                run_market_memory_clusters_refresh(conn)
             except Exception:
-                logging.exception("market_memory_events_refresh failed")
+                logging.exception("market_memory_clusters_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
