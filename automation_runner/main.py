@@ -285,6 +285,119 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_clusters_refresh(conn):
+    """
+    Refresh Market Memory event clusters.
+    Analytics-only: writes market_memory_event_clusters; does not change trading state.
+    """
+    if os.getenv("MARKET_MEMORY_CLUSTERS_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_CLUSTERS_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_clusters_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_event_clusters_v1'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_clusters: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_clusters_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_clusters_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT refresh_market_memory_event_clusters_v1();")
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS active_clusters,
+              COUNT(*) FILTER (WHERE cluster_importance='EXTREME') AS extreme_clusters,
+              COUNT(*) FILTER (WHERE cluster_importance='HIGH') AS high_clusters,
+              COUNT(*) FILTER (WHERE cluster_importance='MEDIUM') AS medium_clusters,
+              COUNT(*) FILTER (WHERE cluster_type='IMPULSE_UP_CLUSTER') AS impulse_up,
+              COUNT(*) FILTER (WHERE cluster_type='MOMENTUM_BREAKOUT_CLUSTER') AS momentum_breakout,
+              COUNT(*) FILTER (WHERE cluster_type='REVERSAL_CLUSTER') AS reversal_cluster,
+              ROUND(MAX(cluster_score), 4) AS max_cluster_score
+            FROM v_market_memory_event_clusters_active;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              cluster_type,
+              direction,
+              cluster_importance,
+              ROUND(cluster_score, 4) AS cluster_score,
+              event_count,
+              volume_spike,
+              atr_expansion,
+              breakout_up,
+              momentum_up,
+              reversal_up_candidate,
+              first_observed_at,
+              last_observed_at,
+              expires_at,
+              reason
+            FROM v_market_memory_event_clusters_active
+            ORDER BY cluster_score DESC NULLS LAST, last_observed_at DESC
+            LIMIT 20;
+        """)
+        top_rows = cur.fetchall()
+
+        stats = {
+            "active_clusters": int(r[0] or 0),
+            "extreme_clusters": int(r[1] or 0),
+            "high_clusters": int(r[2] or 0),
+            "medium_clusters": int(r[3] or 0),
+            "impulse_up": int(r[4] or 0),
+            "momentum_breakout": int(r[5] or 0),
+            "reversal_cluster": int(r[6] or 0),
+            "max_cluster_score": float(r[7] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "cluster_type": x[2],
+                    "direction": x[3],
+                    "cluster_importance": x[4],
+                    "cluster_score": float(x[5] or 0),
+                    "event_count": int(x[6] or 0),
+                    "volume_spike": int(x[7] or 0),
+                    "atr_expansion": int(x[8] or 0),
+                    "breakout_up": int(x[9] or 0),
+                    "momentum_up": int(x[10] or 0),
+                    "reversal_up_candidate": int(x[11] or 0),
+                    "first_observed_at": x[12].isoformat() if x[12] else None,
+                    "last_observed_at": x[13].isoformat() if x[13] else None,
+                    "expires_at": x[14].isoformat() if x[14] else None,
+                    "reason": x[15],
+                }
+                for x in top_rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_clusters_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_clusters_last_status", "ok")
+        upsert_kv(cur, "market_memory_clusters_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info("market_memory_clusters: active=%s max_score=%s", stats["active_clusters"], stats["max_cluster_score"])
+
+
 def run_market_memory_events_refresh(conn):
     """
     Refresh short-term Market Memory events.
@@ -1461,6 +1574,15 @@ def main():
 
             try:
                 run_market_memory_events_refresh(conn)
+            try:
+                run_market_memory_clusters_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_clusters_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
             except Exception:
                 logging.exception("market_memory_events_refresh failed")
                 try:
