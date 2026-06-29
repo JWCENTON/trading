@@ -49,8 +49,8 @@ def get_active_orc_apply_view() -> tuple[str, str, str, str]:
     return (
         "v_orc_v7_shadow_picks",
         "eligible_v7_shadow = true",
-        "ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)",
-        "ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)",
+        "ORC_INTEGRATION_V2: picked by V2 context scoring (entries ON, ENFORCE)",
+        "ORC_INTEGRATION_V2: not picked by V2 context scoring (entries OFF, DRY_RUN)",
     )
 
 ORC_INTEGRATION_V2_APPLY_ENABLED = os.getenv("ORC_INTEGRATION_V2_APPLY_ENABLED", "0") == "1"
@@ -168,12 +168,12 @@ def run_orc_v5_apply(conn):
         active_pick_reason = (
             "ORC_INTEGRATION_V2: V7 readiness + MME context picked (entries ON, ENFORCE)"
             if ORC_INTEGRATION_V2_APPLY_ENABLED
-            else "ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)"
+            else "ORC_INTEGRATION_V2: picked by V2 context scoring (entries ON, ENFORCE)"
         )
         active_off_reason = (
             "ORC_INTEGRATION_V2: not ready, late/exhausted, or not picked (entries OFF, DRY_RUN)"
             if ORC_INTEGRATION_V2_APPLY_ENABLED
-            else "ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)"
+            else "ORC_INTEGRATION_V2: not picked by V2 context scoring (entries OFF, DRY_RUN)"
         )
 
         cur.execute("SELECT to_regclass(%s);", (active_picks_view,))
@@ -181,8 +181,8 @@ def run_orc_v5_apply(conn):
             logging.warning("orc_apply: requested picks view %s missing; fallback to v_orc_v7_shadow_picks", active_picks_view)
             active_picks_view = "v_orc_v7_shadow_picks"
             active_picks_eligible_sql = "eligible_v7_shadow = true"
-            active_pick_reason = "ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)"
-            active_off_reason = "ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)"
+            active_pick_reason = "ORC_INTEGRATION_V2: picked by V2 context scoring (entries ON, ENFORCE)"
+            active_off_reason = "ORC_INTEGRATION_V2: not picked by V2 context scoring (entries OFF, DRY_RUN)"
 
         active_picks_view, active_picks_eligible_sql, active_pick_reason, active_off_reason = get_active_orc_apply_view()
 
@@ -191,8 +191,8 @@ def run_orc_v5_apply(conn):
             logging.warning("orc_apply: picks view %s missing; fallback to v_orc_v7_shadow_picks", active_picks_view)
             active_picks_view = "v_orc_v7_shadow_picks"
             active_picks_eligible_sql = "eligible_v7_shadow = true"
-            active_pick_reason = "ORC_V7_READY: V6.3 edge + runtime readiness picked (entries ON, ENFORCE)"
-            active_off_reason = "ORC_V7_READY: not ready or not picked (entries OFF, DRY_RUN)"
+            active_pick_reason = "ORC_INTEGRATION_V2: picked by V2 context scoring (entries ON, ENFORCE)"
+            active_off_reason = "ORC_INTEGRATION_V2: not picked by V2 context scoring (entries OFF, DRY_RUN)"
 
         sql = f"""
         WITH picks_base AS (
