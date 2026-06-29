@@ -288,6 +288,120 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_market_memory_ranking_refresh(conn):
+    """
+    Refresh MME V1.5 opportunity ranking.
+    Shadow-only: writes market_memory_ranking; does not touch bot_control/ORC/orders.
+    """
+    if os.getenv("MARKET_MEMORY_RANKING_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MARKET_MEMORY_RANKING_INTERVAL_SECONDS", "60"))
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='market_memory_ranking_v15_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_market_memory_ranking_v15'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("market_memory_ranking_v15: refresh function missing; skip")
+            upsert_kv(cur, "market_memory_ranking_v15_last_ts_s", str(now_ts))
+            upsert_kv(cur, "market_memory_ranking_v15_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute("SELECT refresh_market_memory_ranking_v15();")
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS active_ranked,
+              COUNT(*) FILTER (WHERE ranking_status='PRIORITY') AS priority,
+              COUNT(*) FILTER (WHERE ranking_status='WATCH') AS watch,
+              COUNT(*) FILTER (WHERE ranking_status='LATE_OR_EXHAUSTED') AS late_or_exhausted,
+              ROUND(MAX(rank_score), 4) AS max_rank_score,
+              ROUND(MAX(remaining_score), 4) AS max_remaining_score
+            FROM v_market_memory_ranking_current;
+        """)
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              global_rank,
+              symbol,
+              interval,
+              ranking_status,
+              ROUND(rank_score, 4),
+              ROUND(remaining_score, 4),
+              ROUND(timing_score, 4),
+              ROUND(opportunity_score, 4),
+              ROUND(confidence_score, 4),
+              ROUND(urgency_score, 4),
+              ROUND(exhaustion_risk, 4),
+              stage,
+              direction,
+              opportunity_type,
+              reason,
+              expires_at
+            FROM v_market_memory_ranking_current
+            ORDER BY global_rank ASC NULLS LAST
+            LIMIT 20;
+        """)
+        top_rows = cur.fetchall()
+
+        stats = {
+            "active_ranked": int(r[0] or 0),
+            "priority": int(r[1] or 0),
+            "watch": int(r[2] or 0),
+            "late_or_exhausted": int(r[3] or 0),
+            "max_rank_score": float(r[4] or 0),
+            "max_remaining_score": float(r[5] or 0),
+            "top": [
+                {
+                    "global_rank": int(x[0] or 0),
+                    "symbol": x[1],
+                    "interval": x[2],
+                    "ranking_status": x[3],
+                    "rank_score": float(x[4] or 0),
+                    "remaining_score": float(x[5] or 0),
+                    "timing_score": float(x[6] or 0),
+                    "opportunity_score": float(x[7] or 0),
+                    "confidence_score": float(x[8] or 0),
+                    "urgency_score": float(x[9] or 0),
+                    "exhaustion_risk": float(x[10] or 0),
+                    "stage": x[11],
+                    "direction": x[12],
+                    "opportunity_type": x[13],
+                    "reason": x[14],
+                    "expires_at": x[15].isoformat() if x[15] else None,
+                }
+                for x in top_rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "market_memory_ranking_v15_last_ts_s", str(now_ts))
+        upsert_kv(cur, "market_memory_ranking_v15_last_status", "ok")
+        upsert_kv(cur, "market_memory_ranking_v15_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info(
+        "market_memory_ranking_v15: active=%s priority=%s max_rank=%s",
+        stats["active_ranked"],
+        stats["priority"],
+        stats["max_rank_score"],
+    )
+
+
 def run_market_memory_opportunity_refresh(conn):
     """
     Refresh Market Memory opportunity / stage engine.
@@ -1831,6 +1945,15 @@ def main():
                 run_market_memory_opportunity_refresh(conn)
             except Exception:
                 logging.exception("market_memory_opportunity_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            try:
+                run_market_memory_ranking_refresh(conn)
+            except Exception:
+                logging.exception("market_memory_ranking_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
