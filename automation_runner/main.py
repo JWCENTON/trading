@@ -282,6 +282,89 @@ def run_orc_v5_apply(conn):
 
 
 
+
+def run_slot_brain_snapshot_refresh(conn):
+    """
+    Refresh Slot Brain snapshots for multiple windows.
+    Analytics-only: does not change bot_control, orders, positions, ORC picks or risk.
+    """
+    if os.getenv("SLOT_BRAIN_REFRESH_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("SLOT_BRAIN_REFRESH_INTERVAL_SECONDS", "300"))
+    now_ts = time.time()
+
+    windows = [
+        ("15m", 15),
+        ("1h", 60),
+        ("6h", 360),
+        ("24h", 1440),
+        ("7d", 10080),
+        ("30d", 43200),
+        ("90d", 129600),
+    ]
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='slot_brain_refresh_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE p.proname = 'refresh_slot_brain_snapshot'
+              AND n.nspname = current_schema();
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            logging.warning("slot_brain_refresh: refresh function missing; skip")
+            upsert_kv(cur, "slot_brain_refresh_last_ts_s", str(now_ts))
+            upsert_kv(cur, "slot_brain_refresh_last_status", "missing_function")
+            conn.commit()
+            return
+
+        refreshed = []
+        for label, minutes in windows:
+            cur.execute("SELECT refresh_slot_brain_snapshot(%s, %s);", (label, minutes))
+            refreshed.append(label)
+
+        cur.execute("""
+            SELECT
+              window_label,
+              COUNT(*) AS rows,
+              COUNT(*) FILTER (WHERE edge_status='ALLOW_LIVE') AS allow_live,
+              COUNT(*) FILTER (WHERE edge_status='OBSERVE') AS observe,
+              COUNT(*) FILTER (WHERE edge_status='BLOCK_LIVE') AS block_live
+            FROM slot_brain_snapshot
+            GROUP BY window_label
+            ORDER BY window_label;
+        """)
+        rows = cur.fetchall()
+
+        stats = {
+            "windows": refreshed,
+            "summary": [
+                {
+                    "window_label": r[0],
+                    "rows": int(r[1] or 0),
+                    "allow_live": int(r[2] or 0),
+                    "observe": int(r[3] or 0),
+                    "block_live": int(r[4] or 0),
+                }
+                for r in rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "slot_brain_refresh_last_ts_s", str(now_ts))
+        upsert_kv(cur, "slot_brain_refresh_last_status", "ok")
+        upsert_kv(cur, "slot_brain_refresh_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info("slot_brain_refresh: refreshed windows=%s", ",".join(refreshed))
+
+
 def run_mfe_mae_snapshot_refresh(conn):
     """
     Periodically refreshes read-optimized MFE/MAE/Profit Giveback snapshot.
@@ -1163,6 +1246,15 @@ def main():
                 run_market_regime_confidence_refresh(conn)
             except Exception:
                 logging.exception("market_regime_confidence_refresh failed")
+
+            try:
+                run_slot_brain_snapshot_refresh(conn)
+            except Exception:
+                logging.exception("slot_brain_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             try:
                 run_mfe_mae_snapshot_refresh(conn)
