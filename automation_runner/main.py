@@ -31,6 +31,12 @@ def _env_bool(name: str, default: str = "0") -> bool:
 
 ORC_INTEGRATION_V2_APPLY_ENABLED = _env_bool("ORC_INTEGRATION_V2_APPLY_ENABLED", "0")
 
+
+def _sql_literal(value: str) -> str:
+    """Return a safely quoted SQL string literal for f-string SQL fragments."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def get_active_orc_apply_view() -> tuple[str, str, str, str]:
     """
     Returns:
@@ -267,8 +273,8 @@ def run_orc_v5_apply(conn):
                 WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                     THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                 WHEN d.want_on
-                    THEN active_pick_reason
-                ELSE active_off_reason
+                    THEN {_sql_literal(active_pick_reason)}
+                ELSE {_sql_literal(active_off_reason)}
                 END,
             live_since = CASE
               WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
@@ -293,8 +299,8 @@ def run_orc_v5_apply(conn):
                             WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
                                 THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
                             WHEN d.want_on
-                                THEN active_pick_reason
-                            ELSE active_off_reason
+                                THEN {_sql_literal(active_pick_reason)}
+                            ELSE {_sql_literal(active_off_reason)}
                             END)
             )
           RETURNING d.want_on
