@@ -96,6 +96,68 @@ WHERE f.id = p.id
 """
 
 
+
+RECONCILE_OKX_EXIT_FILLS_SQL = """
+WITH sell_orders AS (
+  SELECT
+    f.source,
+    f.symbol,
+    f.order_id,
+    NULLIF(f.raw->'raw'->>'clOrdId', '') AS clordid,
+    MIN(f.event_time) AS exit_time,
+    SUM(f.executed_qty) AS executed_qty,
+    CASE
+      WHEN SUM(f.executed_qty) > 0
+        THEN SUM(f.executed_qty * f.avg_price) / SUM(f.executed_qty)
+      ELSE MAX(f.avg_price)
+    END AS avg_exit_price
+  FROM binance_order_fills f
+  WHERE f.source = %s
+    AND f.side = 'SELL'
+    AND f.event_time >= to_timestamp(%s / 1000.0)
+  GROUP BY f.source, f.symbol, f.order_id, NULLIF(f.raw->'raw'->>'clOrdId', '')
+), candidates AS (
+  SELECT
+    p.id AS position_id,
+    s.order_id,
+    s.clordid,
+    s.exit_time,
+    s.executed_qty,
+    s.avg_exit_price,
+    ROW_NUMBER() OVER (
+      PARTITION BY p.id
+      ORDER BY s.exit_time ASC, s.order_id ASC
+    ) AS rn
+  FROM sell_orders s
+  JOIN positions p
+    ON p.symbol = s.symbol
+   AND p.status = 'OPEN'
+   AND p.side = 'LONG'
+   AND s.executed_qty >= (p.qty * 0.98)
+   AND (
+        p.exit_order_id = s.order_id
+        OR regexp_replace(COALESCE(p.exit_client_order_id, ''), '[^A-Za-z0-9]', '', 'g') = COALESCE(s.clordid, '')
+        OR COALESCE(s.clordid, '') ILIKE ('%%P' || p.id::text || 'X%%')
+   )
+)
+UPDATE positions p
+SET
+  status = 'CLOSED',
+  exit_price = c.avg_exit_price,
+  exit_time = c.exit_time,
+  exit_reason = COALESCE(NULLIF(p.exit_reason, ''), 'RECONCILED_OKX_EXIT_FILL'),
+  exit_order_id = COALESCE(p.exit_order_id, c.order_id),
+  exit_client_order_id = COALESCE(NULLIF(p.exit_client_order_id, ''), c.clordid),
+  exit_hour_utc = EXTRACT(HOUR FROM c.exit_time)::smallint,
+  exit_day_utc = c.exit_time::date,
+  hold_minutes = COALESCE(p.hold_minutes, EXTRACT(EPOCH FROM (c.exit_time - p.entry_time)) / 60.0)
+FROM candidates c
+WHERE p.id = c.position_id
+  AND c.rn = 1
+  AND p.status = 'OPEN';
+"""
+
+
 def _mk_dsn(*, host: str, port: int, dbname: str, user: str, password: str) -> str:
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
@@ -141,6 +203,18 @@ def _commission_usdc(symbol: str, commission, commission_asset, price):
         return abs(c * px)
 
     return None
+
+
+
+def reconcile_okx_exit_fills(conn, *, source: str, since_ms: int) -> int:
+    """
+    Reconcile accepted OKX SELL fills back into positions SSOT.
+    """
+    if str(source).lower() != "okx":
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(RECONCILE_OKX_EXIT_FILLS_SQL, (str(source).lower(), int(since_ms)))
+        return int(cur.rowcount or 0)
 
 
 def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str = "binance") -> Dict[str, Any]:
@@ -232,11 +306,19 @@ def ingest_my_trades(
                 cur.execute(UPSERT_STATE_SQL, (state_symbol, max_time))
 
         priced_updated = 0
+        reconciled_exits = 0
         if min_event_time_ms_seen is not None:
             with conn.cursor() as cur:
                 cur.execute(PRICE_FEES_SQL, (min_event_time_ms_seen,))
                 priced_updated = cur.rowcount
+            try:
+                reconciled_exits = reconcile_okx_exit_fills(conn, source=source, since_ms=min_event_time_ms_seen)
+            except Exception:
+                logging.exception("EXCHANGE_INGEST|exit fill reconciliation failed source=%s", source)
 
         conn.commit()
+
+    if reconciled_exits:
+        logging.warning("EXCHANGE_INGEST|reconciled %s OKX exit fill(s) into positions SSOT", reconciled_exits)
 
     return total_fetched, priced_updated
