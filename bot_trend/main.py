@@ -1412,7 +1412,8 @@ def execute_and_record(
     except Exception:
         executed_f = 0.0
 
-    # compute live_ok safely
+    # compute live_ok / accepted ACK safely
+    order_id = raw.get("orderId")
     live_ok = resp.get("live_ok")
     if live_ok is None:
         status = str(raw.get("status", "")).upper()
@@ -1423,17 +1424,20 @@ def execute_and_record(
             executed_f = 0.0
         live_ok = executed_f > 0.0 or status == "FILLED"
     live_ok = bool(live_ok)
+    order_accepted = bool(resp.get("order_accepted")) or (bool(order_id) and status_raw in {"NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED"})
 
     emit_strategy_event(
         event_type="LIVE_ORDER_SENT",
         decision=side,
-        reason="OK" if live_ok else "ACK_NO_FILL",
+        reason="OK" if live_ok else ("ORDER_ACCEPTED_PENDING_FILL" if order_accepted else "ACK_NO_FILL"),
         price=price,
         candle_open_time=candle_open_time,
         info={
             "is_exit": bool(is_exit),
             "client_order_id": client_order_id,
             "live_ok": live_ok,
+            "order_accepted": bool(order_accepted),
+            "pending_fill": bool(order_accepted and not live_ok),
             "status": status_raw,
             "executed_qty": executed_f,
             "resp": raw,
@@ -1444,11 +1448,8 @@ def execute_and_record(
     if (
         cfg_used.trading_mode == "LIVE"
         and not is_exit
-        and live_ok
-        and executed_f > 0.0
+        and (live_ok or order_accepted)
     ):
-        order_id = raw.get("orderId")
-
         avg_px = None
         try:
             fills = raw.get("fills") or []
@@ -1473,7 +1474,7 @@ def execute_and_record(
 
         pos_id_new = open_position_from_live_ack(
             side=("LONG" if str(side).upper() == "BUY" else "SHORT"),
-            qty=float(executed_f),
+            qty=float(executed_f if executed_f > 0.0 else qty_btc),
             entry_price=float(avg_px),
             entry_order_id=str(order_id) if order_id is not None else None,
             entry_client_order_id=str(client_order_id),
@@ -1503,8 +1504,8 @@ def execute_and_record(
     return {
         "ledger_ok": True,
         "live_attempted": True,
-        "live_ok": live_ok,
-        "blocked_reason": None if live_ok else "ACK_NO_FILL",
+        "live_ok": bool(live_ok or order_accepted),
+        "blocked_reason": None if (live_ok or order_accepted) else "ACK_NO_FILL",
         "client_order_id": client_order_id,
         "resp": raw,
     }

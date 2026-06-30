@@ -6,6 +6,7 @@ from common.exchange_client import ExchangeAPIException
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import re
+import json
 from common.sizing import get_symbol_filters as sizing_get_symbol_filters
 
 _CID_RE = re.compile(r"[^A-Za-z0-9\-_]")
@@ -85,6 +86,13 @@ def _attach_order_to_position(conn, *, position_id: int, leg: str, client_order_
 
     with conn.cursor() as cur:
         cur.execute(sql, (str(client_order_id), str(order_id) if order_id is not None else None, int(position_id)))
+
+
+def json_dumps_safe(value):
+    try:
+        return json.dumps(value)
+    except Exception:
+        return json.dumps({"repr": repr(value)})
 
 
 def _safe_float(x, default=0.0):
@@ -607,12 +615,48 @@ def place_live_order(
 
         status = str(resp.get("status", "")).upper()
         executed_qty = _safe_float(resp.get("executedQty"), 0.0)
-        live_ok = (status == "FILLED") or (executed_qty > 0.0)
+        order_id = resp.get("orderId")
 
-        # --- SSOT attach (CRITICAL FIX) ---
-        if live_ok and db_conn is not None and position_id is not None and leg is not None:
+        # OKX often ACKs market orders as NEW with executedQty=0, then fills shortly after.
+        # That is an accepted exchange order, not a failed order.
+        live_ok = (status == "FILLED") or (executed_qty > 0.0)
+        order_accepted = bool(order_id) and status in {"NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED"}
+        pending_fill = bool(order_accepted and not live_ok)
+
+        # Persist order ACK when the caller provides a DB transaction. This is best-effort and
+        # intentionally does not fail trading if the legacy table is missing/different.
+        if db_conn is not None and order_id is not None:
             try:
-                order_id = resp.get("orderId")
+                with db_conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO binance_orders (
+                            symbol, side, order_type, client_order_id, order_id,
+                            status, raw, position_id, is_exit
+                        )
+                        VALUES (%s, %s, 'MARKET', %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        (
+                            str(symbol),
+                            str(side).upper(),
+                            str(client_order_id),
+                            str(order_id),
+                            status or None,
+                            json_dumps_safe(resp),
+                            int(position_id) if position_id is not None else None,
+                            bool(str(leg or "").upper().startswith("EXIT") or str(leg or "").upper().startswith("X")),
+                        ),
+                    )
+            except Exception:
+                logging.exception(
+                    "ORDER ACK PERSIST FAILED symbol=%s side=%s orderId=%s clientOrderId=%s",
+                    symbol, side, order_id, client_order_id,
+                )
+
+        # --- SSOT attach on accepted ACK, not only on immediate fill ---
+        if order_accepted and db_conn is not None and position_id is not None and leg is not None:
+            try:
                 _attach_order_to_position(
                     db_conn,
                     position_id=int(position_id),
@@ -629,6 +673,8 @@ def place_live_order(
         return {
             "ok": True,
             "live_ok": bool(live_ok),
+            "order_accepted": bool(order_accepted),
+            "pending_fill": bool(pending_fill),
             "blocked": False,
             "reason": None,
             "resp": resp,
