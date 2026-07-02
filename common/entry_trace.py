@@ -80,6 +80,9 @@ def record_entry_trace_shadow(
                       atr_pct, ema_slope_pct, volume_ratio,
                       momentum_3_pct, momentum_5_pct, range_pct,
                       breakout_up, breakout_down,
+                      atr_component, volume_component, ema_component,
+                      momentum_component, breakout_component,
+                      realtime_weights_json,
                       input_info, realtime_json
                     )
                     VALUES (
@@ -89,6 +92,9 @@ def record_entry_trace_shadow(
                       %s,%s,%s,
                       %s,%s,%s,
                       %s,%s,
+                      %s,%s,%s,
+                      %s,%s,
+                      %s::jsonb,
                       %s::jsonb,%s::jsonb
                     )
                     """,
@@ -112,6 +118,12 @@ def record_entry_trace_shadow(
                         _safe_float(rt.get("range_pct")),
                         bool(rt.get("breakout_up")) if rt.get("breakout_up") is not None else None,
                         bool(rt.get("breakout_down")) if rt.get("breakout_down") is not None else None,
+                        _safe_float(rt.get("atr_component")),
+                        _safe_float(rt.get("volume_component")),
+                        _safe_float(rt.get("ema_component")),
+                        _safe_float(rt.get("momentum_component")),
+                        _safe_float(rt.get("breakout_component")),
+                        json.dumps(sanitize_json(rt.get("weights") or {}), allow_nan=False),
                         json.dumps(sanitize_json(info or {}), allow_nan=False),
                         json.dumps(sanitize_json(rt or {}), allow_nan=False),
                     ),

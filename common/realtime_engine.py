@@ -127,23 +127,33 @@ def compute_realtime_snapshot(symbol: str, interval: str, candle_open_time=None,
     momentum_score = max(_score_abs_pct(momentum_3_pct, 0.40), _score_abs_pct(momentum_5_pct, 0.70))
     breakout_score = 100.0 if (breakout_up or breakout_down) else 0.0
 
-    realtime_score = (
-        0.25 * atr_score
-        + 0.20 * volume_score
-        + 0.20 * slope_score
-        + 0.25 * momentum_score
-        + 0.10 * breakout_score
-    )
-    realtime_score = round(_clamp(realtime_score), 4)
-
-    drivers = {
-        "ATR": atr_score,
-        "VOLUME": volume_score,
-        "EMA_SLOPE": slope_score,
-        "MOMENTUM": momentum_score,
-        "BREAKOUT": breakout_score,
+    weights = {
+        "ATR": 0.25,
+        "VOLUME": 0.20,
+        "EMA_SLOPE": 0.20,
+        "MOMENTUM": 0.25,
+        "BREAKOUT": 0.10,
     }
-    primary_driver = max(drivers, key=drivers.get)
+
+    components = {
+        "ATR": round(weights["ATR"] * atr_score, 4),
+        "VOLUME": round(weights["VOLUME"] * volume_score, 4),
+        "EMA_SLOPE": round(weights["EMA_SLOPE"] * slope_score, 4),
+        "MOMENTUM": round(weights["MOMENTUM"] * momentum_score, 4),
+        "BREAKOUT": round(weights["BREAKOUT"] * breakout_score, 4),
+    }
+
+    realtime_score = round(_clamp(sum(components.values())), 4)
+
+    raw_scores = {
+        "ATR": round(atr_score, 4),
+        "VOLUME": round(volume_score, 4),
+        "EMA_SLOPE": round(slope_score, 4),
+        "MOMENTUM": round(momentum_score, 4),
+        "BREAKOUT": round(breakout_score, 4),
+    }
+
+    primary_driver = max(components, key=components.get)
 
     if realtime_score >= 70:
         status = "REALTIME_READY"
@@ -169,7 +179,14 @@ def compute_realtime_snapshot(symbol: str, interval: str, candle_open_time=None,
         "range_pct": range_pct,
         "breakout_up": breakout_up,
         "breakout_down": breakout_down,
-        "scores": drivers,
+        "raw_scores": raw_scores,
+        "components": components,
+        "weights": weights,
+        "atr_component": components.get("ATR"),
+        "volume_component": components.get("VOLUME"),
+        "ema_component": components.get("EMA_SLOPE"),
+        "momentum_component": components.get("MOMENTUM"),
+        "breakout_component": components.get("BREAKOUT"),
         "prev_20_high": prev_20_high,
         "prev_20_low": prev_20_low,
         "rows": len(rows),
