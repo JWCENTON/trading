@@ -8,6 +8,7 @@ import psycopg2
 import pandas as pd
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
+from common.entry_trace import record_entry_trace_shadow
 from common.execution import build_live_client_order_id, build_live_entry_intent_client_order_id
 from dataclasses import replace
 from datetime import datetime, timezone, date
@@ -161,6 +162,18 @@ def emit_strategy_event(
             conn.commit()
         finally:
             conn.close()
+
+        record_entry_trace_shadow(
+            symbol=sym,
+            interval=itv,
+            strategy=strat,
+            event_type=event_type,
+            decision=decision,
+            reason=reason,
+            price=price,
+            candle_open_time=candle_open_time,
+            info=info or {},
+        )
     except Exception:
         logging.exception("strategy_events insert failed")
 
