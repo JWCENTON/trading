@@ -100,9 +100,16 @@ def build_exit_reason_context(
     if peak_pct is not None and current_pct is not None:
         giveback_pct = peak_pct - current_pct
 
+    strategy_u = str(strategy or "").upper()
+    reason_text = str(reason or "").strip()
+
+    if strategy_u and reason_text.upper().startswith(strategy_u + " "):
+        prefix_parts = [reason_text]
+    else:
+        prefix_parts = [strategy_u, reason_text]
+
     parts = [
-        str(strategy or "").upper(),
-        reason,
+        *prefix_parts,
         str(side_u),
         f"entry={entry_f:.8f}",
         f"exit={exit_f:.8f}",
