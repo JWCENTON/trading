@@ -476,6 +476,128 @@ def run_orc_candidate_context_refresh(conn):
     )
 
 
+def run_missed_opportunity_replay_refresh(conn):
+    """
+    Missed Opportunity Replay V1.
+    Shadow-only: refreshes missed_opportunity_replay from entry_trace_events/candles.
+    Does not touch bot_control/orders/positions/ORC picks.
+    """
+    if os.getenv("MISSED_OPPORTUNITY_REPLAY_ENABLED", "1") != "1":
+        return
+
+    interval_s = int(os.getenv("MISSED_OPPORTUNITY_REPLAY_INTERVAL_SECONDS", "900"))
+    lookback_hours = int(os.getenv("MISSED_OPPORTUNITY_REPLAY_LOOKBACK_HOURS", "6"))
+    min_realtime = float(os.getenv("MISSED_OPPORTUNITY_REPLAY_MIN_REALTIME", "50.0"))
+    min_move_pct = float(os.getenv("MISSED_OPPORTUNITY_REPLAY_MIN_MOVE_PCT", "0.35"))
+
+    now_ts = time.time()
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='missed_opportunity_replay_v1_last_ts_s';")
+        last_ts = float(last_ts_s) if last_ts_s else 0.0
+        if now_ts - last_ts < float(interval_s):
+            return
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.routines
+            WHERE specific_schema = current_schema()
+              AND routine_name = 'refresh_missed_opportunity_replay_v1';
+        """)
+        if int(cur.fetchone()[0] or 0) == 0:
+            upsert_kv(cur, "missed_opportunity_replay_v1_last_ts_s", str(now_ts))
+            upsert_kv(cur, "missed_opportunity_replay_v1_last_status", "missing_function")
+            conn.commit()
+            return
+
+        cur.execute(
+            """
+            SELECT *
+            FROM refresh_missed_opportunity_replay_v1(
+              (%s::text || ' hours')::interval,
+              %s,
+              %s
+            );
+            """,
+            (str(lookback_hours), min_realtime, min_move_pct),
+        )
+        refresh_row = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              COUNT(*) AS total,
+              COUNT(*) FILTER (WHERE replay_status='OK') AS ok_n,
+              COUNT(*) FILTER (WHERE replay_status='WAITING_FOR_60M_CANDLE') AS waiting_n,
+              COUNT(*) FILTER (WHERE missed_opportunity) AS missed_n,
+              ROUND(MAX(missed_move_pct), 4) AS max_missed_move_pct,
+              ROUND(MAX(realtime_score), 4) AS max_realtime_score
+            FROM missed_opportunity_replay
+            WHERE event_time >= now() - (%s::text || ' hours')::interval;
+        """, (str(lookback_hours),))
+        r = cur.fetchone()
+
+        cur.execute("""
+            SELECT
+              symbol,
+              interval,
+              strategy,
+              reason,
+              event_time,
+              ROUND(realtime_score, 4),
+              replay_status,
+              missed_opportunity,
+              ROUND(missed_move_pct, 4),
+              ROUND(adverse_move_pct, 4)
+            FROM v_missed_opportunity_top
+            ORDER BY missed_opportunity DESC, missed_move_pct DESC NULLS LAST
+            LIMIT 20;
+        """)
+        rows = cur.fetchall()
+
+        stats = {
+            "processed": int(refresh_row[0] or 0) if refresh_row else 0,
+            "inserted_or_updated": int(refresh_row[1] or 0) if refresh_row else 0,
+            "lookback_hours": lookback_hours,
+            "min_realtime": min_realtime,
+            "min_move_pct": min_move_pct,
+            "total": int(r[0] or 0),
+            "ok_n": int(r[1] or 0),
+            "waiting_n": int(r[2] or 0),
+            "missed_n": int(r[3] or 0),
+            "max_missed_move_pct": float(r[4] or 0),
+            "max_realtime_score": float(r[5] or 0),
+            "top": [
+                {
+                    "symbol": x[0],
+                    "interval": x[1],
+                    "strategy": x[2],
+                    "reason": x[3],
+                    "event_time": x[4].isoformat() if x[4] else None,
+                    "realtime_score": float(x[5] or 0),
+                    "replay_status": x[6],
+                    "missed_opportunity": bool(x[7]),
+                    "missed_move_pct": float(x[8] or 0),
+                    "adverse_move_pct": float(x[9] or 0),
+                }
+                for x in rows
+            ],
+            "refreshed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+        upsert_kv(cur, "missed_opportunity_replay_v1_last_ts_s", str(now_ts))
+        upsert_kv(cur, "missed_opportunity_replay_v1_last_status", "ok")
+        upsert_kv(cur, "missed_opportunity_replay_v1_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+
+    conn.commit()
+    logging.info(
+        "missed_opportunity_replay_v1: processed=%s updated=%s missed=%s max_move=%s",
+        stats["processed"],
+        stats["inserted_or_updated"],
+        stats["missed_n"],
+        stats["max_missed_move_pct"],
+    )
+
+
 def run_market_memory_orc_context_refresh(conn):
     """
     Refresh/log MME V1.7 ORC context view.
@@ -2399,6 +2521,11 @@ def main():
                 run_orc_candidate_context_refresh(conn)
             except Exception:
                 logging.exception("orc_candidate_context_refresh failed")
+
+            try:
+                run_missed_opportunity_replay_refresh(conn)
+            except Exception:
+                logging.exception("missed_opportunity_replay_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
