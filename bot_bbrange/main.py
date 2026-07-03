@@ -33,6 +33,7 @@ from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.position_path import load_position_path_snapshot
+from common.exit_reason_context import build_exit_reason_context
 
 
 # =========================
@@ -473,14 +474,48 @@ def open_position_from_live_ack(
 def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT id, side, entry_price, entry_time
+        FROM positions
+        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+        ORDER BY entry_time DESC
+        LIMIT 1;
+        """,
+        (SYMBOL, STRATEGY_NAME, INTERVAL),
+    )
+    row = cur.fetchone()
+
+    if not row:
+        conn.commit()
+        cur.close()
+        conn.close()
+        return False
+
+    pos_id, pos_side, pos_entry_price, pos_entry_time = row
+
+    enriched_reason = build_exit_reason_context(
+        base_reason=reason,
+        strategy=STRATEGY_NAME,
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        side=pos_side,
+        entry_price=pos_entry_price,
+        exit_price=exit_price,
+        entry_time=pos_entry_time,
+        asof_time=candle_open_time,
+        profit_lock_config=None,
+    )
+
     cur.execute(
         """
         UPDATE positions
         SET status='CLOSED', exit_price=%s, exit_time=now(), exit_reason=%s
-        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+        WHERE id=%s AND status='OPEN'
         RETURNING id;
         """,
-        (float(exit_price), reason, SYMBOL, STRATEGY_NAME, INTERVAL),
+        (float(exit_price), enriched_reason, int(pos_id)),
     )
     closed = cur.fetchone() is not None
     conn.commit()
@@ -491,10 +526,10 @@ def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
         emit_strategy_event(
             event_type="POSITION_CLOSED",
             decision=None,
-            reason=reason,
+            reason=enriched_reason,
             price=float(exit_price),
             candle_open_time=candle_open_time,
-            info={"exit_reason": reason, "exit_price": float(exit_price)},
+            info={"exit_reason": enriched_reason, "exit_price": float(exit_price)},
         )
     return closed
 

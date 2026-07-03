@@ -1495,6 +1495,32 @@ def ssot_apply_positions_paper(
         # 2) close position (this is the hard-truth close for PAPER)
         cur_exec.execute(
             """
+            SELECT side, entry_price, entry_time
+            FROM positions
+            WHERE id=%s AND status='OPEN'
+            """,
+            (int(pos_id),),
+        )
+        paper_pos_row = cur_exec.fetchone()
+
+        enriched_reason = str(reason_text or "PAPER_EXIT")
+        if paper_pos_row:
+            pos_side, pos_entry_price, pos_entry_time = paper_pos_row
+            enriched_reason = build_exit_reason_context(
+                base_reason=str(reason_text or "PAPER_EXIT"),
+                strategy=STRATEGY_NAME,
+                symbol=cfg_used.symbol,
+                interval=cfg_used.interval,
+                side=pos_side,
+                entry_price=pos_entry_price,
+                exit_price=price,
+                entry_time=pos_entry_time,
+                asof_time=candle_open_time,
+                profit_lock_config=PROFIT_LOCK_CONFIG,
+            )
+
+        cur_exec.execute(
+            """
             UPDATE positions
             SET status='CLOSED',
                 exit_price=%s,
@@ -1502,7 +1528,7 @@ def ssot_apply_positions_paper(
                 exit_reason=%s
             WHERE id=%s AND status='OPEN'
             """,
-            (float(price), str(reason_text or "PAPER_EXIT"), int(pos_id)),
+            (float(price), enriched_reason, int(pos_id)),
         )
         conn_exec.commit()
     except Exception:
