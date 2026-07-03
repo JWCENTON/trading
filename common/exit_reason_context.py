@@ -53,10 +53,6 @@ def build_exit_reason_context(
     """
     reason = str(base_reason or "EXIT").strip()
 
-    # Do not double-enrich reasons that already contain the standard context.
-    if " peak=" in reason and " current=" in reason and " age=" in reason:
-        return reason
-
     entry_f = _safe_float(entry_price)
     exit_f = _safe_float(exit_price)
     side_u = (side or "LONG").upper()
@@ -110,37 +106,42 @@ def build_exit_reason_context(
 
     parts = [
         *prefix_parts,
-        str(side_u),
-        f"entry={entry_f:.8f}",
-        f"exit={exit_f:.8f}",
     ]
 
+    def add_missing(token_prefix: str, value: str) -> None:
+        if token_prefix not in reason_text:
+            parts.append(value)
+
+    add_missing(" " + str(side_u), str(side_u))
+    add_missing("entry=", f"entry={entry_f:.8f}")
+    add_missing("exit=", f"exit={exit_f:.8f}")
+
     if peak_pct is not None:
-        parts.append(f"peak={peak_pct:.3f}%")
+        add_missing("peak=", f"peak={peak_pct:.3f}%")
 
     if current_pct is not None:
-        parts.append(f"current={current_pct:.3f}%")
+        add_missing("current=", f"current={current_pct:.3f}%")
 
     if peak_pct is not None:
-        parts.append(f"mfe={peak_pct:.3f}%")
+        add_missing("mfe=", f"mfe={peak_pct:.3f}%")
 
     if mae_pct is not None:
-        parts.append(f"mae={mae_pct:.3f}%")
+        add_missing("mae=", f"mae={mae_pct:.3f}%")
 
     if giveback_pct is not None:
-        parts.append(f"giveback={giveback_pct:.3f}%")
+        add_missing("giveback=", f"giveback={giveback_pct:.3f}%")
 
     if profit_lock_config is not None:
         try:
-            parts.append(f"floor={float(profit_lock_config.floor_pct):.3f}%")
-            parts.append(f"trail_drop={float(profit_lock_config.trail_drop_pct):.3f}%")
+            add_missing("floor=", f"floor={float(profit_lock_config.floor_pct):.3f}%")
+            add_missing("trail_drop=", f"trail_drop={float(profit_lock_config.trail_drop_pct):.3f}%")
         except Exception:
             pass
 
     if age is not None:
-        parts.append(f"age={age:.1f}m")
+        add_missing("age=", f"age={age:.1f}m")
 
     if bars_seen is not None:
-        parts.append(f"bars={bars_seen}")
+        add_missing("bars=", f"bars={bars_seen}")
 
     return " ".join(p for p in parts if p)
