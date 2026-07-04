@@ -1736,6 +1736,24 @@ def run_learning_telemetry_refresh(conn):
     interval_s = int(os.getenv("LEARNING_TELEMETRY_REFRESH_INTERVAL_SECONDS", "300"))
     timeout_ms = int(os.getenv("LEARNING_TELEMETRY_REFRESH_TIMEOUT_MS", "300000"))
 
+    env_name = (
+        os.getenv("TRADING_MODE")
+        or os.getenv("ENVIRONMENT")
+        or os.getenv("APP_ENV")
+        or ""
+    ).strip().lower()
+
+    default_enabled = "0" if env_name == "paper" else "1"
+    enabled = (os.getenv("LEARNING_TELEMETRY_REFRESH_ENABLED", default_enabled) or default_enabled).strip().lower()
+
+    if enabled not in ("1", "true", "yes", "on"):
+        with conn.cursor() as cur:
+            upsert_kv(cur, "learning_telemetry_refresh_last_status", "disabled")
+            upsert_kv(cur, "learning_telemetry_refresh_last_ts_s", str(now_ts))
+            upsert_kv(cur, "learning_telemetry_refresh_disabled_reason", f"env={env_name or 'unknown'}")
+            conn.commit()
+        return
+
     with conn.cursor() as cur:
         last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='learning_telemetry_refresh_last_ts_s';")
         try:
