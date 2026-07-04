@@ -1725,6 +1725,84 @@ def run_daily_report(conn):
 
 
 
+
+def run_learning_telemetry_refresh(conn):
+    """
+    Refreshes Exit Trace / Exit Learning telemetry.
+    Analytics only: does not touch bot_control, orders, positions or ORC picks.
+    """
+    now_ts = int(time.time())
+
+    interval_s = int(os.getenv("LEARNING_TELEMETRY_REFRESH_INTERVAL_SECONDS", "300"))
+    timeout_ms = int(os.getenv("LEARNING_TELEMETRY_REFRESH_TIMEOUT_MS", "300000"))
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='learning_telemetry_refresh_last_ts_s';")
+        try:
+            last_ts = int(last_ts_s) if last_ts_s else 0
+        except Exception:
+            last_ts = 0
+
+        if now_ts - last_ts < interval_s:
+            return
+
+        funcs = [
+            "refresh_exit_trace_v1",
+            "refresh_exit_trace_v2",
+            "refresh_exit_trace_v3",
+            "refresh_exit_learning_v1",
+        ]
+
+        cur.execute(
+            """
+            SELECT proname
+            FROM pg_proc
+            WHERE proname = ANY(%s)
+            """,
+            (funcs,),
+        )
+        existing = {r[0] for r in cur.fetchall()}
+        missing = [f for f in funcs if f not in existing]
+
+        if missing:
+            logging.warning("learning_telemetry_refresh: missing functions=%s; skip", ",".join(missing))
+            upsert_kv(cur, "learning_telemetry_refresh_last_ts_s", str(now_ts))
+            upsert_kv(cur, "learning_telemetry_refresh_last_status", "missing_function")
+            upsert_kv(cur, "learning_telemetry_refresh_missing_functions", ",".join(missing))
+            conn.commit()
+            return
+
+        cur.execute("SET LOCAL statement_timeout = %s;", (timeout_ms,))
+
+        stats = {}
+
+        logging.info("learning_telemetry_refresh: running")
+
+        cur.execute("SELECT refresh_exit_trace_v1();")
+        stats["exit_trace_v1"] = cur.fetchone()[0]
+
+        cur.execute("SELECT refresh_exit_trace_v2();")
+        stats["exit_trace_v2"] = cur.fetchone()[0]
+
+        cur.execute("SELECT refresh_exit_trace_v3();")
+        stats["exit_trace_v3"] = cur.fetchone()[0]
+
+        cur.execute("SELECT refresh_exit_learning_v1();")
+        stats["exit_learning_v1"] = cur.fetchone()[0]
+
+        upsert_kv(cur, "learning_telemetry_refresh_last_ts_s", str(now_ts))
+        upsert_kv(cur, "learning_telemetry_refresh_last_status", "ok")
+        upsert_kv(cur, "learning_telemetry_refresh_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+        conn.commit()
+
+    logging.info(
+        "learning_telemetry_refresh: exit_trace_v1=%s exit_trace_v2=%s exit_trace_v3=%s exit_learning_v1=%s",
+        stats.get("exit_trace_v1"),
+        stats.get("exit_trace_v2"),
+        stats.get("exit_trace_v3"),
+        stats.get("exit_learning_v1"),
+    )
+
 def run_market_regime_confidence_refresh(conn):
     if os.getenv("MARKET_REGIME_CONFIDENCE_REFRESH_ENABLED", "1") != "1":
         return
