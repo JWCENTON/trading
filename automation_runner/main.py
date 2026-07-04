@@ -1796,17 +1796,22 @@ def run_learning_telemetry_refresh(conn):
 
         logging.info("learning_telemetry_refresh: running")
 
-        cur.execute("SELECT refresh_exit_trace_v1();")
+        lookback_hours = int(os.getenv("LEARNING_TELEMETRY_LOOKBACK_HOURS", "24"))
+        lookback_interval = f"{lookback_hours} hours"
+
+        cur.execute("SELECT refresh_exit_trace_v1(now() - %s::interval);", (lookback_interval,))
         stats["exit_trace_v1"] = cur.fetchone()[0]
 
-        cur.execute("SELECT refresh_exit_trace_v2();")
+        cur.execute("SELECT refresh_exit_trace_v2(now() - %s::interval);", (lookback_interval,))
         stats["exit_trace_v2"] = cur.fetchone()[0]
 
-        cur.execute("SELECT refresh_exit_trace_v3();")
+        cur.execute("SELECT refresh_exit_learning_v1(now() - %s::interval);", (lookback_interval,))
+        stats["exit_learning_v1"] = cur.fetchone()[0]
+
+        cur.execute("SELECT refresh_exit_trace_v3(now() - %s::interval);", (lookback_interval,))
         stats["exit_trace_v3"] = cur.fetchone()[0]
 
-        cur.execute("SELECT refresh_exit_learning_v1();")
-        stats["exit_learning_v1"] = cur.fetchone()[0]
+        stats["lookback_hours"] = lookback_hours
 
         upsert_kv(cur, "learning_telemetry_refresh_last_ts_s", str(now_ts))
         upsert_kv(cur, "learning_telemetry_refresh_last_status", "ok")
@@ -1814,7 +1819,8 @@ def run_learning_telemetry_refresh(conn):
         conn.commit()
 
     logging.info(
-        "learning_telemetry_refresh: exit_trace_v1=%s exit_trace_v2=%s exit_trace_v3=%s exit_learning_v1=%s",
+        "learning_telemetry_refresh: lookback_hours=%s exit_trace_v1=%s exit_trace_v2=%s exit_trace_v3=%s exit_learning_v1=%s",
+        stats.get("lookback_hours"),
         stats.get("exit_trace_v1"),
         stats.get("exit_trace_v2"),
         stats.get("exit_trace_v3"),
