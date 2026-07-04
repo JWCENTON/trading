@@ -2636,6 +2636,15 @@ def main():
                 except Exception:
                     pass
 
+            try:
+                run_learning_telemetry_refresh(conn)
+            except Exception:
+                logging.exception("learning_telemetry_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
             if now - last_disk_usage_check_ts >= disk_int:
                 try:
                     run_disk_usage_notification_check(conn)
