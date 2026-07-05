@@ -1768,7 +1768,7 @@ def run_entry_context_snapshot_refresh(conn):
 
         conn.commit()
 
-    logger.info(
+    logging.info(
         "entry_context_snapshot_refresh: lookback_hours=%s refreshed=%s",
         lookback_hours,
         refreshed,
