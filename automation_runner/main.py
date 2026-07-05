@@ -1876,6 +1876,92 @@ def run_learning_telemetry_refresh(conn):
         stats.get("exit_learning_v1"),
     )
 
+
+def run_shadow_learning_pipeline_refresh(conn):
+    """
+    Refreshes shadow learning pipeline.
+    Shadow-only: does not touch bot_control, orders, positions, ORC picks or execution.
+    """
+    now_ts = int(time.time())
+
+    interval_s = int(os.getenv("SHADOW_LEARNING_REFRESH_INTERVAL_SECONDS", "300"))
+    timeout_ms = int(os.getenv("SHADOW_LEARNING_REFRESH_TIMEOUT_MS", "300000"))
+    enabled = (os.getenv("SHADOW_LEARNING_REFRESH_ENABLED", "1") or "1").strip().lower()
+
+    if enabled not in ("1", "true", "yes", "on"):
+        with conn.cursor() as cur:
+            upsert_kv(cur, "shadow_learning_pipeline_last_status", "disabled")
+            upsert_kv(cur, "shadow_learning_pipeline_last_ts_s", str(now_ts))
+            conn.commit()
+        return
+
+    with conn.cursor() as cur:
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='shadow_learning_pipeline_last_ts_s';")
+        try:
+            last_ts = int(last_ts_s) if last_ts_s else 0
+        except Exception:
+            last_ts = 0
+
+        if now_ts - last_ts < interval_s:
+            return
+
+        funcs = [
+            "refresh_learning_feedback_shadow_recommendations_v1",
+            "refresh_learning_feature_warehouse_v1",
+            "refresh_decision_replay_v1",
+        ]
+
+        cur.execute(
+            """
+            SELECT proname
+            FROM pg_proc
+            WHERE proname = ANY(%s)
+            """,
+            (funcs,),
+        )
+        existing = {r[0] for r in cur.fetchall()}
+        missing = [f for f in funcs if f not in existing]
+
+        if missing:
+            logging.warning("shadow_learning_pipeline_refresh: missing functions=%s; skip", ",".join(missing))
+            upsert_kv(cur, "shadow_learning_pipeline_last_ts_s", str(now_ts))
+            upsert_kv(cur, "shadow_learning_pipeline_last_status", "missing_function")
+            upsert_kv(cur, "shadow_learning_pipeline_missing_functions", ",".join(missing))
+            conn.commit()
+            return
+
+        cur.execute("SET LOCAL statement_timeout = %s;", (timeout_ms,))
+
+        lookback_hours = int(os.getenv("SHADOW_LEARNING_LOOKBACK_HOURS", "24"))
+
+        logging.info("shadow_learning_pipeline_refresh: running")
+
+        stats = {}
+        cur.execute("SELECT refresh_learning_feedback_shadow_recommendations_v1(%s);", (lookback_hours,))
+        stats["shadow_recommendations"] = cur.fetchone()[0]
+
+        cur.execute("SELECT refresh_learning_feature_warehouse_v1(%s);", (lookback_hours,))
+        stats["feature_warehouse"] = cur.fetchone()[0]
+
+        cur.execute("SELECT refresh_decision_replay_v1(%s);", (lookback_hours,))
+        stats["decision_replay"] = cur.fetchone()[0]
+
+        stats["lookback_hours"] = lookback_hours
+
+        upsert_kv(cur, "shadow_learning_pipeline_last_ts_s", str(now_ts))
+        upsert_kv(cur, "shadow_learning_pipeline_last_status", "ok")
+        upsert_kv(cur, "shadow_learning_pipeline_last_stats_json", json.dumps(stats, default=_json_default, sort_keys=True))
+        upsert_kv(cur, "shadow_learning_pipeline_lookback_hours", str(lookback_hours))
+        conn.commit()
+
+    logging.info(
+        "shadow_learning_pipeline_refresh: lookback_hours=%s shadow_recommendations=%s feature_warehouse=%s decision_replay=%s",
+        stats.get("lookback_hours"),
+        stats.get("shadow_recommendations"),
+        stats.get("feature_warehouse"),
+        stats.get("decision_replay"),
+    )
+
 def run_market_regime_confidence_refresh(conn):
     if os.getenv("MARKET_REGIME_CONFIDENCE_REFRESH_ENABLED", "1") != "1":
         return
@@ -2712,8 +2798,9 @@ def main():
             try:
                 run_entry_context_snapshot_refresh(conn)
                 run_learning_telemetry_refresh(conn)
+                run_shadow_learning_pipeline_refresh(conn)
             except Exception:
-                logging.exception("entry_context_snapshot_refresh / learning_telemetry_refresh failed")
+                logging.exception("entry_context_snapshot_refresh / learning_telemetry_refresh / shadow_learning_pipeline_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
