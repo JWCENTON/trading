@@ -2711,9 +2711,9 @@ def main():
 
             try:
                 run_entry_context_snapshot_refresh(conn)
-        run_learning_telemetry_refresh(conn)
+                run_learning_telemetry_refresh(conn)
             except Exception:
-                logging.exception("learning_telemetry_refresh failed")
+                logging.exception("entry_context_snapshot_refresh / learning_telemetry_refresh failed")
                 try:
                     conn.rollback()
                 except Exception:
