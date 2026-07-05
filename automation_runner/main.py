@@ -1726,6 +1726,55 @@ def run_daily_report(conn):
 
 
 
+def run_entry_context_snapshot_refresh(conn):
+    enabled = os.getenv("ENTRY_CONTEXT_SNAPSHOT_REFRESH_ENABLED", "0") == "1"
+    lookback_hours = int(os.getenv("ENTRY_CONTEXT_SNAPSHOT_LOOKBACK_HOURS", "6"))
+
+    now_ts = int(time.time())
+
+    with conn.cursor() as cur:
+        if not enabled:
+            cur.execute("""
+                INSERT INTO automation_kv(key, value, updated_at)
+                VALUES
+                  ('entry_context_snapshot_refresh_last_status', 'disabled', now()),
+                  ('entry_context_snapshot_refresh_disabled_reason', 'env_disabled', now()),
+                  ('entry_context_snapshot_refresh_last_ts_s', %s, now())
+                ON CONFLICT (key) DO UPDATE
+                SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+            """, (str(now_ts),))
+            conn.commit()
+            return
+
+        interval_text = f"{lookback_hours} hours"
+
+        cur.execute("SELECT refresh_entry_context_snapshot_v1(now() - %s::interval);", (interval_text,))
+        refreshed = cur.fetchone()[0]
+
+        stats = {
+            "refreshed": refreshed,
+            "lookback_hours": lookback_hours,
+        }
+
+        cur.execute("""
+            INSERT INTO automation_kv(key, value, updated_at)
+            VALUES
+              ('entry_context_snapshot_refresh_last_status', 'ok', now()),
+              ('entry_context_snapshot_refresh_last_stats_json', %s, now()),
+              ('entry_context_snapshot_refresh_last_ts_s', %s, now())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+        """, (json.dumps(stats, sort_keys=True), str(now_ts)))
+
+        conn.commit()
+
+    logger.info(
+        "entry_context_snapshot_refresh: lookback_hours=%s refreshed=%s",
+        lookback_hours,
+        refreshed,
+    )
+
+
 def run_learning_telemetry_refresh(conn):
     """
     Refreshes Exit Trace / Exit Learning telemetry.
@@ -2661,7 +2710,8 @@ def main():
                     pass
 
             try:
-                run_learning_telemetry_refresh(conn)
+                run_entry_context_snapshot_refresh(conn)
+        run_learning_telemetry_refresh(conn)
             except Exception:
                 logging.exception("learning_telemetry_refresh failed")
                 try:
