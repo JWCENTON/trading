@@ -267,3 +267,12 @@ cookies.txt
 !scripts/cleanup.sql
 .env.okx.live
 .env.okx.live.bak.*
+
+# local/generated trading audits and DB dumps
+logs.txt
+deep_trading_audit_*.txt
+exit_trace_incremental_audit_*.txt
+*_backup*.sql
+*full_backup*.sql
+*_schema_*.sql
+db_live_data/
