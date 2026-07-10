@@ -1963,6 +1963,58 @@ def run_shadow_learning_pipeline_refresh(conn):
     )
 
 
+def run_learning_shadow_confidence_v14(conn, source_refresh_run_id):
+    """Run V1.4 after V1.2/V1.3 commit, isolated from the main refresh."""
+    if not source_refresh_run_id:
+        return
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT to_regprocedure(
+                    'refresh_learning_shadow_confidence_proposals_v1_4(bigint,text)'
+                ) IS NOT NULL;
+                """
+            )
+            if not bool(cur.fetchone()[0]):
+                logging.info(
+                    "learning_engine_v1_4: function missing; skip"
+                )
+                conn.rollback()
+                return
+
+            cur.execute(
+                """
+                SELECT refresh_learning_shadow_confidence_proposals_v1_4(
+                    %s,
+                    'AUTOMATION_RUNNER'
+                );
+                """,
+                (source_refresh_run_id,),
+            )
+            row = cur.fetchone()
+            result = row[0] if row else None
+
+        conn.commit()
+        logging.info(
+            "learning_engine_v1_4: isolated refresh completed "
+            "source_refresh_run_id=%s result=%r",
+            source_refresh_run_id,
+            result,
+        )
+    except Exception:
+        logging.exception(
+            "learning_engine_v1_4: isolated refresh failed "
+            "source_refresh_run_id=%s",
+            source_refresh_run_id,
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def run_learning_feedback_engine_refresh(conn):
     """
     Runs Learning Feedback Engine V1.2 when its 12-hour window is due.
@@ -2273,6 +2325,14 @@ def run_learning_feedback_engine_refresh(conn):
         )
 
     conn.commit()
+
+    # V1.2 and its V1.3 trigger are durable before V1.4 starts. V1.4 owns a
+    # separate transaction and catches both SQL-level and connection errors.
+    if isinstance(result, dict) and result.get("status") == "ok":
+        run_learning_shadow_confidence_v14(
+            conn,
+            result.get("run_id"),
+        )
 
     if isinstance(result, dict):
         logging.info(
