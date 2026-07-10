@@ -1962,6 +1962,332 @@ def run_shadow_learning_pipeline_refresh(conn):
         stats.get("decision_replay"),
     )
 
+
+def run_learning_feedback_engine_refresh(conn):
+    """
+    Runs Learning Feedback Engine V1.2 when its 12-hour window is due.
+
+    The runner performs a lightweight due check first. PostgreSQL still owns
+    the final advisory lock and safety checks.
+
+    Shadow-only:
+    - no bot_control writes,
+    - no ORC weight application,
+    - no confidence application,
+    - no promotion application,
+    - no capital allocation,
+    - no order placement.
+    """
+    enabled = (
+        os.getenv("LEARNING_FEEDBACK_AUTOMATION_ENABLED", "1")
+        or "1"
+    ).strip().lower()
+
+    now_ts = int(time.time())
+
+    if enabled not in ("1", "true", "yes", "on"):
+        with conn.cursor() as cur:
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_status",
+                "disabled",
+            )
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_ts_s",
+                str(now_ts),
+            )
+        conn.commit()
+
+        logging.info(
+            "learning_feedback_engine_v1_2: disabled by environment"
+        )
+        return
+
+    check_interval_s = max(
+        60,
+        int(
+            os.getenv(
+                "LEARNING_FEEDBACK_CHECK_INTERVAL_SECONDS",
+                "300",
+            )
+        ),
+    )
+
+    interval_hours = max(
+        1,
+        int(
+            os.getenv(
+                "LEARNING_FEEDBACK_INTERVAL_HOURS",
+                "12",
+            )
+        ),
+    )
+
+    window_days = max(
+        1,
+        int(
+            os.getenv(
+                "LEARNING_FEEDBACK_WINDOW_DAYS",
+                "30",
+            )
+        ),
+    )
+
+    min_observe_sample = max(
+        1,
+        int(
+            os.getenv(
+                "LEARNING_FEEDBACK_MIN_OBSERVE_SAMPLE",
+                "10",
+            )
+        ),
+    )
+
+    min_action_sample = max(
+        min_observe_sample,
+        int(
+            os.getenv(
+                "LEARNING_FEEDBACK_MIN_ACTION_SAMPLE",
+                "30",
+            )
+        ),
+    )
+
+    timeout_ms = max(
+        1000,
+        int(
+            os.getenv(
+                "LEARNING_FEEDBACK_TIMEOUT_MS",
+                "300000",
+            )
+        ),
+    )
+
+    function_signature = (
+        "refresh_learning_feedback_engine_v1_2_if_due("
+        "integer,integer,integer,integer,boolean,text)"
+    )
+
+    with conn.cursor() as cur:
+        last_check_s = q1(
+            cur,
+            """
+            SELECT value
+            FROM automation_kv
+            WHERE key =
+                'learning_feedback_engine_runner_last_ts_s';
+            """,
+        )
+
+        try:
+            last_check = int(last_check_s) if last_check_s else 0
+        except Exception:
+            last_check = 0
+
+        if now_ts - last_check < check_interval_s:
+            return
+
+        cur.execute(
+            """
+            SELECT to_regprocedure(%s) IS NOT NULL;
+            """,
+            (function_signature,),
+        )
+
+        function_exists = bool(cur.fetchone()[0])
+
+        if not function_exists:
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_status",
+                "missing_function",
+            )
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_missing_function",
+                function_signature,
+            )
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_ts_s",
+                str(now_ts),
+            )
+            conn.commit()
+
+            logging.warning(
+                "learning_feedback_engine_v1_2: "
+                "function missing; skip signature=%s",
+                function_signature,
+            )
+            return
+
+        # Lightweight pre-check. This prevents a SKIPPED_NOT_DUE history row
+        # from being written on every automation-runner tick.
+        cur.execute(
+            """
+            SELECT
+                MAX(finished_at) AS last_success_at,
+                CASE
+                    WHEN MAX(finished_at) IS NULL THEN true
+                    ELSE now() >= (
+                        MAX(finished_at)
+                        + make_interval(hours => %s)
+                    )
+                END AS is_due,
+                CASE
+                    WHEN MAX(finished_at) IS NULL THEN now()
+                    ELSE (
+                        MAX(finished_at)
+                        + make_interval(hours => %s)
+                    )
+                END AS next_due_at
+            FROM learning_feedback_refresh_runs_v1
+            WHERE environment = current_database()
+              AND status = 'OK';
+            """,
+            (
+                interval_hours,
+                interval_hours,
+            ),
+        )
+
+        due_row = cur.fetchone()
+        last_success_at = due_row[0] if due_row else None
+        is_due = bool(due_row[1]) if due_row else True
+        next_due_at = due_row[2] if due_row else None
+
+        if not is_due:
+            runner_stats = {
+                "status": "not_due",
+                "interval_hours": interval_hours,
+                "last_success_at": last_success_at,
+                "next_due_at": next_due_at,
+            }
+
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_status",
+                "not_due",
+            )
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_stats_json",
+                json.dumps(
+                    runner_stats,
+                    default=_json_default,
+                    sort_keys=True,
+                ),
+            )
+            upsert_kv(
+                cur,
+                "learning_feedback_engine_runner_last_ts_s",
+                str(now_ts),
+            )
+            conn.commit()
+
+            logging.info(
+                "learning_feedback_engine_v1_2: not due "
+                "last_success_at=%s next_due_at=%s",
+                last_success_at,
+                next_due_at,
+            )
+            return
+
+        cur.execute(
+            "SET LOCAL statement_timeout = %s;",
+            (timeout_ms,),
+        )
+
+        logging.info(
+            "learning_feedback_engine_v1_2: due; running "
+            "interval_hours=%s window_days=%s "
+            "min_observe_sample=%s min_action_sample=%s",
+            interval_hours,
+            window_days,
+            min_observe_sample,
+            min_action_sample,
+        )
+
+        cur.execute(
+            """
+            SELECT refresh_learning_feedback_engine_v1_2_if_due(
+                %s,
+                %s,
+                %s,
+                %s,
+                false,
+                'AUTOMATION_RUNNER'
+            );
+            """,
+            (
+                interval_hours,
+                window_days,
+                min_observe_sample,
+                min_action_sample,
+            ),
+        )
+
+        row = cur.fetchone()
+        result = row[0] if row else None
+
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (TypeError, ValueError):
+                pass
+
+        status = (
+            result.get("status")
+            if isinstance(result, dict)
+            else "unknown"
+        )
+
+        runner_stats = {
+            "status": status,
+            "interval_hours": interval_hours,
+            "window_days": window_days,
+            "min_observe_sample": min_observe_sample,
+            "min_action_sample": min_action_sample,
+            "result": result,
+        }
+
+        upsert_kv(
+            cur,
+            "learning_feedback_engine_runner_last_status",
+            str(status),
+        )
+        upsert_kv(
+            cur,
+            "learning_feedback_engine_runner_last_stats_json",
+            json.dumps(
+                runner_stats,
+                default=_json_default,
+                sort_keys=True,
+            ),
+        )
+        upsert_kv(
+            cur,
+            "learning_feedback_engine_runner_last_ts_s",
+            str(now_ts),
+        )
+
+    conn.commit()
+
+    if isinstance(result, dict):
+        logging.info(
+            "learning_feedback_engine_v1_2: completed "
+            "status=%s run_id=%s refreshed_at=%s",
+            result.get("status"),
+            result.get("run_id"),
+            result.get("refreshed_at"),
+        )
+    else:
+        logging.info(
+            "learning_feedback_engine_v1_2: result=%r",
+            result,
+        )
+
 def run_market_regime_confidence_refresh(conn):
     if os.getenv("MARKET_REGIME_CONFIDENCE_REFRESH_ENABLED", "1") != "1":
         return
@@ -2801,6 +3127,17 @@ def main():
                 run_shadow_learning_pipeline_refresh(conn)
             except Exception:
                 logging.exception("entry_context_snapshot_refresh / learning_telemetry_refresh / shadow_learning_pipeline_refresh failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            try:
+                run_learning_feedback_engine_refresh(conn)
+            except Exception:
+                logging.exception(
+                    "learning_feedback_engine_v1_2 refresh failed"
+                )
                 try:
                     conn.rollback()
                 except Exception:
