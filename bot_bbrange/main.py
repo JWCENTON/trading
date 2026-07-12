@@ -6,6 +6,14 @@ import hashlib
 import logging
 import psycopg2
 import pandas as pd
+from decimal import Decimal
+from common.decision_contract import (
+    DecisionReason,
+    DecisionSink,
+    DecisionSubtype,
+    EvaluationContext,
+    FinalDecision,
+)
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
@@ -101,7 +109,19 @@ RSI_BLOCK_EXTREME_HIGH = float(os.environ.get("RSI_BLOCK_EXTREME_HIGH", "90"))
 
 API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
-client = get_market_data_client()
+_exchange_client = None
+
+
+def get_exchange_client():
+    """Return the process-wide exchange client, creating it on first runtime use."""
+    global _exchange_client
+    if _exchange_client is None:
+        try:
+            _exchange_client = get_market_data_client()
+        except Exception:
+            logging.exception("BBRANGE exchange client initialization failed")
+            raise
+    return _exchange_client
 
 logging.info(
     "CONFIG|SYMBOL=%s|INTERVAL=%s|SPOT_MODE=%s|cfg_trading_mode=%s",
@@ -921,7 +941,7 @@ def execute_and_record(
     conn_exec = get_db_conn()
     try:
         resp = place_live_order(
-            client,
+            get_exchange_client(),
             cfg_used.symbol,
             side_u,
             qty_btc,
@@ -1115,7 +1135,9 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
 
 def fetch_klines(limit=50):
     start = time.perf_counter()
-    klines = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=limit)
+    klines = get_exchange_client().get_klines(
+        symbol=SYMBOL, interval=INTERVAL, limit=limit
+    )
     logging.info("Fetched %d klines in %.3f s", len(klines), time.perf_counter() - start)
 
     rows = []
@@ -1329,7 +1351,8 @@ def get_trend(close: float, ema21: float, buffer_pct: float = TREND_BUFFER) -> s
         return "DOWN"
     return "FLAT"
 
-def run_strategy(row):
+def run_strategy(row, decision_sink: DecisionSink | None = None):
+    evaluation_started_at = datetime.now(timezone.utc)
     open_time = (row[0] if row else None)
     price_for_events = float(row[4]) if row and row[4] is not None else None
 
@@ -1690,6 +1713,34 @@ def run_strategy(row):
         # ENTRY (SPOT LONG ONLY)
         # =========================
 
+        evaluation = EvaluationContext(
+            deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+            environment=DB_NAME,
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            strategy=STRATEGY_NAME,
+            candle_open_time=open_time,
+            evaluation_started_at=evaluation_started_at,
+            engine_name=STRATEGY_NAME,
+            engine_version=os.environ.get("BOT_VERSION"),
+            market_regime=None,
+            regime_confidence=None,
+            runtime_enabled=bool(bc.enabled),
+            live_orders_enabled=bool(snap["allowed_orders_entry"]),
+            paper_mode=cfg_effective.trading_mode != "LIVE",
+            context={"contract_version": "FINAL_DECISION_V1"},
+        )
+
+        def finish(decision: FinalDecision):
+            if decision_sink is not None:
+                try:
+                    decision_sink(decision)
+                except Exception:
+                    logging.exception(
+                        "BBRANGE FinalDecision sink failed; trading result unchanged"
+                    )
+            return None
+
         # disable hours
         if open_time.hour in DISABLE_HOURS_SET:
             emit_blocked(
@@ -1699,11 +1750,24 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info={"hour_utc": int(open_time.hour), "disable_hours": sorted(list(DISABLE_HOURS_SET))},
             )
-            return
+            return finish(FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.DISABLE_HOURS,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                signal_detected=False,
+                details={"hour_utc": int(open_time.hour)},
+            ))
 
         if not bc.enabled:
             emit_blocked(reason="BOT_DISABLED", decision=None, price=price, candle_open_time=open_time, info={})
-            return
+            return finish(FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_DISABLED,
+                DecisionSubtype.LIVE_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                signal_detected=False,
+            ))
 
         # Daily loss gate — SSOT = positions.
         # PAPER: only positions shadow telemetry (no legacy sim shadow, no block).
@@ -1760,7 +1824,13 @@ def run_strategy(row):
                         candle_open_time=open_time,
                         info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
                     )
-                    return
+                    return finish(FinalDecision.entry_blocked(
+                        evaluation, DecisionReason.DAILY_MAX_LOSS_POSITIONS,
+                        DecisionSubtype.RISK_BLOCKED,
+                        finished_at=datetime.now(timezone.utc),
+                        reference_price=Decimal(str(price)), side=None,
+                        signal_detected=False, details=pos_payload,
+                    ))
 
         # Build BB on recent closes (need at least BB_PERIOD)
         conn = get_db_conn()
@@ -1779,7 +1849,11 @@ def run_strategy(row):
 
         if df.empty or len(df) < BB_PERIOD + 5:
             emit_blocked(reason="NOT_ENOUGH_CANDLES", decision=None, price=price, candle_open_time=open_time, info={"have": int(len(df))})
-            return
+            return finish(FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.NOT_ENOUGH_CANDLES,
+                finished_at=datetime.now(timezone.utc),
+                details={"have": int(len(df))},
+            ))
 
         df = df.sort_values("open_time")
         closes = df["close"].astype(float)
@@ -1791,7 +1865,10 @@ def run_strategy(row):
 
         if bb_mid is None or bb_upper is None or bb_lower is None or bb_mid == 0:
             emit_blocked(reason="BB_NOT_READY", decision=None, price=price, candle_open_time=open_time, info={})
-            return
+            return finish(FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.BB_NOT_READY,
+                finished_at=datetime.now(timezone.utc),
+            ))
 
         bb_width_pct = (bb_upper - bb_lower) / bb_mid
         trend = get_trend(price, ema_val)
@@ -1804,7 +1881,12 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info={"bb_width_pct": float(bb_width_pct), "min": float(MIN_BB_WIDTH_PCT)},
             )
-            return
+            return finish(FinalDecision.signal_rejected(
+                evaluation, DecisionReason.BB_WIDTH_TOO_LOW,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=None,
+                details={"bb_width_pct": float(bb_width_pct)},
+            ))
 
         # BBRANGE entries normally only in FLAT trend.
         # PAPER-only explore mode allows weak trend buckets to generate more samples.
@@ -1825,7 +1907,12 @@ def run_strategy(row):
                     "allowed_trends": sorted(allowed_trends),
                 },
             )
-            return
+            return finish(FinalDecision.signal_rejected(
+                evaluation, DecisionReason.TREND_NOT_FLAT,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=None,
+                details={"trend": trend},
+            ))
 
         entry_threshold = bb_lower
         if explore_enabled and BBRANGE_ENTRY_BB_OFFSET_PCT > 0:
@@ -1845,7 +1932,12 @@ def run_strategy(row):
                     "bb_entry_offset_pct": float(BBRANGE_ENTRY_BB_OFFSET_PCT),
                 },
             )
-            return
+            return finish(FinalDecision.no_trade(
+                evaluation, DecisionReason.NO_SIGNAL,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                details={"entry_threshold": float(entry_threshold)},
+            ))
 
         # RSI filters
         if rsi_val <= RSI_BLOCK_EXTREME_LOW or rsi_val >= RSI_BLOCK_EXTREME_HIGH:
@@ -1856,7 +1948,12 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info={"rsi": float(rsi_val), "low": float(RSI_BLOCK_EXTREME_LOW), "high": float(RSI_BLOCK_EXTREME_HIGH)},
             )
-            return
+            return finish(FinalDecision.signal_rejected(
+                evaluation, DecisionReason.RSI_EXTREME_BLOCK,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                details={"rsi": float(rsi_val)},
+            ))
         if rsi_val > RSI_LONG_MAX:
             emit_blocked(
                 reason="RSI_LONG_MAX_BLOCK",
@@ -1865,7 +1962,12 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info={"rsi": float(rsi_val), "rsi_long_max": float(RSI_LONG_MAX)},
             )
-            return
+            return finish(FinalDecision.signal_rejected(
+                evaluation, DecisionReason.RSI_LONG_MAX_BLOCK,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                details={"rsi": float(rsi_val)},
+            ))
 
         decision = "BUY"
         reason = (
@@ -1876,7 +1978,11 @@ def run_strategy(row):
         # SPOT short block (defensive; here decision is BUY anyway)
         if decision == "SELL" and cfg_effective.spot_mode:
             emit_blocked(reason="SPOT_SHORT_BLOCK", decision="SELL", price=price, candle_open_time=open_time, info={"spot_mode": True})
-            return
+            return finish(FinalDecision.signal_rejected(
+                evaluation, DecisionReason.SPOT_SHORT_BLOCK,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="SELL",
+            ))
 
         # REGIME gate (ENTRY only) — standard: ENTRY_CHECK
         gate_entry = decide_regime_gate(
@@ -1904,7 +2010,13 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info={"why": gate_entry.why, "regime": gate_entry.regime, "meta": gate_entry.meta},
             )
-            return
+            return finish(FinalDecision.entry_blocked(
+                evaluation, DecisionReason.REGIME_BLOCK,
+                DecisionSubtype.REGIME_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=decision,
+                details={"why": gate_entry.why, "regime": gate_entry.regime},
+            ))
 
         emit_strategy_event(
             event_type="SIGNAL",
@@ -1916,7 +2028,7 @@ def run_strategy(row):
         )
             
         qty_btc, sizing_info = compute_qty_from_notional(
-            client,
+            get_exchange_client(),
             symbol=SYMBOL,
             px=price,                 # albo price / close_price - ten sam px, którego używasz do ordera
             target_notional=ORDER_NOTIONAL_USDC,
@@ -1945,7 +2057,7 @@ def run_strategy(row):
 
         if (manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0):
             qty_btc, sizing_info = compute_qty_from_notional(
-                client,
+                get_exchange_client(),
                 symbol=SYMBOL,
                 px=price,
                 target_notional=final_target_notional,
@@ -1994,7 +2106,13 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info=sizing_info,
             )
-            return
+            return finish(FinalDecision.technical_failure_result(
+                evaluation, DecisionReason.SIZING_QTY_ZERO,
+                DecisionSubtype.ORDER_REJECTED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                signal_detected=True, details=sizing_info,
+            ))
 
         res = execute_and_record(
             side="BUY",
@@ -2011,12 +2129,29 @@ def run_strategy(row):
         )
         if not res["ledger_ok"]:
             logging.info("BBRANGE: entry blocked/failed -> not opening position.")
-            return
+            return finish(FinalDecision.technical_failure_result(
+                evaluation,
+                DecisionReason.DB_GUARD_DUPLICATE
+                if res.get("blocked_reason") == "DB_GUARD_DUPLICATE"
+                else DecisionReason.UNKNOWN,
+                DecisionSubtype.DUPLICATE_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                signal_detected=True, entry_attempted=True,
+                details={"blocked_reason": res.get("blocked_reason")},
+            ))
 
         if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
             # NOT_ATTEMPTED jest już emitowane w execute_and_record() (SSOT)
             if not res.get("live_attempted", False):
-                return
+                return finish(FinalDecision.entry_suppressed(
+                    evaluation, DecisionReason.LIVE_ENTRY_NOT_ATTEMPTED,
+                    DecisionSubtype.LIVE_DISABLED,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)), side="BUY",
+                    signal_detected=True, entry_attempted=True,
+                    details={"blocked_reason": res.get("blocked_reason")},
+                ))
 
             # attempted, ale brak fill -> logujemy tutaj
             emit_strategy_event(
@@ -2027,7 +2162,15 @@ def run_strategy(row):
                 candle_open_time=open_time,
                 info={"res": res},
             )
-            return
+            return finish(FinalDecision.technical_failure_result(
+                evaluation, DecisionReason.LIVE_ENTRY_NOT_FILLED,
+                DecisionSubtype.ORDER_REJECTED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                signal_detected=True, entry_attempted=True,
+                order_submitted=True,
+                details={"blocked_reason": res.get("blocked_reason")},
+            ))
 
         # Position OPEN is created inside execute_and_record() (SSOT).
         emit_strategy_event(
@@ -2038,7 +2181,19 @@ def run_strategy(row):
             candle_open_time=open_time,
             info={"qty_btc": float(qty_btc)},
         )
-        return
+        if cfg_effective.trading_mode == "LIVE":
+            return finish(FinalDecision.trade_executed_result(
+                evaluation, DecisionReason.SSOT_EXECUTE_AND_RECORD,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                details={"legacy_result": dict(res)},
+            ))
+        return finish(FinalDecision.paper_simulation(
+            evaluation, DecisionReason.SSOT_EXECUTE_AND_RECORD,
+            finished_at=datetime.now(timezone.utc),
+            reference_price=Decimal(str(price)), side="BUY",
+            details={"legacy_result": dict(res)},
+        ))
 
     finally:
         emit_strategy_event(
@@ -2060,6 +2215,7 @@ LAST_PROCESSED_OPEN_TIME = None
 def main_loop():
     global LAST_PROCESSED_OPEN_TIME
 
+    runtime_client = get_exchange_client()
     ensure_schema()
     upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
 
@@ -2077,7 +2233,7 @@ def main_loop():
             # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
             if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(
-                    client=client,
+                    client=runtime_client,
                     symbols=[SYMBOL],
                     db_host=DB_HOST,
                     db_port=DB_PORT,
