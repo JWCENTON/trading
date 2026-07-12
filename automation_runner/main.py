@@ -26,6 +26,12 @@ ORC_APPLY_VERSION = os.getenv("ORC_APPLY_VERSION", "ORC_V6_3")
 ORC_APPLY_MODE = os.getenv("ORC_APPLY_MODE", "COOLDOWN_PROMOTE_HYSTERESIS")
 ORC_PICKS_VIEW = os.getenv("ORC_PICKS_VIEW", "v_orc_picks_v5")
 
+LEARNING_FEEDBACK_SCHEDULER_VERSION = "LEARNING_FEEDBACK_SCHEDULER_V1_2"
+LEARNING_FEEDBACK_SOURCE_ENGINE_VERSION = "LEARNING_FEEDBACK_ENGINE_V1_2"
+LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION = "LEARNING_ENGINE_V1_4"
+LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE = "SHADOW"
+LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED = False
+
 def _env_bool(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -96,6 +102,72 @@ def upsert_kv(cur, key, value):
         ON CONFLICT (key) DO UPDATE
         SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at;
     """, (key, value))
+
+
+def _learning_feedback_runner_stats(status: str, **extra):
+    stats = {
+        "status": status,
+        "scheduler_version": LEARNING_FEEDBACK_SCHEDULER_VERSION,
+        "source_refresh_engine_version": LEARNING_FEEDBACK_SOURCE_ENGINE_VERSION,
+        "engine_version": LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+        "engine_mode": LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+        "apply_enabled": LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
+    }
+    stats.update(extra)
+    return stats
+
+
+def _upsert_learning_feedback_runner_observability(
+    cur,
+    status: str,
+    now_ts: int,
+    stats,
+):
+    upsert_kv(cur, "learning_feedback_engine_runner_last_status", status)
+    upsert_kv(cur, "learning_feedback_engine_runner_last_ts_s", str(now_ts))
+    upsert_kv(
+        cur,
+        "learning_feedback_engine_runner_last_stats_json",
+        json.dumps(stats, default=_json_default, sort_keys=True),
+    )
+    upsert_kv(
+        cur,
+        "learning_feedback_engine_runner_scheduler_version",
+        LEARNING_FEEDBACK_SCHEDULER_VERSION,
+    )
+    upsert_kv(
+        cur,
+        "learning_feedback_engine_runner_source_refresh_engine_version",
+        LEARNING_FEEDBACK_SOURCE_ENGINE_VERSION,
+    )
+    upsert_kv(
+        cur,
+        "learning_feedback_engine_runner_engine_version",
+        LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+    )
+    upsert_kv(
+        cur,
+        "learning_feedback_engine_runner_engine_mode",
+        LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+    )
+    upsert_kv(
+        cur,
+        "learning_feedback_engine_runner_apply_enabled",
+        "1" if LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED else "0",
+    )
+
+    if stats.get("last_success_at") is not None:
+        upsert_kv(
+            cur,
+            "learning_feedback_engine_runner_last_success_at",
+            _json_default(stats["last_success_at"]),
+        )
+    if stats.get("next_due_at") is not None:
+        upsert_kv(
+            cur,
+            "learning_feedback_engine_runner_next_due_at",
+            _json_default(stats["next_due_at"]),
+        )
 
 
 def set_panic(cur, enabled: bool, reason: str):
@@ -1979,7 +2051,11 @@ def run_learning_shadow_confidence_v14(conn, source_refresh_run_id):
             )
             if not bool(cur.fetchone()[0]):
                 logging.info(
-                    "learning_engine_v1_4: function missing; skip"
+                    "learning_engine_v1_4: engine_version=%s "
+                    "engine_mode=%s apply_enabled=%s function missing; skip",
+                    LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+                    LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+                    LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
                 )
                 conn.rollback()
                 return
@@ -1998,15 +2074,22 @@ def run_learning_shadow_confidence_v14(conn, source_refresh_run_id):
 
         conn.commit()
         logging.info(
-            "learning_engine_v1_4: isolated refresh completed "
+            "learning_engine_v1_4: engine_version=%s engine_mode=%s "
+            "apply_enabled=%s isolated refresh completed "
             "source_refresh_run_id=%s result=%r",
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+            LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
             source_refresh_run_id,
             result,
         )
     except Exception:
         logging.exception(
-            "learning_engine_v1_4: isolated refresh failed "
-            "source_refresh_run_id=%s",
+            "learning_engine_v1_4: engine_version=%s engine_mode=%s "
+            "apply_enabled=%s isolated refresh failed source_refresh_run_id=%s",
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+            LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
             source_refresh_run_id,
         )
         try:
@@ -2039,20 +2122,25 @@ def run_learning_feedback_engine_refresh(conn):
 
     if enabled not in ("1", "true", "yes", "on"):
         with conn.cursor() as cur:
-            upsert_kv(
-                cur,
-                "learning_feedback_engine_runner_last_status",
+            runner_stats = _learning_feedback_runner_stats(
                 "disabled",
+                reason="disabled_by_environment",
             )
-            upsert_kv(
+            _upsert_learning_feedback_runner_observability(
                 cur,
-                "learning_feedback_engine_runner_last_ts_s",
-                str(now_ts),
+                "disabled",
+                now_ts,
+                runner_stats,
             )
         conn.commit()
 
         logging.info(
-            "learning_feedback_engine_v1_2: disabled by environment"
+            "learning_feedback_scheduler_v1_2: "
+            "engine_version=%s engine_mode=%s apply_enabled=%s "
+            "status=disabled reason=environment",
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+            LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
         )
         return
 
@@ -2150,26 +2238,30 @@ def run_learning_feedback_engine_refresh(conn):
         function_exists = bool(cur.fetchone()[0])
 
         if not function_exists:
-            upsert_kv(
-                cur,
-                "learning_feedback_engine_runner_last_status",
+            runner_stats = _learning_feedback_runner_stats(
                 "missing_function",
+                missing_function=function_signature,
+            )
+            _upsert_learning_feedback_runner_observability(
+                cur,
+                "missing_function",
+                now_ts,
+                runner_stats,
             )
             upsert_kv(
                 cur,
                 "learning_feedback_engine_runner_missing_function",
                 function_signature,
             )
-            upsert_kv(
-                cur,
-                "learning_feedback_engine_runner_last_ts_s",
-                str(now_ts),
-            )
             conn.commit()
 
             logging.warning(
-                "learning_feedback_engine_v1_2: "
-                "function missing; skip signature=%s",
+                "learning_feedback_scheduler_v1_2: "
+                "engine_version=%s engine_mode=%s apply_enabled=%s "
+                "status=missing_function signature=%s",
+                LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+                LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+                LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
                 function_signature,
             )
             return
@@ -2210,37 +2302,27 @@ def run_learning_feedback_engine_refresh(conn):
         next_due_at = due_row[2] if due_row else None
 
         if not is_due:
-            runner_stats = {
-                "status": "not_due",
-                "interval_hours": interval_hours,
-                "last_success_at": last_success_at,
-                "next_due_at": next_due_at,
-            }
-
-            upsert_kv(
-                cur,
-                "learning_feedback_engine_runner_last_status",
+            runner_stats = _learning_feedback_runner_stats(
                 "not_due",
+                interval_hours=interval_hours,
+                last_success_at=last_success_at,
+                next_due_at=next_due_at,
             )
-            upsert_kv(
+            _upsert_learning_feedback_runner_observability(
                 cur,
-                "learning_feedback_engine_runner_last_stats_json",
-                json.dumps(
-                    runner_stats,
-                    default=_json_default,
-                    sort_keys=True,
-                ),
-            )
-            upsert_kv(
-                cur,
-                "learning_feedback_engine_runner_last_ts_s",
-                str(now_ts),
+                "not_due",
+                now_ts,
+                runner_stats,
             )
             conn.commit()
 
             logging.info(
-                "learning_feedback_engine_v1_2: not due "
-                "last_success_at=%s next_due_at=%s",
+                "learning_feedback_scheduler_v1_2: "
+                "engine_version=%s engine_mode=%s apply_enabled=%s "
+                "status=not_due last_success_at=%s next_due_at=%s",
+                LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+                LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+                LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
                 last_success_at,
                 next_due_at,
             )
@@ -2252,9 +2334,15 @@ def run_learning_feedback_engine_refresh(conn):
         )
 
         logging.info(
-            "learning_feedback_engine_v1_2: due; running "
+            "learning_feedback_scheduler_v1_2: "
+            "source_refresh_engine_version=%s engine_version=%s "
+            "engine_mode=%s apply_enabled=%s status=due running "
             "interval_hours=%s window_days=%s "
             "min_observe_sample=%s min_action_sample=%s",
+            LEARNING_FEEDBACK_SOURCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+            LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
             interval_hours,
             window_days,
             min_observe_sample,
@@ -2295,33 +2383,43 @@ def run_learning_feedback_engine_refresh(conn):
             else "unknown"
         )
 
-        runner_stats = {
-            "status": status,
-            "interval_hours": interval_hours,
-            "window_days": window_days,
-            "min_observe_sample": min_observe_sample,
-            "min_action_sample": min_action_sample,
-            "result": result,
-        }
+        cur.execute(
+            """
+            SELECT
+                MAX(finished_at) AS last_success_at,
+                CASE
+                    WHEN MAX(finished_at) IS NULL THEN NULL
+                    ELSE (
+                        MAX(finished_at)
+                        + make_interval(hours => %s)
+                    )
+                END AS next_due_at
+            FROM learning_feedback_refresh_runs_v1
+            WHERE environment = current_database()
+              AND status = 'OK';
+            """,
+            (interval_hours,),
+        )
+        due_row = cur.fetchone()
+        last_success_at = due_row[0] if due_row else None
+        next_due_at = due_row[1] if due_row else None
 
-        upsert_kv(
-            cur,
-            "learning_feedback_engine_runner_last_status",
+        runner_stats = _learning_feedback_runner_stats(
             str(status),
+            interval_hours=interval_hours,
+            window_days=window_days,
+            min_observe_sample=min_observe_sample,
+            min_action_sample=min_action_sample,
+            last_success_at=last_success_at,
+            next_due_at=next_due_at,
+            result=result,
         )
-        upsert_kv(
+
+        _upsert_learning_feedback_runner_observability(
             cur,
-            "learning_feedback_engine_runner_last_stats_json",
-            json.dumps(
-                runner_stats,
-                default=_json_default,
-                sort_keys=True,
-            ),
-        )
-        upsert_kv(
-            cur,
-            "learning_feedback_engine_runner_last_ts_s",
-            str(now_ts),
+            str(status),
+            now_ts,
+            runner_stats,
         )
 
     conn.commit()
@@ -2336,15 +2434,25 @@ def run_learning_feedback_engine_refresh(conn):
 
     if isinstance(result, dict):
         logging.info(
-            "learning_feedback_engine_v1_2: completed "
+            "learning_feedback_scheduler_v1_2: "
+            "source_refresh_engine_version=%s engine_version=%s "
+            "engine_mode=%s apply_enabled=%s completed "
             "status=%s run_id=%s refreshed_at=%s",
+            LEARNING_FEEDBACK_SOURCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+            LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
             result.get("status"),
             result.get("run_id"),
             result.get("refreshed_at"),
         )
     else:
         logging.info(
-            "learning_feedback_engine_v1_2: result=%r",
+            "learning_feedback_scheduler_v1_2: "
+            "engine_version=%s engine_mode=%s apply_enabled=%s result=%r",
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_VERSION,
+            LEARNING_SHADOW_CONFIDENCE_ENGINE_MODE,
+            LEARNING_SHADOW_CONFIDENCE_APPLY_ENABLED,
             result,
         )
 
@@ -3196,7 +3304,7 @@ def main():
                 run_learning_feedback_engine_refresh(conn)
             except Exception:
                 logging.exception(
-                    "learning_feedback_engine_v1_2 refresh failed"
+                    "learning_feedback_scheduler_v1_2 refresh failed"
                 )
                 try:
                     conn.rollback()

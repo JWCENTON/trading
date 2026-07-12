@@ -36,13 +36,25 @@ Brak stabilnych wejść kończy run statusem `OK`, licznikami zero i bez placeho
 
 ```text
 automation_runner
-  -> V1.2 due refresh
+  -> V1.2 due gate / source refresh scheduler
   -> V1.3 trigger
   -> commit udanego V1.2/V1.3
   -> osobna transakcja V1.4
 ```
 
 V1.4 nie ma triggera ani osobnego schedulera. Runner wywołuje go dopiero po commicie V1.2/V1.3. Wywołanie ma osobny `try/except` i rollback. W funkcji rekord runu powstaje przed wewnętrznym blokiem wyjątków: błąd cofa propozycje, po czym run zostaje trwale oznaczony `ERROR`; funkcja nie wykonuje `RAISE`.
+
+Logi i `automation_kv` rozdzielają nazwy:
+
+```text
+scheduler_version=LEARNING_FEEDBACK_SCHEDULER_V1_2
+source_refresh_engine_version=LEARNING_FEEDBACK_ENGINE_V1_2
+engine_version=LEARNING_ENGINE_V1_4
+engine_mode=SHADOW
+apply_enabled=false
+```
+
+Status `not_due` oznacza, że scheduler V1.2 nie uruchomił nowego source refresh runu, więc V1.4 nie ma nowego wejścia do przetworzenia.
 
 ## Safety invariants
 

@@ -59,6 +59,7 @@ class LearningEngineV14ContractTests(unittest.TestCase):
         forbidden = (
             "bot_control", "strategy_params", "runtime_params",
             "allocation_policy", "positions", "orders", "fills",
+            "binance_orders", "binance_order_fills", "simulated_orders",
         )
         for table in forbidden:
             pattern = rf"\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+{table}\b"
