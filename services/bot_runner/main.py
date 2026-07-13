@@ -4,6 +4,7 @@ import time
 import signal
 import logging
 import subprocess
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Tuple, Optional
@@ -25,6 +26,11 @@ POLL_SECONDS = int(os.getenv("BOT_RUNNER_POLL_SECONDS", "5"))
 GRACE_SECONDS = int(os.getenv("BOT_RUNNER_GRACE_SECONDS", "20"))
 KILL_SECONDS = int(os.getenv("BOT_RUNNER_KILL_SECONDS", "5"))
 RESTART_BACKOFF_SECONDS = int(os.getenv("BOT_RUNNER_RESTART_BACKOFF_SECONDS", "15"))
+STARTUP_STAGGER_SECONDS = float(
+    os.getenv("BOT_RUNNER_STARTUP_STAGGER_SECONDS", "1.5")
+)
+if not math.isfinite(STARTUP_STAGGER_SECONDS) or STARTUP_STAGGER_SECONDS < 0:
+    raise RuntimeError("BOT_RUNNER_STARTUP_STAGGER_SECONDS must be finite and >= 0")
 
 TRADING_MODE = os.getenv("TRADING_MODE", "").strip()
 if TRADING_MODE not in ("LIVE", "PAPER"):
@@ -38,6 +44,7 @@ STRATEGY_CMD = {
   "TREND": ["python", "-u", "/app/bot_trend/main.py"], 
   "SUPERTREND": ["python", "-u", "/app/bot_supertrend/main.py"],
 }
+STRATEGY_ORDER = {name: index for index, name in enumerate(STRATEGY_CMD)}
 
 @dataclass(frozen=True)
 class BotKey:
@@ -107,6 +114,16 @@ def fetch_desired_configs(conn) -> Dict[BotKey, dict]:
               regime_enabled,
               regime_mode
             FROM bot_control
+            ORDER BY
+              CASE strategy
+                WHEN 'RSI' THEN 0
+                WHEN 'BBRANGE' THEN 1
+                WHEN 'TREND' THEN 2
+                WHEN 'SUPERTREND' THEN 3
+                ELSE 99
+              END,
+              symbol,
+              interval
             """
         )
         rows = cur.fetchall()
@@ -120,6 +137,29 @@ def fetch_desired_configs(conn) -> Dict[BotKey, dict]:
         )
         desired[key] = r
     return desired
+
+
+def worker_sort_key(key: BotKey) -> tuple[int, str, str, str]:
+    """Stable order that separates strategies using the same market slot."""
+    strategy = key.strategy.replace("_", "").upper()
+    return (
+        STRATEGY_ORDER.get(strategy, len(STRATEGY_ORDER)),
+        key.symbol,
+        key.interval,
+        strategy,
+    )
+
+
+def ordered_start_candidates(
+    desired: Dict[BotKey, dict],
+    running: Dict[BotKey, BotProc],
+) -> list[tuple[BotKey, dict]]:
+    candidates = [
+        (key, row)
+        for key, row in desired.items()
+        if row.get("enabled", False) and key not in running
+    ]
+    return sorted(candidates, key=lambda item: worker_sort_key(item[0]))
 
 
 def build_env(row: dict) -> dict:
@@ -163,6 +203,79 @@ def start_bot(row: dict) -> subprocess.Popen:
 
     # stdout/stderr dziedziczone -> widoczne w docker logs bot-runner
     return subprocess.Popen(cmd, env=env)
+
+
+def interruptible_wait(
+    seconds: float,
+    shutdown_requested=lambda: _shutdown,
+    *,
+    monotonic=time.monotonic,
+    sleep=time.sleep,
+) -> bool:
+    """Wait up to seconds, returning False promptly when shutdown is requested."""
+    deadline = monotonic() + max(0.0, float(seconds))
+    while not shutdown_requested():
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return True
+        sleep(min(0.1, remaining))
+    return False
+
+
+def start_worker_batch(
+    candidates: list[tuple[BotKey, dict]],
+    running: Dict[BotKey, BotProc],
+    last_restart_attempt: Dict[BotKey, float],
+    *,
+    stagger_seconds: float = STARTUP_STAGGER_SECONDS,
+    start_fn=start_bot,
+    now_fn=time.time,
+    wait_fn=interruptible_wait,
+    shutdown_requested=lambda: _shutdown,
+) -> int:
+    """Start an ordered batch with waits only between consecutive attempts."""
+    total = len(candidates)
+    if total == 0:
+        return 0
+
+    logger.info(
+        "BOT_RUNNER_STARTUP_BATCH size=%d stagger_seconds=%.3f",
+        total,
+        stagger_seconds,
+    )
+    started = 0
+    for index, (key, row) in enumerate(candidates, start=1):
+        if shutdown_requested():
+            break
+        if index > 1 and not wait_fn(stagger_seconds, shutdown_requested):
+            break
+        if shutdown_requested():
+            break
+
+        attempted_at = now_fn()
+        last_restart_attempt[key] = attempted_at
+        logger.info(
+            "BOT_RUNNER_START worker=%d/%d strategy=%s symbol=%s interval=%s spawn_timestamp=%.6f",
+            index,
+            total,
+            key.strategy,
+            key.symbol,
+            key.interval,
+            attempted_at,
+        )
+        try:
+            popen = start_fn(row)
+            running[key] = BotProc(key=key, popen=popen, started_at=now_fn())
+            started += 1
+        except Exception as exc:
+            logger.exception("Failed to start %s: %s", key, exc)
+
+    logger.info(
+        "BOT_RUNNER_STARTUP_BATCH_DONE requested=%d started=%d",
+        total,
+        started,
+    )
+    return started
 
 
 def stop_bot(proc: BotProc):
@@ -235,7 +348,8 @@ def main():
                     stop_bot(proc)
                     running.pop(key, None)
 
-            # 2) Sprawdź crashe i restartuj (z backoff)
+            # 2) Usuń zakończone procesy. Krok 3 uruchomi kwalifikujące się
+            # restarty: pojedynczy natychmiast, wiele jako bounded batch.
             for key, proc in list(running.items()):
                 rc = proc.popen.poll()
                 if rc is None:
@@ -250,37 +364,21 @@ def main():
                     key.strategy, key.symbol, key.interval, rc
                 )
 
+            # 3) Startuj brakujące w stabilnym, ograniczonym batchu. Pojedynczy
+            # restart/enable nie czeka, bo wait występuje tylko między elementami.
+            candidates = []
+            now = time.time()
+            for key, row in ordered_start_candidates(desired, running):
                 last = last_restart_attempt.get(key, 0.0)
-                if now - last < RESTART_BACKOFF_SECONDS:
-                    continue
-                last_restart_attempt[key] = now
+                if now - last >= RESTART_BACKOFF_SECONDS:
+                    candidates.append((key, row))
 
-                row = desired.get(key)
-                if row and row.get("enabled", False):
-                    try:
-                        p = start_bot(row)
-                        running[key] = BotProc(key=key, popen=p, started_at=time.time())
-                    except Exception as e:
-                        logger.exception("Failed to restart %s: %s", key, e)
-
-            # 3) Startuj brakujące
-            for key, row in desired.items():
-                if not row.get("enabled", False):
-                    continue
-                if key in running:
-                    continue
-
-                now = time.time()
-                last = last_restart_attempt.get(key, 0.0)
-                if now - last < RESTART_BACKOFF_SECONDS:
-                    continue
-                last_restart_attempt[key] = now
-
-                try:
-                    p = start_bot(row)
-                    running[key] = BotProc(key=key, popen=p, started_at=time.time())
-                except Exception as e:
-                    logger.exception("Failed to start %s: %s", key, e)
+            start_worker_batch(
+                candidates,
+                running,
+                last_restart_attempt,
+                stagger_seconds=STARTUP_STAGGER_SECONDS,
+            )
 
             elapsed = time.perf_counter() - tick_start
             record_worker_heartbeat(
