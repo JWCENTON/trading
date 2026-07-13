@@ -8,7 +8,6 @@ from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_n
 from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
 from common.flags import exchange_mytrades_enabled
-from common.schema import ensure_schema
 from common.exchange_ingest_trades import ingest_my_trades
 from dataclasses import replace
 from datetime import datetime, timezone, date
@@ -129,7 +128,19 @@ ORDER_NOTIONAL_USDC = float(os.environ.get("ORDER_NOTIONAL_USDC", "6.0"))
 MIN_NOTIONAL_BUFFER_PCT = float(os.environ.get("MIN_NOTIONAL_BUFFER_PCT", "0.05"))
 LIVE_TARGET_NOTIONAL = float(os.environ.get("LIVE_TARGET_NOTIONAL", "6.0"))
 
-client = get_market_data_client()
+_exchange_client = None
+
+
+def get_exchange_client():
+    """Return the process-wide exchange client, creating it on first runtime use."""
+    global _exchange_client
+    if _exchange_client is None:
+        try:
+            _exchange_client = get_market_data_client()
+        except Exception:
+            logging.exception("RSI exchange client initialization failed")
+            raise
+    return _exchange_client
 
 # ========================
 # Regime gating
@@ -187,7 +198,7 @@ def _safe_float(x, default=0.0):
 
 
 def get_best_bid_ask(sym: str):
-    return client.get_best_bid_ask(symbol=sym)
+    return get_exchange_client().get_best_bid_ask(symbol=sym)
 
 
 
@@ -226,7 +237,7 @@ def place_live_exit_maker_then_market(
     base_client_order_id: str,
 ):
     return exchange_place_live_exit_maker_then_market(
-        client,
+        get_exchange_client(),
         symbol=symbol,
         side=side,
         qty=float(qty_btc),
@@ -447,7 +458,7 @@ def execute_and_record(
             conn_exec.close()
 
     pre = preflight_live_order(
-        client,
+        get_exchange_client(),
         cfg_used.symbol,
         side,
         qty_btc,
@@ -483,7 +494,7 @@ def execute_and_record(
         }
 
     resp = place_live_order(
-        client,
+        get_exchange_client(),
         cfg_used.symbol,
         side,
         qty_btc,
@@ -1859,7 +1870,9 @@ def load_runtime_params():
 
 def fetch_klines(limit=50):
     start = time.perf_counter()
-    klines = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=limit)
+    klines = get_exchange_client().get_klines(
+        symbol=SYMBOL, interval=INTERVAL, limit=limit
+    )
     logging.info("Fetched %d klines in %.3f s", len(klines), time.perf_counter() - start)
 
     rows = []
@@ -2868,7 +2881,7 @@ def run_strategy(row, prev_row=None):
         # === SIZING (Model A) ===
         if cfg_effective.trading_mode == "LIVE":
             qty_btc, px_live, notional_live, step, min_qty, min_notional = compute_live_qty_from_notional(
-                client,
+                get_exchange_client(),
                 SYMBOL,
                 target_notional=float(ORDER_NOTIONAL_USDC),
                 quote_asset=QUOTE_ASSET,
@@ -2908,7 +2921,7 @@ def run_strategy(row, prev_row=None):
 
         if manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0:
             qty_btc, px_live, notional_live, step, min_qty, min_notional = compute_live_qty_from_notional(
-                client,
+                get_exchange_client(),
                 SYMBOL,
                 target_notional=float(final_target_notional),
                 quote_asset=QUOTE_ASSET,
@@ -3023,7 +3036,7 @@ LAST_PROCESSED_OPEN_TIME = None
 def main_loop():
     global LAST_PROCESSED_OPEN_TIME
 
-    ensure_schema()
+    runtime_client = get_exchange_client()
     upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
     conn = get_db_conn()
     try:
@@ -3038,7 +3051,7 @@ def main_loop():
             # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
             if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(
-                    client=client,
+                    client=runtime_client,
                     symbols=[SYMBOL],         
                     db_host=DB_HOST,
                     db_port=DB_PORT,

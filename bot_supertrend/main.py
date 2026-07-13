@@ -7,6 +7,7 @@ import hashlib
 from decimal import Decimal, ROUND_DOWN
 from dataclasses import replace
 from datetime import datetime, timezone, date
+from typing import Callable
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
@@ -20,7 +21,6 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_batch
 from common.db import get_db_conn
-from common.schema import ensure_schema
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
@@ -65,7 +65,23 @@ API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 cfg = RuntimeConfig.from_env()
-client = get_market_data_client()
+_exchange_client = None
+
+INDICATOR_PROGRESS_INTERVAL_S = 90.0
+INDICATOR_PROGRESS_ROW_STEP = 5000
+IndicatorProgressCallback = Callable[[str, int, int], None]
+
+
+def get_exchange_client():
+    """Return the process-wide exchange client, creating it on first runtime use."""
+    global _exchange_client
+    if _exchange_client is None:
+        try:
+            _exchange_client = get_market_data_client()
+        except Exception:
+            logging.exception("SUPERTREND exchange client initialization failed")
+            raise
+    return _exchange_client
 
 # =========================
 # Strategy Params (defaults)
@@ -150,7 +166,7 @@ def _get_symbol_filters():
     if _SYMBOL_FILTERS_CACHE is not None:
         return _SYMBOL_FILTERS_CACHE
 
-    info = client.get_symbol_info(SYMBOL)
+    info = get_exchange_client().get_symbol_info(SYMBOL)
     if not info:
         raise RuntimeError(f"Cannot fetch symbol_info for {SYMBOL}")
 
@@ -332,6 +348,110 @@ def heartbeat(info: dict):
     conn.commit()
     cur.close()
     conn.close()
+
+
+def lifecycle_heartbeat(status: str, *, duration_s=None, error=None, **metadata):
+    """Best-effort loop-boundary heartbeat without replacing strategy metadata."""
+    info = {
+        "lifecycle_status": str(status),
+        "lifecycle_updated_at": datetime.now(timezone.utc).isoformat(),
+        "cycle_duration_s": (
+            round(float(duration_s), 3) if duration_s is not None else None
+        ),
+        "last_cycle_error": None if error is None else str(error)[:2000],
+    }
+    info.update(metadata)
+    conn = None
+    cur = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO public.bot_heartbeat(symbol, strategy, interval, last_seen, info)
+            VALUES (%s, %s, %s, now(), %s::jsonb)
+            ON CONFLICT ON CONSTRAINT bot_heartbeat_symbol_strategy_interval_key
+            DO UPDATE SET
+              last_seen=now(),
+              info=COALESCE(bot_heartbeat.info, '{}'::jsonb) || EXCLUDED.info;
+            """,
+            (
+                SYMBOL,
+                STRATEGY_NAME,
+                INTERVAL,
+                json.dumps(sanitize_json(info), default=_json_default, allow_nan=False),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logging.exception("SUPERTREND lifecycle heartbeat failed")
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+class IndicatorProgressHeartbeat:
+    """Emit heartbeat only for time-gated progress made by the main thread."""
+
+    def __init__(
+        self,
+        *,
+        cycle_started_at: str,
+        interval_s: float = INDICATOR_PROGRESS_INTERVAL_S,
+        monotonic: Callable[[], float] = time.monotonic,
+    ):
+        self.cycle_started_at = cycle_started_at
+        self.interval_s = float(interval_s)
+        self.monotonic = monotonic
+        self.last_emit_at = monotonic()
+        self.last_phase = None
+        self.last_processed_rows = -1
+
+    def __call__(self, phase: str, processed_rows: int, total_rows: int):
+        phase = str(phase)
+        processed_rows = int(processed_rows)
+        total_rows = max(0, int(total_rows))
+        made_progress = (
+            phase != self.last_phase
+            or processed_rows > self.last_processed_rows
+        )
+        if not made_progress:
+            return
+
+        self.last_phase = phase
+        self.last_processed_rows = processed_rows
+        now = self.monotonic()
+        if now - self.last_emit_at < self.interval_s:
+            return
+
+        self.last_emit_at = now
+        progress_pct = (
+            round((processed_rows / total_rows) * 100.0, 3)
+            if total_rows > 0
+            else None
+        )
+        lifecycle_heartbeat(
+            "INDICATOR_PROGRESS",
+            phase=phase,
+            processed_rows=processed_rows,
+            total_rows=total_rows,
+            progress_pct=progress_pct,
+            cycle_started_at=self.cycle_started_at,
+            progress_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
 
 # =========================
 # Regime Gate (entry only)
@@ -1002,7 +1122,7 @@ def execute_and_record(
     conn_exec = get_db_conn()
     try:
         resp = place_live_order(
-            client,
+            get_exchange_client(),
             cfg_used.symbol,
             side_u,
             qty_btc,
@@ -1180,7 +1300,9 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
 def fetch_klines():
     logging.info("Fetching klines for %s, interval %s", SYMBOL, INTERVAL)
     start = time.perf_counter()
-    klines = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=50)
+    klines = get_exchange_client().get_klines(
+        symbol=SYMBOL, interval=INTERVAL, limit=50
+    )
     elapsed = time.perf_counter() - start
     logging.info("Fetched %d klines in %.3f s", len(klines), elapsed)
 
@@ -1239,11 +1361,25 @@ def save_klines(rows):
     cur.close()
     conn.close()
 
-def update_indicators():
+def update_indicators(
+    progress_callback: IndicatorProgressCallback | None = None,
+):
     """
     Computes EMA, RSI, ATR and SuperTrend over full series, updates last ~50 candles.
     """
     conn = get_db_conn()
+    progress_failed = False
+
+    def report_progress(phase: str, processed_rows: int, total_rows: int):
+        nonlocal progress_failed
+        if progress_callback is None or progress_failed:
+            return
+        try:
+            progress_callback(phase, processed_rows, total_rows)
+        except Exception:
+            progress_failed = True
+            logging.exception("SUPERTREND indicator progress callback failed")
+
     df = pd.read_sql_query(
         """
         SELECT id, open_time, open, high, low, close
@@ -1254,6 +1390,8 @@ def update_indicators():
         conn,
         params=(SYMBOL, INTERVAL),
     )
+    total_rows = len(df)
+    report_progress("LOAD_HISTORY", total_rows, total_rows)
 
     if df.empty or len(df) < max(EMA_PERIOD, RSI_PERIOD, ATR_PERIOD) + 5:
         conn.close()
@@ -1265,6 +1403,7 @@ def update_indicators():
 
     # EMA
     df["ema_21"] = close.ewm(span=EMA_PERIOD, adjust=False).mean()
+    report_progress("EMA", total_rows, total_rows)
 
     # RSI
     delta = close.diff()
@@ -1274,6 +1413,7 @@ def update_indicators():
     roll_down = loss.rolling(window=RSI_PERIOD).mean()
     rs = roll_up / roll_down
     df["rsi_14"] = 100.0 - (100.0 / (1.0 + rs))
+    report_progress("RSI", total_rows, total_rows)
 
     # ATR (EWMA of TR)
     prev_close = close.shift(1)
@@ -1282,6 +1422,7 @@ def update_indicators():
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["atr_14"] = tr.ewm(span=ATR_PERIOD, adjust=False).mean()
+    report_progress("ATR", total_rows, total_rows)
 
     # SuperTrend
     hl2 = (high + low) / 2.0
@@ -1319,6 +1460,10 @@ def update_indicators():
             st_dir.iloc[i] = int(st_dir.iloc[i - 1])
 
         st_val.iloc[i] = float(final_lb.iloc[i]) if int(st_dir.iloc[i]) == 1 else float(final_ub.iloc[i])
+        if i % INDICATOR_PROGRESS_ROW_STEP == 0:
+            report_progress("SUPERTREND_LOOP", i, total_rows)
+
+    report_progress("SUPERTREND_LOOP", total_rows, total_rows)
 
     df["supertrend_direction"] = st_dir
     df["supertrend"] = st_val
@@ -1346,8 +1491,10 @@ def update_indicators():
         )
         for _, row in last.iterrows()
     ]
+    report_progress("PERSIST_LATEST", 0, len(data))
     cur.executemany(sql, data)
     conn.commit()
+    report_progress("PERSIST_LATEST", len(data), len(data))
     cur.close()
     conn.close()
 
@@ -2012,7 +2159,7 @@ def run_strategy(latest, prev):
 
         # --- SIZING (jak RSI/TREND) ---
         qty_btc, sizing_info = compute_qty_from_notional_safe(
-            client,
+            get_exchange_client(),
             symbol=SYMBOL,
             px=price,
             target_notional=LIVE_TARGET_NOTIONAL,
@@ -2041,7 +2188,7 @@ def run_strategy(latest, prev):
 
         if (manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0):
             qty_btc, sizing_info = compute_qty_from_notional_safe(
-                client,
+                get_exchange_client(),
                 symbol=SYMBOL,
                 px=price,
                 target_notional=final_target_notional,
@@ -2139,9 +2286,87 @@ LAST_PROCESSED_OPEN_TIME = None
 # =========================
 # Main Loop
 # =========================
-def main_loop():
+def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
     global LAST_PROCESSED_OPEN_TIME
-    ensure_schema()
+    # --- Exchange fills ingest (LIVE ONLY) ---
+    # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
+    if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
+        n_trades, n_priced = ingest_my_trades(
+            client=runtime_client,
+            symbols=[SYMBOL],
+            db_host=DB_HOST,
+            db_port=DB_PORT,
+            db_name=DB_NAME,
+            db_user=DB_USER,
+            db_pass=DB_PASS,
+            lookback_ms_default=7 * 24 * 3600 * 1000,
+        )
+        last_ingest_ts = time.time()
+
+        emit_strategy_event(
+            event_type="INGEST",
+            decision=None,
+            reason="EXCHANGE_MYTRADES",
+            price=None,
+            candle_open_time=None,
+            info={"symbol": SYMBOL, "n_trades": int(n_trades), "n_fee_priced": int(n_priced)},
+        )
+
+    load_runtime_params()
+    rows = fetch_klines()
+    save_klines(rows)
+    update_indicators(progress_callback=progress_callback)
+    latest = get_last_closed_candle()
+    prev = get_prev_closed_candle()
+    if latest and prev:
+        open_time = latest[0]
+        if LAST_PROCESSED_OPEN_TIME != open_time:
+            LAST_PROCESSED_OPEN_TIME = open_time
+            run_strategy(latest, prev)
+        else:
+            logging.info("SUPERTREND: no new candle yet (%s) -> skip strategy.", str(open_time))
+    return last_ingest_ts
+
+
+def run_loop_cycle(runtime_client, last_ingest_ts):
+    """Run one real worker iteration and record progress only at its boundaries."""
+    loop_start = time.perf_counter()
+    cycle_started_at = datetime.now(timezone.utc).isoformat()
+    lifecycle_heartbeat("RUNNING", cycle_started_at=cycle_started_at)
+    progress_heartbeat = IndicatorProgressHeartbeat(
+        cycle_started_at=cycle_started_at,
+    )
+    error = None
+    try:
+        last_ingest_ts = run_loop_iteration(
+            runtime_client,
+            last_ingest_ts,
+            progress_callback=progress_heartbeat,
+        )
+    except Exception as exc:
+        error = exc
+        logging.exception("SUPERTREND loop error")
+        emit_strategy_event(
+            event_type="ERROR",
+            decision=None,
+            reason="EXCEPTION",
+            price=None,
+            candle_open_time=None,
+            info={"error": str(exc)},
+        )
+    finally:
+        duration_s = time.perf_counter() - loop_start
+        lifecycle_heartbeat(
+            "ERROR" if error is not None else "CYCLE_OK",
+            duration_s=duration_s,
+            error=error,
+        )
+        logging.info("SUPERTREND loop finished in %.3f s", duration_s)
+    return last_ingest_ts
+
+
+def main_loop():
+    runtime_client = get_exchange_client()
     upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
 
     conn = get_db_conn()
@@ -2155,58 +2380,7 @@ def main_loop():
         logging.info("LIVE + REGIME_ENABLED but REGIME_MODE=DRY_RUN. Consider ENFORCE for profitability.")
 
     while True:
-        loop_start = time.perf_counter()
-        try:
-            # --- Exchange fills ingest (LIVE ONLY) ---
-            # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
-            if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
-                n_trades, n_priced = ingest_my_trades(
-                    client=client,
-                    symbols=[SYMBOL],         
-                    db_host=DB_HOST,
-                    db_port=DB_PORT,
-                    db_name=DB_NAME,
-                    db_user=DB_USER,
-                    db_pass=DB_PASS,
-                    lookback_ms_default=7 * 24 * 3600 * 1000,
-                )
-                last_ingest_ts = time.time()
-
-                emit_strategy_event(
-                    event_type="INGEST",
-                    decision=None,
-                    reason="EXCHANGE_MYTRADES",
-                    price=None,
-                    candle_open_time=None,
-                    info={"symbol": SYMBOL, "n_trades": int(n_trades), "n_fee_priced": int(n_priced)},
-                )
-            else:
-                pass
-            load_runtime_params()
-            rows = fetch_klines()
-            save_klines(rows)
-            update_indicators()
-            latest = get_last_closed_candle()
-            prev = get_prev_closed_candle()
-            if latest and prev:
-                open_time = latest[0]
-                if LAST_PROCESSED_OPEN_TIME != open_time:
-                    LAST_PROCESSED_OPEN_TIME = open_time
-                    run_strategy(latest, prev)
-                else:
-                    logging.info("SUPERTREND: no new candle yet (%s) -> skip strategy.", str(open_time))
-        except Exception as e:
-            logging.exception("SUPERTREND loop error")
-            emit_strategy_event(
-                event_type="ERROR",
-                decision=None,
-                reason="EXCEPTION",
-                price=None,
-                candle_open_time=None,
-                info={"error": str(e)},
-            )
-
-        logging.info("SUPERTREND loop finished in %.3f s", time.perf_counter() - loop_start)
+        last_ingest_ts = run_loop_cycle(runtime_client, last_ingest_ts)
         time.sleep(60)
 
 if __name__ == "__main__":

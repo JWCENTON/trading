@@ -11,7 +11,6 @@ from common.entry_trace import record_entry_trace_shadow
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
 from common.flags import exchange_mytrades_enabled
-from common.schema import ensure_schema
 from dataclasses import replace
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
@@ -90,7 +89,19 @@ API_KEY = os.environ.get("BINANCE_API_KEY")
 API_SECRET = os.environ.get("BINANCE_API_SECRET")
 
 cfg = RuntimeConfig.from_env()
-client = get_market_data_client()
+_exchange_client = None
+
+
+def get_exchange_client():
+    """Return the process-wide exchange client, creating it on first runtime use."""
+    global _exchange_client
+    if _exchange_client is None:
+        try:
+            _exchange_client = get_market_data_client()
+        except Exception:
+            logging.exception("TREND exchange client initialization failed")
+            raise
+    return _exchange_client
 
 TREND_BUFFER = float(os.environ.get("TREND_BUFFER", "0.001"))  # 0.1%
 MAX_POSITION_MINUTES = int(os.environ.get("MAX_POSITION_MINUTES", "90"))
@@ -1371,7 +1382,7 @@ def execute_and_record(
     conn_exec = get_db_conn()
     try:
         pre = preflight_live_order(
-            client,
+            get_exchange_client(),
             cfg_used.symbol,
             side,
             qty_btc,
@@ -1406,7 +1417,7 @@ def execute_and_record(
                 "resp": pre,
             }
         resp = place_live_order(
-            client,
+            get_exchange_client(),
             cfg_used.symbol,
             side_u,
             qty_btc,
@@ -2739,7 +2750,7 @@ def run_trend_strategy():
 
         # ===== SIZING (MUSI być przed użyciem qty_btc) =====
         qty_btc, sizing_info = compute_qty_from_notional(
-            client,
+            get_exchange_client(),
             symbol=SYMBOL,
             px=price,
             target_notional=LIVE_TARGET_NOTIONAL,
@@ -2768,7 +2779,7 @@ def run_trend_strategy():
 
         if manual_entry_addon_usdc > 0 or applied_three_win_boost_usdc > 0:
             qty_btc, sizing_info = compute_qty_from_notional(
-                client,
+                get_exchange_client(),
                 symbol=SYMBOL,
                 px=price,
                 target_notional=final_target_notional,
@@ -2873,7 +2884,9 @@ def fetch_klines():
     logging.info("Fetching klines for %s, interval %s", SYMBOL, INTERVAL)
 
     start = time.perf_counter()
-    klines = client.get_klines(symbol=SYMBOL, interval=INTERVAL, limit=50)
+    klines = get_exchange_client().get_klines(
+        symbol=SYMBOL, interval=INTERVAL, limit=50
+    )
     elapsed = time.perf_counter() - start
     logging.info("Fetched %d klines in %.3f s", len(klines), elapsed)
 
@@ -3036,7 +3049,7 @@ LAST_PROCESSED_OPEN_TIME = None
 
 def main_loop():
     global LAST_PROCESSED_OPEN_TIME
-    ensure_schema()
+    runtime_client = get_exchange_client()
     upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
     conn = get_db_conn()
     try:
@@ -3053,7 +3066,7 @@ def main_loop():
             # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
             if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
                 n_trades, n_priced = ingest_my_trades(
-                    client=client,
+                    client=runtime_client,
                     symbols=[SYMBOL],         
                     db_host=DB_HOST,
                     db_port=DB_PORT,

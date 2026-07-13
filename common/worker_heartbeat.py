@@ -12,9 +12,6 @@ log = logging.getLogger(__name__)
 
 HEARTBEAT_MAX_RETRIES = 3
 HEARTBEAT_RETRYABLE_ERRORS = ("deadlock detected", "could not serialize access")
-_HEARTBEAT_SCHEMA_READY = False
-
-
 def current_environment() -> str:
     return (
         os.environ.get("ENVIRONMENT")
@@ -22,37 +19,6 @@ def current_environment() -> str:
         or os.environ.get("APP_ENV")
         or "UNKNOWN"
     ).upper()
-
-
-def ensure_worker_heartbeats_table(cur) -> None:
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS worker_heartbeats (
-          service_name TEXT NOT NULL,
-          environment TEXT NOT NULL DEFAULT 'UNKNOWN',
-          status TEXT NOT NULL DEFAULT 'unknown',
-          last_tick TIMESTAMPTZ NOT NULL DEFAULT now(),
-          last_ok TIMESTAMPTZ,
-          last_error TEXT,
-          loop_duration_ms INTEGER,
-          meta JSONB NOT NULL DEFAULT '{}'::jsonb,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-          PRIMARY KEY (service_name, environment)
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_status_updated
-          ON worker_heartbeats(status, updated_at DESC);
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS ix_worker_heartbeats_last_tick
-          ON worker_heartbeats(last_tick DESC);
-        """
-    )
 
 
 def record_worker_heartbeat(
@@ -84,12 +50,7 @@ def record_worker_heartbeat(
         environment = current_environment()
         payload = json.dumps(meta or {})
 
-        global _HEARTBEAT_SCHEMA_READY
         with hb_conn.cursor() as cur:
-            if not _HEARTBEAT_SCHEMA_READY:
-                cur.execute("SELECT pg_advisory_xact_lock(917263001)")
-                ensure_worker_heartbeats_table(cur)
-                _HEARTBEAT_SCHEMA_READY = True
             # Serialize heartbeat writes to avoid PostgreSQL deadlocks during concurrent
             # INSERT ... ON CONFLICT updates from multiple workers.
             cur.execute("SELECT pg_advisory_xact_lock(917263002)")

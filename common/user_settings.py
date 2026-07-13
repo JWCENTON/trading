@@ -9,46 +9,6 @@ DEFAULT_MANUAL_ENTRY_ADDON_USDC = 0.0
 DEFAULT_THREE_WIN_BOOST_USDC = 0.0
 
 
-def ensure_user_settings_table(cur) -> None:
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_settings (
-          id BIGSERIAL PRIMARY KEY,
-          user_id BIGINT NULL,
-          min_entry_usdc NUMERIC(18,8) NOT NULL DEFAULT 6,
-          mode TEXT NOT NULL DEFAULT 'AUTO',
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        """
-    )
-    cur.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_user_settings_user_id
-        ON user_settings ((COALESCE(user_id, -1)));
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE user_settings
-        ADD COLUMN IF NOT EXISTS manual_entry_addon_usdc NUMERIC(18,8) NOT NULL DEFAULT 0;
-        """
-    )
-    cur.execute(
-        """
-        ALTER TABLE user_settings
-        ADD COLUMN IF NOT EXISTS three_win_boost_usdc NUMERIC(18,8) NOT NULL DEFAULT 0;
-        """
-    )
-    cur.execute(
-        """
-        INSERT INTO user_settings (user_id, min_entry_usdc, manual_entry_addon_usdc, three_win_boost_usdc, mode)
-        VALUES (NULL, %s, %s, %s, 'AUTO')
-        ON CONFLICT ((COALESCE(user_id, -1))) DO NOTHING;
-        """,
-        (SYSTEM_MIN_ENTRY_USDC, DEFAULT_MANUAL_ENTRY_ADDON_USDC, DEFAULT_THREE_WIN_BOOST_USDC),
-    )
-
-
 def _build_snapshot(row) -> Dict[str, Any]:
     legacy_min_entry = float(row[1]) if row and row[1] is not None else SYSTEM_MIN_ENTRY_USDC
     manual_addon = float(row[2]) if row and row[2] is not None else DEFAULT_MANUAL_ENTRY_ADDON_USDC
@@ -77,7 +37,6 @@ def get_user_settings_snapshot() -> Dict[str, Any]:
     conn = get_db_conn()
     cur = conn.cursor()
     try:
-        ensure_user_settings_table(cur)
         cur.execute(
             """
             SELECT user_id, min_entry_usdc, manual_entry_addon_usdc, three_win_boost_usdc, mode, updated_at
@@ -105,8 +64,6 @@ def upsert_user_settings(
     conn = get_db_conn()
     cur = conn.cursor()
     try:
-        ensure_user_settings_table(cur)
-
         cur.execute(
             """
             SELECT min_entry_usdc, manual_entry_addon_usdc, three_win_boost_usdc, mode

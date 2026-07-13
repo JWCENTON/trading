@@ -27,7 +27,6 @@ from common.alerts import emit_alert_throttled
 from common.exchange_ingest_trades import ingest_my_trades
 from common.flags import exchange_mytrades_enabled
 from common.db import get_db_conn
-from common.schema import ensure_schema
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
@@ -2216,7 +2215,6 @@ def main_loop():
     global LAST_PROCESSED_OPEN_TIME
 
     runtime_client = get_exchange_client()
-    ensure_schema()
     upsert_defaults(SYMBOL, STRATEGY_NAME, INTERVAL)
 
     conn = get_db_conn()

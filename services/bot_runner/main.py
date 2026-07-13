@@ -11,6 +11,7 @@ from typing import Dict, Tuple, Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from common.worker_heartbeat import record_worker_heartbeat
+from common.schema_readiness import validate_strategy_runtime_schema
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -202,6 +203,21 @@ def main():
 
     conn = db_connect()
     conn.autocommit = True
+
+    try:
+        validate_strategy_runtime_schema(conn)
+        logger.info("strategy runtime schema readiness: OK")
+    except Exception as exc:
+        logger.exception("strategy runtime schema readiness failed")
+        record_worker_heartbeat(
+            "bot-runner",
+            status="error",
+            error=exc,
+            meta={"schema_ready": False, "trading_mode": TRADING_MODE},
+            conn=conn,
+        )
+        conn.close()
+        raise
 
     running: Dict[BotKey, BotProc] = {}
     last_restart_attempt: Dict[BotKey, float] = {}
