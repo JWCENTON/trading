@@ -13,6 +13,7 @@ import urllib3.connection
 
 
 def _fresh_import(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "PAPER")
     module_name = "waltrade_bot_bbrange_main_import_safety"
     sys.modules.pop(module_name, None)
     blocked = lambda *_args, **_kwargs: pytest.fail("I/O during import")

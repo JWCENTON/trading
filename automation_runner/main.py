@@ -1858,12 +1858,7 @@ def run_learning_telemetry_refresh(conn):
     interval_s = int(os.getenv("LEARNING_TELEMETRY_REFRESH_INTERVAL_SECONDS", "300"))
     timeout_ms = int(os.getenv("LEARNING_TELEMETRY_REFRESH_TIMEOUT_MS", "300000"))
 
-    env_name = (
-        os.getenv("TRADING_MODE")
-        or os.getenv("ENVIRONMENT")
-        or os.getenv("APP_ENV")
-        or ""
-    ).strip().lower()
+    env_name = cfg.trading_mode.lower()
 
     default_enabled = "0" if env_name == "paper" else "1"
     enabled = (os.getenv("LEARNING_TELEMETRY_REFRESH_ENABLED", default_enabled) or default_enabled).strip().lower()
@@ -3332,25 +3327,26 @@ def main():
 
             logging.info("tick ok")
 
-            if cfg.trading_mode == "LIVE":
+            try:
+                pending_entry_run = run_pending_entry_reconciliation_if_due(
+                    conn,
+                    batch_size=100,
+                    trading_mode=cfg.trading_mode,
+                )
+                logging.info(
+                    "pending_entry_reconciliation status=%s ran=%s "
+                    "scanned=%s has_more=%s",
+                    pending_entry_run.status,
+                    pending_entry_run.ran,
+                    pending_entry_run.stats.scanned,
+                    pending_entry_run.stats.has_more,
+                )
+            except Exception:
+                logging.exception("pending_entry_reconciliation failed")
                 try:
-                    pending_entry_run = run_pending_entry_reconciliation_if_due(
-                        conn, batch_size=100
-                    )
-                    logging.info(
-                        "pending_entry_reconciliation status=%s ran=%s "
-                        "scanned=%s has_more=%s",
-                        pending_entry_run.status,
-                        pending_entry_run.ran,
-                        pending_entry_run.stats.scanned,
-                        pending_entry_run.stats.has_more,
-                    )
+                    conn.rollback()
                 except Exception:
-                    logging.exception("pending_entry_reconciliation failed")
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
+                    pass
 
             if now - last_ip >= ip_int:
                 run_ip_panic_watch(conn)

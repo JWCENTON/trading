@@ -2,6 +2,25 @@
 from dataclasses import dataclass
 import os
 
+
+class TradingModeConfigurationError(ValueError):
+    """Raised when the required TRADING_MODE is missing or invalid."""
+
+
+def normalize_trading_mode(value) -> str:
+    """Return the canonical LIVE/PAPER mode or fail closed."""
+    mode = str(value or "").strip().upper()
+    if mode not in {"LIVE", "PAPER"}:
+        raise TradingModeConfigurationError(
+            "TRADING_MODE must be explicitly set to LIVE or PAPER"
+        )
+    return mode
+
+
+def trading_mode_from_env() -> str:
+    return normalize_trading_mode(os.environ.get("TRADING_MODE"))
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
     symbol: str
@@ -23,7 +42,7 @@ class RuntimeConfig:
             symbol=symbol,
             interval=os.environ.get("INTERVAL", "1m"),
             strategy=os.environ.get("STRATEGY_NAME", "RSI").upper(),
-            trading_mode=os.environ.get("TRADING_MODE", "PAPER").upper(),
+            trading_mode=trading_mode_from_env(),
             live_orders_enabled=(os.environ.get("LIVE_ORDERS_ENABLED", "0") == "1"),
             spot_mode=(os.environ.get("SPOT_MODE", "1") == "1"),
             quote_asset=quote,

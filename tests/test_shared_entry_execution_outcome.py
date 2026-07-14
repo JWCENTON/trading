@@ -232,6 +232,7 @@ def run_entry(module, monkeypatch, result, *, ledger_ok=True, position_failure=F
 def test_strategy_live_entry_matrix(
     monkeypatch, strategy, case, expected_position_qty, expected_reason
 ):
+    monkeypatch.setenv("TRADING_MODE", "LIVE")
     module = load_strategy(strategy)
     observed = run_entry(module, monkeypatch, execution_result(case))
     assert observed.operation_log.count("execution:place_live_order") == 1
@@ -270,6 +271,7 @@ def test_strategy_live_entry_matrix(
 
 @pytest.mark.parametrize("strategy", STRATEGIES)
 def test_strategy_ledger_failure_before_fill_sends_no_order(monkeypatch, strategy):
+    monkeypatch.setenv("TRADING_MODE", "LIVE")
     module = load_strategy(strategy)
     observed = run_entry(
         module, monkeypatch, execution_result("filled"), ledger_ok=False
@@ -281,6 +283,7 @@ def test_strategy_ledger_failure_before_fill_sends_no_order(monkeypatch, strateg
 
 @pytest.mark.parametrize("strategy", STRATEGIES)
 def test_strategy_ledger_failure_after_fill_preserves_execution(monkeypatch, strategy):
+    monkeypatch.setenv("TRADING_MODE", "LIVE")
     module = load_strategy(strategy)
     observed = run_entry(
         module, monkeypatch, execution_result("filled"), position_failure=True

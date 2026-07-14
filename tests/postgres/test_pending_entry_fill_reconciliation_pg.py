@@ -28,8 +28,13 @@ from psycopg2.extensions import parse_dsn  # noqa: E402
 
 from common.entry_fill_reconciliation import (  # noqa: E402
     _CANDIDATES_SQL,
-    reconcile_pending_entry_fills,
+    reconcile_pending_entry_fills as _reconcile_pending_entry_fills,
 )
+
+
+def reconcile_pending_entry_fills(conn, **kwargs):
+    kwargs.setdefault("trading_mode", "LIVE")
+    return _reconcile_pending_entry_fills(conn, **kwargs)
 
 
 def _dsn_database_name() -> str:

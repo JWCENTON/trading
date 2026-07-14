@@ -1,5 +1,7 @@
 import os
 
+from common.runtime import trading_mode_from_env
+
 def env_flag(name: str, default: str = "0") -> bool:
     """
     Returns True if env var is one of: 1, true, yes, on (case-insensitive).
@@ -8,7 +10,7 @@ def env_flag(name: str, default: str = "0") -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 def trading_mode() -> str:
-    return (os.getenv("TRADING_MODE", "PAPER") or "PAPER").strip().upper()
+    return trading_mode_from_env()
 
 def is_live_mode() -> bool:
     return trading_mode() == "LIVE"

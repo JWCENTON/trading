@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from common.runtime import normalize_trading_mode
+
 
 REQUIRED_COLUMNS = {
     "bot_control": {
@@ -97,6 +101,29 @@ REQUIRED_INDEXES = {
     "ux_binance_order_fill_trade",
 }
 
+LIVE_ONLY_TABLES = {"binance_orders", "binance_order_fills"}
+LIVE_ONLY_INDEXES = {
+    "ux_binance_orders_source_symbol_order_id",
+    "ux_binance_orders_legacy_null_source_symbol_order_id",
+    "ix_binance_orders_pending_entry_reconcile",
+    "ix_binance_order_fills_entry_reconcile_lookup",
+    "ux_binance_order_fill_trade",
+}
+BASE_REQUIRED_COLUMNS = {
+    table_name: columns
+    for table_name, columns in REQUIRED_COLUMNS.items()
+    if table_name not in LIVE_ONLY_TABLES
+}
+BASE_REQUIRED_INDEXES = REQUIRED_INDEXES - LIVE_ONLY_INDEXES
+
+
+@dataclass(frozen=True)
+class SchemaReadinessResult:
+    environment: str
+    status: str
+    pending_entry_reconciliation_applicable: bool
+
+
 PENDING_ENTRY_INDEX_CONTRACT = {
     "ux_positions_open": (
         "create unique index", "(symbol, strategy, \"interval\")", "where",
@@ -138,8 +165,20 @@ PENDING_ENTRY_TABLES = {
 }
 
 
-def validate_pending_entry_reconciliation_schema(conn) -> None:
+def validate_pending_entry_reconciliation_schema(
+    conn,
+    *,
+    trading_mode: str | None = None,
+) -> SchemaReadinessResult:
     """Validate the complete read/write contract; performs catalog reads only."""
+    mode = normalize_trading_mode(trading_mode)
+    if mode == "PAPER":
+        return SchemaReadinessResult(
+            environment="PAPER",
+            status="NOT_APPLICABLE",
+            pending_entry_reconciliation_applicable=False,
+        )
+
     missing = []
     with conn.cursor() as cur:
         cur.execute(
@@ -220,9 +259,26 @@ def validate_pending_entry_reconciliation_schema(conn) -> None:
             + ", ".join(missing)
         )
 
+    return SchemaReadinessResult(
+        environment="LIVE",
+        status="READY",
+        pending_entry_reconciliation_applicable=True,
+    )
 
-def validate_strategy_runtime_schema(conn) -> None:
+
+def validate_strategy_runtime_schema(
+    conn,
+    *,
+    trading_mode: str | None = None,
+) -> SchemaReadinessResult:
     """Fail fast when the migrated strategy schema is incomplete; never run DDL."""
+    mode = normalize_trading_mode(trading_mode)
+    required_columns = (
+        REQUIRED_COLUMNS if mode == "LIVE" else BASE_REQUIRED_COLUMNS
+    )
+    required_indexes = (
+        REQUIRED_INDEXES if mode == "LIVE" else BASE_REQUIRED_INDEXES
+    )
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -230,14 +286,14 @@ def validate_strategy_runtime_schema(conn) -> None:
             FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = ANY(%s)
             """,
-            (list(REQUIRED_COLUMNS),),
+            (list(required_columns),),
         )
         actual_columns: dict[str, set[str]] = {}
         for table_name, column_name in cur.fetchall():
             actual_columns.setdefault(table_name, set()).add(column_name)
 
         missing = []
-        for table_name, required in REQUIRED_COLUMNS.items():
+        for table_name, required in required_columns.items():
             absent = sorted(required - actual_columns.get(table_name, set()))
             if absent:
                 missing.append(f"{table_name}: {','.join(absent)}")
@@ -248,10 +304,10 @@ def validate_strategy_runtime_schema(conn) -> None:
             FROM pg_indexes
             WHERE schemaname = 'public' AND indexname = ANY(%s)
             """,
-            (list(REQUIRED_INDEXES),),
+            (list(required_indexes),),
         )
         actual_indexes = {row[0] for row in cur.fetchall()}
-        absent_indexes = sorted(REQUIRED_INDEXES - actual_indexes)
+        absent_indexes = sorted(required_indexes - actual_indexes)
         if absent_indexes:
             missing.append(f"indexes: {','.join(absent_indexes)}")
 
@@ -261,4 +317,14 @@ def validate_strategy_runtime_schema(conn) -> None:
             + "; ".join(missing)
         )
 
-    validate_pending_entry_reconciliation_schema(conn)
+    if mode == "PAPER":
+        return SchemaReadinessResult(
+            environment="PAPER",
+            status="NOT_APPLICABLE",
+            pending_entry_reconciliation_applicable=False,
+        )
+
+    return validate_pending_entry_reconciliation_schema(
+        conn,
+        trading_mode="LIVE",
+    )

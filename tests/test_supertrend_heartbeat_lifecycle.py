@@ -6,7 +6,8 @@ import pytest
 
 
 @pytest.fixture
-def module():
+def module(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "PAPER")
     return importlib.import_module("bot_supertrend.main")
 
 

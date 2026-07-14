@@ -7,18 +7,14 @@ import time
 from typing import Any, Optional
 
 from common.db import get_db_conn
+from common.runtime import trading_mode_from_env
 
 log = logging.getLogger(__name__)
 
 HEARTBEAT_MAX_RETRIES = 3
 HEARTBEAT_RETRYABLE_ERRORS = ("deadlock detected", "could not serialize access")
 def current_environment() -> str:
-    return (
-        os.environ.get("ENVIRONMENT")
-        or os.environ.get("TRADING_MODE")
-        or os.environ.get("APP_ENV")
-        or "UNKNOWN"
-    ).upper()
+    return trading_mode_from_env()
 
 
 def record_worker_heartbeat(
@@ -32,9 +28,16 @@ def record_worker_heartbeat(
     _attempt: int = 1,
 ) -> None:
     """
-    Best-effort heartbeat writer. Never raises to the caller.
+    Best-effort heartbeat writer after mandatory trading-mode validation.
+    Configuration errors propagate; DB write failures remain fail-open.
     Can reuse an existing connection or open its own short connection.
     """
+    environment = current_environment()
+    deployment = os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV")
+    payload_meta = dict(meta or {})
+    if deployment:
+        payload_meta.setdefault("deployment", deployment)
+
     own_conn = conn is None
     hb_conn = conn
     try:
@@ -47,8 +50,7 @@ def record_worker_heartbeat(
             loop_duration_ms = max(0, int(float(loop_duration_s) * 1000))
 
         error_text = None if error is None else str(error)[:2000]
-        environment = current_environment()
-        payload = json.dumps(meta or {})
+        payload = json.dumps(payload_meta)
 
         with hb_conn.cursor() as cur:
             # Serialize heartbeat writes to avoid PostgreSQL deadlocks during concurrent

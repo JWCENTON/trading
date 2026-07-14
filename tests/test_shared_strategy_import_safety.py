@@ -28,6 +28,7 @@ STRATEGIES = (
 def _fresh_import(monkeypatch, label, source, factory):
     module_name = f"waltrade_{label.lower()}_main_import_safety"
     sys.modules.pop(module_name, None)
+    monkeypatch.setenv("TRADING_MODE", "PAPER")
     monkeypatch.delenv("BINANCE_API_KEY", raising=False)
     monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
     monkeypatch.delenv("OKX_API_KEY", raising=False)

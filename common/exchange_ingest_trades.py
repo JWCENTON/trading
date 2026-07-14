@@ -5,13 +5,41 @@ import logging
 import os
 from decimal import Decimal
 from common.exchange_client import get_market_data_client
-from typing import Iterable, Dict, Any, Tuple, Optional
+from typing import Iterable, Dict, Any, Optional
 
 import psycopg2
 from psycopg2.extras import execute_batch
 
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
 from common.exchange_identity import normalize_exchange_source
+from common.flags import trading_mode
+
+
+class FillIngestResult(tuple):
+    """Two-item legacy result with additive applicability metadata."""
+
+    def __new__(
+        cls,
+        fetched: int,
+        fee_rows_priced: int,
+        *,
+        status: str = "OK",
+        ran: bool = True,
+        applicable: bool = True,
+    ):
+        result = super().__new__(cls, (int(fetched), int(fee_rows_priced)))
+        result.status = status
+        result.ran = bool(ran)
+        result.applicable = bool(applicable)
+        return result
+
+    @property
+    def fetched(self) -> int:
+        return self[0]
+
+    @property
+    def fee_rows_priced(self) -> int:
+        return self[1]
 
 
 UPSERT_TRADE_SQL = """
@@ -254,7 +282,7 @@ def ingest_my_trades(
     db_pass: str,
     lookback_ms_default: int = 7 * 24 * 3600 * 1000,
     api_limit: int = 1000,
-) -> Tuple[int, int]:
+) -> FillIngestResult:
     """
     Ingestuje fill-level z configured exchange (client.get_my_trades) do binance_order_fills.
     Historyczna nazwa tabeli zostaje, ale source musi być exchange-neutral:
@@ -263,6 +291,20 @@ def ingest_my_trades(
 
     Returns: (n_trades_fetched, n_fee_rows_priced)
     """
+    mode = trading_mode()
+    if mode != "LIVE":
+        logging.info(
+            "EXCHANGE_INGEST|status=NOT_APPLICABLE trading_mode=%s",
+            mode,
+        )
+        return FillIngestResult(
+            0,
+            0,
+            status="NOT_APPLICABLE",
+            ran=False,
+            applicable=False,
+        )
+
     dsn = _mk_dsn(host=db_host, port=db_port, dbname=db_name, user=db_user, password=db_pass)
     now_ms = int(time.time() * 1000)
     source = normalize_exchange_source(os.getenv("EXCHANGE", "BINANCE") or "BINANCE")
@@ -322,7 +364,9 @@ def ingest_my_trades(
             cur.execute("SAVEPOINT pending_entry_fill_batch")
         try:
             entry_run = run_pending_entry_reconciliation_if_due(
-                conn, batch_size=100
+                conn,
+                batch_size=100,
+                trading_mode=mode,
             )
             with conn.cursor() as cur:
                 cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
@@ -368,4 +412,4 @@ def ingest_my_trades(
             reconciled_entries,
         )
 
-    return total_fetched, priced_updated
+    return FillIngestResult(total_fetched, priced_updated)

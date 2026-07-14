@@ -6,11 +6,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 from collections import defaultdict
 from common.db import get_db_conn
+from common.runtime import trading_mode_from_env
 from common.worker_heartbeat import record_worker_heartbeat
 from typing import Dict, Tuple, Any, Optional, List, Set
 from datetime import datetime, timezone, timedelta
 import psycopg2
 import psycopg2.extras
+
+TRADING_MODE = trading_mode_from_env()
 
 # -------------------------
 # Logging
@@ -27,8 +30,6 @@ UNIVERSE_STRATS = {"RSI", "SUPERTREND", "TREND", "BBRANGE"}
 UNIVERSE_INTERVALS = tuple(
     x.strip() for x in os.getenv("ORC_ALLOC_INTERVALS", "1m").split(",") if x.strip()
 )
-
-TRADING_MODE = os.getenv("TRADING_MODE", "").upper()
 
 MAX_PICKS = int(os.getenv("ORC_ALLOC_MAX_PICKS", "4"))
 MAX_PER_SYMBOL = int(os.getenv("ORC_ALLOC_MAX_PER_SYMBOL", "1"))

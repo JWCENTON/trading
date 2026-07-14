@@ -8,6 +8,9 @@ import sys
 import pytest
 
 from common.schema_readiness import (
+    BASE_REQUIRED_COLUMNS,
+    BASE_REQUIRED_INDEXES,
+    LIVE_ONLY_INDEXES,
     PENDING_ENTRY_FUNCTION,
     PENDING_ENTRY_INDEX_CONTRACT,
     PENDING_ENTRY_REQUIRED_KV,
@@ -27,6 +30,15 @@ STRATEGY_FILES = (
     ROOT / "bot_supertrend" / "main.py",
 )
 DDL_PREFIXES = ("ALTER", "CREATE", "DROP", "TRUNCATE", "REINDEX", "VACUUM")
+VALID_TRADING_MODES = (
+    ("live", "LIVE"),
+    ("LIVE", "LIVE"),
+    (" live ", "LIVE"),
+    ("paper", "PAPER"),
+    ("PAPER", "PAPER"),
+    (" paper ", "PAPER"),
+)
+INVALID_TRADING_MODES = (None, "", "   ", "unknown", "testnet")
 
 
 class RecordingCursor:
@@ -61,6 +73,22 @@ class RecordingConnection:
         self.closed = True
 
 
+class TrapCursor:
+    def execute(self, *_args, **_kwargs):
+        raise AssertionError("execute called")
+
+
+class TrapConnection:
+    def cursor(self):
+        raise AssertionError("cursor called")
+
+    def commit(self):
+        raise AssertionError("commit called")
+
+    def rollback(self):
+        raise AssertionError("rollback called")
+
+
 def _pending_ready_responses():
     columns = [
         (table, column)
@@ -81,6 +109,15 @@ def _pending_ready_responses():
             for key in PENDING_ENTRY_REQUIRED_KV
         ],
     ]
+
+
+def _base_ready_responses():
+    columns = [
+        (table, column)
+        for table, names in BASE_REQUIRED_COLUMNS.items()
+        for column in names
+    ]
+    return [columns, [(name,) for name in BASE_REQUIRED_INDEXES]]
 
 
 def test_strategy_modules_do_not_import_or_call_ensure_schema():
@@ -115,7 +152,7 @@ def test_schema_readiness_uses_selects_only():
         *_pending_ready_responses(),
     ])
 
-    validate_strategy_runtime_schema(conn)
+    validate_strategy_runtime_schema(conn, trading_mode="LIVE")
 
     assert len(conn.cursor_obj.sql) == 7
     assert all(sql.upper().startswith("SELECT") for sql, _ in conn.cursor_obj.sql)
@@ -126,7 +163,115 @@ def test_schema_readiness_fails_fast_when_schema_is_missing():
     conn = RecordingConnection([[], [], [], [], [], [], []])
 
     with pytest.raises(RuntimeError, match="apply migrations"):
-        validate_strategy_runtime_schema(conn)
+        validate_strategy_runtime_schema(conn, trading_mode="LIVE")
+
+
+def test_live_readiness_rejects_missing_binance_orders():
+    from common.schema_readiness import REQUIRED_COLUMNS, REQUIRED_INDEXES
+
+    columns = [
+        (table, column)
+        for table, names in REQUIRED_COLUMNS.items()
+        if table != "binance_orders"
+        for column in names
+    ]
+    conn = RecordingConnection([
+        columns,
+        [(name,) for name in REQUIRED_INDEXES],
+    ])
+
+    with pytest.raises(RuntimeError, match="binance_orders"):
+        validate_strategy_runtime_schema(conn, trading_mode="LIVE")
+
+
+def test_paper_readiness_accepts_base_schema_without_live_order_queries():
+    conn = RecordingConnection(_base_ready_responses())
+
+    result = validate_strategy_runtime_schema(conn, trading_mode="PAPER")
+
+    assert result.environment == "PAPER"
+    assert result.status == "NOT_APPLICABLE"
+    assert result.pending_entry_reconciliation_applicable is False
+    assert len(conn.cursor_obj.sql) == 2
+    queried_names = {
+        name
+        for _sql, params in conn.cursor_obj.sql
+        for name in params[0]
+    }
+    assert "binance_orders" not in queried_names
+    assert "binance_order_fills" not in queried_names
+    assert not queried_names.intersection(LIVE_ONLY_INDEXES)
+
+
+def test_paper_readiness_still_rejects_missing_base_schema():
+    conn = RecordingConnection([
+        [],
+        [(name,) for name in BASE_REQUIRED_INDEXES],
+    ])
+
+    with pytest.raises(RuntimeError, match="apply migrations"):
+        validate_strategy_runtime_schema(conn, trading_mode="PAPER")
+
+
+def test_paper_readiness_still_rejects_missing_base_index():
+    columns = [
+        (table, column)
+        for table, names in BASE_REQUIRED_COLUMNS.items()
+        for column in names
+    ]
+    conn = RecordingConnection([columns, []])
+
+    with pytest.raises(RuntimeError, match="indexes"):
+        validate_strategy_runtime_schema(conn, trading_mode="PAPER")
+
+
+@pytest.mark.parametrize(("raw", "expected"), VALID_TRADING_MODES)
+def test_strategy_runtime_readiness_uses_full_mode_matrix(raw, expected):
+    if expected == "PAPER":
+        conn = RecordingConnection(_base_ready_responses())
+        result = validate_strategy_runtime_schema(conn, trading_mode=raw)
+        assert result.environment == "PAPER"
+        assert result.status == "NOT_APPLICABLE"
+        assert result.pending_entry_reconciliation_applicable is False
+        assert len(conn.cursor_obj.sql) == 2
+        return
+
+    from common.schema_readiness import REQUIRED_COLUMNS, REQUIRED_INDEXES
+
+    columns = [
+        (table, column)
+        for table, names in REQUIRED_COLUMNS.items()
+        for column in names
+    ]
+    conn = RecordingConnection([
+        columns,
+        [(name,) for name in REQUIRED_INDEXES],
+        *_pending_ready_responses(),
+    ])
+    result = validate_strategy_runtime_schema(conn, trading_mode=raw)
+    assert result.environment == "LIVE"
+    assert result.status == "READY"
+    assert result.pending_entry_reconciliation_applicable is True
+    assert len(conn.cursor_obj.sql) == 7
+
+
+@pytest.mark.parametrize("raw", INVALID_TRADING_MODES)
+def test_strategy_runtime_readiness_rejects_invalid_before_cursor(raw):
+    from common.runtime import TradingModeConfigurationError
+
+    with pytest.raises(TradingModeConfigurationError):
+        validate_strategy_runtime_schema(TrapConnection(), trading_mode=raw)
+
+
+def test_paper_pending_entry_readiness_is_no_query_not_applicable():
+    result = validate_pending_entry_reconciliation_schema(
+        TrapConnection(),
+        trading_mode="PAPER",
+    )
+
+    assert result.environment == "PAPER"
+    assert result.status == "NOT_APPLICABLE"
+    assert result.pending_entry_reconciliation_applicable is False
 
 
 @pytest.mark.parametrize(
@@ -146,7 +291,9 @@ def test_pending_entry_readiness_rejects_incomplete_contract(
     responses[response_index] = replacement
     conn = RecordingConnection(responses)
     with pytest.raises(RuntimeError, match=expected):
-        validate_pending_entry_reconciliation_schema(conn)
+        validate_pending_entry_reconciliation_schema(
+            conn, trading_mode="LIVE"
+        )
 
 
 def test_pending_entry_readiness_rejects_wrong_index_definition():
@@ -154,7 +301,9 @@ def test_pending_entry_readiness_rejects_wrong_index_definition():
     responses[1][0] = (responses[1][0][0], "CREATE INDEX wrong ON public.x (id)")
     conn = RecordingConnection(responses)
     with pytest.raises(RuntimeError, match="index_definition"):
-        validate_pending_entry_reconciliation_schema(conn)
+        validate_pending_entry_reconciliation_schema(
+            conn, trading_mode="LIVE"
+        )
 
 
 @pytest.mark.parametrize("missing_name", sorted(PENDING_ENTRY_INDEX_CONTRACT))
@@ -163,13 +312,19 @@ def test_pending_entry_readiness_rejects_each_missing_critical_index(missing_nam
     responses[1] = [row for row in responses[1] if row[0] != missing_name]
     conn = RecordingConnection(responses)
     with pytest.raises(RuntimeError, match=missing_name):
-        validate_pending_entry_reconciliation_schema(conn)
+        validate_pending_entry_reconciliation_schema(
+            conn, trading_mode="LIVE"
+        )
 
 
 def test_pending_entry_readiness_accepts_full_contract():
-    validate_pending_entry_reconciliation_schema(
-        RecordingConnection(_pending_ready_responses())
+    result = validate_pending_entry_reconciliation_schema(
+        RecordingConnection(_pending_ready_responses()),
+        trading_mode="LIVE",
     )
+    assert result.environment == "LIVE"
+    assert result.status == "READY"
+    assert result.pending_entry_reconciliation_applicable is True
 
 
 def test_runner_validates_schema_before_fetching_or_starting_children(monkeypatch):
@@ -184,7 +339,7 @@ def test_runner_validates_schema_before_fetching_or_starting_children(monkeypatc
 
     monkeypatch.setattr(runner, "db_connect", lambda: operations.append("connect") or conn)
 
-    def readiness(_conn):
+    def readiness(_conn, **_kwargs):
         operations.append("readiness")
         raise StopAfterReadiness
 

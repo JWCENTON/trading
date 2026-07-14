@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from common.runtime import normalize_trading_mode
+
 
 _CANDIDATES_SQL = """
 /* pending-entry:candidates */
@@ -177,6 +179,13 @@ class EntryFillReconciliationStats:
     alarms: int = 0
     failed: int = 0
     has_more: bool = False
+    status: str = "OK"
+    ran: bool = True
+    applicable: bool = True
+
+    @property
+    def processed(self) -> int:
+        return self.scanned
 
 
 @dataclass(frozen=True)
@@ -184,6 +193,10 @@ class PendingEntryReconciliationRun:
     ran: bool
     status: str
     stats: EntryFillReconciliationStats
+
+    @property
+    def applicable(self) -> bool:
+        return self.stats.applicable
 
 
 def _mark_order(
@@ -535,8 +548,16 @@ def reconcile_pending_entry_fills(
     conn,
     *,
     batch_size: int = 100,
+    trading_mode: str | None = None,
 ) -> EntryFillReconciliationStats:
     """Reconcile already-ingested entry fills; performs no exchange requests."""
+    if normalize_trading_mode(trading_mode) == "PAPER":
+        return EntryFillReconciliationStats(
+            status="NOT_APPLICABLE",
+            ran=False,
+            applicable=False,
+        )
+
     bounded_batch = max(1, min(int(batch_size), 1000))
     with conn.cursor() as cur:
         cur.execute(_CANDIDATES_SQL, (bounded_batch,))
@@ -582,12 +603,11 @@ def reconcile_pending_entry_fills(
                 order_row_id,
             )
 
+    has_more = len(candidates) >= bounded_batch or counts["failed"] > 0
     return EntryFillReconciliationStats(
         scanned=len(candidates),
-        has_more=(
-            len(candidates) >= bounded_batch
-            or counts["failed"] > 0
-        ),
+        has_more=has_more,
+        status="BACKLOG_REMAINS" if has_more else "OK",
         **counts,
     )
 
@@ -627,8 +647,21 @@ def run_pending_entry_reconciliation_if_due(
     batch_size: int = 100,
     force: bool = False,
     now: datetime | None = None,
+    trading_mode: str | None = None,
 ) -> PendingEntryReconciliationRun:
     """Run one DB-only bounded batch under the shared automation_kv due gate."""
+    mode = normalize_trading_mode(trading_mode)
+    if mode == "PAPER":
+        return PendingEntryReconciliationRun(
+            False,
+            "NOT_APPLICABLE",
+            EntryFillReconciliationStats(
+                status="NOT_APPLICABLE",
+                ran=False,
+                applicable=False,
+            ),
+        )
+
     now_utc = now or datetime.now(timezone.utc)
     with conn.cursor() as cur:
         cur.execute(_READ_DUE_GATE_SQL, (list(_DUE_KEYS),))
@@ -636,12 +669,16 @@ def run_pending_entry_reconciliation_if_due(
 
     if settings.get(_DUE_KEYS[0]) != "1":
         return PendingEntryReconciliationRun(
-            False, "SCHEMA_NOT_READY", EntryFillReconciliationStats()
+            False,
+            "SCHEMA_NOT_READY",
+            EntryFillReconciliationStats(status="SCHEMA_NOT_READY", ran=False),
         )
     enabled = settings.get(_DUE_KEYS[1], "1").strip().lower()
     if enabled not in {"1", "true", "yes", "on"}:
         return PendingEntryReconciliationRun(
-            False, "DISABLED", EntryFillReconciliationStats()
+            False,
+            "DISABLED",
+            EntryFillReconciliationStats(status="DISABLED", ran=False),
         )
     try:
         interval_seconds = max(1, int(settings.get(_DUE_KEYS[2], "30")))
@@ -657,22 +694,33 @@ def run_pending_entry_reconciliation_if_due(
     if not force and last_run is not None:
         if (now_utc - last_run).total_seconds() < interval_seconds:
             return PendingEntryReconciliationRun(
-                False, "NOT_DUE", EntryFillReconciliationStats()
+                False,
+                "NOT_DUE",
+                EntryFillReconciliationStats(status="NOT_DUE", ran=False),
             )
 
     from common.schema_readiness import validate_pending_entry_reconciliation_schema
 
     try:
-        validate_pending_entry_reconciliation_schema(conn)
+        validate_pending_entry_reconciliation_schema(
+            conn,
+            trading_mode="LIVE",
+        )
     except Exception as exc:
         with conn.cursor() as cur:
             _upsert_kv(cur, "pending_entry_reconciliation_last_status", "SCHEMA_NOT_READY")
             _upsert_kv(cur, "pending_entry_reconciliation_last_error", str(exc))
         return PendingEntryReconciliationRun(
-            False, "SCHEMA_NOT_READY", EntryFillReconciliationStats()
+            False,
+            "SCHEMA_NOT_READY",
+            EntryFillReconciliationStats(status="SCHEMA_NOT_READY", ran=False),
         )
 
-    stats = reconcile_pending_entry_fills(conn, batch_size=batch_size)
+    stats = reconcile_pending_entry_fills(
+        conn,
+        batch_size=batch_size,
+        trading_mode="LIVE",
+    )
     status = "BACKLOG_REMAINS" if stats.has_more else "OK"
     stats_payload = {
         "scanned": stats.scanned,

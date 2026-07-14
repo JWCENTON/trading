@@ -22,6 +22,10 @@ import secrets
 import hashlib
 import pyotp
 from common.exchange_client import get_market_data_client
+from common.runtime import trading_mode_from_env
+
+
+TRADING_MODE = trading_mode_from_env()
 
 
 DB_HOST = os.environ.get("DB_HOST", "db")
@@ -158,11 +162,9 @@ AI_TUNE_INTERVAL_MINUTES = int(os.environ.get("AI_TUNE_INTERVAL_MINUTES", "1440"
 AI_AUTO_APPLY = os.environ.get("AI_AUTO_APPLY", "false").lower() == "true"
 
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "").lower()
-TRADING_MODE = os.environ.get("TRADING_MODE", "").upper()
+exchange_client = get_market_data_client()
 
 ALLOW_AI_DB_WRITES = (ENVIRONMENT == "paper" and TRADING_MODE == "PAPER" and AI_AUTO_APPLY)
-
-exchange_client = get_market_data_client()
 
 app = FastAPI(title="Trading Bot API", version="0.1.0")
 
@@ -3290,7 +3292,7 @@ def get_regime_history(
 def safety_status(user: CurrentUser = Depends(require_auth)):
     return {
         "environment": os.environ.get("ENVIRONMENT"),
-        "trading_mode": os.environ.get("TRADING_MODE"),
+        "trading_mode": TRADING_MODE,
         "live_orders_enabled": os.environ.get("LIVE_ORDERS_ENABLED"),
         "panic_disable_trading": os.environ.get("PANIC_DISABLE_TRADING"),
     }
@@ -4242,8 +4244,10 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                     ELSE 'healthy'
                   END AS effective_status
                 FROM worker_heartbeats
+                WHERE environment = %s
                 ORDER BY service_name ASC, environment ASC
-                """
+                """,
+                (TRADING_MODE,),
             )
             worker_rows = cur.fetchall()
             create_worker_heartbeat_notifications_if_needed(cur)
@@ -5535,7 +5539,7 @@ def get_backup_stale_status():
 
 
 def get_daily_pnl_thresholds():
-    if TRADING_MODE.upper() == "PAPER" or ENVIRONMENT.lower() == "paper":
+    if TRADING_MODE == "PAPER" or ENVIRONMENT.lower() == "paper":
         return PAPER_DAILY_DRAWDOWN_ALERT_USDC, PAPER_DAILY_PROFIT_ALERT_USDC
     return LIVE_DAILY_DRAWDOWN_ALERT_USDC, LIVE_DAILY_PROFIT_ALERT_USDC
 
@@ -5811,8 +5815,10 @@ def create_worker_heartbeat_notifications_if_needed(cur):
             ELSE 'healthy'
           END AS effective_status
         FROM worker_heartbeats
+        WHERE environment = %s
         ORDER BY service_name ASC, environment ASC
-        """
+        """,
+        (TRADING_MODE,),
     )
     rows = cur.fetchall()
     if not rows:
@@ -6280,5 +6286,3 @@ def mark_all_ui_notifications_read(user: CurrentUser = Depends(require_admin)):
             )
             conn.commit()
     return {"ok": True}
-
-

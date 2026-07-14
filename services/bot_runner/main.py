@@ -13,6 +13,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from common.worker_heartbeat import record_worker_heartbeat
 from common.schema_readiness import validate_strategy_runtime_schema
+from common.runtime import normalize_trading_mode
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -32,9 +33,7 @@ STARTUP_STAGGER_SECONDS = float(
 if not math.isfinite(STARTUP_STAGGER_SECONDS) or STARTUP_STAGGER_SECONDS < 0:
     raise RuntimeError("BOT_RUNNER_STARTUP_STAGGER_SECONDS must be finite and >= 0")
 
-TRADING_MODE = os.getenv("TRADING_MODE", "").strip()
-if TRADING_MODE not in ("LIVE", "PAPER"):
-    raise RuntimeError("TRADING_MODE must be LIVE or PAPER (set in env_file)")
+TRADING_MODE = normalize_trading_mode(os.getenv("TRADING_MODE"))
 
 # Mapowanie strategii -> komenda uruchomieniowa
 # Dostosuj ścieżki do swoich entrypointów.
@@ -318,8 +317,17 @@ def main():
     conn.autocommit = True
 
     try:
-        validate_strategy_runtime_schema(conn)
-        logger.info("strategy runtime schema readiness: OK")
+        readiness = validate_strategy_runtime_schema(
+            conn,
+            trading_mode=TRADING_MODE,
+        )
+        logger.info(
+            "strategy runtime schema readiness: status=%s environment=%s "
+            "pending_entry_reconciliation_applicable=%s",
+            readiness.status,
+            readiness.environment,
+            readiness.pending_entry_reconciliation_applicable,
+        )
     except Exception as exc:
         logger.exception("strategy runtime schema readiness failed")
         record_worker_heartbeat(

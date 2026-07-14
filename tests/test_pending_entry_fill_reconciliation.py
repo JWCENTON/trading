@@ -8,13 +8,23 @@ from pathlib import Path
 import pytest
 
 from common.entry_fill_reconciliation import (
-    reconcile_pending_entry_fills,
-    run_pending_entry_reconciliation_if_due,
+    reconcile_pending_entry_fills as _reconcile_pending_entry_fills,
+    run_pending_entry_reconciliation_if_due as _run_pending_entry_reconciliation_if_due,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "db/migrations/20260714_pending_entry_fill_reconciliation_v1.sql"
+
+
+def reconcile_pending_entry_fills(conn, **kwargs):
+    kwargs.setdefault("trading_mode", "LIVE")
+    return _reconcile_pending_entry_fills(conn, **kwargs)
+
+
+def run_pending_entry_reconciliation_if_due(conn, **kwargs):
+    kwargs.setdefault("trading_mode", "LIVE")
+    return _run_pending_entry_reconciliation_if_due(conn, **kwargs)
 
 
 def candidate(
@@ -255,6 +265,17 @@ class MemoryConnection:
         )
 
 
+class TrapConnection:
+    def cursor(self):
+        raise AssertionError("cursor called")
+
+    def commit(self):
+        raise AssertionError("commit called")
+
+    def rollback(self):
+        raise AssertionError("rollback called")
+
+
 def existing_position(row, *, status="OPEN", qty=None, order_id=None):
     return {
         "id": 77,
@@ -276,6 +297,64 @@ def test_pending_ack_without_fill_creates_nothing():
     stats = reconcile_pending_entry_fills(conn)
     assert stats.scanned == 0
     assert conn.positions == []
+
+
+def test_paper_reconcile_is_no_query_no_write_no_op():
+    stats = reconcile_pending_entry_fills(
+        TrapConnection(),
+        trading_mode="PAPER",
+    )
+
+    assert stats.status == "NOT_APPLICABLE"
+    assert stats.ran is False
+    assert stats.applicable is False
+    assert stats.scanned == 0
+    assert stats.processed == 0
+    assert stats.created == 0
+    assert stats.updated == 0
+    assert stats.failed == 0
+    assert stats.has_more is False
+
+
+def test_empty_live_reconcile_is_explicit_success():
+    conn = MemoryConnection()
+
+    stats = reconcile_pending_entry_fills(conn, trading_mode="LIVE")
+
+    assert stats.status == "OK"
+    assert stats.ran is True
+    assert stats.applicable is True
+    assert stats.scanned == 0
+    assert stats.processed == 0
+    assert stats.has_more is False
+
+
+def test_paper_due_runner_is_not_applicable_before_due_gate():
+    result = run_pending_entry_reconciliation_if_due(
+        TrapConnection(),
+        force=True,
+        trading_mode="PAPER",
+    )
+
+    assert result.ran is False
+    assert result.status == "NOT_APPLICABLE"
+    assert result.applicable is False
+    assert result.stats.status == "NOT_APPLICABLE"
+    assert result.stats.ran is False
+    assert result.stats.applicable is False
+    assert result.stats.scanned == 0
+    assert result.stats.processed == 0
+    assert result.stats.created == 0
+    assert result.stats.updated == 0
+    assert result.stats.failed == 0
+    assert result.stats.has_more is False
+
+
+def test_automation_passes_environment_to_lightweight_reconciliation_gate():
+    source = (ROOT / "automation_runner/main.py").read_text()
+    call = source[source.index("run_pending_entry_reconciliation_if_due(") :]
+    call = call[:call.index(")") + 1]
+    assert "trading_mode=cfg.trading_mode" in call
 
 
 @pytest.mark.parametrize("strategy", ["RSI", "TREND", "SUPERTREND", "BBRANGE"])
@@ -527,7 +606,7 @@ def test_batch_is_bounded_and_candidate_rows_are_locked():
 def test_due_runner_drains_150_rows_in_two_bounded_runs_without_new_fills(monkeypatch):
     monkeypatch.setattr(
         "common.schema_readiness.validate_pending_entry_reconciliation_schema",
-        lambda _conn: None,
+        lambda _conn, **_kwargs: None,
     )
     rows = []
     for i in range(150):
@@ -552,7 +631,7 @@ def test_due_runner_drains_150_rows_in_two_bounded_runs_without_new_fills(monkey
 def test_due_runner_retries_failed_order_on_next_cycle(monkeypatch):
     monkeypatch.setattr(
         "common.schema_readiness.validate_pending_entry_reconciliation_schema",
-        lambda _conn: None,
+        lambda _conn, **_kwargs: None,
     )
     conn = MemoryConnection([candidate()])
     conn.fail_insert = True
@@ -570,7 +649,9 @@ def test_due_runner_retries_failed_order_on_next_cycle(monkeypatch):
 def test_due_runner_fails_closed_when_schema_contract_is_missing(monkeypatch):
     monkeypatch.setattr(
         "common.schema_readiness.validate_pending_entry_reconciliation_schema",
-        lambda _conn: (_ for _ in ()).throw(RuntimeError("missing trigger")),
+        lambda _conn, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("missing trigger")
+        ),
     )
     conn = MemoryConnection([candidate()])
     result = run_pending_entry_reconciliation_if_due(conn, force=True)

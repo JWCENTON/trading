@@ -1,5 +1,31 @@
 # Pending Entry Fill Reconciliation V1
 
+## Environment applicability
+
+Pending Entry Fill Reconciliation V1 is a LIVE-only exchange recovery feature.
+`TRADING_MODE`, never the database name, selects the contract:
+
+- `LIVE`: real exchange ACK/fills are applicable; the complete order/fill
+  schema, migration, readiness contract and bounded reconciliation runner are
+  required;
+- `PAPER`: exchange entry-fill reconciliation is `NOT_APPLICABLE`. Readiness
+  validates the base strategy schema without requiring `binance_orders`, the
+  runner is a no-query/no-write no-op, and real trade ingest returns before a
+  database connection or exchange request.
+
+PAPER does not receive a synthetic `binance_orders` table or a partial schema
+version marker. Its existing simulated-order and position lifecycle continues
+to use simulated requested quantity and is outside this LIVE fill-recovery
+feature.
+
+## TRADING_MODE policy
+
+`TRADING_MODE` is mandatory at every runtime entry point. The one shared
+normalizer applies `(value or "").strip().upper()` and accepts only `LIVE` or
+`PAPER`. Missing, empty, whitespace-only and unknown values are configuration
+errors and fail closed before database, automation, reconciliation or exchange
+work starts. There is no default mode.
+
 ## Safety invariant
 
 A LIVE entry ACK is not a fill. Reconciliation may change `positions` only
@@ -98,6 +124,10 @@ work. Per-order savepoints preserve other ingested fills; failures become
 `ENTRY_FILL_RECONCILIATION_ERROR` without advancing reconciled counters and are
 retried on later due cycles.
 
+In PAPER, the lightweight environment gate runs before the due-key query and
+returns `ran=false`, `status=NOT_APPLICABLE`, zero counters and
+`has_more=false`. It does not create scheduler state or backlog.
+
 ## Schema readiness
 
 The schema marker is `pending_entry_reconciliation_schema_version=1`.
@@ -114,6 +144,34 @@ Missing contract returns `SCHEMA_NOT_READY`, creates no position and performs no
 reconciliation write. The normal bot supervisor also fails before starting
 strategy children. The migration must precede code rollout; old code tolerates
 the additive columns and legacy NULL-source unique index.
+
+These strict checks are the LIVE contract. PAPER readiness checks the shared
+strategy tables and indexes only, then returns the structured result
+`environment=PAPER`, `pending_entry_reconciliation_applicable=false`,
+`status=NOT_APPLICABLE`. It does not query the LIVE-only order/fill tables,
+indexes, mirror function, trigger or reconciliation marker.
+
+## Rollout model
+
+- LOCAL LIVE: create a local pre-rollout dump, apply the LIVE reconciliation
+  migration, validate the complete contract, then roll out code. Remove the
+  dump only after full PASS and the rollback window has closed.
+- LOCAL PAPER: create a temporary local pre-rollout dump, then roll out code
+  only. Do not create `binance_orders` or apply the LIVE reconciliation
+  migration. Reconciliation is `NOT_APPLICABLE`; remove the temporary dump
+  after PASS, or after a safely blocked rollout when no mutation occurred.
+- VPS LIVE: apply the LIVE reconciliation migration, validate the complete
+  contract, then roll out code. Do not create a rollout dump because VPS
+  storage is constrained.
+- VPS PAPER: roll out code only. Reconciliation is `NOT_APPLICABLE`; do not
+  create `binance_orders`, apply the LIVE migration or create a dump.
+
+The migration intentionally remains LIVE-only and assumes the pre-existing
+LIVE `binance_orders` table. It must not be used to manufacture that table in
+PAPER and must not write `pending_entry_reconciliation_schema_version=1` when
+the full LIVE contract is absent.
+
+VPS is pull-only in this workflow and never performs `git push`.
 
 ## Audit status priority
 
