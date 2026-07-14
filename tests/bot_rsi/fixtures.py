@@ -43,6 +43,8 @@ class RsiObservation:
     order_attempts: tuple[OrderAttempt, ...]
     captured_events: tuple[CapturedEvent, ...]
     state_changes: tuple[StateChange, ...]
+    final_decision: Any
+    operation_log: tuple[str, ...]
 
 
 class StrictFakeExchange:
@@ -74,7 +76,10 @@ def entry_previous_candle(*, minute: int = -1):
     return candle(minute=minute, close=99.7, high=99.9, low=99.5, rsi=25.0)
 
 
-def runtime_snapshot(*, mode: str = "NORMAL", enabled: bool = True):
+def runtime_snapshot(
+    *, mode: str = "NORMAL", enabled: bool = True,
+    trading_mode: str = "PAPER",
+):
     return {
         "bc": SimpleNamespace(
             mode=mode,
@@ -83,7 +88,7 @@ def runtime_snapshot(*, mode: str = "NORMAL", enabled: bool = True):
             regime_mode="ENFORCE",
         ),
         "cfg_effective": SimpleNamespace(
-            trading_mode="PAPER",
+            trading_mode=trading_mode,
             spot_mode=True,
             live_orders_enabled=False,
         ),
@@ -104,17 +109,28 @@ class RsiStatefulHarness:
         self.exchange = StrictFakeExchange()
         self.now = OPEN_TIME + timedelta(minutes=10)
         self.last_processed_open_time = None
+        self.module.LAST_PROCESSED_OPEN_TIME = None
         self.position = None
         self.next_position_id = 1
         self.runtime_mode = "NORMAL"
         self.runtime_enabled = True
+        self.trading_mode = "PAPER"
         self.regime_allow = True
         self.time_exit_enabled = False
         self.profit_lock_triggered = False
+        self.execution_ledger_ok = True
+        self.execution_live_ok = True
+        self.execution_live_attempted = False
+        self.execution_order_accepted = False
+        self.execution_include_order_accepted = True
+        self.execution_executed_qty: float | None = None
+        self.execution_fully_executed: bool | None = None
+        self.execution_blocked_reason = None
         self.events: list[CapturedEvent] = []
         self.orders: list[OrderAttempt] = []
         self.changes: list[StateChange] = []
         self.observations: list[RsiObservation] = []
+        self.operation_log: list[str] = []
         self._install()
 
     def _install(self) -> None:
@@ -149,12 +165,25 @@ class RsiStatefulHarness:
             self.module,
             "get_runtime_snapshot",
             lambda **_kwargs: runtime_snapshot(
-                mode=self.runtime_mode, enabled=self.runtime_enabled
+                mode=self.runtime_mode,
+                enabled=self.runtime_enabled,
+                trading_mode=self.trading_mode,
             ),
         )
         self.monkeypatch.setattr(self.module, "get_open_position", lambda: self.position)
         self.monkeypatch.setattr(self.module, "execute_and_record", self._execute)
         self.monkeypatch.setattr(self.module, "execute_exit_safe", self._execute_exit)
+        self.monkeypatch.setattr(self.module, "close_position", self._close_position)
+        self.monkeypatch.setattr(
+            self.module,
+            "set_mode",
+            lambda mode, reason: setattr(self, "runtime_mode", str(mode)),
+        )
+        self.monkeypatch.setattr(
+            self.module,
+            "compute_live_qty_from_notional",
+            lambda *_args, **_kwargs: (0.1, 99.8, 9.98, "0.1", 0.1, 5.0),
+        )
         self.monkeypatch.setattr(
             self.module,
             "decide_regime_gate",
@@ -216,6 +245,10 @@ class RsiStatefulHarness:
         raise AssertionError("unexpected real database access")
 
     def _event(self, channel: str, **payload: Any) -> None:
+        operation = channel
+        if channel == "strategy":
+            operation = f"strategy_event:{payload.get('event_type')}"
+        self.operation_log.append(operation)
         self.events.append(
             CapturedEvent(channel, MappingProxyType(dict(payload)))
         )
@@ -228,6 +261,11 @@ class RsiStatefulHarness:
         self.position = value
         if before != value:
             self.changes.append(StateChange("position", before, value))
+            self.operation_log.append("state_change:position")
+
+    def _close_position(self, **_kwargs):
+        self._set_position(None)
+        return True
 
     def _record_order(
         self,
@@ -250,19 +288,65 @@ class RsiStatefulHarness:
                 exit_kind=exit_kind,
             )
         )
-        if is_exit:
-            self._set_position(None)
-        else:
-            position = (
-                self.next_position_id,
-                "LONG" if str(side).upper() == "BUY" else "SHORT",
-                float(quantity),
-                float(price),
-                candle_open_time or self.now,
+        self.operation_log.append(
+            f"execution:{'EXIT' if is_exit else 'ENTRY'}_{str(side).upper()}"
+        )
+        execution_succeeded = self.execution_ledger_ok and (
+            self.trading_mode != "LIVE"
+            or (
+                self.execution_live_attempted
+                and self.execution_order_accepted
+                and self.execution_live_ok
             )
-            self.next_position_id += 1
-            self._set_position(position)
-        return {"ledger_ok": True, "live_ok": True, "live_attempted": False}
+        )
+        if execution_succeeded:
+            if is_exit:
+                if self.trading_mode != "LIVE":
+                    self._set_position(None)
+            else:
+                position = (
+                    self.next_position_id,
+                    "LONG" if str(side).upper() == "BUY" else "SHORT",
+                    float(quantity),
+                    float(price),
+                    candle_open_time or self.now,
+                )
+                self.next_position_id += 1
+                self._set_position(position)
+        live_executed_qty = (
+            self.execution_executed_qty
+            if self.execution_executed_qty is not None
+            else (
+                float(quantity)
+                if self.trading_mode == "LIVE" and self.execution_live_ok
+                else 0.0
+            )
+        )
+        fully_executed = (
+            self.execution_fully_executed
+            if self.execution_fully_executed is not None
+            else bool(self.trading_mode == "LIVE" and self.execution_live_ok)
+        )
+        result = {
+            "ledger_ok": self.execution_ledger_ok,
+            "live_ok": (
+                self.execution_live_ok if self.trading_mode == "LIVE" else False
+            ),
+            "paper_executed": self.trading_mode != "LIVE" and execution_succeeded,
+            "executed": live_executed_qty > 0.0,
+            "fully_executed": fully_executed,
+            "executed_qty": live_executed_qty,
+            "requested_qty": float(quantity),
+            "live_attempted": self.execution_live_attempted,
+            "blocked_reason": (
+                self.execution_blocked_reason
+                if self.execution_blocked_reason is not None
+                else (None if self.execution_live_ok else "LIVE_ORDER_FAILED")
+            ),
+        }
+        if self.execution_include_order_accepted:
+            result["order_accepted"] = self.execution_order_accepted
+        return result
 
     def _execute(self, *args, **kwargs):
         names = ("side", "price", "qty_btc", "reason", "candle_open_time")
@@ -327,11 +411,29 @@ class RsiStatefulHarness:
         )
         self.next_position_id += 1
 
+    def open_short(
+        self,
+        *,
+        entry_price: float = 100.0,
+        quantity: float = 0.1,
+        age_minutes: int = 10,
+    ) -> None:
+        self.position = (
+            self.next_position_id,
+            "SHORT",
+            quantity,
+            entry_price,
+            self.now - timedelta(minutes=age_minutes),
+        )
+        self.next_position_id += 1
+
     def cycle(self, row, prev_row=None) -> RsiObservation:
         self.events = []
         self.orders = []
         self.changes = []
+        self.operation_log = []
         position_before = self.position
+        final_decision = None
 
         if row is None:
             candle_state = "NO_CLOSED_CANDLE"
@@ -361,10 +463,12 @@ class RsiStatefulHarness:
                         "last_processed": str(self.last_processed_open_time),
                     },
                 )
+                final_decision = self.module.build_no_new_candle_decision(row)
             else:
                 candle_state = "NEW_CANDLE"
                 self.last_processed_open_time = open_time
-                self.module.run_strategy(row, prev_row=prev_row)
+                self.module.LAST_PROCESSED_OPEN_TIME = open_time
+                final_decision = self.module.run_strategy(row, prev_row=prev_row)
 
         strategy_events = [
             event for event in self.events if event.channel == "strategy"
@@ -413,6 +517,8 @@ class RsiStatefulHarness:
             order_attempts=tuple(self.orders),
             captured_events=tuple(self.events),
             state_changes=tuple(self.changes),
+            final_decision=final_decision,
+            operation_log=tuple(self.operation_log),
         )
         self.observations.append(observation)
         return observation

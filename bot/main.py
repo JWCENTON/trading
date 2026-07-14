@@ -11,6 +11,7 @@ from common.flags import exchange_mytrades_enabled
 from common.exchange_ingest_trades import ingest_my_trades
 from dataclasses import replace
 from datetime import datetime, timezone, date
+from decimal import Decimal
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
 from psycopg2.extras import execute_batch
@@ -27,6 +28,14 @@ from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_loc
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
+from common.decision_contract import (
+    DecisionReason,
+    DecisionSubtype,
+    ExecutionOutcome,
+    ExecutionStage,
+    EvaluationContext,
+    FinalDecision,
+)
 from common.execution import (
     place_live_order,
     place_live_exit_maker_then_market as exchange_place_live_exit_maker_then_market,
@@ -297,6 +306,7 @@ def execute_and_record(
         return {
             "ledger_ok": False,
             "live_attempted": False,
+            "order_accepted": False,
             "live_ok": False,
             "blocked_reason": "DB_GUARD_DUPLICATE",
             "client_order_id": None,
@@ -341,7 +351,9 @@ def execute_and_record(
             return {
                 "ledger_ok": False,
                 "live_attempted": False,
-                "live_ok": True,
+                "order_accepted": False,
+                "live_ok": False,
+                "paper_executed": False,
                 "blocked_reason": paper_res.get("blocked_reason") or "PAPER_POSITIONS_FAILED",
                 "client_order_id": paper_res.get("client_order_id"),
                 "resp": None,
@@ -350,7 +362,9 @@ def execute_and_record(
         return {
             "ledger_ok": True,
             "live_attempted": False,
-            "live_ok": True,  # PAPER traktujemy jako wykonane
+            "order_accepted": False,
+            "live_ok": False,
+            "paper_executed": True,
             "blocked_reason": None,
             "client_order_id": paper_res.get("client_order_id"),
             "resp": None,
@@ -383,6 +397,7 @@ def execute_and_record(
         return {
             "ledger_ok": True,
             "live_attempted": False,
+            "order_accepted": False,
             "live_ok": False,
             "blocked_reason": "LIVE_ORDER_SUPPRESSED",
             "client_order_id": None,
@@ -403,6 +418,7 @@ def execute_and_record(
             return {
                 "ledger_ok": True,
                 "live_attempted": False,
+                "order_accepted": False,
                 "live_ok": False,
                 "blocked_reason": "ALREADY_OPEN",
                 "client_order_id": None,
@@ -434,6 +450,7 @@ def execute_and_record(
             return {
                 "ledger_ok": True,
                 "live_attempted": False,
+                "order_accepted": False,
                 "live_ok": False,
                 "blocked_reason": "EXIT_NO_OPEN_POSITION",
                 "client_order_id": None,
@@ -487,6 +504,7 @@ def execute_and_record(
         return {
             "ledger_ok": True,
             "live_attempted": False,
+            "order_accepted": False,
             "live_ok": False,
             "blocked_reason": (pre or {}).get("reason") or "LIVE_PREFLIGHT_FAILED",
             "client_order_id": client_order_id,
@@ -531,6 +549,13 @@ def execute_and_record(
         return {
             "ledger_ok": True,
             "live_attempted": True,
+            "order_accepted": bool((resp or {}).get("order_accepted", False)),
+            "executed": bool((resp or {}).get("executed", False)),
+            "fully_executed": bool((resp or {}).get("fully_executed", False)),
+            "executed_qty": float((resp or {}).get("executed_qty") or 0.0),
+            "requested_qty": float((resp or {}).get("requested_qty") or qty_btc),
+            "order_id": (resp or {}).get("order_id"),
+            "exchange_status": (resp or {}).get("exchange_status"),
             "live_ok": False,
             "blocked_reason": (resp or {}).get("reason") or "LIVE_ORDER_FAILED",
             "client_order_id": client_order_id,
@@ -558,6 +583,13 @@ def execute_and_record(
             return {
                 "ledger_ok": True,
                 "live_attempted": True,
+                "order_accepted": bool((resp or {}).get("order_accepted", False)),
+                "executed": bool((resp or {}).get("executed", False)),
+                "fully_executed": bool((resp or {}).get("fully_executed", False)),
+                "executed_qty": float((resp or {}).get("executed_qty") or 0.0),
+                "requested_qty": float((resp or {}).get("requested_qty") or qty_btc),
+                "order_id": (resp or {}).get("order_id"),
+                "exchange_status": (resp or {}).get("exchange_status"),
                 "live_ok": False,
                 "blocked_reason": "LIVE_ACK_MISSING_ORDER_ID",
                 "client_order_id": client_order_id,
@@ -652,6 +684,13 @@ def execute_and_record(
     return {
         "ledger_ok": True,
         "live_attempted": True,
+        "order_accepted": bool((resp or {}).get("order_accepted", False)),
+        "executed": bool((resp or {}).get("executed", live_ok)),
+        "fully_executed": bool((resp or {}).get("fully_executed", False)),
+        "executed_qty": float((resp or {}).get("executed_qty") or 0.0),
+        "requested_qty": float((resp or {}).get("requested_qty") or qty_btc),
+        "order_id": (resp or {}).get("order_id"),
+        "exchange_status": (resp or {}).get("exchange_status"),
         "live_ok": live_ok,
         "blocked_reason": None if live_ok else "ACK_NO_FILL",
         "client_order_id": client_order_id,
@@ -701,6 +740,7 @@ def execute_and_record_soft_exit_maker_then_market(
         return {
             "ledger_ok": False,
             "live_attempted": False,
+            "order_accepted": False,
             "live_ok": False,
             "blocked_reason": "DB_GUARD_DUPLICATE",
             "client_order_id": None,
@@ -721,7 +761,9 @@ def execute_and_record_soft_exit_maker_then_market(
         return {
             "ledger_ok": True,
             "live_attempted": False,
-            "live_ok": True,
+            "order_accepted": False,
+            "live_ok": False,
+            "paper_executed": True,
             "blocked_reason": None,
             "client_order_id": None,
             "resp": None,
@@ -740,6 +782,7 @@ def execute_and_record_soft_exit_maker_then_market(
         return {
             "ledger_ok": True,
             "live_attempted": False,
+            "order_accepted": False,
             "live_ok": False,
             "blocked_reason": "LIVE_ORDER_SUPPRESSED",
             "client_order_id": None,
@@ -760,6 +803,7 @@ def execute_and_record_soft_exit_maker_then_market(
         return {
             "ledger_ok": True,
             "live_attempted": False,
+            "order_accepted": False,
             "live_ok": False,
             "blocked_reason": "EXIT_NO_OPEN_POSITION",
             "client_order_id": None,
@@ -824,7 +868,14 @@ def execute_and_record_soft_exit_maker_then_market(
         )
         return {
             "ledger_ok": True,
-            "live_attempted": True,
+            "live_attempted": bool(out.get("attempted", True)),
+            "order_accepted": bool(out.get("order_accepted", False)),
+            "executed": bool(out.get("executed", False)),
+            "fully_executed": bool(out.get("fully_executed", False)),
+            "executed_qty": float(out.get("executed_qty") or 0.0),
+            "requested_qty": float(out.get("requested_qty") or qty_btc),
+            "order_id": out.get("order_id"),
+            "exchange_status": out.get("exchange_status"),
             "live_ok": False,
             "blocked_reason": "LIVE_ORDER_FAILED",
             "client_order_id": base_client_order_id,
@@ -884,6 +935,13 @@ def execute_and_record_soft_exit_maker_then_market(
     return {
         "ledger_ok": True,
         "live_attempted": True,
+        "order_accepted": bool(out.get("order_accepted", out.get("live_ok") is True)),
+        "executed": bool(out.get("executed", out.get("live_ok") is True)),
+        "fully_executed": bool(out.get("fully_executed", False)),
+        "executed_qty": float(out.get("executed_qty") or 0.0),
+        "requested_qty": float(out.get("requested_qty") or qty_btc),
+        "order_id": out.get("order_id"),
+        "exchange_status": out.get("exchange_status"),
         "live_ok": True,
         "blocked_reason": None,
         "client_order_id": base_client_order_id,
@@ -2026,7 +2084,246 @@ def get_latest_candle():
 # =========================
 
 
+def _as_aware_utc(value):
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _rsi_evaluation_context(open_time, evaluation_started_at, snap=None):
+    cfg_effective = snap["cfg_effective"] if snap is not None else cfg
+    bc = snap["bc"] if snap is not None else None
+    return EvaluationContext(
+        deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        environment=DB_NAME,
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        candle_open_time=_as_aware_utc(open_time),
+        evaluation_started_at=evaluation_started_at,
+        engine_name=STRATEGY_NAME,
+        engine_version=os.environ.get("BOT_VERSION"),
+        runtime_enabled=(bool(bc.enabled) if bc is not None else None),
+        live_orders_enabled=(
+            bool(snap["allowed_orders_entry"]) if snap is not None else None
+        ),
+        paper_mode=cfg_effective.trading_mode != "LIVE",
+        context={"contract_version": "FINAL_DECISION_V1"},
+    )
+
+
+def build_no_new_candle_decision(row):
+    """Return the non-persisted terminal result for main-loop candle deduplication."""
+    open_time = row[0]
+    now = datetime.now(timezone.utc)
+    evaluation = _rsi_evaluation_context(open_time, now)
+    return FinalDecision.idle(
+        evaluation,
+        DecisionReason.NO_NEW_CANDLE,
+        finished_at=now,
+        reason_text="NO_NEW_CANDLE",
+        details={"last_processed": str(LAST_PROCESSED_OPEN_TIME)},
+    )
+
+
+def _rsi_execution_outcome(result, cfg_effective):
+    if isinstance(result, ExecutionOutcome):
+        return result
+    return ExecutionOutcome.from_legacy(
+        result, paper_mode=cfg_effective.trading_mode != "LIVE"
+    )
+
+
+def _rsi_execution_succeeded(result, cfg_effective):
+    outcome = _rsi_execution_outcome(result, cfg_effective)
+    return outcome.ledger_ok and (
+        cfg_effective.trading_mode != "LIVE" or outcome.operation_succeeded
+    )
+
+
+def _rsi_exit_decision(
+    evaluation,
+    res,
+    cfg_effective,
+    *,
+    reason_code,
+    reason_text,
+    side,
+    price,
+    position_id,
+):
+    outcome = _rsi_execution_outcome(res, cfg_effective)
+    details = {
+        "blocked_reason": outcome.blocked_reason,
+        "live_attempted": outcome.attempted,
+        "order_accepted": outcome.order_accepted,
+        "live_ok": outcome.operation_succeeded,
+        "executed": outcome.executed,
+        "fully_executed": outcome.fully_executed,
+        "executed_qty": outcome.executed_qty,
+        "requested_qty": outcome.requested_qty,
+        "ledger_ok": outcome.ledger_ok,
+        "execution_stage": outcome.stage.value,
+        "execution_result": outcome.raw,
+    }
+
+    if not outcome.ledger_ok:
+        failure_subtype = DecisionSubtype.LEDGER_FAILURE
+    elif cfg_effective.trading_mode != "LIVE":
+        return FinalDecision.exit_result(
+            evaluation,
+            reason_code,
+            finished_at=datetime.now(timezone.utc),
+            reference_price=Decimal(str(price)),
+            side=side,
+            position_id=position_id,
+            reason_text=reason_text,
+            details=details,
+        )
+
+    elif outcome.fully_executed:
+        return FinalDecision.exit_result(
+            evaluation,
+            reason_code,
+            finished_at=datetime.now(timezone.utc),
+            reference_price=Decimal(str(price)),
+            side=side,
+            position_id=position_id,
+            reason_text=reason_text,
+            details=details,
+        )
+
+    elif outcome.stage in {ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED}:
+        if outcome.blocked_reason == "EXIT_NO_OPEN_POSITION":
+            return FinalDecision.no_position(
+                evaluation,
+                DecisionReason.NO_OPEN_POSITION,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                side=side,
+                reason_text=outcome.blocked_reason,
+                details=details,
+            )
+        return FinalDecision.action_suppressed(
+            evaluation,
+            DecisionReason.EXECUTION_NOT_ATTEMPTED,
+            finished_at=datetime.now(timezone.utc),
+            reference_price=Decimal(str(price)),
+            side=side,
+            reason_text=outcome.blocked_reason or "LIVE_EXIT_NOT_ATTEMPTED",
+            details=details,
+        )
+    elif outcome.executed:
+        failure_subtype = DecisionSubtype.PARTIAL_EXECUTION
+    elif outcome.order_accepted:
+        failure_subtype = DecisionSubtype.ORDER_ACCEPTED_NOT_FILLED
+    else:
+        failure_subtype = DecisionSubtype.ORDER_REJECTED
+
+    return FinalDecision.technical_failure_result(
+        evaluation,
+        DecisionReason.EXECUTION_FAILED,
+        failure_subtype,
+        finished_at=datetime.now(timezone.utc),
+        reference_price=Decimal(str(price)),
+        side=side,
+        reason_text=outcome.blocked_reason or "EXIT_BLOCKED",
+        signal_detected=True,
+        entry_attempted=outcome.attempted,
+        order_submitted=outcome.order_accepted,
+        trade_executed=outcome.executed,
+        details={
+            **details,
+            "exit_reason": reason_text,
+        },
+    )
+
+
+def _rsi_entry_decision(
+    evaluation,
+    res,
+    cfg_effective,
+    *,
+    side,
+    price,
+    reason_text,
+):
+    outcome = _rsi_execution_outcome(res, cfg_effective)
+    details = {
+        "blocked_reason": outcome.blocked_reason,
+        "live_attempted": outcome.attempted,
+        "order_accepted": outcome.order_accepted,
+        "live_ok": outcome.operation_succeeded,
+        "executed": outcome.executed,
+        "fully_executed": outcome.fully_executed,
+        "executed_qty": outcome.executed_qty,
+        "requested_qty": outcome.requested_qty,
+        "ledger_ok": outcome.ledger_ok,
+        "execution_stage": outcome.stage.value,
+        "execution_result": outcome.raw,
+    }
+    common = {
+        "finished_at": datetime.now(timezone.utc),
+        "reference_price": Decimal(str(price)),
+        "side": side,
+        "details": details,
+    }
+
+    if not outcome.ledger_ok:
+        return FinalDecision.technical_failure_result(
+            evaluation,
+            DecisionReason.EXECUTION_FAILED,
+            DecisionSubtype.LEDGER_FAILURE,
+            reason_text=outcome.blocked_reason or "ENTRY_LEDGER_FAILED",
+            signal_detected=True,
+            entry_attempted=outcome.attempted,
+            order_submitted=outcome.order_accepted,
+            trade_executed=outcome.executed,
+            **common,
+        )
+    if cfg_effective.trading_mode != "LIVE":
+        return FinalDecision.paper_simulation(
+            evaluation,
+            DecisionReason.SSOT_EXECUTE_AND_RECORD,
+            reason_text=reason_text,
+            **common,
+        )
+    if outcome.stage in {ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED}:
+        return FinalDecision.action_suppressed(
+            evaluation,
+            DecisionReason.EXECUTION_NOT_ATTEMPTED,
+            reason_text=outcome.blocked_reason or "LIVE_ENTRY_NOT_ATTEMPTED",
+            **common,
+        )
+    if outcome.fully_executed:
+        return FinalDecision.trade_executed_result(
+            evaluation,
+            DecisionReason.SSOT_EXECUTE_AND_RECORD,
+            reason_text=reason_text,
+            **common,
+        )
+
+    if outcome.executed:
+        failure_subtype = DecisionSubtype.PARTIAL_EXECUTION
+    elif outcome.order_accepted:
+        failure_subtype = DecisionSubtype.ORDER_ACCEPTED_NOT_FILLED
+    else:
+        failure_subtype = DecisionSubtype.ORDER_REJECTED
+    return FinalDecision.technical_failure_result(
+        evaluation,
+        DecisionReason.EXECUTION_FAILED,
+        failure_subtype,
+        reason_text=outcome.blocked_reason or "LIVE_ENTRY_NOT_FILLED",
+        signal_detected=True,
+        entry_attempted=outcome.attempted,
+        order_submitted=outcome.order_accepted,
+        trade_executed=outcome.executed,
+        **common,
+    )
+
+
 def run_strategy(row, prev_row=None):
+    evaluation_started_at = datetime.now(timezone.utc)
     open_time = (row[0] if row else None)
     price_for_events = float(row[4]) if row and row[4] is not None else None
     emit_strategy_event(
@@ -2051,6 +2348,9 @@ def run_strategy(row, prev_row=None):
             return
 
         open_time, open_px, high_px, low_px, close_px, ema_21, rsi_14, atr_14 = row
+        pre_evaluation = _rsi_evaluation_context(
+            open_time, evaluation_started_at
+        )
 
         close_price = float(close_px) if close_px is not None else None
         high_price  = float(high_px) if high_px is not None else None
@@ -2059,6 +2359,12 @@ def run_strategy(row, prev_row=None):
 
         if close_price is None or high_price is None or low_price is None:
             fallback_price = float(open_px) if open_px is not None else None
+            missing_fields = [
+                name for name, value in (
+                    ("close", close_px), ("high", high_px), ("low", low_px)
+                )
+                if value is None
+            ]
             emit_strategy_event(
                 event_type="BLOCKED",
                 reason="CANDLE_MISSING_FIELDS",
@@ -2067,7 +2373,12 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"open": open_px, "high": high_px, "low": low_px, "close": close_px},
             )
-            return
+            return FinalDecision.system_not_evaluated(
+                pre_evaluation, DecisionReason.CANDLE_MISSING_FIELDS,
+                finished_at=datetime.now(timezone.utc),
+                reason_text="CANDLE_MISSING_FIELDS",
+                details={"missing_fields": missing_fields},
+            )
 
         if ema_21 is None or rsi_14 is None or atr_14 is None:            
             emit_blocked(
@@ -2078,7 +2389,11 @@ def run_strategy(row, prev_row=None):
                 info={"ema_21": ema_21, "rsi_14": rsi_14},
             )
             heartbeat({"price": price, "open_time": str(open_time), "status": "indicators_not_ready"})
-            return
+            return FinalDecision.system_not_evaluated(
+                pre_evaluation, DecisionReason.INDICATORS_NOT_READY,
+                finished_at=datetime.now(timezone.utc),
+                reason_text="INDICATORS_NOT_READY",
+            )
 
         ema_val = float(ema_21)
         rsi_val = float(rsi_14)
@@ -2094,6 +2409,9 @@ def run_strategy(row, prev_row=None):
 
         snap = get_runtime_snapshot(price=price, open_time=open_time)
         bc = snap["bc"]
+        evaluation = _rsi_evaluation_context(
+            open_time, evaluation_started_at, snap=snap
+        )
 
         # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
         emit_regime_gate_event(
@@ -2125,7 +2443,15 @@ def run_strategy(row, prev_row=None):
                 info={"mode": "HALT"},
             )
             heartbeat({**snap["heartbeat"], "status": "HALT"})
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation,
+                DecisionReason.BOT_MODE_HALT,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="BOT_MODE_HALT",
+                signal_detected=False,
+            )
 
         # heartbeat zawsze
         pos = get_open_position()
@@ -2141,6 +2467,9 @@ def run_strategy(row, prev_row=None):
 
         # PANIC zachowujemy jak masz (panic close + HALT)
         if bc.mode == "PANIC":
+            panic_result = None
+            panic_side = None
+            panic_position_id = None
             emit_strategy_event(
                 event_type="CONFIG_APPLIED",
                 decision=None,
@@ -2150,11 +2479,12 @@ def run_strategy(row, prev_row=None):
                 info={"mode": "PANIC"},
             )
             if pos:
-                _, side, qty, _entry_price, _entry_time = pos
+                panic_position_id, side, qty, _entry_price, _entry_time = pos
                 side_u = str(side).upper()
                 qty_f = float(qty)
 
                 exit_side = "SELL" if side_u == "LONG" else "BUY"
+                panic_side = exit_side
 
                 res = execute_and_record(
                     side=exit_side,
@@ -2167,7 +2497,7 @@ def run_strategy(row, prev_row=None):
                     allow_meta=snap["allow_meta_exit"],
                     is_exit=True,
                 )
-                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                if _rsi_execution_succeeded(res, cfg_effective):
                     if cfg_effective.trading_mode == "LIVE":
                         close_position(exit_price=price, reason="PANIC")
                         pos = None
@@ -2179,7 +2509,13 @@ def run_strategy(row, prev_row=None):
                         candle_open_time=open_time,
                         info={"res": res},
                     )
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.STRATEGY_EXIT,
+                        reason_text="PANIC CLOSE", side=exit_side, price=price,
+                        position_id=panic_position_id,
+                    )
+                panic_result = res
             if not pos:
                 emit_blocked(
                     reason="PANIC_NO_POSITION",
@@ -2189,7 +2525,20 @@ def run_strategy(row, prev_row=None):
                     info={},
                 )
             set_mode("HALT", reason="Panic executed; halting.")
-            return
+            if panic_result is not None:
+                return _rsi_exit_decision(
+                    evaluation, panic_result, cfg_effective,
+                    reason_code=DecisionReason.STRATEGY_EXIT,
+                    reason_text="PANIC CLOSE", side=panic_side, price=price,
+                    position_id=panic_position_id,
+                )
+            return FinalDecision.no_position(
+                evaluation, DecisionReason.NO_OPEN_POSITION,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="PANIC_NO_POSITION",
+                details={"operation": "PANIC_CLOSE"},
+            )
 
 
         # =========================
@@ -2227,7 +2576,7 @@ def run_strategy(row, prev_row=None):
                         allow_meta=snap["allow_meta_exit"],
                         exit_kind="TAKE_PROFIT",
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=exec_px, reason="TAKE_PROFIT")
                     else:
@@ -2238,8 +2587,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                        return
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.TAKE_PROFIT,
+                        reason_text=reason, side="SELL", price=exec_px,
+                        position_id=_pos_id,
+                    )
 
                 # SL intrabar
                 if STOP_LOSS_PCT > 0 and low_price <= sl_level:
@@ -2247,7 +2600,7 @@ def run_strategy(row, prev_row=None):
                     reason = f"RSI STOP LOSS LONG intrabar low={low_price:.2f} <= sl={sl_level:.2f}"
                     res = execute_and_record("SELL", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
                         allow_meta=snap["allow_meta_exit"], is_exit=True,)
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=exec_px, reason="STOP_LOSS")
                     else:
@@ -2258,8 +2611,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                        return
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.STOP_LOSS,
+                        reason_text=reason, side="SELL", price=exec_px,
+                        position_id=_pos_id,
+                    )
 
             # --- SHORT ---
             else:
@@ -2281,7 +2638,7 @@ def run_strategy(row, prev_row=None):
                         allow_meta=snap["allow_meta_exit"],
                         exit_kind="TAKE_PROFIT",
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=exec_px, reason="TAKE_PROFIT_SHORT")
                     else:
@@ -2292,8 +2649,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                        return
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.TAKE_PROFIT,
+                        reason_text=reason, side="BUY", price=exec_px,
+                        position_id=_pos_id,
+                    )
 
                 # SL intrabar
                 if STOP_LOSS_PCT > 0 and high_price >= sl_level:
@@ -2301,7 +2662,7 @@ def run_strategy(row, prev_row=None):
                     reason = f"RSI STOP LOSS SHORT intrabar high={high_price:.2f} >= sl={sl_level:.2f}"
                     res = execute_and_record("BUY", exec_px, qty_f, reason, open_time, cfg_used=cfg_effective, allow_live_orders=snap["allowed_orders_exit"],
                         allow_meta=snap["allow_meta_exit"], is_exit=True,)
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=exec_px, reason="STOP_LOSS_SHORT")
                     else:
@@ -2312,8 +2673,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                        return
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.STOP_LOSS,
+                        reason_text=reason, side="BUY", price=exec_px,
+                        position_id=_pos_id,
+                    )
             
             # Profit-protect (stateless): jeśli był zysk >= BE_TRIGGER,
             # a teraz wróciliśmy blisko entry (BE_OFFSET) -> zamknij, żeby nie oddawać.
@@ -2334,12 +2699,17 @@ def run_strategy(row, prev_row=None):
                             allow_meta=snap["allow_meta_exit"],
                             exit_kind="BE_PROTECT",
                         )
-                        if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                        if _rsi_execution_succeeded(res, cfg_effective):
                             if cfg_effective.trading_mode == "LIVE":
                                 close_position(exit_price=price, reason="BE_PROTECT")
                         else:
                             emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
-                        return
+                        return _rsi_exit_decision(
+                            evaluation, res, cfg_effective,
+                            reason_code=DecisionReason.BREAK_EVEN_PROTECT,
+                            reason_text=reason_exit, side=exit_side, price=price,
+                            position_id=_pos_id,
+                        )
                 else:
                     be_level = entry_f * (1.0 - float(BE_OFFSET_PCT) / 100.0)
                     if price >= be_level:
@@ -2356,12 +2726,17 @@ def run_strategy(row, prev_row=None):
                             allow_meta=snap["allow_meta_exit"],
                             exit_kind="BE_PROTECT",
                         )
-                        if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                        if _rsi_execution_succeeded(res, cfg_effective):
                             if cfg_effective.trading_mode == "LIVE":
                                 close_position(exit_price=price, reason="BE_PROTECT")
                         else:
                             emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
-                        return
+                        return _rsi_exit_decision(
+                            evaluation, res, cfg_effective,
+                            reason_code=DecisionReason.BREAK_EVEN_PROTECT,
+                            reason_text=reason_exit, side=exit_side, price=price,
+                            position_id=_pos_id,
+                        )
                 
             # PROFIT LOCK: stateful high-watermark guard based on candle path since entry.
             # Captures profits for RSI/TREND/SUPERTREND/BBRANGE and intentionally excludes legacy SUPER_TREND config rows.
@@ -2465,12 +2840,17 @@ def run_strategy(row, prev_row=None):
                         allow_meta=snap["allow_meta_exit"],
                         exit_kind=exit_kind,
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=price, reason=exit_kind)
                     else:
                         emit_blocked(reason="EXIT_BLOCKED", decision=exit_side, price=price, candle_open_time=open_time, info={"res": res})
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.PROFIT_LOCK,
+                        reason_text=reason_exit, side=exit_side, price=price,
+                        position_id=_pos_id,
+                    )
 
             # SOFT EXIT (mean reversion) — jeśli włączone
             if int(RSI_SOFT_EXIT_ENABLED) == 1:
@@ -2501,7 +2881,7 @@ def run_strategy(row, prev_row=None):
                         allow_meta=snap["allow_meta_exit"],
                         exit_kind="RSI_SOFT_EXIT",
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=price, reason="RSI_SOFT_EXIT")
                     else:
@@ -2512,7 +2892,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.STRATEGY_EXIT,
+                        reason_text=reason_exit, side=exit_side, price=price,
+                        position_id=_pos_id,
+                    )
 
                 # SHORT: zamykamy gdy RSI wraca nisko (oversold/exit threshold)
                 if pos_side_u != "LONG" and rsi_val <= float(RSI_EXIT_OVERSOLD) and move_pct >= float(MIN_PROFIT_FOR_SOFT_EXIT_PCT):
@@ -2541,7 +2926,7 @@ def run_strategy(row, prev_row=None):
                         allow_meta=snap["allow_meta_exit"],
                         exit_kind="RSI_SOFT_EXIT",
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=price, reason="RSI_SOFT_EXIT")
                     else:
@@ -2552,7 +2937,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.STRATEGY_EXIT,
+                        reason_text=reason_exit, side=exit_side, price=price,
+                        position_id=_pos_id,
+                    )
 
             # TIME EXIT (dla obu stron)
             if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
@@ -2586,7 +2976,7 @@ def run_strategy(row, prev_row=None):
                         allow_meta=snap["allow_meta_exit"],
                         exit_kind="TIME_EXIT",
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if _rsi_execution_succeeded(res, cfg_effective):
                         if cfg_effective.trading_mode == "LIVE":
                             close_position(exit_price=price, reason="TIME_EXIT")
                     else:
@@ -2597,7 +2987,12 @@ def run_strategy(row, prev_row=None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                    return
+                    return _rsi_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.TIME_EXIT,
+                        reason_text=reason_timeout, side=side_timeout, price=price,
+                        position_id=_pos_id,
+                    )
                         # OPEN: brak sygnału exit w tym ticku (TP/SL/TIME/soft-exit nie zaszły)
             age_minutes = None
             if pos_entry_time is not None:
@@ -2628,7 +3023,16 @@ def run_strategy(row, prev_row=None):
                     "exit_oversold": float(RSI_EXIT_OVERSOLD),
                 },
             )
-            return        
+            return FinalDecision.position_hold(
+                evaluation,
+                DecisionReason.POSITION_HOLD,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                side=pos_side_u,
+                position_id=_pos_id,
+                reason_text="NO_EXIT_SIGNAL",
+                details={"age_minutes": age_minutes},
+            )
 
         # =========================
         # 2) ENTRY (tu stosujemy filtry + REGIME)
@@ -2644,7 +3048,13 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"hour_utc": int(hour_utc), "disable_hours": sorted(list(DISABLE_HOURS_SET))},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.DISABLE_HOURS,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="DISABLE_HOURS",
+            )
         
         if not bc.enabled:
             emit_blocked(
@@ -2654,7 +3064,13 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"enabled": False},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_DISABLED,
+                DecisionSubtype.LIVE_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="BOT_DISABLED",
+            )
 
         # Daily loss gate — SSOT = positions. PAPER: telemetry only. LIVE: hard-block by positions.
         if DAILY_MAX_LOSS_PCT > 0:
@@ -2707,7 +3123,15 @@ def run_strategy(row, prev_row=None):
                         candle_open_time=open_time,
                         info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
                     )
-                    return
+                    return FinalDecision.entry_blocked(
+                        evaluation, DecisionReason.DAILY_MAX_LOSS_POSITIONS,
+                        DecisionSubtype.RISK_BLOCKED,
+                        finished_at=datetime.now(timezone.utc),
+                        reference_price=Decimal(str(price)),
+                        reason_text="DAILY_MAX_LOSS_POSITIONS",
+                        signal_detected=False,
+                        details=pos_payload,
+                    )
 
         # filtr dystansu od EMA (jako %)
         dist_from_ema_pct = abs(price - ema_val) / ema_val * 100.0
@@ -2719,7 +3143,14 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"dist_pct": float(dist_from_ema_pct), "max_dist_pct": float(MAX_DIST_FROM_EMA_PCT), "ema_21": float(ema_val)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                DecisionSubtype.READINESS_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="MAX_DIST_FROM_EMA",
+                details={"dist_pct": dist_from_ema_pct},
+            )
 
         # decyzja RSI
         # ===== ENTRY SIGNAL: REBOUND (z poprzedniej świecy) =====
@@ -2731,7 +3162,11 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"prev_rsi": prev_rsi_val, "prev_ema": prev_ema_val},
             )
-            return
+            return FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.INDICATORS_NOT_READY,
+                finished_at=datetime.now(timezone.utc),
+                reason_text="PREV_INDICATORS_NOT_READY",
+            )
 
         # ATR gate (fee-aware): nie handluj, gdy zmienność zbyt mała
         atr_pct = (float(atr_val) / float(price)) * 100.0 if atr_val and price else 0.0
@@ -2743,7 +3178,14 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"atr_14": float(atr_val), "atr_pct": float(atr_pct), "min_atr_pct": float(ATR_MIN_PCT)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                DecisionSubtype.READINESS_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="ATR_TOO_LOW",
+                details={"atr_pct": atr_pct},
+            )
 
         # Trend filter: nie kupuj, gdy EMA spada (opcjonalnie)
         if int(EMA_SLOPE_BLOCK) == 1 and ema_val < prev_ema_val:
@@ -2754,7 +3196,13 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"ema_now": float(ema_val), "ema_prev": float(prev_ema_val)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                DecisionSubtype.READINESS_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="EMA_SLOPE_DOWN",
+            )
 
         # Minimalny edge gate (opcjonalnie)
         if float(MIN_EDGE_PCT) > 0 and float(TAKE_PROFIT_PCT) < float(MIN_EDGE_PCT):
@@ -2765,7 +3213,13 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"tp_pct": float(TAKE_PROFIT_PCT), "min_edge_pct": float(MIN_EDGE_PCT)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                DecisionSubtype.READINESS_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="EDGE_TOO_LOW",
+            )
 
         # Rebound: poprzednio RSI poniżej oversold, teraz powrót powyżej oversold + delta
         if not (prev_rsi_val < float(RSI_OVERSOLD) and rsi_val > (float(RSI_OVERSOLD) + float(RSI_REBOUND_DELTA))):
@@ -2781,7 +3235,13 @@ def run_strategy(row, prev_row=None):
                     "rebound_delta": float(RSI_REBOUND_DELTA),
                 },
             )
-            return
+            return FinalDecision.no_trade(
+                evaluation, DecisionReason.NO_SIGNAL,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text="NO_SIGNAL_REBOUND",
+                details={"rsi_prev": prev_rsi_val, "rsi_now": rsi_val},
+            )
 
         decision = "BUY"
         reason = f"RSI_REBOUND prev={prev_rsi_val:.2f} now={rsi_val:.2f} > {RSI_OVERSOLD + RSI_REBOUND_DELTA:.2f}"
@@ -2814,7 +3274,13 @@ def run_strategy(row, prev_row=None):
                     candle_open_time=open_time,
                     info={"buy_level": float(buy_level), "ema_21": float(ema_val), "entry_buffer_pct": float(ENTRY_BUFFER_PCT)},
                 )
-                return
+                return FinalDecision.signal_rejected(
+                    evaluation, DecisionReason.POLICY_BLOCK,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)), side="BUY",
+                    reason_text="ENTRY_BUFFER_BLOCK",
+                    details={"buy_level": buy_level},
+                )
 
         # SELL (short): wymagamy wyjścia powyżej EMA o ENTRY_BUFFER_PCT
         if decision == "SELL":
@@ -2827,7 +3293,13 @@ def run_strategy(row, prev_row=None):
                     candle_open_time=open_time,
                     info={"sell_level": float(sell_level), "ema_21": float(ema_val), "entry_buffer_pct": float(ENTRY_BUFFER_PCT)},
                 )
-                return
+                return FinalDecision.signal_rejected(
+                    evaluation, DecisionReason.POLICY_BLOCK,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)), side="SELL",
+                    reason_text="ENTRY_BUFFER_BLOCK",
+                    details={"sell_level": sell_level},
+                )
 
         # SPOT: nie otwieramy shortów
         if decision == "SELL" and cfg_effective.spot_mode:
@@ -2838,7 +3310,12 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"spot_mode": True, "trading_mode": cfg_effective.trading_mode},
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.SPOT_SHORT_BLOCK,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="SELL",
+                reason_text="SPOT_SHORT_BLOCK",
+            )
 
         # --- REGIME GATE (ENTRY ONLY) ---
         gate_entry = decide_regime_gate(
@@ -2867,7 +3344,14 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"why": gate_entry.why, "regime": gate_entry.regime, "meta": gate_entry.meta},
             )
-            return
+            return FinalDecision.entry_blocked(
+                evaluation, DecisionReason.REGIME_BLOCK,
+                DecisionSubtype.REGIME_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=decision,
+                reason_text="REGIME_BLOCK",
+                details={"why": gate_entry.why, "regime": gate_entry.regime},
+            )
         
         emit_strategy_event(
             event_type="SIGNAL",
@@ -2971,7 +3455,14 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"qty": float(qty_btc)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.SIZING_QTY_ZERO,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=decision,
+                reason_text="SIZING_QTY_ZERO",
+                signal_detected=True,
+            )
 
         # 1) giełda (LIVE) + ledger
         res = execute_and_record(
@@ -2985,14 +3476,23 @@ def run_strategy(row, prev_row=None):
             allow_meta=snap["allow_meta_entry"],
             is_exit=False,
         )
-        if not res["ledger_ok"]:
+        outcome = _rsi_execution_outcome(res, cfg_effective)
+        if not outcome.ledger_ok:
             logging.info("RSI: entry blocked/failed -> not opening position.")
-            return
+            return _rsi_entry_decision(
+                evaluation, outcome, cfg_effective,
+                side=decision, price=price, reason_text=reason,
+            )
 
-        if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
+        if cfg_effective.trading_mode == "LIVE" and not outcome.operation_succeeded:
             # NOT_ATTEMPTED jest już emitowane w execute_and_record() (SSOT)
-            if not res.get("live_attempted", False):
-                return
+            if outcome.stage in {
+                ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED
+            }:
+                return _rsi_entry_decision(
+                    evaluation, outcome, cfg_effective,
+                    side=decision, price=price, reason_text=reason,
+                )
 
             # attempted, ale brak fill -> to logujemy tutaj
             emit_strategy_event(
@@ -3003,7 +3503,10 @@ def run_strategy(row, prev_row=None):
                 candle_open_time=open_time,
                 info={"res": res},
             )
-            return
+            return _rsi_entry_decision(
+                evaluation, outcome, cfg_effective,
+                side=decision, price=price, reason_text=reason,
+            )
 
         # 2) Position OPEN is created inside execute_and_record() (SSOT).
         # Do not open it again here.
@@ -3014,6 +3517,10 @@ def run_strategy(row, prev_row=None):
             price=price,
             candle_open_time=open_time,
             info={"qty_btc": float(qty_btc)},
+        )
+        return _rsi_entry_decision(
+            evaluation, outcome, cfg_effective,
+            side=decision, price=price, reason_text=reason,
         )
     finally:
         emit_strategy_event(
@@ -3102,6 +3609,7 @@ def main_loop():
                         candle_open_time=open_time,
                         info={"open_time": str(open_time), "last_processed": str(LAST_PROCESSED_OPEN_TIME)},
                     )
+                    build_no_new_candle_decision(latest)
                     logging.info("RSI: no new candle yet (%s) -> skip strategy.", str(open_time))
 
         except Exception as e:

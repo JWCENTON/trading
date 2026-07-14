@@ -141,7 +141,8 @@ def place_live_exit_maker_then_market(
       1) LIMIT_MAKER (post-only)
       2) poll up to timeout_sec
       3) cancel + MARKET for remaining
-    Returns dict {ok, live_ok, status, executed_qty, filled_as, resp, maker_price, best_bid, best_ask}
+    Returns a backward-compatible dict with explicit attempted/order_accepted/live_ok
+    flags aggregated across maker and market-fallback stages.
     """
 
     side_u = str(side).upper()
@@ -149,7 +150,23 @@ def place_live_exit_maker_then_market(
 
     best_bid, best_ask = get_best_bid_ask(client, symbol)
     if best_bid is None or best_ask is None:
-        return {"ok": False, "live_ok": False, "status": "NO_BOOK", "executed_qty": 0.0, "filled_as": None, "resp": {"error": "order_book_empty"}}
+        return {
+            "ok": False,
+            "attempted": False,
+            "order_accepted": False,
+            "executed": False,
+            "fully_executed": False,
+            "live_ok": False,
+            "status": "NO_BOOK",
+            "executed_qty": 0.0,
+            "requested_qty": qty_f,
+            "remaining_qty": qty_f,
+            "order_id": None,
+            "client_order_id": None,
+            "exchange_status": "NO_BOOK",
+            "filled_as": None,
+            "resp": {"error": "order_book_empty"},
+        }
 
     # SELL: price slightly ABOVE best_bid to remain maker
     # BUY:  price slightly BELOW best_ask to remain maker
@@ -179,9 +196,31 @@ def place_live_exit_maker_then_market(
                 newClientOrderId=maker_cid,
             )
     except Exception as e:
-        return {"ok": False, "live_ok": False, "status": "MAKER_CREATE_FAILED", "executed_qty": 0.0, "filled_as": None, "resp": {"error": str(e)}, "maker_price": float(maker_price), "best_bid": best_bid, "best_ask": best_ask}
+        return {
+            "ok": False,
+            "attempted": True,
+            "order_accepted": False,
+            "executed": False,
+            "fully_executed": False,
+            "live_ok": False,
+            "status": "MAKER_CREATE_FAILED",
+            "executed_qty": 0.0,
+            "requested_qty": qty_f,
+            "remaining_qty": qty_f,
+            "order_id": None,
+            "client_order_id": maker_cid,
+            "exchange_status": "MAKER_CREATE_FAILED",
+            "filled_as": None,
+            "resp": {"error": str(e)},
+            "maker_price": float(maker_price),
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+        }
 
     order_id = resp_maker.get("orderId")
+    maker_status = str(resp_maker.get("status", "")).upper()
+    accepted_statuses = {"NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED"}
+    maker_accepted = bool(order_id) and maker_status in accepted_statuses
     executed_qty = 0.0
 
     deadline = time.time() + max(0, int(timeout_sec))
@@ -201,11 +240,22 @@ def place_live_exit_maker_then_market(
         executed_qty = _safe_float(o.get("executedQty"), 0.0)
 
         if status == "FILLED" or executed_qty >= qty_f * 0.999:
+            if status == "FILLED" and executed_qty <= 0.0:
+                executed_qty = qty_f
             return {
                 "ok": True,
+                "attempted": True,
+                "order_accepted": True,
+                "executed": True,
+                "fully_executed": True,
                 "live_ok": True,
                 "status": status or "FILLED_BY_QTY",
                 "executed_qty": float(executed_qty),
+                "requested_qty": qty_f,
+                "remaining_qty": 0.0,
+                "order_id": str(order_id) if order_id is not None else None,
+                "client_order_id": maker_cid,
+                "exchange_status": status or "FILLED_BY_QTY",
                 "filled_as": "MAKER",
                 "resp": {"maker_create": resp_maker, "maker_final": o},
                 "maker_price": float(maker_price),
@@ -244,12 +294,34 @@ def place_live_exit_maker_then_market(
                 )
             mkt_status = str(resp_mkt.get("status", "")).upper()
             mkt_exec = _safe_float(resp_mkt.get("executedQty"), 0.0)
+            if mkt_status == "FILLED" and mkt_exec <= 0.0:
+                mkt_exec = remaining
             live_ok = (mkt_status == "FILLED") or (mkt_exec > 0.0)
+            market_order_id = resp_mkt.get("orderId")
+            market_accepted = (
+                bool(market_order_id) and mkt_status in accepted_statuses
+            )
+            total_executed = float(executed_qty) + float(mkt_exec)
+            fully_executed = total_executed >= qty_f * 0.999
             return {
                 "ok": True,
+                "attempted": True,
+                "order_accepted": bool(
+                    maker_accepted or market_accepted or live_ok
+                ),
+                "executed": total_executed > 0.0,
+                "fully_executed": fully_executed,
                 "live_ok": bool(live_ok),
                 "status": "FALLBACK_MARKET",
-                "executed_qty": float(executed_qty) + float(mkt_exec),
+                "executed_qty": total_executed,
+                "requested_qty": qty_f,
+                "remaining_qty": max(0.0, qty_f - total_executed),
+                "order_id": (
+                    str(market_order_id) if market_order_id is not None
+                    else (str(order_id) if order_id is not None else None)
+                ),
+                "client_order_id": mkt_cid,
+                "exchange_status": mkt_status or "FALLBACK_MARKET",
                 "filled_as": "MARKET_FALLBACK",
                 "resp": {"maker_create": resp_maker, "cancel": cancel_resp, "market": resp_mkt},
                 "maker_price": float(maker_price),
@@ -257,11 +329,24 @@ def place_live_exit_maker_then_market(
                 "best_ask": best_ask,
             }
         except Exception as e:
+            total_executed = float(executed_qty)
             return {
                 "ok": False,
+                "attempted": True,
+                "order_accepted": bool(maker_accepted),
+                "executed": total_executed > 0.0,
+                "fully_executed": total_executed >= qty_f * 0.999,
                 "live_ok": False,
                 "status": "FALLBACK_MARKET_FAILED",
-                "executed_qty": float(executed_qty),
+                "executed_qty": total_executed,
+                "requested_qty": qty_f,
+                "remaining_qty": max(0.0, qty_f - total_executed),
+                "order_id": str(order_id) if order_id is not None else None,
+                "client_order_id": maker_cid,
+                "exchange_status": (
+                    "FALLBACK_FAILED_AFTER_PARTIAL_FILL"
+                    if total_executed > 0.0 else "FALLBACK_MARKET_FAILED"
+                ),
                 "filled_as": None,
                 "resp": {"maker_create": resp_maker, "cancel": cancel_resp, "error": str(e)},
                 "maker_price": float(maker_price),
@@ -269,11 +354,22 @@ def place_live_exit_maker_then_market(
                 "best_ask": best_ask,
             }
 
+    total_executed = float(executed_qty)
+    fully_executed = total_executed >= qty_f * 0.999
     return {
         "ok": True,
-        "live_ok": float(executed_qty) > 0.0,
+        "attempted": True,
+        "order_accepted": bool(maker_accepted or float(executed_qty) > 0.0),
+        "executed": total_executed > 0.0,
+        "fully_executed": fully_executed,
+        "live_ok": total_executed > 0.0,
         "status": "MAKER_TIMEOUT_NO_REMAIN",
-        "executed_qty": float(executed_qty),
+        "executed_qty": total_executed,
+        "requested_qty": qty_f,
+        "remaining_qty": max(0.0, qty_f - total_executed),
+        "order_id": str(order_id) if order_id is not None else None,
+        "client_order_id": maker_cid,
+        "exchange_status": status or "MAKER_TIMEOUT_NO_REMAIN",
         "filled_as": "MAKER_TIMEOUT",
         "resp": {"maker_create": resp_maker, "cancel": cancel_resp},
         "maker_price": float(maker_price),
@@ -573,9 +669,20 @@ def place_live_order(
     )
 
     if not pre.get("ok"):
+        preflight_status = str(pre.get("reason") or "PREFLIGHT_BLOCKED")
         return {
             "ok": False,
+            "attempted": False,
+            "order_accepted": False,
+            "executed": False,
             "live_ok": False,
+            "fully_executed": False,
+            "executed_qty": 0.0,
+            "requested_qty": float(qty),
+            "order_id": None,
+            "client_order_id": client_order_id,
+            "status": preflight_status,
+            "exchange_status": preflight_status,
             "blocked": True,
             "reason": pre.get("reason"),
             "meta": pre.get("meta"),
@@ -616,12 +723,21 @@ def place_live_order(
         status = str(resp.get("status", "")).upper()
         executed_qty = _safe_float(resp.get("executedQty"), 0.0)
         order_id = resp.get("orderId")
+        if status == "FILLED" and executed_qty <= 0.0:
+            executed_qty = float(qty)
 
         # OKX often ACKs market orders as NEW with executedQty=0, then fills shortly after.
         # That is an accepted exchange order, not a failed order.
         live_ok = (status == "FILLED") or (executed_qty > 0.0)
-        order_accepted = bool(order_id) and status in {"NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED"}
+        order_accepted = bool(live_ok) or (
+            bool(order_id)
+            and status in {"NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED"}
+        )
         pending_fill = bool(order_accepted and not live_ok)
+        fully_executed = bool(
+            live_ok
+            and (status == "FILLED" or executed_qty >= float(qty) * 0.999)
+        )
 
         # Persist order ACK when the caller provides a DB transaction. This is best-effort and
         # intentionally does not fail trading if the legacy table is missing/different.
@@ -672,8 +788,16 @@ def place_live_order(
 
         return {
             "ok": True,
+            "attempted": True,
             "live_ok": bool(live_ok),
             "order_accepted": bool(order_accepted),
+            "executed": bool(live_ok),
+            "fully_executed": fully_executed,
+            "executed_qty": float(executed_qty),
+            "requested_qty": float(qty),
+            "order_id": str(order_id) if order_id is not None else None,
+            "status": status or None,
+            "exchange_status": status or None,
             "pending_fill": bool(pending_fill),
             "blocked": False,
             "reason": None,
@@ -691,7 +815,17 @@ def place_live_order(
         )
         return {
             "ok": False,
+            "attempted": True,
+            "order_accepted": False,
+            "executed": False,
             "live_ok": False,
+            "fully_executed": False,
+            "executed_qty": 0.0,
+            "requested_qty": float(qty),
+            "order_id": None,
+            "client_order_id": client_order_id,
+            "status": "EXCHANGE_REJECTED",
+            "exchange_status": "EXCHANGE_REJECTED",
             "blocked": False,
             "reason": "EXCHANGE_API_EXCEPTION",
             "meta": {"code": getattr(e, "code", None), "msg": getattr(e, "message", str(e))},
@@ -705,7 +839,17 @@ def place_live_order(
         )
         return {
             "ok": False,
+            "attempted": True,
+            "order_accepted": False,
+            "executed": False,
             "live_ok": False,
+            "fully_executed": False,
+            "executed_qty": 0.0,
+            "requested_qty": float(qty),
+            "order_id": None,
+            "client_order_id": client_order_id,
+            "status": "EXECUTION_EXCEPTION",
+            "exchange_status": "EXECUTION_EXCEPTION",
             "blocked": False,
             "reason": "LIVE_ORDER_EXCEPTION",
             "meta": {"err": str(e)},
