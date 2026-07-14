@@ -7,7 +7,16 @@ import sys
 
 import pytest
 
-from common.schema_readiness import validate_strategy_runtime_schema
+from common.schema_readiness import (
+    PENDING_ENTRY_FUNCTION,
+    PENDING_ENTRY_INDEX_CONTRACT,
+    PENDING_ENTRY_REQUIRED_KV,
+    PENDING_ENTRY_SCHEMA_MARKER,
+    PENDING_ENTRY_TABLES,
+    PENDING_ENTRY_TRIGGER,
+    validate_pending_entry_reconciliation_schema,
+    validate_strategy_runtime_schema,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +61,28 @@ class RecordingConnection:
         self.closed = True
 
 
+def _pending_ready_responses():
+    columns = [
+        (table, column)
+        for table, names in PENDING_ENTRY_TABLES.items()
+        for column in names
+    ]
+    index_defs = [
+        (name, "CREATE UNIQUE INDEX " + name + " ON public.x " + " ".join(parts))
+        for name, parts in PENDING_ENTRY_INDEX_CONTRACT.items()
+    ]
+    return [
+        columns,
+        index_defs,
+        [(PENDING_ENTRY_FUNCTION,)],
+        [(PENDING_ENTRY_TRIGGER, "strategy_events", PENDING_ENTRY_FUNCTION)],
+        [
+            (key, "1" if key == PENDING_ENTRY_SCHEMA_MARKER else "configured")
+            for key in PENDING_ENTRY_REQUIRED_KV
+        ],
+    ]
+
+
 def test_strategy_modules_do_not_import_or_call_ensure_schema():
     for path in STRATEGY_FILES:
         tree = ast.parse(path.read_text())
@@ -78,20 +109,67 @@ def test_schema_readiness_uses_selects_only():
         for table, names in REQUIRED_COLUMNS.items()
         for column in names
     ]
-    conn = RecordingConnection([columns, [(name,) for name in REQUIRED_INDEXES]])
+    conn = RecordingConnection([
+        columns,
+        [(name,) for name in REQUIRED_INDEXES],
+        *_pending_ready_responses(),
+    ])
 
     validate_strategy_runtime_schema(conn)
 
-    assert len(conn.cursor_obj.sql) == 2
+    assert len(conn.cursor_obj.sql) == 7
     assert all(sql.upper().startswith("SELECT") for sql, _ in conn.cursor_obj.sql)
     assert not any("PG_ADVISORY" in sql.upper() for sql, _ in conn.cursor_obj.sql)
 
 
 def test_schema_readiness_fails_fast_when_schema_is_missing():
-    conn = RecordingConnection([[], []])
+    conn = RecordingConnection([[], [], [], [], [], [], []])
 
     with pytest.raises(RuntimeError, match="apply migrations"):
         validate_strategy_runtime_schema(conn)
+
+
+@pytest.mark.parametrize(
+    ("response_index", "replacement", "expected"),
+    [
+        (0, [], "columns:"),
+        (1, [], "index:"),
+        (2, [], "function:"),
+        (3, [], "trigger:"),
+        (4, [], "marker:"),
+    ],
+)
+def test_pending_entry_readiness_rejects_incomplete_contract(
+    response_index, replacement, expected
+):
+    responses = _pending_ready_responses()
+    responses[response_index] = replacement
+    conn = RecordingConnection(responses)
+    with pytest.raises(RuntimeError, match=expected):
+        validate_pending_entry_reconciliation_schema(conn)
+
+
+def test_pending_entry_readiness_rejects_wrong_index_definition():
+    responses = _pending_ready_responses()
+    responses[1][0] = (responses[1][0][0], "CREATE INDEX wrong ON public.x (id)")
+    conn = RecordingConnection(responses)
+    with pytest.raises(RuntimeError, match="index_definition"):
+        validate_pending_entry_reconciliation_schema(conn)
+
+
+@pytest.mark.parametrize("missing_name", sorted(PENDING_ENTRY_INDEX_CONTRACT))
+def test_pending_entry_readiness_rejects_each_missing_critical_index(missing_name):
+    responses = _pending_ready_responses()
+    responses[1] = [row for row in responses[1] if row[0] != missing_name]
+    conn = RecordingConnection(responses)
+    with pytest.raises(RuntimeError, match=missing_name):
+        validate_pending_entry_reconciliation_schema(conn)
+
+
+def test_pending_entry_readiness_accepts_full_contract():
+    validate_pending_entry_reconciliation_schema(
+        RecordingConnection(_pending_ready_responses())
+    )
 
 
 def test_runner_validates_schema_before_fetching_or_starting_children(monkeypatch):
