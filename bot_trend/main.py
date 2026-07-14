@@ -24,7 +24,7 @@ from common.telemetry_throttle import should_emit_throttled_event
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.exchange_ingest_trades import ingest_my_trades
 from common.exchange_identity import normalize_exchange_source
-from common.db import get_db_conn
+from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
@@ -3048,21 +3048,20 @@ def save_klines(rows):
 
 
 def update_indicators():
-    conn = get_db_conn()
-    df = pd.read_sql_query(
-        """
-        SELECT id, open_time, close
-        FROM candles
-        WHERE symbol = %s AND interval = %s
-        ORDER BY open_time
-        """,
-        conn,
-        params=(SYMBOL, INTERVAL),
-    )
+    with read_only_db_conn(get_db_conn) as read_conn:
+        df = pd.read_sql_query(
+            """
+            SELECT id, open_time, close
+            FROM candles
+            WHERE symbol = %s AND interval = %s
+            ORDER BY open_time
+            """,
+            read_conn,
+            params=(SYMBOL, INTERVAL),
+        )
 
     if df.empty:
         logging.info("No data for indicators yet.")
-        conn.close()
         return
 
     df["ema_21"] = df["close"].astype(float).ewm(span=EMA_PERIOD, adjust=False).mean()
@@ -3079,7 +3078,6 @@ def update_indicators():
 
     last = df.tail(50)
 
-    cur = conn.cursor()
     sql = """
         UPDATE candles
         SET ema_21 = %s,
@@ -3090,11 +3088,10 @@ def update_indicators():
     data = [(row["ema_21"], row["rsi_14"], int(row["id"])) for _, row in last.iterrows()]
 
     start = time.perf_counter()
-    cur.executemany(sql, data)
-    conn.commit()
-    elapsed = time.perf_counter() - start
-    cur.close()
-    conn.close()
+    with db_write_conn(get_db_conn) as (conn, cur):
+        cur.executemany(sql, data)
+        conn.commit()
+        elapsed = time.perf_counter() - start
 
     logging.info("Updated indicators for %d candles in %.3f s", len(data), elapsed)
 

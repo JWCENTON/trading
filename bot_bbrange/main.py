@@ -28,7 +28,7 @@ from common.alerts import emit_alert_throttled
 from common.exchange_ingest_trades import ingest_my_trades
 from common.exchange_identity import normalize_exchange_source
 from common.flags import exchange_mytrades_enabled
-from common.db import get_db_conn
+from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
@@ -1299,21 +1299,20 @@ def save_klines(rows):
     conn.close()
 
 def update_indicators():
-    conn = get_db_conn()
-    df = pd.read_sql_query(
-        """
-        SELECT id, open_time, close
-        FROM candles
-        WHERE symbol=%s AND interval=%s
-        ORDER BY open_time DESC
-        LIMIT 2000;
-        """,
-        conn,
-        params=(SYMBOL, INTERVAL),
-    )
+    with read_only_db_conn(get_db_conn) as read_conn:
+        df = pd.read_sql_query(
+            """
+            SELECT id, open_time, close
+            FROM candles
+            WHERE symbol=%s AND interval=%s
+            ORDER BY open_time DESC
+            LIMIT 2000;
+            """,
+            read_conn,
+            params=(SYMBOL, INTERVAL),
+        )
 
     if df.empty:
-        conn.close()
         return
 
     close_f = df["close"].astype(float)
@@ -1330,19 +1329,17 @@ def update_indicators():
 
     last = df.tail(60)
 
-    cur = conn.cursor()
-    data = [(row["ema_21"], row["rsi_14"], int(row["id"])) for _, row in last.iterrows()]
-    cur.executemany(
-        """
-        UPDATE candles
-        SET ema_21=%s, rsi_14=%s
-        WHERE id=%s;
-        """,
-        data,
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    with db_write_conn(get_db_conn) as (conn, cur):
+        data = [(row["ema_21"], row["rsi_14"], int(row["id"])) for _, row in last.iterrows()]
+        cur.executemany(
+            """
+            UPDATE candles
+            SET ema_21=%s, rsi_14=%s
+            WHERE id=%s;
+            """,
+            data,
+        )
+        conn.commit()
 
 def get_last_closed_candle():
     conn = get_db_conn()
@@ -1953,19 +1950,18 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                     ))
 
         # Build BB on recent closes (need at least BB_PERIOD)
-        conn = get_db_conn()
-        df = pd.read_sql_query(
-            """
-            SELECT open_time, close
-            FROM candles
-            WHERE symbol=%s AND interval=%s AND open_time <= %s
-            ORDER BY open_time DESC
-            LIMIT %s
-            """,
-            conn,
-            params=(SYMBOL, INTERVAL, open_time, max(BB_PERIOD + 30, 120)),
-        )
-        conn.close()
+        with read_only_db_conn(get_db_conn) as read_conn:
+            df = pd.read_sql_query(
+                """
+                SELECT open_time, close
+                FROM candles
+                WHERE symbol=%s AND interval=%s AND open_time <= %s
+                ORDER BY open_time DESC
+                LIMIT %s
+                """,
+                read_conn,
+                params=(SYMBOL, INTERVAL, open_time, max(BB_PERIOD + 30, 120)),
+            )
 
         if df.empty or len(df) < BB_PERIOD + 5:
             emit_blocked(reason="NOT_ENOUGH_CANDLES", decision=None, price=price, candle_open_time=open_time, info={"have": int(len(df))})

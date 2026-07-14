@@ -52,8 +52,14 @@ class _Connection:
     def cursor(self):
         return self.cursor_obj
 
+    def set_session(self, *, readonly):
+        assert readonly is True
+
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        pass
 
     def close(self):
         self.closed = True

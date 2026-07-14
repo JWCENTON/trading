@@ -22,7 +22,7 @@ from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
-from common.db import get_db_conn
+from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
 from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
@@ -2063,20 +2063,19 @@ def save_klines(rows):
 
 
 def update_indicators():
-    conn = get_db_conn()
-    df = pd.read_sql_query(
-        """
-        SELECT id, open_time, high, low, close
-        FROM candles
-        WHERE symbol=%s AND interval=%s
-        ORDER BY open_time
-        """,
-        conn,
-        params=(SYMBOL, INTERVAL),
-    )
+    with read_only_db_conn(get_db_conn) as read_conn:
+        df = pd.read_sql_query(
+            """
+            SELECT id, open_time, high, low, close
+            FROM candles
+            WHERE symbol=%s AND interval=%s
+            ORDER BY open_time
+            """,
+            read_conn,
+            params=(SYMBOL, INTERVAL),
+        )
 
     if df.empty:
-        conn.close()
         logging.info("RSI: no candles yet for indicators.")
         return
 
@@ -2112,22 +2111,20 @@ def update_indicators():
 
     last = df.tail(60)  # update tylko końcówkę
 
-    cur = conn.cursor()
-    data = [
-        (row["ema_21"], row["rsi_14"], row["atr_14"], int(row["id"]))
-        for _, row in last.iterrows()
-    ]
-    cur.executemany(
-        """
-        UPDATE candles
-        SET ema_21=%s, rsi_14=%s, atr_14=%s
-        WHERE id=%s;
-        """,
-        data,
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    with db_write_conn(get_db_conn) as (conn, cur):
+        data = [
+            (row["ema_21"], row["rsi_14"], row["atr_14"], int(row["id"]))
+            for _, row in last.iterrows()
+        ]
+        cur.executemany(
+            """
+            UPDATE candles
+            SET ema_21=%s, rsi_14=%s, atr_14=%s
+            WHERE id=%s;
+            """,
+            data,
+        )
+        conn.commit()
     logging.info("RSI: updated indicators for %d candles.", len(data))
 
 

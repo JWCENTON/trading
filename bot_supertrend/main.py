@@ -21,7 +21,7 @@ from common.execution import build_live_client_order_id, build_live_entry_intent
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_batch
-from common.db import get_db_conn
+from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
@@ -1487,7 +1487,6 @@ def update_indicators(
     """
     Computes EMA, RSI, ATR and SuperTrend over full series, updates last ~50 candles.
     """
-    conn = get_db_conn()
     progress_failed = False
 
     def report_progress(phase: str, processed_rows: int, total_rows: int):
@@ -1500,21 +1499,21 @@ def update_indicators(
             progress_failed = True
             logging.exception("SUPERTREND indicator progress callback failed")
 
-    df = pd.read_sql_query(
-        """
-        SELECT id, open_time, open, high, low, close
-        FROM candles
-        WHERE symbol = %s AND interval = %s
-        ORDER BY open_time
-        """,
-        conn,
-        params=(SYMBOL, INTERVAL),
-    )
+    with read_only_db_conn(get_db_conn) as read_conn:
+        df = pd.read_sql_query(
+            """
+            SELECT id, open_time, open, high, low, close
+            FROM candles
+            WHERE symbol = %s AND interval = %s
+            ORDER BY open_time
+            """,
+            read_conn,
+            params=(SYMBOL, INTERVAL),
+        )
     total_rows = len(df)
     report_progress("LOAD_HISTORY", total_rows, total_rows)
 
     if df.empty or len(df) < max(EMA_PERIOD, RSI_PERIOD, ATR_PERIOD) + 5:
-        conn.close()
         return
 
     close = df["close"].astype(float)
@@ -1590,7 +1589,6 @@ def update_indicators(
 
     last = df.tail(50)
 
-    cur = conn.cursor()
     sql = """
         UPDATE candles
         SET ema_21 = %s,
@@ -1612,11 +1610,10 @@ def update_indicators(
         for _, row in last.iterrows()
     ]
     report_progress("PERSIST_LATEST", 0, len(data))
-    cur.executemany(sql, data)
-    conn.commit()
-    report_progress("PERSIST_LATEST", len(data), len(data))
-    cur.close()
-    conn.close()
+    with db_write_conn(get_db_conn) as (conn, cur):
+        cur.executemany(sql, data)
+        conn.commit()
+        report_progress("PERSIST_LATEST", len(data), len(data))
 
 def get_last_closed_candle():
     conn = get_db_conn()

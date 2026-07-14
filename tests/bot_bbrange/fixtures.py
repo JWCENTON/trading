@@ -80,6 +80,10 @@ class FakeConnection:
     def __init__(self, recorder: Recorder) -> None:
         self.recorder = recorder
 
+    def set_session(self, *, readonly):
+        assert readonly is True
+        self.recorder.add("set_session_readonly")
+
     def cursor(self):
         self.recorder.add("cursor_open")
         return FakeCursor(self.recorder)
