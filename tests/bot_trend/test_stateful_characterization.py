@@ -162,48 +162,208 @@ def test_paper_entry_and_live_boundaries(harness):
     assert filled.execution_attempts[0].side == "BUY"
 
 
-def test_current_live_new_ack_is_promoted_to_live_ok_and_opens_position(trend, monkeypatch):
-    """Freeze TREND's legacy ACK semantics without using FinalDecision/ExecutionOutcome."""
+def run_live_entry_boundary(
+    trend, monkeypatch, place_result, *, ledger_ok=True, open_failure=False
+):
     class Conn:
         def commit(self):
-            pass
+            operations.append("db:commit")
 
         def close(self):
-            pass
+            operations.append("db:close")
 
+    operations = []
+    events = []
     opened = []
-    monkeypatch.setattr(trend, "insert_simulated_order", lambda **_kwargs: True)
-    monkeypatch.setattr(trend, "get_db_conn", lambda: Conn())
-    monkeypatch.setattr(trend, "get_exchange_client", lambda: StrictFakeExchange())
-    monkeypatch.setattr(trend, "get_open_position", lambda: None)
-    monkeypatch.setattr(trend, "emit_strategy_event", lambda **_kwargs: None)
-    monkeypatch.setattr(trend, "preflight_live_order", lambda *_a, **_k: {"ok": True})
+
+    def insert(**_kwargs):
+        operations.append("ledger:reserve")
+        return ledger_ok
+
+    def place(*_args, **_kwargs):
+        operations.append("execution:place_live_order")
+        return place_result
+
+    def open_position(**kwargs):
+        operations.append("state_change:open_attempt")
+        if open_failure:
+            raise RuntimeError("position ledger write failed")
+        opened.append(kwargs)
+        operations.append("state_change:open")
+        return 77
+
+    monkeypatch.setattr(trend, "insert_simulated_order", insert)
     monkeypatch.setattr(
+        trend, "get_db_conn",
+        lambda: operations.append("db:get_connection") or Conn(),
+    )
+    monkeypatch.setattr(trend, "get_exchange_client", lambda: StrictFakeExchange())
+    monkeypatch.setattr(
+        trend, "get_open_position",
+        lambda: operations.append("state:read_position") or None,
+    )
+    monkeypatch.setattr(
+        trend, "emit_strategy_event",
+        lambda **payload: (
+            events.append(payload),
+            operations.append(f"strategy_event:{payload['event_type']}")
+        ),
+    )
+    monkeypatch.setattr(
+        trend, "preflight_live_order",
+        lambda *_a, **_k: operations.append("execution:preflight") or {"ok": True},
+    )
+    monkeypatch.setattr(trend, "place_live_order", place)
+    monkeypatch.setattr(trend, "open_position_from_live_ack", open_position)
+
+    try:
+        result = trend.execute_and_record(
+            side="BUY", price=102.0, qty_btc=0.1, reason="fixture",
+            candle_open_time=trend_rows()[0][2], is_exit=False,
+            cfg_used=SimpleNamespace(
+                symbol="BTCUSDC", interval="1m", trading_mode="LIVE",
+                live_orders_enabled=True, quote_asset="USDC",
+            ),
+            allow_live_orders=True, allow_meta={}, rsi_14=50.0, ema_21=101.0,
+        )
+        error = None
+    except RuntimeError as exc:
+        result = None
+        error = exc
+    return SimpleNamespace(
+        result=result, error=error, opened=opened, events=events,
+        operation_log=operations,
+    )
+
+
+@pytest.mark.parametrize("status", ["NEW", "ACCEPTED"])
+def test_live_accepted_without_fill_stays_pending(trend, monkeypatch, status):
+    observed = run_live_entry_boundary(
         trend,
-        "place_live_order",
-        lambda *_a, **_k: {
-            "ok": True, "live_ok": False, "order_accepted": True,
-            "resp": {"orderId": "order-new", "status": "NEW", "executedQty": "0"},
+        monkeypatch,
+        {
+            "ok": True, "attempted": True, "live_ok": False,
+            "order_accepted": True, "executed": False,
+            "fully_executed": False, "executed_qty": 0.0,
+            "requested_qty": 0.1, "order_id": f"order-{status.lower()}",
+            "client_order_id": "cid-entry", "exchange_status": status,
+            "resp": {"orderId": f"order-{status.lower()}", "status": status,
+                     "executedQty": "0"},
         },
     )
-    monkeypatch.setattr(
+    assert observed.error is None
+    assert observed.result["live_attempted"] is True
+    assert observed.result["order_accepted"] is True
+    assert observed.result["executed"] is False
+    assert observed.result["live_ok"] is False
+    assert observed.result["blocked_reason"] == "ORDER_ACCEPTED_PENDING_FILL"
+    assert observed.opened == []
+    assert "state_change:open_attempt" not in observed.operation_log
+    sent = next(e for e in observed.events if e["event_type"] == "LIVE_ORDER_SENT")
+    assert sent["reason"] == "ORDER_ACCEPTED_PENDING_FILL"
+    assert sent["info"]["pending_fill"] is True
+    assert observed.operation_log.count("execution:place_live_order") == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "executed_qty", "fully_executed", "expected_qty"),
+    [
+        ("PARTIALLY_FILLED", 0.04, False, 0.04),
+        ("FILLED", 0.1, True, 0.1),
+    ],
+)
+def test_live_partial_and_full_fill_use_actual_quantity(
+    trend, monkeypatch, status, executed_qty, fully_executed, expected_qty
+):
+    observed = run_live_entry_boundary(
         trend,
-        "open_position_from_live_ack",
-        lambda **kwargs: opened.append(kwargs) or 77,
+        monkeypatch,
+        {
+            "ok": True, "attempted": True, "live_ok": True,
+            "order_accepted": True, "executed": True,
+            "fully_executed": fully_executed, "executed_qty": executed_qty,
+            "requested_qty": 0.1, "order_id": "order-filled",
+            "client_order_id": "cid-entry", "exchange_status": status,
+            "resp": {"orderId": "order-filled", "status": status,
+                     "executedQty": str(executed_qty)},
+        },
     )
-    result = trend.execute_and_record(
-        side="BUY", price=102.0, qty_btc=0.1, reason="fixture",
-        candle_open_time=trend_rows()[0][2], is_exit=False,
-        cfg_used=SimpleNamespace(
-            symbol="BTCUSDC", interval="1m", trading_mode="LIVE",
-            live_orders_enabled=True, quote_asset="USDC",
-        ),
-        allow_live_orders=True, allow_meta={}, rsi_14=50.0, ema_21=101.0,
+    assert observed.error is None
+    assert observed.result["live_ok"] is True
+    assert observed.result["executed"] is True
+    assert observed.result["fully_executed"] is fully_executed
+    assert observed.opened[0]["qty"] == expected_qty
+    if not fully_executed:
+        assert observed.opened[0]["qty"] != 0.1
+    assert observed.operation_log.index("execution:place_live_order") < observed.operation_log.index("state_change:open")
+
+
+def test_live_rejection_before_ack_and_exchange_exception_do_not_open(trend, monkeypatch):
+    rejected = run_live_entry_boundary(
+        trend,
+        monkeypatch,
+        {
+            "ok": True, "attempted": True, "live_ok": False,
+            "order_accepted": False, "executed": False,
+            "fully_executed": False, "executed_qty": 0.0,
+            "requested_qty": 0.1, "order_id": None,
+            "client_order_id": "cid-entry", "exchange_status": "REJECTED",
+            "resp": {"status": "REJECTED", "executedQty": "0"},
+        },
     )
-    assert result["live_attempted"] is True, result
-    assert result["live_ok"] is True
-    assert opened[0]["qty"] == 0.1
-    assert opened[0]["entry_order_id"] == "order-new"
+    assert rejected.result["live_ok"] is False
+    assert rejected.result["order_accepted"] is False
+    assert rejected.opened == []
+
+    failed = run_live_entry_boundary(
+        trend,
+        monkeypatch,
+        {
+            "ok": False, "attempted": True, "live_ok": False,
+            "order_accepted": False, "executed": False,
+            "fully_executed": False, "executed_qty": 0.0,
+            "requested_qty": 0.1, "order_id": None,
+            "client_order_id": "cid-entry", "exchange_status": "EXECUTION_EXCEPTION",
+            "reason": "LIVE_ORDER_EXCEPTION", "resp": None,
+        },
+    )
+    assert failed.result["live_ok"] is False
+    assert failed.result["blocked_reason"] == "LIVE_ORDER_FAILED"
+    assert failed.opened == []
+    assert failed.operation_log.count("execution:place_live_order") == 1
+
+
+def test_live_ledger_failure_before_and_after_fill(trend, monkeypatch):
+    before = run_live_entry_boundary(trend, monkeypatch, {}, ledger_ok=False)
+    assert before.result["ledger_ok"] is False
+    assert before.opened == []
+    assert "execution:place_live_order" not in before.operation_log
+
+    after = run_live_entry_boundary(
+        trend,
+        monkeypatch,
+        {
+            "ok": True, "attempted": True, "live_ok": True,
+            "order_accepted": True, "executed": True,
+            "fully_executed": True, "executed_qty": 0.1,
+            "requested_qty": 0.1, "order_id": "order-filled",
+            "client_order_id": "cid-entry", "exchange_status": "FILLED",
+            "resp": {"orderId": "order-filled", "status": "FILLED",
+                     "executedQty": "0.1"},
+        },
+        open_failure=True,
+    )
+    assert after.error is None
+    assert after.result["ledger_ok"] is False
+    assert after.result["executed"] is True
+    assert after.result["executed_qty"] == 0.1
+    assert after.result["blocked_reason"] == "LIVE_ENTRY_FILL_POSITION_WRITE_FAILED"
+    assert after.opened == []
+    assert "state_change:open_attempt" in after.operation_log
+    assert "state_change:open" not in after.operation_log
+    assert next(e for e in after.events if e["event_type"] == "LIVE_ORDER_SENT")["reason"] == "OK"
+    blocked = next(e for e in after.events if e["event_type"] == "BLOCKED")
+    assert blocked["reason"] == "LIVE_ENTRY_FILL_BUT_POSITION_NOT_OPENED"
 
 
 @pytest.mark.parametrize(

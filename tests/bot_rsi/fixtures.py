@@ -291,12 +291,21 @@ class RsiStatefulHarness:
         self.operation_log.append(
             f"execution:{'EXIT' if is_exit else 'ENTRY'}_{str(side).upper()}"
         )
+        live_executed_qty = (
+            self.execution_executed_qty
+            if self.execution_executed_qty is not None
+            else (
+                float(quantity)
+                if self.trading_mode == "LIVE" and self.execution_live_ok
+                else 0.0
+            )
+        )
         execution_succeeded = self.execution_ledger_ok and (
             self.trading_mode != "LIVE"
             or (
                 self.execution_live_attempted
                 and self.execution_order_accepted
-                and self.execution_live_ok
+                and live_executed_qty > 0.0
             )
         )
         if execution_succeeded:
@@ -307,21 +316,16 @@ class RsiStatefulHarness:
                 position = (
                     self.next_position_id,
                     "LONG" if str(side).upper() == "BUY" else "SHORT",
-                    float(quantity),
+                    (
+                        live_executed_qty
+                        if self.trading_mode == "LIVE"
+                        else float(quantity)
+                    ),
                     float(price),
                     candle_open_time or self.now,
                 )
                 self.next_position_id += 1
                 self._set_position(position)
-        live_executed_qty = (
-            self.execution_executed_qty
-            if self.execution_executed_qty is not None
-            else (
-                float(quantity)
-                if self.trading_mode == "LIVE" and self.execution_live_ok
-                else 0.0
-            )
-        )
         fully_executed = (
             self.execution_fully_executed
             if self.execution_fully_executed is not None

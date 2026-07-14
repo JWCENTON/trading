@@ -897,6 +897,48 @@ def test_live_entry_execution_outcome_matrix(
 
 
 @pytest.mark.parametrize(
+    (
+        "case", "accepted", "executed_qty", "fully_executed", "ledger_ok",
+        "expected_position_qty", "order_submitted", "trade_executed",
+    ),
+    [
+        ("pending", True, 0.0, False, True, None, True, False),
+        ("partial", True, 0.04, False, True, 0.04, True, True),
+        ("full", True, 0.1, True, True, 0.1, True, True),
+        ("ledger_failure_after_fill", True, 0.1, True, False, None, True, True),
+    ],
+)
+def test_live_entry_decision_and_position_share_executed_qty_ssot(
+    harness, case, accepted, executed_qty, fully_executed, ledger_ok,
+    expected_position_qty, order_submitted, trade_executed,
+):
+    harness.trading_mode = "LIVE"
+    harness.execution_ledger_ok = ledger_ok
+    harness.execution_live_attempted = True
+    harness.execution_order_accepted = accepted
+    harness.execution_live_ok = executed_qty > 0.0
+    harness.execution_executed_qty = executed_qty
+    harness.execution_fully_executed = fully_executed
+    if not ledger_ok:
+        harness.execution_blocked_reason = "LEDGER_POST_FILL_FAILED"
+
+    observed = harness.cycle(
+        entry_candle(), prev_row=entry_previous_candle()
+    )
+    decision = observed.final_decision
+
+    assert decision.order_submitted is order_submitted, case
+    assert decision.trade_executed is trade_executed
+    assert decision.details["execution_result"]["executed_qty"] == executed_qty
+    if expected_position_qty is None:
+        assert observed.position_after is None
+    else:
+        assert observed.position_after is not None
+        assert observed.position_after[2] == expected_position_qty
+        assert observed.position_after[2] != 0.1 or executed_qty == 0.1
+
+
+@pytest.mark.parametrize(
     ("attempted", "accepted", "executed"),
     [
         (False, True, False),

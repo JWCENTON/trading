@@ -39,6 +39,7 @@ from common.execution import (
     build_live_entry_intent_client_order_id,
     preflight_live_order,
 )
+from common.decision_contract import normalize_entry_execution_outcome
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1440,6 +1441,15 @@ def execute_and_record(
             pass
 
     if not resp or not resp.get("ok"):
+        failed_entry_outcome = (
+            normalize_entry_execution_outcome(
+                resp or {},
+                requested_qty=qty_btc,
+                client_order_id=client_order_id,
+            )
+            if not is_exit
+            else None
+        )
         emit_strategy_event(
             event_type="BLOCKED",
             decision=side,
@@ -1455,41 +1465,69 @@ def execute_and_record(
             conn.commit()
             cur.close()
             conn.close()
-        return {
+        result = {
             "ledger_ok": True,
-            "live_attempted": True,
+            "live_attempted": (
+                failed_entry_outcome.attempted if failed_entry_outcome else True
+            ),
             "live_ok": False,
             "blocked_reason": "LIVE_ORDER_FAILED",
             "client_order_id": client_order_id,
             "resp": (resp or {}).get("resp"),
         }
+        if failed_entry_outcome is not None:
+            result.update({
+                "order_accepted": failed_entry_outcome.order_accepted,
+                "executed": failed_entry_outcome.executed,
+                "fully_executed": failed_entry_outcome.fully_executed,
+                "executed_qty": failed_entry_outcome.executed_qty,
+                "requested_qty": failed_entry_outcome.requested_qty,
+                "order_id": failed_entry_outcome.order_id,
+                "exchange_status": failed_entry_outcome.exchange_status,
+            })
+        return result
 
     raw = (resp or {}).get("resp") or {}
-    status_raw = str(raw.get("status", "")).upper()
-    executed_raw = raw.get("executedQty")
-    try:
-        executed_f = float(executed_raw) if executed_raw is not None else 0.0
-    except Exception:
-        executed_f = 0.0
-
-    # compute live_ok / accepted ACK safely
-    order_id = raw.get("orderId")
-    live_ok = resp.get("live_ok")
-    if live_ok is None:
-        status = str(raw.get("status", "")).upper()
-        executed = raw.get("executedQty")
+    if not is_exit:
+        outcome = normalize_entry_execution_outcome(
+            resp,
+            requested_qty=qty_btc,
+            client_order_id=client_order_id,
+        )
+        status_raw = str(outcome.exchange_status or "").upper()
+        executed_f = float(outcome.executed_qty or 0.0)
+        order_id = outcome.order_id
+        live_ok = bool(outcome.executed)
+        order_accepted = bool(outcome.order_accepted)
+    else:
+        # Preserve the pre-existing TREND exit interpretation unchanged.
+        status_raw = str(raw.get("status", "")).upper()
+        executed_raw = raw.get("executedQty")
         try:
-            executed_f = float(executed) if executed is not None else 0.0
+            executed_f = float(executed_raw) if executed_raw is not None else 0.0
         except Exception:
             executed_f = 0.0
-        live_ok = executed_f > 0.0 or status == "FILLED"
-    live_ok = bool(live_ok)
-    order_accepted = bool(resp.get("order_accepted")) or (bool(order_id) and status_raw in {"NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED"})
+        order_id = raw.get("orderId")
+        live_ok = resp.get("live_ok")
+        if live_ok is None:
+            live_ok = executed_f > 0.0 or status_raw == "FILLED"
+        live_ok = bool(live_ok)
+        order_accepted = bool(resp.get("order_accepted")) or (
+            bool(order_id)
+            and status_raw in {
+                "NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED",
+            }
+        )
 
     emit_strategy_event(
         event_type="LIVE_ORDER_SENT",
         decision=side,
-        reason="OK" if live_ok else ("ORDER_ACCEPTED_PENDING_FILL" if order_accepted else "ACK_NO_FILL"),
+        reason=(
+            "OK" if live_ok
+            else "ORDER_ACCEPTED_PENDING_FILL" if order_accepted
+            else "ORDER_REJECTED" if not is_exit
+            else "ACK_NO_FILL"
+        ),
         price=price,
         candle_open_time=candle_open_time,
         info={
@@ -1508,7 +1546,7 @@ def execute_and_record(
     if (
         cfg_used.trading_mode == "LIVE"
         and not is_exit
-        and (live_ok or order_accepted)
+        and outcome.executed
     ):
         avg_px = None
         try:
@@ -1532,19 +1570,28 @@ def execute_and_record(
             except Exception:
                 avg_px = float(price)
 
-        pos_id_new = open_position_from_live_ack(
-            side=("LONG" if str(side).upper() == "BUY" else "SHORT"),
-            qty=float(executed_f if executed_f > 0.0 else qty_btc),
-            entry_price=float(avg_px),
-            entry_order_id=str(order_id) if order_id is not None else None,
-            entry_client_order_id=str(client_order_id),
-        )
+        position_error = None
+        try:
+            pos_id_new = open_position_from_live_ack(
+                side=("LONG" if str(side).upper() == "BUY" else "SHORT"),
+                qty=executed_f,
+                entry_price=float(avg_px),
+                entry_order_id=str(order_id) if order_id is not None else None,
+                entry_client_order_id=str(client_order_id),
+            )
+        except Exception as exc:
+            position_error = str(exc)
+            pos_id_new = None
+            logging.exception(
+                "TREND live entry fill position write failed symbol=%s client_order_id=%s order_id=%s",
+                cfg_used.symbol, client_order_id, order_id,
+            )
 
         if not pos_id_new:
             emit_strategy_event(
                 event_type="BLOCKED",
                 decision=side,
-                reason="LIVE_ENTRY_ACK_BUT_POSITION_NOT_OPENED",
+                reason="LIVE_ENTRY_FILL_BUT_POSITION_NOT_OPENED",
                 price=price,
                 candle_open_time=candle_open_time,
                 info={
@@ -1552,21 +1599,53 @@ def execute_and_record(
                     "order_id": order_id,
                     "executed_qty": executed_f,
                     "avg_px": avg_px,
+                    "error": position_error,
                     "resp": raw,
                 },
             )
-            raise RuntimeError(
-                "TREND live entry ACK but position not opened: "
-                f"symbol={cfg_used.symbol} interval={cfg_used.interval} "
-                f"client_order_id={client_order_id} order_id={order_id}"
-            )
+            return {
+                "ledger_ok": False,
+                "live_attempted": outcome.attempted,
+                "order_accepted": outcome.order_accepted,
+                "executed": outcome.executed,
+                "fully_executed": outcome.fully_executed,
+                "executed_qty": outcome.executed_qty,
+                "requested_qty": outcome.requested_qty,
+                "order_id": outcome.order_id,
+                "exchange_status": outcome.exchange_status,
+                "live_ok": live_ok,
+                "blocked_reason": "LIVE_ENTRY_FILL_POSITION_WRITE_FAILED",
+                "client_order_id": outcome.client_order_id,
+                "resp": raw,
+            }
+
+    if is_exit:
+        return {
+            "ledger_ok": True,
+            "live_attempted": True,
+            "live_ok": bool(live_ok or order_accepted),
+            "blocked_reason": None if (live_ok or order_accepted) else "ACK_NO_FILL",
+            "client_order_id": client_order_id,
+            "resp": raw,
+        }
 
     return {
         "ledger_ok": True,
-        "live_attempted": True,
-        "live_ok": bool(live_ok or order_accepted),
-        "blocked_reason": None if (live_ok or order_accepted) else "ACK_NO_FILL",
-        "client_order_id": client_order_id,
+        "live_attempted": outcome.attempted,
+        "order_accepted": outcome.order_accepted,
+        "executed": outcome.executed,
+        "fully_executed": outcome.fully_executed,
+        "executed_qty": outcome.executed_qty,
+        "requested_qty": outcome.requested_qty,
+        "order_id": outcome.order_id,
+        "exchange_status": outcome.exchange_status,
+        "live_ok": live_ok,
+        "blocked_reason": (
+            None if outcome.executed
+            else "ORDER_ACCEPTED_PENDING_FILL" if outcome.order_accepted
+            else "ORDER_REJECTED"
+        ),
+        "client_order_id": outcome.client_order_id,
         "resp": raw,
     }
 

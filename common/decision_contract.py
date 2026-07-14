@@ -299,6 +299,77 @@ class ExecutionOutcome:
         )
 
 
+def normalize_entry_execution_outcome(
+    result: Mapping[str, Any],
+    *,
+    requested_qty: float,
+    client_order_id: str | None,
+    ledger_ok: bool = True,
+) -> ExecutionOutcome:
+    """Normalize a LIVE entry result without performing I/O or state mutation."""
+    raw_response = result.get("resp")
+    response = raw_response if isinstance(raw_response, Mapping) else {}
+    # When the raw exchange response is available it is the quantity SSOT. This
+    # deliberately rejects a legacy top-level requested-qty fallback for a
+    # FILLED response whose exchange-reported executedQty is zero or absent.
+    executed_qty_raw = (
+        response.get("executedQty", 0.0)
+        if response
+        else result.get("executed_qty")
+    )
+    try:
+        executed_qty = float(executed_qty_raw or 0.0)
+    except (TypeError, ValueError):
+        executed_qty = 0.0
+
+    if "executed" in result:
+        executed = bool(result.get("executed")) and executed_qty > 0.0
+    else:
+        executed = executed_qty > 0.0
+
+    if "order_accepted" in result:
+        order_accepted = bool(result.get("order_accepted"))
+    else:
+        # A confirmed fill necessarily passed exchange acceptance. An order ID or
+        # NEW/ACCEPTED status alone deliberately does not infer acceptance.
+        order_accepted = executed
+
+    status = str(
+        result.get("exchange_status")
+        or result.get("status")
+        or response.get("status")
+        or ""
+    ).upper()
+    fully_executed = bool(
+        executed
+        and result.get("fully_executed", status == "FILLED")
+    )
+
+    if "live_attempted" in result or "attempted" in result:
+        attempted = bool(
+            result.get("live_attempted", result.get("attempted", False))
+        )
+    else:
+        # A real fill proves that an exchange attempt occurred. Pending IDs and
+        # statuses remain insufficient to infer an attempt or acceptance.
+        attempted = executed
+
+    normalized = {
+        **result,
+        "ledger_ok": bool(ledger_ok),
+        "live_attempted": attempted,
+        "order_accepted": order_accepted,
+        "executed": executed,
+        "fully_executed": fully_executed,
+        "executed_qty": executed_qty,
+        "requested_qty": result.get("requested_qty", requested_qty),
+        "client_order_id": result.get("client_order_id") or client_order_id,
+        # For entry semantics, operation success means a real positive fill.
+        "live_ok": executed,
+    }
+    return ExecutionOutcome.from_legacy(normalized)
+
+
 def _aware(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone-aware")

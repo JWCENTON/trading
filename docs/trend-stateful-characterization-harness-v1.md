@@ -2,10 +2,12 @@
 
 ## Scope
 
-This test-only harness freezes the behavior of `bot_trend/main.py` at baseline
-`cfae897711aa1492dcd55951569e3dfcd9911470`. It does not integrate TREND with
-`FinalDecision` or `ExecutionOutcome`, add a decision sink, persist decisions, or
-change production code.
+This test-only harness was introduced at baseline
+`cfae897711aa1492dcd55951569e3dfcd9911470` and now also protects the TREND LIVE
+ACK/fill regression. All four strategies use the same pure
+`normalize_entry_execution_outcome()` adapter to interpret LIVE entry results.
+TREND does not integrate `FinalDecision`, add a decision sink, or persist
+decisions.
 
 ## Runtime state machine
 
@@ -145,16 +147,27 @@ Unexpected network, exchange, database, or background-thread activity fails the
 tests. PAPER changes only fake ledger/position state. LIVE records intent through
 test doubles and never sends an order.
 
-The current TREND `execute_and_record()` behavior is intentionally frozen:
-`NEW + order_accepted=true + executedQty=0` is returned as `live_ok=true`, and a
-local position is opened using requested quantity when executed quantity is zero.
-This is legacy behavior, not an endorsement or a correction.
+TREND `execute_and_record()` now preserves the canonical distinction between ACK
+and fill. `NEW` or `ACCEPTED` with `order_accepted=true` and zero executed quantity
+remains pending: `live_ok=false`, with no local position. Partial and full fills
+open a position only for the confirmed `executed_qty`. The same shared boundary is
+used by RSI, SUPERTREND, and BBRANGE. A legacy result without an explicit ACK may
+infer acceptance only from a positive confirmed fill, never from an order ID or
+pending status alone.
+
+Entry event types are unchanged. Their reasons are truthful at the execution
+boundary: `ORDER_REJECTED` before ACK, `ORDER_ACCEPTED_PENDING_FILL` for ACK with
+zero fill, and `OK` for a positive partial or full fill. A confirmed fill followed
+by a failed local position write emits
+`BLOCKED / LIVE_ENTRY_FILL_BUT_POSITION_NOT_OPENED`; the returned execution flags
+still preserve the exchange fill.
 
 ## Findings
 
 | Severity | Path | Current behavior | Potential impact | Covered |
 |---|---|---|---|---|
-| High | LIVE entry ACK | Accepted `NEW` with zero fill is promoted to `live_ok=true`; local position is opened at requested qty. | Local position may precede confirmed fill. | Yes, direct execution-boundary test. |
+| Resolved | Four-strategy LIVE entry ACK/fill | RSI, TREND, SUPERTREND, and BBRANGE previously had divergent ACK/fill interpretation; the shared canonical adapter now requires positive `executed_qty` and uses that exact quantity. | False requested-quantity positions are prevented. | Yes, shared rejection/pending/partial/full/exception/legacy/ledger matrix. |
+| High | Delayed pending-entry fill recovery | TREND, SUPERTREND, and BBRANGE retain ACKs in `binance_orders`, but `reconcile_positions()` only updates existing positions and exchange trade ingestion invokes exit-fill reconciliation only. RSI does not pass a DB connection to the shared order helper, so its pending ACK is not added there. | A fill arriving after the strategy cycle has no current path that creates the missing local OPEN position; RSI also has a weaker pending-order persistence boundary. | Yes, explicit no-hidden-recovery audit test and call-site audit; remediation intentionally requires a separate patch. |
 | Medium | Open-position HOLD | Heartbeat and `RUN_END` occur, but there is no explicit HOLD event or reason. | Downstream event-only observers cannot distinguish HOLD from several silent paths. | Yes. |
 | Medium | Insufficient candles/EMA | Return occurs before `RUN_START`, heartbeat, and `RUN_END`. | Startup data-readiness is not visible through normal strategy lifecycle events. | Yes. |
 | Medium | SHORT entry | `ALLOW_SHORT` exists, but every DOWN trend returns `TREND_DOWN_LONG_ONLY`; only management of pre-existing SHORT is active. | Configuration suggests an entry capability that runtime does not provide. | Yes. |
@@ -171,5 +184,7 @@ It does not run the infinite main loop, containers, runtime DDL, migrations, or
 production services. Dedupe behavior is reproduced test-only from the exact
 `main_loop` boundary and checked against the source behavior.
 
-There are no production seams, production code changes, FinalDecision imports,
-decision-sink calls, or decision persistence.
+There are no new exchange calls, retries, runtime DDL, FinalDecision integrations
+for TREND/SUPERTREND/BBRANGE, decision-sink calls, or decision persistence. The
+production change is the shared canonical interpretation of existing LIVE entry
+responses and strategy-local position creation only after a confirmed fill.
