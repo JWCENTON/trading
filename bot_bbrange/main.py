@@ -26,6 +26,7 @@ from common.execution import place_live_exit_maker_then_market
 from common.daily_loss import should_emit_daily_loss_shadow
 from common.alerts import emit_alert_throttled
 from common.exchange_ingest_trades import ingest_my_trades
+from common.exchange_identity import normalize_exchange_source
 from common.flags import exchange_mytrades_enabled
 from common.db import get_db_conn
 from common.runtime import RuntimeConfig
@@ -955,6 +956,13 @@ def execute_and_record(
             db_conn=conn_exec,
             position_id=int(pos_id) if pos_id is not None else None,
             leg=("EXIT" if is_exit else "ENTRY"),
+            strategy=STRATEGY_NAME,
+            interval=cfg_used.interval,
+            exchange_source=normalize_exchange_source(
+                os.environ.get("EXCHANGE")
+                or os.environ.get("EXCHANGE_PROVIDER")
+                or "BINANCE"
+            ),
         )
         conn_exec.commit()
     finally:
@@ -1050,8 +1058,20 @@ def execute_and_record(
             "is_exit": bool(is_exit),
             "client_order_id": client_order_id,
             "live_ok": bool(live_ok),
+            "order_accepted": bool(
+                entry_outcome.order_accepted
+                if entry_outcome is not None
+                else resp.get("order_accepted", False)
+            ),
             "status": status_raw,
             "executed_qty": executed_f,
+            "requested_qty": float(qty_btc),
+            "order_purpose": "EXIT" if is_exit else "ENTRY",
+            "exchange_source": normalize_exchange_source(
+                os.environ.get("EXCHANGE")
+                or os.environ.get("EXCHANGE_PROVIDER")
+                or "BINANCE"
+            ),
             "resp": raw,
         },
     )

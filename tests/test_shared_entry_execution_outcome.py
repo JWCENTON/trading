@@ -315,9 +315,12 @@ def test_shared_normalizer_is_pure_and_legacy_fill_infers_only_required_ack():
     assert legacy_fill.executed_qty == 0.06
 
 
-def test_pending_entry_recovery_gap_is_explicit_and_has_no_hidden_client_call():
+def test_pending_entry_recovery_uses_ingested_fills_without_hidden_client_call():
     reconcile = importlib.import_module("common.reconcile_positions")
     ingest = importlib.import_module("common.exchange_ingest_trades")
+    entry_reconcile = importlib.import_module(
+        "common.entry_fill_reconciliation"
+    )
     operations = []
 
     class StrictClient:
@@ -332,5 +335,11 @@ def test_pending_entry_recovery_gap_is_explicit_and_has_no_hidden_client_call():
     assert "FROM positions" in source
     assert "INSERT INTO positions" not in source
     ingest_source = inspect.getsource(ingest.ingest_my_trades)
+    assert "run_pending_entry_reconciliation_if_due" in ingest_source
     assert "reconcile_okx_exit_fills" in ingest_source
-    assert "reconcile_okx_entry_fills" not in ingest_source
+    assert ingest_source.index("run_pending_entry_reconciliation_if_due") < ingest_source.index(
+        "reconcile_okx_exit_fills"
+    )
+    entry_source = inspect.getsource(entry_reconcile)
+    assert "get_my_trades" not in entry_source
+    assert "place_live_order" not in entry_source

@@ -9,6 +9,7 @@ from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
 from common.flags import exchange_mytrades_enabled
 from common.exchange_ingest_trades import ingest_my_trades
+from common.exchange_identity import normalize_exchange_source
 from dataclasses import replace
 from datetime import datetime, timezone, date
 from decimal import Decimal
@@ -524,6 +525,13 @@ def execute_and_record(
         panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
         live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
         skip_balance_precheck=is_exit,
+        strategy=STRATEGY_NAME,
+        interval=cfg_used.interval,
+        exchange_source=normalize_exchange_source(
+            os.environ.get("EXCHANGE")
+            or os.environ.get("EXCHANGE_PROVIDER")
+            or "BINANCE"
+        ),
     )
 
     if not resp or not resp.get("ok"):
@@ -723,8 +731,20 @@ def execute_and_record(
             "is_exit": bool(is_exit),
             "client_order_id": client_order_id,
             "live_ok": bool(live_ok),
+            "order_accepted": bool(
+                entry_outcome.order_accepted
+                if entry_outcome is not None
+                else resp.get("order_accepted", False)
+            ),
             "status": status_raw,
             "executed_qty": executed_f,
+            "requested_qty": float(qty_btc),
+            "order_purpose": "EXIT" if is_exit else "ENTRY",
+            "exchange_source": normalize_exchange_source(
+                os.environ.get("EXCHANGE")
+                or os.environ.get("EXCHANGE_PROVIDER")
+                or "BINANCE"
+            ),
             "resp": raw,
             "cummulative_quote_qty": cquote_f,
             "avg_price": float(avg_price) if avg_price is not None else None,

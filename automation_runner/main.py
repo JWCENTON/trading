@@ -11,6 +11,7 @@ from common.db import get_db_conn
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.worker_heartbeat import record_worker_heartbeat
+from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -3330,6 +3331,26 @@ def main():
                 run_orc_v5_apply(conn)
 
             logging.info("tick ok")
+
+            if cfg.trading_mode == "LIVE":
+                try:
+                    pending_entry_run = run_pending_entry_reconciliation_if_due(
+                        conn, batch_size=100
+                    )
+                    logging.info(
+                        "pending_entry_reconciliation status=%s ran=%s "
+                        "scanned=%s has_more=%s",
+                        pending_entry_run.status,
+                        pending_entry_run.ran,
+                        pending_entry_run.stats.scanned,
+                        pending_entry_run.stats.has_more,
+                    )
+                except Exception:
+                    logging.exception("pending_entry_reconciliation failed")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
             if now - last_ip >= ip_int:
                 run_ip_panic_watch(conn)

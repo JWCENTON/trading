@@ -7,7 +7,9 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import re
 import json
+import os
 from common.sizing import get_symbol_filters as sizing_get_symbol_filters
+from common.exchange_identity import normalize_exchange_source
 
 _CID_RE = re.compile(r"[^A-Za-z0-9\-_]")
 
@@ -654,6 +656,9 @@ def place_live_order(
     db_conn=None,
     position_id: int | None = None,
     leg: str | None = None,
+    strategy: str | None = None,
+    interval: str | None = None,
+    exchange_source: str | None = None,
 ):
     pre = preflight_live_order(
         client,
@@ -748,10 +753,15 @@ def place_live_order(
                         """
                         INSERT INTO binance_orders (
                             symbol, side, order_type, client_order_id, order_id,
-                            status, raw, position_id, is_exit
+                            status, raw, position_id, is_exit, strategy,
+                            interval, order_purpose, requested_qty,
+                            order_accepted, exchange_source
                         )
-                        VALUES (%s, %s, 'MARKET', %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT DO NOTHING
+                        VALUES (
+                            %s, %s, 'MARKET', %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (exchange_source, symbol, order_id) DO NOTHING
                         """,
                         (
                             str(symbol),
@@ -762,6 +772,23 @@ def place_live_order(
                             json_dumps_safe(resp),
                             int(position_id) if position_id is not None else None,
                             bool(str(leg or "").upper().startswith("EXIT") or str(leg or "").upper().startswith("X")),
+                            str(strategy).upper() if strategy else None,
+                            str(interval) if interval else None,
+                            (
+                                "EXIT"
+                                if str(leg or "").upper().startswith(("EXIT", "X"))
+                                else "ENTRY"
+                                if str(leg or "").upper().startswith(("ENTRY", "E"))
+                                else None
+                            ),
+                            float(qty),
+                            bool(order_accepted),
+                            normalize_exchange_source(
+                                exchange_source
+                                or os.environ.get("EXCHANGE")
+                                or os.environ.get("EXCHANGE_PROVIDER")
+                                or "BINANCE"
+                            ),
                         ),
                     )
             except Exception:

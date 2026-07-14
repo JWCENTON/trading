@@ -23,6 +23,7 @@ from common.sizing import compute_qty_from_notional
 from common.telemetry_throttle import should_emit_throttled_event
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.exchange_ingest_trades import ingest_my_trades
+from common.exchange_identity import normalize_exchange_source
 from common.db import get_db_conn
 from common.guarded_params import guarded_profit_defaults_map, parse_guarded_profit_config
 from common.position_path import load_position_path_snapshot
@@ -1432,6 +1433,13 @@ def execute_and_record(
             db_conn=conn_exec,
             position_id=int(pos_id) if pos_id is not None else None,
             leg=("EXIT" if is_exit else "ENTRY"),
+            strategy=STRATEGY_NAME,
+            interval=cfg_used.interval,
+            exchange_source=normalize_exchange_source(
+                os.environ.get("EXCHANGE")
+                or os.environ.get("EXCHANGE_PROVIDER")
+                or "BINANCE"
+            ),
         )
         conn_exec.commit()
     finally:
@@ -1538,6 +1546,13 @@ def execute_and_record(
             "pending_fill": bool(order_accepted and not live_ok),
             "status": status_raw,
             "executed_qty": executed_f,
+            "requested_qty": float(qty_btc),
+            "order_purpose": "EXIT" if is_exit else "ENTRY",
+            "exchange_source": normalize_exchange_source(
+                os.environ.get("EXCHANGE")
+                or os.environ.get("EXCHANGE_PROVIDER")
+                or "BINANCE"
+            ),
             "resp": raw,
         },
     )

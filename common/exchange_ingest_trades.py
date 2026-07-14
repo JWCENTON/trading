@@ -10,6 +10,9 @@ from typing import Iterable, Dict, Any, Tuple, Optional
 import psycopg2
 from psycopg2.extras import execute_batch
 
+from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.exchange_identity import normalize_exchange_source
+
 
 UPSERT_TRADE_SQL = """
 INSERT INTO binance_order_fills (
@@ -222,7 +225,7 @@ def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str
     side = "BUY" if t.get("isBuyer") else "SELL"
     role = "MAKER" if t.get("isMaker") else "TAKER"
     return {
-        "source": str(source).lower(),
+        "source": normalize_exchange_source(source),
         "trade_id": int(t["id"]),
         "order_id": str(t["orderId"]),
         "symbol": symbol,
@@ -262,7 +265,7 @@ def ingest_my_trades(
     """
     dsn = _mk_dsn(host=db_host, port=db_port, dbname=db_name, user=db_user, password=db_pass)
     now_ms = int(time.time() * 1000)
-    source = (os.getenv("EXCHANGE", "BINANCE") or "BINANCE").strip().lower()
+    source = normalize_exchange_source(os.getenv("EXCHANGE", "BINANCE") or "BINANCE")
 
     total_fetched = 0
     min_event_time_ms_seen: Optional[int] = None
@@ -306,11 +309,50 @@ def ingest_my_trades(
                 cur.execute(UPSERT_STATE_SQL, (state_symbol, max_time))
 
         priced_updated = 0
+        reconciled_entries = 0
         reconciled_exits = 0
         if min_event_time_ms_seen is not None:
             with conn.cursor() as cur:
                 cur.execute(PRICE_FEES_SQL, (min_event_time_ms_seen,))
                 priced_updated = cur.rowcount
+
+        # The due gate runs even when this ingest fetched no new fills, so bounded
+        # backlog and retryable rows cannot depend on future exchange activity.
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT pending_entry_fill_batch")
+        try:
+            entry_run = run_pending_entry_reconciliation_if_due(
+                conn, batch_size=100
+            )
+            with conn.cursor() as cur:
+                cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
+            entry_stats = entry_run.stats
+            reconciled_entries = entry_stats.created + entry_stats.updated
+            logging.info(
+                "EXCHANGE_INGEST|entry fill reconciliation "
+                "status=%s ran=%s scanned=%s created=%s updated=%s already=%s "
+                "ambiguous=%s alarms=%s failed=%s has_more=%s",
+                entry_run.status,
+                entry_run.ran,
+                entry_stats.scanned,
+                entry_stats.created,
+                entry_stats.updated,
+                entry_stats.already_reconciled,
+                entry_stats.ambiguous,
+                entry_stats.alarms,
+                entry_stats.failed,
+                entry_stats.has_more,
+            )
+        except Exception:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT pending_entry_fill_batch")
+                cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
+            logging.exception(
+                "EXCHANGE_INGEST|entry fill reconciliation failed source=%s",
+                source,
+            )
+
+        if min_event_time_ms_seen is not None:
             try:
                 reconciled_exits = reconcile_okx_exit_fills(conn, source=source, since_ms=min_event_time_ms_seen)
             except Exception:
@@ -320,5 +362,10 @@ def ingest_my_trades(
 
     if reconciled_exits:
         logging.warning("EXCHANGE_INGEST|reconciled %s OKX exit fill(s) into positions SSOT", reconciled_exits)
+    if reconciled_entries:
+        logging.warning(
+            "EXCHANGE_INGEST|reconciled %s entry fill aggregate(s) into positions SSOT",
+            reconciled_entries,
+        )
 
     return total_fetched, priced_updated

@@ -221,6 +221,8 @@ db_live_data/
 backup/
 backups/
 *.sql
+!db/migrations/20260714_pending_entry_fill_reconciliation_v1.sql
+!tests/postgres/pending_entry_fill_reconciliation_v1.sql
 *.dump
 *.bak
 
