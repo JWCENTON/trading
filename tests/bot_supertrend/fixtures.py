@@ -238,6 +238,7 @@ class SupertrendHarness:
         self.attempts: list[Attempt] = []
         self.mutations: list[tuple] = []
         self.operation_log: list[str] = []
+        self.exit_evidence: dict[str, float] = {}
         self.last_execution_result = None
         self._install()
 
@@ -366,6 +367,18 @@ class SupertrendHarness:
             self.mutations.append(("OPEN", before, self.position))
             self.operation_log.append("mutation:open")
         if attempt.is_exit:
+            if executed and not scenario["fully_executed"] and self.position is not None:
+                evidence_id = str(order_id or "fixture-exit-order")
+                previous = self.exit_evidence.get(evidence_id, 0.0)
+                delta = max(0.0, float(executed_qty) - previous)
+                self.exit_evidence[evidence_id] = max(previous, float(executed_qty))
+                if delta > 0:
+                    before = self.position
+                    remaining = max(0.0, float(before[2]) - delta)
+                    self.position = (before[0], before[1], remaining, before[3], before[4])
+                    self.mutations.append(("REDUCE", before, self.position, attempt.reason))
+                    self.operation_log.append("mutation:reduce")
+                live_ok = False
             result = {"ledger_ok": True, "live_attempted": True,
                       "live_ok": live_ok,
                       "blocked_reason": scenario["blocked_reason"],

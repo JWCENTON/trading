@@ -720,28 +720,37 @@ def test_partial_fill_final_decision_preserves_real_execution(
     assert decision.details["fully_executed"] is False
 
 
+def test_live_partial_stop_exit_reduces_remaining_quantity_without_close_event(harness):
+    harness.trading_mode = "LIVE"
+    harness.execution_live_attempted = True
+    harness.execution_order_accepted = True
+    harness.execution_live_ok = True
+    harness.execution_executed_qty = 0.04
+    harness.execution_fully_executed = False
+    harness.open_long(entry_price=100.0, quantity=0.1)
+    observed = harness.cycle(candle(close=99.0, high=100.0, low=98.0))
+    assert observed.position_after is not None
+    assert observed.position_after[2] == pytest.approx(0.06)
+    assert observed.final_decision.decision_subtype is DecisionSubtype.PARTIAL_EXECUTION
+    assert observed.operation_log.count("position:REDUCED") == 1
+    assert all(
+        event.payload.get("event_type") != "POSITION_CLOSED"
+        for event in observed.captured_events
+    )
+    assert "strategy_event:RUN_END" in observed.operation_log
+
+
 @pytest.mark.parametrize(
     ("place_result", "expected_order_accepted", "expected_live_ok"),
     [
-        (
-            {"ok": False, "live_ok": False, "order_accepted": False,
-             "reason": "EXCHANGE_API_EXCEPTION", "resp": None},
-            False, False,
-        ),
-        (
-            {"ok": True, "live_ok": False, "order_accepted": True,
-             "reason": None,
-             "resp": {"orderId": "ack-1", "status": "NEW",
-                      "executedQty": "0"}},
-            True, False,
-        ),
-        (
-            {"ok": True, "live_ok": True, "order_accepted": True,
-             "reason": None,
-             "resp": {"orderId": "fill-1", "status": "FILLED",
-                      "executedQty": "0.1"}},
-            True, True,
-        ),
+        ({"ok": False, "live_ok": False, "order_accepted": False,
+          "reason": "EXCHANGE_API_EXCEPTION", "resp": None}, False, False),
+        ({"ok": True, "live_ok": False, "order_accepted": True, "reason": None,
+          "resp": {"orderId": "ack-1", "status": "NEW", "executedQty": "0"}},
+         True, False),
+        ({"ok": True, "live_ok": True, "order_accepted": True, "reason": None,
+          "resp": {"orderId": "fill-1", "status": "FILLED", "executedQty": "0.1"}},
+         True, True),
     ],
 )
 def test_execute_and_record_propagates_order_accepted(

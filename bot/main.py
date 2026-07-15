@@ -38,6 +38,7 @@ from common.decision_contract import (
     FinalDecision,
     normalize_entry_execution_outcome,
 )
+from common.partial_exit import apply_partial_exit_result
 from common.execution import (
     place_live_order,
     place_live_exit_maker_then_market as exchange_place_live_exit_maker_then_market,
@@ -257,6 +258,33 @@ def place_live_exit_maker_then_market(
         poll_sec=float(poll_sec),
         base_client_order_id=base_client_order_id,
     )
+
+
+def _apply_rsi_partial_exit(result, *, pos_id, cfg_used, side, price, reason,
+                            candle_open_time):
+    if pos_id is None:
+        return None
+    mutation = apply_partial_exit_result(
+        get_db_conn, result=result, position_id=int(pos_id),
+        exchange_source=normalize_exchange_source(
+            os.environ.get("EXCHANGE") or os.environ.get("EXCHANGE_PROVIDER") or "BINANCE"
+        ),
+        symbol=cfg_used.symbol, strategy=STRATEGY_NAME,
+        interval=cfg_used.interval, side=side, exit_price=price,
+        exit_reason=reason,
+    )
+    if mutation is not None:
+        emit_strategy_event(
+            event_type="POSITION_REDUCED", decision=side,
+            reason="PARTIAL_EXECUTION", price=price,
+            candle_open_time=candle_open_time,
+            info={"execution_status": "PARTIAL",
+                  "executed_qty": result["executed_qty"],
+                  "applied_qty": result["position_qty_applied"],
+                  "remaining_qty": result["position_remaining_qty"],
+                  "fully_executed": False, "exit_reason": reason},
+        )
+    return mutation
 
 def execute_and_record(
     side: str,
@@ -772,21 +800,31 @@ def execute_and_record(
             "resp": raw,
         }
 
-    return {
+    result = {
         "ledger_ok": True,
         "live_attempted": True,
         "order_accepted": bool((resp or {}).get("order_accepted", False)),
         "executed": bool((resp or {}).get("executed", live_ok)),
-        "fully_executed": bool((resp or {}).get("fully_executed", False)),
-        "executed_qty": float((resp or {}).get("executed_qty") or 0.0),
+        "fully_executed": bool(
+            (resp or {}).get("fully_executed", False)
+            or status_raw == "FILLED"
+            or executed_f >= float(qty_btc) * 0.999
+        ),
+        "executed_qty": float((resp or {}).get("executed_qty") or executed_f),
         "requested_qty": float((resp or {}).get("requested_qty") or qty_btc),
-        "order_id": (resp or {}).get("order_id"),
-        "exchange_status": (resp or {}).get("exchange_status"),
+        "order_id": (resp or {}).get("order_id") or order_id,
+        "exchange_status": (resp or {}).get("exchange_status") or status_raw,
         "live_ok": live_ok,
         "blocked_reason": None if live_ok else "ACK_NO_FILL",
         "client_order_id": client_order_id,
         "resp": (resp or {}).get("resp"),
     }
+    if is_exit:
+        _apply_rsi_partial_exit(
+            result, pos_id=pos_id, cfg_used=cfg_used, side=side, price=price,
+            reason=reason, candle_open_time=candle_open_time,
+        )
+    return result
 
 
 def execute_and_record_soft_exit_maker_then_market(
@@ -957,7 +995,7 @@ def execute_and_record_soft_exit_maker_then_market(
             candle_open_time=candle_open_time,
             info={"is_exit": True, "client_order_id": base_client_order_id, "resp": out},
         )
-        return {
+        result = {
             "ledger_ok": True,
             "live_attempted": bool(out.get("attempted", True)),
             "order_accepted": bool(out.get("order_accepted", False)),
@@ -972,6 +1010,11 @@ def execute_and_record_soft_exit_maker_then_market(
             "client_order_id": base_client_order_id,
             "resp": out,
         }
+        _apply_rsi_partial_exit(
+            result, pos_id=pos_id, cfg_used=cfg_used, side=side, price=price,
+            reason=reason, candle_open_time=candle_open_time,
+        )
+        return result
 
     # classify result
     filled_as = str(out.get("filled_as") or "").upper()
@@ -1023,7 +1066,7 @@ def execute_and_record_soft_exit_maker_then_market(
         except Exception:
             logging.exception("RSI: failed to attach exit order id pos_id=%s", pos_id)
 
-    return {
+    result = {
         "ledger_ok": True,
         "live_attempted": True,
         "order_accepted": bool(out.get("order_accepted", out.get("live_ok") is True)),
@@ -1038,6 +1081,11 @@ def execute_and_record_soft_exit_maker_then_market(
         "client_order_id": base_client_order_id,
         "resp": out,
     }
+    _apply_rsi_partial_exit(
+        result, pos_id=pos_id, cfg_used=cfg_used, side=side, price=price,
+        reason=reason, candle_open_time=candle_open_time,
+    )
+    return result
 
 
 def execute_exit_safe(

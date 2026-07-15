@@ -278,6 +278,10 @@ def run_live_exit_boundary(
         trend, "place_live_order",
         lambda *_a, **_k: operations.append("execution:place_live_order") or place_result,
     )
+    monkeypatch.setattr(
+        trend, "apply_partial_exit_result",
+        lambda *_a, **_k: operations.append("state:apply_partial_exit") or None,
+    )
     result = trend.execute_and_record(
         side="SELL", price=102.0, qty_btc=0.1, reason="fixture-exit",
         candle_open_time=trend_rows()[0][2], is_exit=True, pos_id=7,
@@ -534,7 +538,7 @@ def test_real_live_exit_adapter_preserves_canonical_matrix(
     assert result["executed"] is (executed_qty > 0)
     assert result["fully_executed"] is fully
     assert result["executed_qty"] == executed_qty
-    assert result["live_ok"] is accepted
+    assert result["live_ok"] is (executed_qty > 0)
     assert observed.operation_log.count("execution:place_live_order") == 1
     sent = next(e for e in observed.events if e["event_type"] == "LIVE_ORDER_SENT")
     expected_event_reason = (
@@ -836,15 +840,16 @@ def test_live_standard_exit_runtime_matrix(
     assert observed.operation_log[-1] == "strategy_event:RUN_END"
     sent = [e for e in observed.strategy_events if e.get("event_type") == "LIVE_ORDER_SENT"]
     assert ([e["reason"] for e in sent] or [None])[-1] == event_reason
-    if accepted:
+    if case == "full":
         assert observed.position_after is None
         assert len(observed.position_mutations) == 1
+    elif case == "partial":
+        assert observed.position_after[2] == pytest.approx(0.06)
+        assert "REDUCE" in [m.operation for m in observed.position_mutations]
+        assert observed.final_decision.details["position_mutation_semantics"] == "QUANTITY_REDUCED"
     else:
-        assert observed.position_after[2] == 0.1
+        assert observed.position_after[2] == pytest.approx(0.1)
         assert observed.position_mutations == ()
-    if case == "partial":
-        assert observed.final_decision.details["position_mutation_semantics"] == "LEGACY_CALLER_LIVE_OK"
-        assert observed.position_after is None
 
 
 def test_real_exit_adapter_db_guard_failure_runtime_chronology(
@@ -962,10 +967,16 @@ def test_panic_live_runtime_preserves_canonical_outcome(
     assert observed.operation_log.index("execution:exit") < observed.operation_log.index("strategy_event:LIVE_ORDER_SENT")
     assert observed.operation_log.index("strategy_event:LIVE_ORDER_SENT") < observed.operation_log.index("strategy_event:CONFIG_APPLIED")
     assert observed.operation_log.index("strategy_event:CONFIG_APPLIED") < observed.operation_log.index("state_change:mode")
-    assert (observed.position_after is None) is accepted
+    if fully:
+        assert observed.position_after is None
+    elif executed_qty > 0:
+        assert observed.position_after[2] == pytest.approx(0.06)
+        assert "REDUCE" in [m.operation for m in observed.position_mutations]
+    else:
+        assert observed.position_after is not None
 
 
-def test_profit_lock_partial_exit_chronology_preserves_legacy_close(harness):
+def test_profit_lock_partial_exit_chronology_reduces_quantity(harness):
     harness.runtime_mode = "NORMAL"
     harness.trading_mode = "LIVE"
     harness.set_position(entry_price=102.0, qty=0.1, age_minutes=10)
@@ -983,11 +994,12 @@ def test_profit_lock_partial_exit_chronology_preserves_legacy_close(harness):
         if event.get("event_type") == "LIVE_ORDER_SENT"
     )
     assert live_sent["reason"] == "OK"
-    assert log.index("strategy_event:LIVE_ORDER_SENT") < log.index("state_change:close")
-    assert log.index("state_change:close") < log.index("strategy_event:RUN_END")
+    assert log.index("strategy_event:LIVE_ORDER_SENT") < log.index("state_change:reduce")
+    assert log.index("state_change:reduce") < log.index("strategy_event:RUN_END")
     assert log.index("strategy_event:LIVE_ORDER_SENT") < log.index("strategy_event:RUN_END")
     assert len(observed.position_mutations) == 1
-    assert observed.position_mutations[0].operation == "CLOSE"
+    assert observed.position_mutations[0].operation == "REDUCE"
+    assert observed.position_after[2] == pytest.approx(0.06)
     assert len(observed.execution_attempts) == 1
     assert observed.final_decision.decision_subtype.value == "PARTIAL_EXECUTION"
 

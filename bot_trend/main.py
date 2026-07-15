@@ -50,6 +50,7 @@ from common.decision_contract import (
     FinalDecision,
     normalize_entry_execution_outcome,
 )
+from common.partial_exit import apply_partial_exit_result
 
 logging.basicConfig(
     level=logging.INFO,
@@ -230,7 +231,7 @@ def _trend_execution_decision(evaluation, result, cfg_effective, *, is_exit,
     if is_exit and outcome.executed and not outcome.fully_executed:
         details = {
             **details,
-            "position_mutation_semantics": "LEGACY_CALLER_LIVE_OK",
+            "position_mutation_semantics": "QUANTITY_REDUCED",
         }
     common = dict(
         finished_at=datetime.now(timezone.utc),
@@ -1777,7 +1778,7 @@ def execute_and_record(
             }
 
     if is_exit:
-        return {
+        result = {
             "ledger_ok": True,
             "live_attempted": True,
             "order_accepted": order_accepted,
@@ -1787,14 +1788,35 @@ def execute_and_record(
             "requested_qty": float(qty_btc),
             "order_id": str(order_id) if order_id is not None else None,
             "exchange_status": status_raw or None,
-            # Preserve the legacy caller contract and therefore its existing
-            # position-mutation behavior. Canonical truth is carried by the
-            # additive execution fields above and used only for FinalDecision.
-            "live_ok": bool(live_ok or order_accepted),
-            "blocked_reason": None if (live_ok or order_accepted) else "ACK_NO_FILL",
+            # Only a confirmed execution may authorize position mutation.
+            # Partial executions are reduced atomically below and force this
+            # legacy full-close gate back to false.
+            "live_ok": bool(executed),
+            "blocked_reason": None if executed else "ACK_NO_FILL",
             "client_order_id": client_order_id,
             "resp": raw,
         }
+        mutation = apply_partial_exit_result(
+            get_db_conn, result=result, position_id=int(pos_id),
+            exchange_source=normalize_exchange_source(
+                os.environ.get("EXCHANGE") or os.environ.get("EXCHANGE_PROVIDER") or "BINANCE"
+            ),
+            symbol=cfg_used.symbol, strategy=STRATEGY_NAME,
+            interval=cfg_used.interval, side=side_u, exit_price=price,
+            exit_reason=reason,
+        )
+        if mutation is not None:
+            emit_strategy_event(
+                event_type="POSITION_REDUCED", decision=side_u,
+                reason="PARTIAL_EXECUTION", price=price,
+                candle_open_time=candle_open_time,
+                info={"execution_status": "PARTIAL",
+                      "executed_qty": result["executed_qty"],
+                      "applied_qty": result["position_qty_applied"],
+                      "remaining_qty": result["position_remaining_qty"],
+                      "fully_executed": False, "exit_reason": reason},
+            )
+        return result
 
     return {
         "ledger_ok": True,

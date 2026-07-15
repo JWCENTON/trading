@@ -131,6 +131,7 @@ class RsiStatefulHarness:
         self.changes: list[StateChange] = []
         self.observations: list[RsiObservation] = []
         self.operation_log: list[str] = []
+        self.exit_evidence: dict[str, float] = {}
         self._install()
 
     def _install(self) -> None:
@@ -331,10 +332,22 @@ class RsiStatefulHarness:
             if self.execution_fully_executed is not None
             else bool(self.trading_mode == "LIVE" and self.execution_live_ok)
         )
+        if (is_exit and self.trading_mode == "LIVE" and live_executed_qty > 0
+                and not fully_executed and self.position is not None):
+            evidence_id = "fixture-exit-order"
+            previous = self.exit_evidence.get(evidence_id, 0.0)
+            delta = max(0.0, live_executed_qty - previous)
+            self.exit_evidence[evidence_id] = max(previous, live_executed_qty)
+            if delta > 0:
+                before = self.position
+                remaining = max(0.0, float(before[2]) - delta)
+                self._set_position((before[0], before[1], remaining, before[3], before[4]))
+                self.operation_log.append("position:REDUCED")
         result = {
             "ledger_ok": self.execution_ledger_ok,
             "live_ok": (
-                self.execution_live_ok if self.trading_mode == "LIVE" else False
+                (self.execution_live_ok and fully_executed)
+                if self.trading_mode == "LIVE" else False
             ),
             "paper_executed": self.trading_mode != "LIVE" and execution_succeeded,
             "executed": live_executed_qty > 0.0,

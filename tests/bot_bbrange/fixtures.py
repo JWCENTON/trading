@@ -222,6 +222,17 @@ class StatefulBbrangeHarness:
             else:
                 result = {"ledger_ok": True, "live_attempted": False,
                           "live_ok": True}
+        result = dict(result)
+        if (kwargs["is_exit"] and self.trading_mode == "LIVE"
+                and float(result.get("executed_qty") or 0.0) > 0
+                and not result.get("fully_executed", False)
+                and self.position is not None):
+            before = self.position
+            remaining = max(0.0, float(before[2]) - float(result["executed_qty"]))
+            self.position = (before[0], before[1], remaining, before[3], before[4])
+            self.recorder.add("position_reduced", executed_qty=result["executed_qty"],
+                              remaining_qty=remaining)
+            result["live_ok"] = False
         if (not kwargs["is_exit"] and result["ledger_ok"] and
                 (self.trading_mode != "LIVE" or result["live_ok"])):
             self.next_position_id += 1

@@ -147,36 +147,53 @@ WITH sell_orders AS (
     AND f.side = 'SELL'
     AND f.event_time >= to_timestamp(%s / 1000.0)
   GROUP BY f.source, f.symbol, f.order_id, NULLIF(f.raw->'raw'->>'clOrdId', '')
+), pending_orders AS (
+  SELECT bo.id, bo.position_id,
+         s.executed_qty,
+         s.executed_qty - COALESCE(bo.reconciled_executed_qty, 0) AS delta_qty,
+         s.avg_exit_price, s.exit_time, s.order_id, s.clordid
+  FROM binance_orders bo
+  JOIN sell_orders s
+    ON bo.exchange_source = s.source
+   AND bo.symbol = s.symbol
+   AND bo.order_id = s.order_id
+  WHERE bo.order_purpose = 'EXIT'
+    AND bo.position_id IS NOT NULL
+    AND s.executed_qty > COALESCE(bo.reconciled_executed_qty, 0)
+  FOR UPDATE OF bo
+), applied_orders AS (
+  UPDATE binance_orders bo
+  SET reconciled_executed_qty = po.executed_qty,
+      reconciled_position_id = bo.position_id,
+      reconciled_at = now(), reconciliation_status = 'RECONCILED',
+      last_reconciliation_action = 'EXIT_FILL_DELTA_APPLIED',
+      unreconciled_qty = 0, reconciliation_error = NULL
+  FROM pending_orders po
+  WHERE bo.id = po.id
+  RETURNING bo.position_id, po.delta_qty, po.avg_exit_price,
+            po.exit_time, po.order_id, po.clordid
 ), candidates AS (
   SELECT
-    p.id AS position_id,
-    s.order_id,
-    s.clordid,
-    s.exit_time,
-    s.executed_qty,
-    s.avg_exit_price,
-    ROW_NUMBER() OVER (
-      PARTITION BY p.id
-      ORDER BY s.exit_time ASC, s.order_id ASC
-    ) AS rn
-  FROM sell_orders s
+    p.id AS position_id, SUM(a.delta_qty) AS delta_qty,
+    MAX(a.exit_time) AS exit_time,
+    CASE WHEN SUM(a.delta_qty) > 0
+      THEN SUM(a.delta_qty * a.avg_exit_price) / SUM(a.delta_qty)
+      ELSE MAX(a.avg_exit_price) END AS avg_exit_price,
+    MAX(a.order_id) AS order_id, MAX(a.clordid) AS clordid
+  FROM applied_orders a
   JOIN positions p
-    ON p.symbol = s.symbol
-   AND p.status = 'OPEN'
-   AND p.side = 'LONG'
-   AND s.executed_qty >= (p.qty * 0.98)
-   AND (
-        p.exit_order_id = s.order_id
-        OR regexp_replace(COALESCE(p.exit_client_order_id, ''), '[^A-Za-z0-9]', '', 'g') = COALESCE(s.clordid, '')
-        OR COALESCE(s.clordid, '') ILIKE ('%%P' || p.id::text || 'X%%')
-   )
+    ON p.id = a.position_id AND p.status = 'OPEN'
+  GROUP BY p.id
 )
 UPDATE positions p
 SET
-  status = 'CLOSED',
-  exit_price = c.avg_exit_price,
-  exit_time = c.exit_time,
-  exit_reason = COALESCE(NULLIF(p.exit_reason, ''), 'RECONCILED_OKX_EXIT_FILL'),
+  qty = CASE WHEN c.delta_qty >= (p.qty * 0.999) THEN 0
+             ELSE GREATEST(0, p.qty - c.delta_qty) END,
+  status = CASE WHEN c.delta_qty >= (p.qty * 0.999) THEN 'CLOSED' ELSE 'OPEN' END,
+  exit_price = CASE WHEN c.delta_qty >= (p.qty * 0.999) THEN c.avg_exit_price ELSE p.exit_price END,
+  exit_time = CASE WHEN c.delta_qty >= (p.qty * 0.999) THEN c.exit_time ELSE p.exit_time END,
+  exit_reason = CASE WHEN c.delta_qty >= (p.qty * 0.999)
+    THEN COALESCE(NULLIF(p.exit_reason, ''), 'RECONCILED_OKX_EXIT_FILL') ELSE p.exit_reason END,
   exit_order_id = COALESCE(p.exit_order_id, c.order_id),
   exit_client_order_id = COALESCE(NULLIF(p.exit_client_order_id, ''), c.clordid),
   exit_hour_utc = EXTRACT(HOUR FROM c.exit_time)::smallint,
@@ -184,7 +201,6 @@ SET
   hold_minutes = COALESCE(p.hold_minutes, EXTRACT(EPOCH FROM (c.exit_time - p.entry_time)) / 60.0)
 FROM candidates c
 WHERE p.id = c.position_id
-  AND c.rn = 1
   AND p.status = 'OPEN';
 """
 

@@ -45,6 +45,7 @@ from common.decision_contract import (
     FinalDecision,
     normalize_entry_execution_outcome,
 )
+from common.partial_exit import apply_partial_exit_result
 
 
 logging.basicConfig(
@@ -1359,14 +1360,42 @@ def execute_and_record(
     if is_exit and not order_id:
         logging.error("SUPERTREND: LIVE EXIT ACK missing orderId pos_id=%s resp=%s", pos_id, raw)
 
-    return {
+    result = {
         "ledger_ok": True,
         "live_attempted": True,
+        "order_accepted": bool(resp.get("order_accepted", False)),
+        "executed": bool(resp.get("executed", False)),
+        "fully_executed": bool(resp.get("fully_executed", False)),
+        "executed_qty": float(resp.get("executed_qty") or executed_f),
+        "requested_qty": float(resp.get("requested_qty") or qty_btc),
+        "order_id": resp.get("order_id") or order_id,
+        "exchange_status": resp.get("exchange_status") or status_raw,
         "live_ok": live_ok,
         "blocked_reason": None if live_ok else "ACK_NO_FILL",
         "client_order_id": client_order_id,
         "resp": (resp or {}).get("resp"),
     }
+    mutation = apply_partial_exit_result(
+        get_db_conn, result=result, position_id=int(pos_id),
+        exchange_source=normalize_exchange_source(
+            os.environ.get("EXCHANGE") or os.environ.get("EXCHANGE_PROVIDER") or "BINANCE"
+        ),
+        symbol=cfg_used.symbol, strategy=STRATEGY_NAME,
+        interval=cfg_used.interval, side=side_u, exit_price=price,
+        exit_reason=reason,
+    )
+    if mutation is not None:
+        emit_strategy_event(
+            event_type="POSITION_REDUCED", decision=side_u,
+            reason="PARTIAL_EXECUTION", price=price,
+            candle_open_time=candle_open_time,
+            info={"execution_status": "PARTIAL",
+                  "executed_qty": result["executed_qty"],
+                  "applied_qty": result["position_qty_applied"],
+                  "remaining_qty": result["position_remaining_qty"],
+                  "fully_executed": False, "exit_reason": reason},
+        )
+    return result
 
 
 # =========================

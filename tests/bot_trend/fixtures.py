@@ -114,6 +114,7 @@ class TrendStatefulHarness:
         self.mutations: list[PositionMutation] = []
         self.heartbeats: list[dict[str, Any]] = []
         self.operation_log: list[str] = []
+        self.exit_evidence: dict[str, float] = {}
         self.observations: list[TrendObservation] = []
         self.module.LAST_TREND_STATE = None
         self._install()
@@ -254,8 +255,6 @@ class TrendStatefulHarness:
             self.next_position_id += 1
             self._mutation("OPEN", before, self.position, attempt.reason)
         caller_live_ok = bool(fully_executed)
-        if attempt.is_exit and self.trading_mode == "LIVE":
-            caller_live_ok = bool(fully_executed or order_accepted)
         result = {"ledger_ok": True,
                   "live_attempted": live_attempted,
                   "order_accepted": order_accepted, "executed": executed,
@@ -263,6 +262,10 @@ class TrendStatefulHarness:
                   "executed_qty": executed_qty,
                   "requested_qty": attempt.quantity,
                   "live_ok": caller_live_ok, "blocked_reason": None}
+        reduce_partial = (attempt.is_exit and self.trading_mode == "LIVE" and executed
+                          and not fully_executed and self.position is not None)
+        if reduce_partial:
+            result["live_ok"] = False
         if self.trading_mode == "LIVE" and live_attempted:
             event_live_ok = bool(live_ok)
             self._strategy_event(
@@ -276,6 +279,16 @@ class TrendStatefulHarness:
                 price=attempt.price, candle_open_time=kwargs["candle_open_time"],
                 info={"is_exit": attempt.is_exit, "result": result},
             )
+        if reduce_partial:
+            evidence_id = "fixture-exit-order"
+            previous = self.exit_evidence.get(evidence_id, 0.0)
+            delta = max(0.0, executed_qty - previous)
+            self.exit_evidence[evidence_id] = max(previous, executed_qty)
+            if delta > 0:
+                before = self.position
+                remaining = max(0.0, float(before[2]) - delta)
+                self.position = (before[0], before[1], remaining, before[3], before[4])
+                self._mutation("REDUCE", before, self.position, attempt.reason)
         return result
 
     def _close(self, *, exit_price, reason, open_time):

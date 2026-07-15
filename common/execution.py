@@ -253,6 +253,10 @@ def place_live_exit_maker_then_market(
                 "live_ok": True,
                 "status": status or "FILLED_BY_QTY",
                 "executed_qty": float(executed_qty),
+                "fill_evidence": ({
+                    "order_id": str(order_id), "client_order_id": maker_cid,
+                    "cumulative_qty": float(executed_qty),
+                },),
                 "requested_qty": qty_f,
                 "remaining_qty": 0.0,
                 "order_id": str(order_id) if order_id is not None else None,
@@ -316,6 +320,14 @@ def place_live_exit_maker_then_market(
                 "live_ok": bool(live_ok),
                 "status": "FALLBACK_MARKET",
                 "executed_qty": total_executed,
+                "fill_evidence": tuple(
+                    item for item in (
+                        {"order_id": str(order_id), "client_order_id": maker_cid,
+                         "cumulative_qty": float(executed_qty)} if executed_qty > 0 else None,
+                        {"order_id": str(market_order_id), "client_order_id": mkt_cid,
+                         "cumulative_qty": float(mkt_exec)} if mkt_exec > 0 and market_order_id is not None else None,
+                    ) if item is not None
+                ),
                 "requested_qty": qty_f,
                 "remaining_qty": max(0.0, qty_f - total_executed),
                 "order_id": (
@@ -341,6 +353,10 @@ def place_live_exit_maker_then_market(
                 "live_ok": False,
                 "status": "FALLBACK_MARKET_FAILED",
                 "executed_qty": total_executed,
+                "fill_evidence": ({
+                    "order_id": str(order_id), "client_order_id": maker_cid,
+                    "cumulative_qty": total_executed,
+                },) if total_executed > 0 and order_id is not None else (),
                 "requested_qty": qty_f,
                 "remaining_qty": max(0.0, qty_f - total_executed),
                 "order_id": str(order_id) if order_id is not None else None,
@@ -367,6 +383,10 @@ def place_live_exit_maker_then_market(
         "live_ok": total_executed > 0.0,
         "status": "MAKER_TIMEOUT_NO_REMAIN",
         "executed_qty": total_executed,
+        "fill_evidence": ({
+            "order_id": str(order_id), "client_order_id": maker_cid,
+            "cumulative_qty": total_executed,
+        },) if total_executed > 0 and order_id is not None else (),
         "requested_qty": qty_f,
         "remaining_qty": max(0.0, qty_f - total_executed),
         "order_id": str(order_id) if order_id is not None else None,
@@ -821,6 +841,10 @@ def place_live_order(
             "executed": bool(live_ok),
             "fully_executed": fully_executed,
             "executed_qty": float(executed_qty),
+            "fill_evidence": ({
+                "order_id": str(order_id), "client_order_id": client_order_id,
+                "cumulative_qty": float(executed_qty),
+            },) if executed_qty > 0 and order_id is not None else (),
             "requested_qty": float(qty),
             "order_id": str(order_id) if order_id is not None else None,
             "status": status or None,

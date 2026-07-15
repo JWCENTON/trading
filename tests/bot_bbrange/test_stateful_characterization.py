@@ -210,3 +210,23 @@ def test_panic_without_position_returns_decision_without_new_terminal_event(
     assert observed.returned_value.reason_text == "PANIC_NO_POSITION"
     assert reasons(observed) == ["ENTER", "DONE"]
     assert kinds(observed).count("execution") == 0
+
+
+def test_partial_take_profit_reduces_qty_without_position_closed_event(
+    stateful_bbrange,
+):
+    h = stateful_bbrange
+    h.trading_mode = "LIVE"
+    h.set_position(price=100.0)
+    h.execution_result = {
+        "ledger_ok": True, "live_attempted": True, "order_accepted": True,
+        "executed": True, "fully_executed": False,
+        "executed_qty": 0.04, "requested_qty": 0.1,
+        "live_ok": True, "blocked_reason": None,
+    }
+    observed = h.cycle(candle(close=102.0, high=102.0, low=101.0))
+    assert observed.position is not None
+    assert observed.position[2] == pytest.approx(0.06)
+    assert observed.returned_value.decision_subtype.value == "PARTIAL_EXECUTION"
+    assert kinds(observed).count("position_reduced") == 1
+    assert kinds(observed).count("position_close") == 0

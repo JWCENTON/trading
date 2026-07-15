@@ -770,7 +770,7 @@ def test_live_exit_suppression_keeps_position(harness):
     [
         ("EXIT_REJECTION", False, "ACK_NO_FILL"),
         ("EXIT_ACK_ONLY", False, "ACK_NO_FILL"),
-        ("EXIT_PARTIAL", True, "OK"),
+        ("EXIT_PARTIAL", False, "OK"),
         ("EXIT_FULL", True, "OK"),
     ],
 )
@@ -783,6 +783,9 @@ def test_live_exit_legacy_ack_fill_matrix(
     sent = next(event for event in observed.events if event.get("event_type") == "LIVE_ORDER_SENT")
     assert sent["reason"] == event_reason
     assert (observed.position is None) is closes
+    if scenario_name == "EXIT_PARTIAL":
+        assert observed.position[2] == pytest.approx(0.06)
+        assert observed.mutations[0][0] == "REDUCE"
     assert len(observed.attempts) == 1
 
 
@@ -844,7 +847,11 @@ def test_panic_live_partial_and_full_close_preserve_panic_mode(
     observed = harness.strategy_cycle(candle(), candle(minute=-1))
     assert len(observed.attempts) == 1
     assert observed.attempts[0].side == "SELL"
-    assert observed.position is None
+    if scenario_name == "PANIC_FULL":
+        assert observed.position is None
+    else:
+        assert observed.position[2] == pytest.approx(0.06)
+        assert all(mutation[0] != "CLOSE" for mutation in observed.mutations)
     assert harness.mode == "PANIC"
     assert "mutation:mode" not in observed.operation_log
     assert "OK" in reasons(observed)
