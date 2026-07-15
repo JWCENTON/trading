@@ -41,6 +41,7 @@ class TrendObservation:
     operation_log: tuple[str, ...]
     observed_action: str
     observed_reason: str | None
+    final_decision: Any
 
 
 class StrictFakeExchange:
@@ -83,6 +84,8 @@ class TrendStatefulHarness:
     def __init__(self, module, monkeypatch) -> None:
         self.module = module
         self.monkeypatch = monkeypatch
+        self.production_execute_and_record = module.execute_and_record
+        self.production_safe_close_if_open = module.safe_close_if_open
         self.exchange = StrictFakeExchange()
         self.now = OPEN_TIME + timedelta(minutes=10)
         self.rows = trend_rows()
@@ -98,6 +101,9 @@ class TrendStatefulHarness:
         self.execution_ledger_ok = True
         self.execution_live_attempted = True
         self.execution_live_ok = True
+        self.execution_order_accepted: bool | None = None
+        self.execution_executed_qty: float | None = None
+        self.execution_fully_executed: bool | None = None
         self.time_exit_enabled = False
         self.max_position_minutes = 90
         self.profit_lock_state = "NONE"
@@ -207,24 +213,70 @@ class TrendStatefulHarness:
         live_attempted = self.trading_mode == "LIVE" and allowed and self.execution_live_attempted
         live_ok = self.execution_live_ok if self.trading_mode == "LIVE" else True
         if not self.execution_ledger_ok:
+            self._strategy_event(
+                event_type="BLOCKED", decision=attempt.side,
+                reason="DB_GUARD_DUPLICATE", price=attempt.price,
+                candle_open_time=kwargs["candle_open_time"],
+                info={
+                    "is_exit": attempt.is_exit,
+                    "qty_btc": attempt.quantity,
+                    "reason_text": attempt.reason,
+                },
+            )
             return {"ledger_ok": False, "live_attempted": False, "live_ok": False,
                     "blocked_reason": "DB_GUARD_DUPLICATE"}
         if self.trading_mode == "LIVE" and not allowed:
             return {"ledger_ok": True, "live_attempted": False, "live_ok": False,
                     "blocked_reason": "LIVE_ORDER_SUPPRESSED"}
-        if not attempt.is_exit and live_ok:
+        executed_qty = (
+            self.execution_executed_qty
+            if self.execution_executed_qty is not None
+            else attempt.quantity if live_attempted and live_ok else 0.0
+        )
+        executed = bool(live_attempted and executed_qty > 0.0)
+        order_accepted = (
+            self.execution_order_accepted
+            if self.execution_order_accepted is not None else executed
+        )
+        fully_executed = (
+            self.execution_fully_executed
+            if self.execution_fully_executed is not None else executed and live_ok
+        )
+        if not attempt.is_exit and (self.trading_mode != "LIVE" or executed):
             before = self.position
             self.position = (
                 self.next_position_id,
                 "LONG" if attempt.side == "BUY" else "SHORT",
-                attempt.quantity,
+                executed_qty if self.trading_mode == "LIVE" else attempt.quantity,
                 attempt.price,
                 self.now,
             )
             self.next_position_id += 1
             self._mutation("OPEN", before, self.position, attempt.reason)
-        return {"ledger_ok": True, "live_attempted": live_attempted,
-                "live_ok": live_ok, "blocked_reason": None}
+        caller_live_ok = bool(fully_executed)
+        if attempt.is_exit and self.trading_mode == "LIVE":
+            caller_live_ok = bool(fully_executed or order_accepted)
+        result = {"ledger_ok": True,
+                  "live_attempted": live_attempted,
+                  "order_accepted": order_accepted, "executed": executed,
+                  "fully_executed": fully_executed,
+                  "executed_qty": executed_qty,
+                  "requested_qty": attempt.quantity,
+                  "live_ok": caller_live_ok, "blocked_reason": None}
+        if self.trading_mode == "LIVE" and live_attempted:
+            event_live_ok = bool(live_ok)
+            self._strategy_event(
+                event_type="LIVE_ORDER_SENT", decision=attempt.side,
+                reason=(
+                    "OK" if event_live_ok else
+                    "ORDER_ACCEPTED_PENDING_FILL" if order_accepted else
+                    "ORDER_REJECTED" if not attempt.is_exit else
+                    "ACK_NO_FILL"
+                ),
+                price=attempt.price, candle_open_time=kwargs["candle_open_time"],
+                info={"is_exit": attempt.is_exit, "result": result},
+            )
+        return result
 
     def _close(self, *, exit_price, reason, open_time):
         before = self.position
@@ -234,15 +286,22 @@ class TrendStatefulHarness:
 
     def _panic_close(self, *, current_price, candle_open_time, bc, cfg_effective):
         if self.position is None:
-            return False
+            return {"position": None, "result": None, "closed": False}
+        position = self.position
         side = "SELL" if self.position[1] == "LONG" else "BUY"
-        self._execute(side=side, price=current_price, qty_btc=self.position[2],
-                      reason="PANIC", candle_open_time=candle_open_time,
-                      cfg_used=cfg_effective, allow_live_orders=True,
-                      allow_meta={}, is_exit=True, pos_id=self.position[0])
-        if self.trading_mode != "LIVE" or self.execution_live_ok:
+        result = self._execute(
+            side=side, price=current_price, qty_btc=self.position[2],
+            reason="PANIC", candle_open_time=candle_open_time,
+            cfg_used=cfg_effective, allow_live_orders=True,
+            allow_meta={}, is_exit=True, pos_id=self.position[0],
+        )
+        closed = False
+        if result["ledger_ok"] and (
+            self.trading_mode != "LIVE" or result["live_ok"]
+        ):
             self._close(exit_price=current_price, reason="PANIC", open_time=candle_open_time)
-        return True
+            closed = True
+        return {"position": position, "result": result, "closed": closed}
 
     def _mutation(self, operation, before, after, reason):
         self.mutations.append(PositionMutation(operation, before, after, reason))
@@ -325,11 +384,12 @@ class TrendStatefulHarness:
                 price=float(self.rows[0][3]), candle_open_time=open_time,
                 info={"open_time": str(open_time), "last_processed": str(open_time)},
             )
+            final_decision = self.module.build_no_new_candle_decision((open_time,))
         else:
             candle_state = "NEW_CANDLE" if open_time is not None else "NO_CLOSED_CANDLE"
             if open_time is not None:
                 self.last_processed_open_time = open_time
-            self.module.run_trend_strategy()
+            final_decision = self.module.run_trend_strategy()
 
         events = tuple(self.events[start_e:])
         attempts = tuple(self.attempts[start_a:])
@@ -368,6 +428,7 @@ class TrendStatefulHarness:
             operation_log=log,
             observed_action=action,
             observed_reason=reason,
+            final_decision=final_decision,
         )
         self.observations.append(observation)
         return observation

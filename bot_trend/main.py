@@ -18,6 +18,7 @@ from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from datetime import datetime, timezone, date
+from decimal import Decimal
 from psycopg2.extras import execute_batch
 from common.sizing import compute_qty_from_notional
 from common.telemetry_throttle import should_emit_throttled_event
@@ -40,7 +41,15 @@ from common.execution import (
     build_live_entry_intent_client_order_id,
     preflight_live_order,
 )
-from common.decision_contract import normalize_entry_execution_outcome
+from common.decision_contract import (
+    DecisionReason,
+    DecisionSubtype,
+    EvaluationContext,
+    ExecutionOutcome,
+    ExecutionStage,
+    FinalDecision,
+    normalize_entry_execution_outcome,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,6 +151,131 @@ MIN_NOTIONAL_BUFFER_PCT = float(os.environ.get("MIN_NOTIONAL_BUFFER_PCT", "0.05"
 LIVE_TARGET_NOTIONAL = float(os.environ.get("LIVE_TARGET_NOTIONAL", "6.0"))
 
 LAST_TREND_STATE = None
+
+
+def _as_aware_utc(value):
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _trend_evaluation_context(open_time, evaluation_started_at, snap=None):
+    cfg_effective = snap["cfg_effective"] if snap is not None else cfg
+    bc = snap["bc"] if snap is not None else None
+    return EvaluationContext(
+        deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        environment=DB_NAME,
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        candle_open_time=_as_aware_utc(open_time),
+        evaluation_started_at=evaluation_started_at,
+        engine_name=STRATEGY_NAME,
+        engine_version=os.environ.get("BOT_VERSION"),
+        runtime_enabled=(bool(bc.enabled) if bc is not None else None),
+        live_orders_enabled=(bool(snap["allowed_orders_entry"]) if snap is not None else None),
+        paper_mode=cfg_effective.trading_mode != "LIVE",
+        context={"contract_version": "FINAL_DECISION_V1"},
+    )
+
+
+def build_no_new_candle_decision(row):
+    now = datetime.now(timezone.utc)
+    return FinalDecision.idle(
+        _trend_evaluation_context(row[0], now),
+        DecisionReason.NO_NEW_CANDLE,
+        finished_at=now,
+        reason_text="NO_NEW_CANDLE",
+        details={"last_processed": str(LAST_PROCESSED_OPEN_TIME)},
+    )
+
+
+def _trend_execution_outcome(result, cfg_effective):
+    if isinstance(result, ExecutionOutcome):
+        return result
+    normalized = result
+    if cfg_effective.trading_mode == "LIVE" and "executed" in result:
+        # ``live_ok`` is a legacy caller/mutation flag for TREND exits.  The
+        # immutable decision adapter must not reinterpret ACK-only as execution.
+        normalized = {**result, "live_ok": bool(result.get("executed", False))}
+    return ExecutionOutcome.from_legacy(
+        normalized, paper_mode=cfg_effective.trading_mode != "LIVE"
+    )
+
+
+def _execution_details(outcome):
+    return {
+        "blocked_reason": outcome.blocked_reason,
+        "live_attempted": outcome.attempted,
+        "order_accepted": outcome.order_accepted,
+        "executed": outcome.executed,
+        "fully_executed": outcome.fully_executed,
+        "executed_qty": outcome.executed_qty,
+        "requested_qty": outcome.requested_qty,
+        "ledger_ok": outcome.ledger_ok,
+        "suppressed": outcome.suppressed,
+        "stage": outcome.stage.value,
+        "order_id": outcome.order_id,
+        "client_order_id": outcome.client_order_id,
+        "exchange_status": outcome.exchange_status,
+        "raw": outcome.raw,
+    }
+
+
+def _trend_execution_decision(evaluation, result, cfg_effective, *, is_exit,
+                              reason_code, reason_text, side, price,
+                              position_id=None):
+    outcome = _trend_execution_outcome(result, cfg_effective)
+    details = _execution_details(outcome)
+    if is_exit and outcome.executed and not outcome.fully_executed:
+        details = {
+            **details,
+            "position_mutation_semantics": "LEGACY_CALLER_LIVE_OK",
+        }
+    common = dict(
+        finished_at=datetime.now(timezone.utc),
+        reference_price=Decimal(str(price)), side=side,
+        reason_text=reason_text, details=details,
+    )
+    if not outcome.ledger_ok:
+        subtype = DecisionSubtype.LEDGER_FAILURE
+    elif cfg_effective.trading_mode != "LIVE":
+        if is_exit:
+            return FinalDecision.exit_result(evaluation, reason_code,
+                                             position_id=position_id, **common)
+        return FinalDecision.paper_simulation(
+            evaluation, DecisionReason.SSOT_EXECUTE_AND_RECORD, **common
+        )
+    elif outcome.stage in {ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED}:
+        if is_exit and outcome.blocked_reason in {
+            "EXIT_NO_OPEN_POSITION", "NO_OPEN_POSITION",
+        }:
+            return FinalDecision.no_position(
+                evaluation, DecisionReason.NO_OPEN_POSITION, **common
+            )
+        return FinalDecision.action_suppressed(
+            evaluation, DecisionReason.EXECUTION_NOT_ATTEMPTED, **common
+        )
+    elif outcome.fully_executed:
+        if is_exit:
+            return FinalDecision.exit_result(evaluation, reason_code,
+                                             position_id=position_id, **common)
+        return FinalDecision.trade_executed_result(
+            evaluation, DecisionReason.SSOT_EXECUTE_AND_RECORD,
+            position_id=position_id, **common
+        )
+    elif outcome.executed:
+        subtype = DecisionSubtype.PARTIAL_EXECUTION
+    elif outcome.order_accepted:
+        subtype = DecisionSubtype.ORDER_ACCEPTED_NOT_FILLED
+    else:
+        subtype = DecisionSubtype.ORDER_REJECTED
+    return FinalDecision.technical_failure_result(
+        evaluation, DecisionReason.EXECUTION_FAILED, subtype,
+        signal_detected=True, entry_attempted=outcome.attempted,
+        order_submitted=outcome.order_accepted,
+        trade_executed=outcome.executed, **common,
+    )
 
 def _json_default(o):
     if isinstance(o, (datetime, date)):
@@ -1508,7 +1642,6 @@ def execute_and_record(
         live_ok = bool(outcome.executed)
         order_accepted = bool(outcome.order_accepted)
     else:
-        # Preserve the pre-existing TREND exit interpretation unchanged.
         status_raw = str(raw.get("status", "")).upper()
         executed_raw = raw.get("executedQty")
         try:
@@ -1516,16 +1649,25 @@ def execute_and_record(
         except Exception:
             executed_f = 0.0
         order_id = raw.get("orderId")
-        live_ok = resp.get("live_ok")
-        if live_ok is None:
-            live_ok = executed_f > 0.0 or status_raw == "FILLED"
-        live_ok = bool(live_ok)
+        legacy_live_ok = resp.get("live_ok")
+        if legacy_live_ok is None:
+            legacy_live_ok = executed_f > 0.0 or status_raw == "FILLED"
+        legacy_live_ok = bool(legacy_live_ok)
         order_accepted = bool(resp.get("order_accepted")) or (
             bool(order_id)
             and status_raw in {
                 "NEW", "PARTIALLY_FILLED", "FILLED", "ACCEPTED",
             }
         )
+        executed = executed_f > 0.0
+        fully_executed = bool(
+            executed and (
+                resp.get("fully_executed", False)
+                or status_raw == "FILLED"
+                or executed_f >= float(qty_btc)
+            )
+        )
+        live_ok = legacy_live_ok
 
     emit_strategy_event(
         event_type="LIVE_ORDER_SENT",
@@ -1638,6 +1780,16 @@ def execute_and_record(
         return {
             "ledger_ok": True,
             "live_attempted": True,
+            "order_accepted": order_accepted,
+            "executed": executed,
+            "fully_executed": fully_executed,
+            "executed_qty": executed_f,
+            "requested_qty": float(qty_btc),
+            "order_id": str(order_id) if order_id is not None else None,
+            "exchange_status": status_raw or None,
+            # Preserve the legacy caller contract and therefore its existing
+            # position-mutation behavior. Canonical truth is carried by the
+            # additive execution fields above and used only for FinalDecision.
             "live_ok": bool(live_ok or order_accepted),
             "blocked_reason": None if (live_ok or order_accepted) else "ACK_NO_FILL",
             "client_order_id": client_order_id,
@@ -1668,7 +1820,7 @@ def execute_and_record(
 def safe_close_if_open(current_price: float, candle_open_time, bc, cfg_effective):
     pos = get_open_position()
     if not pos:
-        return False
+        return {"position": None, "result": None, "closed": False}
 
     _, side, qty, _, _ = pos
 
@@ -1696,13 +1848,15 @@ def safe_close_if_open(current_price: float, candle_open_time, bc, cfg_effective
     )
     if not res["ledger_ok"]:
         logging.info("TREND: exit blocked by DB guard (already traded this candle) -> skipping close.")
-        return False
-    # w LIVE wymagaj live_ok
+        return {"position": pos, "result": res, "closed": False}
     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
         logging.info("TREND: exit suppressed/failed -> not closing position.")
-        return False
+        return {"position": pos, "result": res, "closed": False}
 
-    return close_position(exit_price=current_price, reason="PANIC", open_time=candle_open_time)
+    closed = close_position(
+        exit_price=current_price, reason="PANIC", open_time=candle_open_time
+    )
+    return {"position": pos, "result": res, "closed": bool(closed)}
 
 
 def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> float:
@@ -1762,11 +1916,20 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
 
 def run_trend_strategy():
     global LAST_TREND_STATE
+    evaluation_started_at = datetime.now(timezone.utc)
     
     rows = get_latest_candles(limit=max(EMA_SLOW + 20, 100))
     if not rows or len(rows) < EMA_SLOW + 5:
         logging.info("TREND: not enough candles yet (have %d).", len(rows) if rows else 0)
-        return
+        if not rows:
+            return  # No candle_open_time: canonical identity cannot be built.
+        evaluation = _trend_evaluation_context(rows[0][2], evaluation_started_at)
+        return FinalDecision.system_not_evaluated(
+            evaluation, DecisionReason.NOT_ENOUGH_CANDLES,
+            finished_at=datetime.now(timezone.utc),
+            reason_text="NOT_ENOUGH_CANDLES",
+            details={"candles": len(rows), "required": EMA_SLOW + 5},
+        )
 
     rows_asc = list(reversed(rows))
 
@@ -1790,7 +1953,11 @@ def run_trend_strategy():
 
     if df["ema_slow"].isna().iloc[-1]:
         logging.info("TREND: ema_slow not ready yet, skipping.")
-        return
+        evaluation = _trend_evaluation_context(rows[0][2], evaluation_started_at)
+        return FinalDecision.system_not_evaluated(
+            evaluation, DecisionReason.INDICATORS_NOT_READY,
+            finished_at=datetime.now(timezone.utc), reason_text="EMA_SLOW_NOT_READY",
+        )
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
@@ -1808,6 +1975,8 @@ def run_trend_strategy():
     ema_fast_slope_pct = 0.0 if ema_fast_prev == 0 else (ema_fast - ema_fast_prev) / ema_fast_prev
 
     snap = get_runtime_snapshot(price=price, open_time=open_time)
+    evaluation = _trend_evaluation_context(open_time, evaluation_started_at, snap)
+    ref_price = Decimal(str(price))
     emit_strategy_event(
         event_type="RUN_START",
         decision=None,
@@ -1845,10 +2014,18 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"mode": "HALT"},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_MODE_HALT,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=ref_price, reason_text="BOT_MODE_HALT",
+            )
 
         if bc.mode == "PANIC":
-            safe_close_if_open(current_price=float(price), candle_open_time=open_time, bc=bc, cfg_effective=cfg_effective)
+            panic = safe_close_if_open(
+                current_price=float(price), candle_open_time=open_time,
+                bc=bc, cfg_effective=cfg_effective,
+            )
             emit_strategy_event(
                 event_type="CONFIG_APPLIED",
                 reason="PANIC_TRIGGERED",
@@ -1857,7 +2034,22 @@ def run_trend_strategy():
                 info={"mode": "PANIC"},
             )
             set_mode("HALT", reason="Panic executed; halting.")
-            return
+            panic_pos = panic["position"]
+            panic_res = panic["result"]
+            if panic_pos is None:
+                return FinalDecision.no_position(
+                    evaluation, DecisionReason.NO_OPEN_POSITION,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=ref_price, reason_text="PANIC",
+                    details={"mode_transition": "HALT"},
+                )
+            exit_side = "SELL" if str(panic_pos[1]).upper() == "LONG" else "BUY"
+            return _trend_execution_decision(
+                evaluation, panic_res, cfg_effective, is_exit=True,
+                reason_code=DecisionReason.STRATEGY_EXIT,
+                reason_text="PANIC", side=exit_side, price=price,
+                position_id=int(panic_pos[0]),
+            )
 
 
         trend = "FLAT"
@@ -1927,14 +2119,20 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.TAKE_PROFIT,
+                        reason_text="TAKE_PROFIT_LONG", side="SELL", price=price,
+                        position_id=int(pos[0]),
+                    )
                     if not res["ledger_ok"]:
                         logging.info("TREND: exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
-                        return
+                        return final_decision
 
                     close_position(exit_price=price, reason="TAKE_PROFIT_LONG", open_time=open_time)
-                    return
+                    return final_decision
 
                 drop_pct = -change_pct
                 if STOP_LOSS_PCT > 0 and drop_pct >= STOP_LOSS_PCT:
@@ -1967,16 +2165,22 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.STOP_LOSS,
+                        reason_text="STOP_LOSS_LONG", side="SELL", price=price,
+                        position_id=int(pos[0]),
+                    )
                     if not res["ledger_ok"]:
                         logging.info("TREND: exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
 
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: exit suppressed/failed -> not closing position.")
-                        return
+                        return final_decision
 
                     close_position(exit_price=price, reason="STOP_LOSS_LONG", open_time=open_time)
-                    return
+                    return final_decision
 
             elif pos_side == "SHORT":
                 change_pct = (pos_entry_price - price) / pos_entry_price * 100.0
@@ -2011,14 +2215,20 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.TAKE_PROFIT,
+                        reason_text="TAKE_PROFIT_SHORT", side="BUY", price=price,
+                        position_id=int(pos[0]),
+                    )
                     if not res["ledger_ok"]:
                         logging.info("TREND: exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: exit suppressed/failed -> not closing position.")
-                        return
+                        return final_decision
                     close_position(exit_price=price, reason="TAKE_PROFIT_SHORT", open_time=open_time)
-                    return
+                    return final_decision
 
                 rise_pct = -change_pct
                 if STOP_LOSS_PCT > 0 and rise_pct >= STOP_LOSS_PCT:
@@ -2051,14 +2261,20 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.STOP_LOSS,
+                        reason_text="STOP_LOSS_SHORT", side="BUY", price=price,
+                        position_id=int(pos[0]),
+                    )
                     if not res["ledger_ok"]:
                         logging.info("TREND: exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: exit suppressed/failed -> not closing position.")
-                        return
+                        return final_decision
                     close_position(exit_price=price, reason="STOP_LOSS_SHORT", open_time=open_time)
-                    return
+                    return final_decision
                 
             # --- GUARDED PROFIT: shared decision layer, local TREND execution ---
             if pos_side == "LONG" and pos_entry_time is not None and GUARDED_PROFIT_ENABLED:
@@ -2137,14 +2353,20 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.BREAK_EVEN_PROTECT,
+                        reason_text="GUARDED_PROFIT_LONG", side="SELL", price=price,
+                        position_id=int(pos[0]),
+                    )
                     if not res["ledger_ok"]:
                         logging.info("TREND: guarded exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: guarded exit suppressed/failed -> not closing position.")
-                        return
+                        return final_decision
                     close_position(exit_price=price, reason="GUARDED_PROFIT_LONG", open_time=open_time)
-                    return
+                    return final_decision
 
             # --- ADAPTIVE EARLY CUT (SHADOW ONLY): telemetry, no real exit ---
             if (
@@ -2349,14 +2571,20 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.PROFIT_LOCK,
+                        reason_text=exit_kind, side=exit_side, price=price,
+                        position_id=int(pos[0]),
+                    )
                     if not res["ledger_ok"]:
                         logging.info("TREND: profit-lock exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: profit-lock exit suppressed/failed -> not closing position.")
-                        return
+                        return final_decision
                     close_position(exit_price=price, reason=exit_kind, open_time=open_time)
-                    return
+                    return final_decision
 
             # --- EARLY EXIT: cut losers earlier than TIMEOUT/SL to make TIMEOUT non-negative on average ---
             if EARLY_EXIT_MINUTES > 0 and pos_entry_time is not None:
@@ -2398,9 +2626,15 @@ def run_trend_strategy():
                                 is_exit=True,
                                 pos_id=int(pos[0]),
                             )
+                            final_decision = _trend_execution_decision(
+                                evaluation, res, cfg_effective, is_exit=True,
+                                reason_code=DecisionReason.STRATEGY_EXIT,
+                                reason_text="EARLY_CUT_LONG", side="SELL", price=price,
+                                position_id=int(pos[0]),
+                            )
                             if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
                                 close_position(exit_price=price, reason="EARLY_CUT_LONG", open_time=open_time)
-                            return
+                            return final_decision
 
                     elif pos_side == "SHORT":
                         pnl_pct = (pos_entry_price - price) / pos_entry_price * 100.0
@@ -2434,9 +2668,15 @@ def run_trend_strategy():
                                 is_exit=True,
                                 pos_id=int(pos[0]),
                             )
+                            final_decision = _trend_execution_decision(
+                                evaluation, res, cfg_effective, is_exit=True,
+                                reason_code=DecisionReason.STRATEGY_EXIT,
+                                reason_text="EARLY_CUT_SHORT", side="BUY", price=price,
+                                position_id=int(pos[0]),
+                            )
                             if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
                                 close_position(exit_price=price, reason="EARLY_CUT_SHORT", open_time=open_time)
-                            return
+                            return final_decision
 
             # =========================
             # TIMEOUT (optional) — keep winners, cut stagnation
@@ -2478,7 +2718,14 @@ def run_trend_strategy():
                                 "min_profit_to_keep_pct": float(MIN_PROFIT_TO_KEEP_PCT),
                             },
                         )
-                        return
+                        return FinalDecision.position_hold(
+                            evaluation, DecisionReason.POSITION_HOLD,
+                            finished_at=datetime.now(timezone.utc),
+                            reference_price=ref_price, side=pos_side,
+                            position_id=int(pos[0]),
+                            reason_text="TIME_EXIT_SKIPPED_KEEP_PROFIT_WINDOW",
+                            details={"age_minutes": age_minutes, "pnl_pct": pnl_pct},
+                        )
 
                     # 2) after timeout, if profit has faded below protect floor -> force exit
                     if extra_age_minutes >= 0 and pnl_pct < float(TIME_EXIT_MIN_PROFIT_PROTECT_PCT):
@@ -2514,9 +2761,15 @@ def run_trend_strategy():
                             allow_meta=snap["allow_meta_exit"],
                             is_exit=True,
                         )
+                        final_decision = _trend_execution_decision(
+                            evaluation, res, cfg_effective, is_exit=True,
+                            reason_code=DecisionReason.TIME_EXIT,
+                            reason_text="TIME_EXIT_PROFIT_FADED", side=side_timeout,
+                            price=price, position_id=int(pos[0]),
+                        )
                         if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
                             close_position(exit_price=price, reason="TIME_EXIT_PROFIT_FADED", open_time=open_time)
-                        return
+                        return final_decision
 
                     # 3) hard final timeout after extension window
                     if extra_age_minutes >= float(KEEP_PROFIT_MAX_EXTRA_MINUTES):
@@ -2552,9 +2805,15 @@ def run_trend_strategy():
                             allow_meta=snap["allow_meta_exit"],
                             is_exit=True,
                         )
+                        final_decision = _trend_execution_decision(
+                            evaluation, res, cfg_effective, is_exit=True,
+                            reason_code=DecisionReason.TIME_EXIT,
+                            reason_text="TIME_EXIT_HARD", side=side_timeout,
+                            price=price, position_id=int(pos[0]),
+                        )
                         if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
                             close_position(exit_price=price, reason="TIME_EXIT_HARD", open_time=open_time)
-                        return
+                        return final_decision
 
                     side_timeout = "SELL" if pos_side == "LONG" else "BUY"
                     reason_timeout = f"TREND TIMEOUT {pos_side} {age_minutes:.1f}m >= {max_pos_minutes}m (pnl={pnl_pct:.2f}%)"
@@ -2588,6 +2847,12 @@ def run_trend_strategy():
                         is_exit=True,
                         pos_id=int(pos[0]),
                     )
+                    final_decision = _trend_execution_decision(
+                        evaluation, res, cfg_effective, is_exit=True,
+                        reason_code=DecisionReason.TIME_EXIT,
+                        reason_text="TIMEOUT", side=side_timeout, price=price,
+                        position_id=int(pos[0]),
+                    )
 
                     if not res["ledger_ok"]:
                         emit_strategy_event(
@@ -2604,13 +2869,17 @@ def run_trend_strategy():
                             },
                         )
                         logging.info("TREND: exit blocked by DB guard -> skipping close.")
-                        return
+                        return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
-                        return
+                        return final_decision
                     close_position(exit_price=price, reason="TIMEOUT", open_time=open_time)
-                    return
+                    return final_decision
 
-            return  # mamy pozycję -> brak nowych wejść
+            return FinalDecision.position_hold(
+                evaluation, DecisionReason.POSITION_HOLD,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side=pos_side, position_id=int(pos[0]), reason_text="POSITION_HOLD",
+            )
 
         if not bc.enabled:
             emit_blocked(
@@ -2620,7 +2889,12 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "ema_fast": float(ema_fast), "ema_slow": float(ema_slow)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_DISABLED,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                reason_text="BOT_DISABLED",
+            )
 
         # --- ENTRY FILTERS ---
         hour_utc = open_time.hour
@@ -2632,7 +2906,12 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"hour_utc": int(hour_utc), "disable_hours": sorted(list(DISABLE_HOURS_SET)), "trend": trend},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.DISABLE_HOURS,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                reason_text="DISABLE_HOURS", details={"hour_utc": hour_utc},
+            )
 
 
         # Daily loss gate — SSOT = positions. PAPER: telemetry only. LIVE: hard-block by positions.
@@ -2698,7 +2977,14 @@ def run_trend_strategy():
                         candle_open_time=open_time,
                         info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
                     )
-                    return
+                    return FinalDecision.entry_blocked(
+                        evaluation, DecisionReason.DAILY_MAX_LOSS_POSITIONS,
+                        DecisionSubtype.RISK_BLOCKED,
+                        finished_at=datetime.now(timezone.utc),
+                        reference_price=ref_price,
+                        reason_text="DAILY_MAX_LOSS_POSITIONS",
+                        details=pos_payload,
+                    )
 
         if trend == "FLAT":
             emit_blocked(
@@ -2708,7 +2994,11 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "ema_fast": float(ema_fast), "ema_slow": float(ema_slow)},
             )
-            return
+            return FinalDecision.no_trade(
+                evaluation, DecisionReason.NO_SIGNAL,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                reason_text="TREND_NOT_ACTIVE_FLAT", details={"trend": trend},
+            )
 
         decision = "HOLD"
         reason = None
@@ -2734,7 +3024,11 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend},
             )
-            return
+            return FinalDecision.no_trade(
+                evaluation, DecisionReason.NO_SIGNAL,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                reason_text="TREND_DOWN_LONG_ONLY", details={"trend": trend},
+            )
 
         # Momentum confirmation: EMA_FAST slope must agree with direction
         if decision == "BUY" and ema_fast_slope_pct <= EMA_SLOPE_MIN_PCT:
@@ -2745,7 +3039,12 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "up_breakout_now": up_breakout_now, "down_breakout_now": down_breakout_now, "slope_pct": float(ema_fast_slope_pct), "slope_abs": float(ema_fast_slope)},
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side="BUY", reason_text="EMA_SLOPE_REJECT",
+                details={"slope_pct": ema_fast_slope_pct},
+            )
         if decision == "SELL" and ema_fast_slope_pct >= -EMA_SLOPE_MIN_PCT:
             emit_strategy_event(
                 event_type="BLOCKED",
@@ -2754,7 +3053,12 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "up_breakout_now": up_breakout_now, "down_breakout_now": down_breakout_now, "slope_pct": float(ema_fast_slope_pct), "slope_abs": float(ema_fast_slope)},
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side="SELL", reason_text="EMA_SLOPE_REJECT",
+                details={"slope_pct": ema_fast_slope_pct},
+            )
 
         # Simple price momentum confirmation
         if decision == "BUY" and price <= prev_price:
@@ -2765,7 +3069,12 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "up_breakout_now": up_breakout_now, "down_breakout_now": down_breakout_now, "prev_price": prev_price},
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side="BUY", reason_text="PRICE_MOMENTUM_REJECT",
+                details={"previous_price": prev_price},
+            )
         if decision == "SELL" and price >= prev_price:
             emit_strategy_event(
                 event_type="BLOCKED",
@@ -2774,7 +3083,12 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "up_breakout_now": up_breakout_now, "down_breakout_now": down_breakout_now, "prev_price": prev_price},
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side="SELL", reason_text="PRICE_MOMENTUM_REJECT",
+                details={"previous_price": prev_price},
+            )
 
         if decision == "HOLD":
             emit_blocked(
@@ -2784,7 +3098,11 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"trend": trend, "ema_fast": float(ema_fast), "ema_slow": float(ema_slow)},
             )
-            return
+            return FinalDecision.no_trade(
+                evaluation, DecisionReason.NO_SIGNAL,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                reason_text="NO_SIGNAL", details={"trend": trend},
+            )
 
         # --- REGIME GATE (ENTRY ONLY) ---
         gate_entry = decide_regime_gate(
@@ -2813,7 +3131,14 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"why": gate_entry.why, "regime": gate_entry.regime, "meta": gate_entry.meta, "trend": trend},
             )
-            return
+            return FinalDecision.entry_blocked(
+                evaluation, DecisionReason.REGIME_BLOCK,
+                DecisionSubtype.REGIME_BLOCKED,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side=decision, reason_text="REGIME_BLOCK",
+                details={"why": gate_entry.why, "regime": gate_entry.regime,
+                         "meta": gate_entry.meta},
+            )
         
         emit_strategy_event(
             event_type="SIGNAL",
@@ -2840,7 +3165,13 @@ def run_trend_strategy():
                     "ema_fast": float(ema_fast),
                 },
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.POLICY_BLOCK,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side=decision, reason_text="MAX_DIST_FROM_EMA",
+                details={"distance_pct": dist_from_fast_pct,
+                         "maximum_pct": MAX_DIST_FROM_EMA_FAST_PCT},
+            )
 
         # ===== SIZING (MUSI być przed użyciem qty_btc) =====
         qty_btc, sizing_info = compute_qty_from_notional(
@@ -2923,7 +3254,13 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info=sizing_info,
             )
-            return
+            return FinalDecision.entry_blocked(
+                evaluation, DecisionReason.SIZING_QTY_ZERO,
+                DecisionSubtype.RISK_BLOCKED,
+                finished_at=datetime.now(timezone.utc), reference_price=ref_price,
+                side=decision, reason_text="SIZING_QTY_ZERO",
+                details={"sizing": sizing_info},
+            )
 
         logging.info(
             "TREND: opening %s at %.2f (%s) qty=%.8f",
@@ -2943,14 +3280,19 @@ def run_trend_strategy():
             allow_meta=snap["allow_meta_entry"],
             is_exit=False,
         )
+        final_decision = _trend_execution_decision(
+            evaluation, res, cfg_effective, is_exit=False,
+            reason_code=DecisionReason.SSOT_EXECUTE_AND_RECORD,
+            reason_text=reason, side=decision, price=price,
+        )
         if not res["ledger_ok"]:
             logging.info("TREND: entry blocked/failed -> not opening position.")
-            return
+            return final_decision
 
         if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
             # NOT_ATTEMPTED jest już emitowane w execute_and_record() (SSOT)
             if not res.get("live_attempted", False):
-                return
+                return final_decision
 
             # attempted, ale brak fill -> logujemy tutaj
             emit_strategy_event(
@@ -2961,7 +3303,8 @@ def run_trend_strategy():
                 candle_open_time=open_time,
                 info={"res": res},
             )
-            return
+            return final_decision
+        return final_decision
 
     finally:
         emit_strategy_event(
@@ -3188,7 +3531,7 @@ def main_loop():
                 open_time = latest[0]                
                 if LAST_PROCESSED_OPEN_TIME != open_time:
                     LAST_PROCESSED_OPEN_TIME = open_time
-                    run_trend_strategy()
+                    _final_decision = run_trend_strategy()
                 else:
                     emit_strategy_event(
                         event_type="IDLE",
@@ -3198,6 +3541,7 @@ def main_loop():
                         candle_open_time=open_time,
                         info={"open_time": str(open_time), "last_processed": str(LAST_PROCESSED_OPEN_TIME)},
                     )                    
+                    _final_decision = build_no_new_candle_decision(latest)
                     logging.info("TREND: no new candle yet (%s) -> skip strategy.", str(open_time))
 
         except Exception as e:

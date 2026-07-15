@@ -14,6 +14,7 @@ import pytest
 import requests
 
 from tests.bot_trend.fixtures import (
+    ExecutionAttempt,
     StrictFakeExchange,
     TrendStatefulHarness,
     downtrend_rows,
@@ -69,10 +70,9 @@ def reasons(observation):
     return tuple(event.get("reason") for event in observation.strategy_events)
 
 
-def test_harness_is_test_only_and_has_no_final_decision_or_sink(trend):
+def test_trend_returns_final_decision_without_sink(trend):
     source = inspect.getsource(trend)
     assert tuple(inspect.signature(trend.run_trend_strategy).parameters) == ()
-    assert "FinalDecision" not in source
     assert "decision_sink" not in source
 
 
@@ -236,6 +236,111 @@ def run_live_entry_boundary(
     )
 
 
+def run_live_exit_boundary(
+    trend, monkeypatch, place_result, *, ledger_ok=True, preflight_result=None
+):
+    class Conn:
+        def commit(self):
+            operations.append("db:commit")
+
+        def close(self):
+            operations.append("db:close")
+
+    operations = []
+    events = []
+    monkeypatch.setattr(
+        trend, "insert_simulated_order",
+        lambda **_kwargs: operations.append("ledger:reserve") or ledger_ok,
+    )
+    monkeypatch.setattr(
+        trend, "get_db_conn",
+        lambda: operations.append("db:get_connection") or Conn(),
+    )
+    monkeypatch.setattr(trend, "get_exchange_client", lambda: StrictFakeExchange())
+    monkeypatch.setattr(
+        trend, "set_exit_client_order_id",
+        lambda *_a, **_k: operations.append("state:attach_exit_identity"),
+    )
+    monkeypatch.setattr(
+        trend, "emit_strategy_event",
+        lambda **payload: (
+            events.append(payload),
+            operations.append(f"strategy_event:{payload['event_type']}")
+        ),
+    )
+    monkeypatch.setattr(
+        trend, "preflight_live_order",
+        lambda *_a, **_k: operations.append("execution:preflight") or (
+            preflight_result if preflight_result is not None else {"ok": True}
+        ),
+    )
+    monkeypatch.setattr(
+        trend, "place_live_order",
+        lambda *_a, **_k: operations.append("execution:place_live_order") or place_result,
+    )
+    result = trend.execute_and_record(
+        side="SELL", price=102.0, qty_btc=0.1, reason="fixture-exit",
+        candle_open_time=trend_rows()[0][2], is_exit=True, pos_id=7,
+        cfg_used=SimpleNamespace(
+            symbol="BTCUSDC", interval="1m", trading_mode="LIVE",
+            live_orders_enabled=True, quote_asset="USDC",
+        ),
+        allow_live_orders=True, allow_meta={}, rsi_14=50.0, ema_21=101.0,
+    )
+    return SimpleNamespace(result=result, events=events, operation_log=operations)
+
+
+def install_real_exit_runtime_boundary(
+    harness, monkeypatch, place_result, *, ledger_ok=True,
+    preflight_result=None,
+):
+    """Run the production exit adapter underneath the stateful runtime caller."""
+    module = harness.module
+    production_execute = harness.production_execute_and_record
+
+    class Conn:
+        def commit(self):
+            harness.operation_log.append("db:commit")
+
+        def close(self):
+            harness.operation_log.append("db:close")
+
+    monkeypatch.setattr(
+        module, "insert_simulated_order",
+        lambda **_kwargs: harness.operation_log.append("ledger:reserve") or ledger_ok,
+    )
+    monkeypatch.setattr(
+        module, "get_db_conn",
+        lambda: harness.operation_log.append("db:get_connection") or Conn(),
+    )
+    monkeypatch.setattr(
+        module, "set_exit_client_order_id",
+        lambda *_a, **_k: harness.operation_log.append("state:attach_exit_identity"),
+    )
+    monkeypatch.setattr(
+        module, "preflight_live_order",
+        lambda *_a, **_k: harness.operation_log.append("execution:preflight") or (
+            preflight_result if preflight_result is not None else {"ok": True}
+        ),
+    )
+    monkeypatch.setattr(
+        module, "place_live_order",
+        lambda *_a, **_k: harness.operation_log.append("execution:place_live_order") or place_result,
+    )
+
+    def execute(**kwargs):
+        attempt = ExecutionAttempt(
+            side=str(kwargs["side"]), is_exit=bool(kwargs["is_exit"]),
+            price=float(kwargs["price"]), quantity=float(kwargs["qty_btc"]),
+            reason=str(kwargs["reason"]),
+        )
+        harness.attempts.append(attempt)
+        harness.operation_log.append("execution:exit")
+        return production_execute(**kwargs)
+
+    monkeypatch.setattr(module, "execute_and_record", execute)
+
+
 @pytest.mark.parametrize("status", ["NEW", "ACCEPTED"])
 def test_live_accepted_without_fill_stays_pending(trend, monkeypatch, status):
     observed = run_live_entry_boundary(
@@ -364,6 +469,103 @@ def test_live_ledger_failure_before_and_after_fill(trend, monkeypatch):
     assert next(e for e in after.events if e["event_type"] == "LIVE_ORDER_SENT")["reason"] == "OK"
     blocked = next(e for e in after.events if e["event_type"] == "BLOCKED")
     assert blocked["reason"] == "LIVE_ENTRY_FILL_BUT_POSITION_NOT_OPENED"
+
+    partial = run_live_entry_boundary(
+        trend,
+        monkeypatch,
+        {
+            "ok": True, "attempted": True, "live_ok": True,
+            "order_accepted": True, "executed": True,
+            "fully_executed": False, "executed_qty": 0.04,
+            "requested_qty": 0.1, "order_id": "order-partial",
+            "client_order_id": "cid-entry", "exchange_status": "PARTIALLY_FILLED",
+            "resp": {"orderId": "order-partial", "status": "PARTIALLY_FILLED",
+                     "executedQty": "0.04"},
+        },
+        open_failure=True,
+    )
+    decision = trend._trend_execution_decision(
+        trend._trend_evaluation_context(
+            trend_rows()[0][2], trend.datetime.now(trend.timezone.utc),
+            {"cfg_effective": SimpleNamespace(trading_mode="LIVE"),
+             "bc": SimpleNamespace(enabled=True), "allowed_orders_entry": True},
+        ),
+        partial.result, SimpleNamespace(trading_mode="LIVE"), is_exit=False,
+        reason_code=trend.DecisionReason.SSOT_EXECUTE_AND_RECORD,
+        reason_text="ENTRY", side="BUY", price=102.0,
+    )
+    assert decision.decision_type.value == "TECHNICAL_FAILURE"
+    assert decision.decision_subtype.value == "LEDGER_FAILURE"
+    assert decision.order_submitted is True
+    assert decision.trade_executed is True
+    assert decision.details["executed_qty"] == 0.04
+    assert decision.details["requested_qty"] == 0.1
+    assert decision.details["fully_executed"] is False
+    assert partial.opened == []
+    assert partial.operation_log.count("execution:place_live_order") == 1
+
+
+@pytest.mark.parametrize(
+    "status, accepted, executed_qty, fully",
+    [
+        ("REJECTED", False, 0.0, False),
+        ("NEW", True, 0.0, False),
+        ("PARTIALLY_FILLED", True, 0.04, False),
+        ("FILLED", True, 0.1, True),
+    ],
+)
+def test_real_live_exit_adapter_preserves_canonical_matrix(
+    trend, monkeypatch, status, accepted, executed_qty, fully
+):
+    observed = run_live_exit_boundary(
+        trend, monkeypatch,
+        {
+            "ok": True, "attempted": True, "live_ok": executed_qty > 0,
+            "order_accepted": accepted, "executed": executed_qty > 0,
+            "fully_executed": fully, "executed_qty": executed_qty,
+            "requested_qty": 0.1, "order_id": "exit-1",
+            "client_order_id": "cid-exit", "exchange_status": status,
+            "resp": {"orderId": "exit-1", "status": status,
+                     "executedQty": str(executed_qty)},
+        },
+    )
+    result = observed.result
+    assert result["order_accepted"] is accepted
+    assert result["executed"] is (executed_qty > 0)
+    assert result["fully_executed"] is fully
+    assert result["executed_qty"] == executed_qty
+    assert result["live_ok"] is accepted
+    assert observed.operation_log.count("execution:place_live_order") == 1
+    sent = next(e for e in observed.events if e["event_type"] == "LIVE_ORDER_SENT")
+    expected_event_reason = (
+        "OK" if executed_qty > 0 else
+        "ORDER_ACCEPTED_PENDING_FILL" if accepted else "ACK_NO_FILL"
+    )
+    assert sent["reason"] == expected_event_reason
+    if not accepted:
+        assert result["blocked_reason"] == "ACK_NO_FILL"
+        decision = trend._trend_execution_decision(
+            trend._trend_evaluation_context(
+                trend_rows()[0][2], trend.datetime.now(trend.timezone.utc),
+                {"cfg_effective": SimpleNamespace(trading_mode="LIVE"),
+                 "bc": SimpleNamespace(enabled=True), "allowed_orders_entry": True},
+            ),
+            result, SimpleNamespace(trading_mode="LIVE"), is_exit=True,
+            reason_code=trend.DecisionReason.STRATEGY_EXIT,
+            reason_text="EXIT", side="SELL", price=102.0, position_id=7,
+        )
+        assert decision.decision_subtype.value == "ORDER_REJECTED"
+
+
+def test_real_live_exit_preflight_suppression_does_not_submit(trend, monkeypatch):
+    observed = run_live_exit_boundary(
+        trend, monkeypatch, {},
+        preflight_result={"ok": False, "reason": "LIVE_DISABLED"},
+    )
+    assert observed.result["live_attempted"] is False
+    assert observed.result["live_ok"] is False
+    assert observed.result["blocked_reason"] == "LIVE_DISABLED"
+    assert "execution:place_live_order" not in observed.operation_log
 
 
 @pytest.mark.parametrize(
@@ -516,3 +718,319 @@ def test_operation_log_freezes_boundary_chronology(harness):
     exited = harness.cycle(trend_rows(minute=1, current=102.5))
     assert exited.operation_log.index("execution:exit") < exited.operation_log.index("state_change:close")
     assert exited.operation_log.index("state_change:close") < exited.operation_log.index("strategy_event:RUN_END")
+
+
+@pytest.mark.parametrize(
+    "result, expected_type, expected_subtype, submitted, executed",
+    [
+        ({"ledger_ok": True, "live_attempted": False, "suppressed": True,
+          "blocked_reason": "LIVE_DISABLED"}, "ACTION_SUPPRESSED", "EXECUTION_NOT_ATTEMPTED", False, False),
+        ({"ledger_ok": True, "live_attempted": True, "order_accepted": False,
+          "executed": False, "executed_qty": 0.0}, "TECHNICAL_FAILURE", "ORDER_REJECTED", False, False),
+        ({"ledger_ok": True, "live_attempted": True, "order_accepted": True,
+          "executed": False, "executed_qty": 0.0}, "TECHNICAL_FAILURE", "ORDER_ACCEPTED_NOT_FILLED", True, False),
+        ({"ledger_ok": True, "live_attempted": True, "order_accepted": True,
+          "executed": True, "fully_executed": False, "executed_qty": 0.4,
+          "requested_qty": 1.0}, "TECHNICAL_FAILURE", "PARTIAL_EXECUTION", True, True),
+        ({"ledger_ok": True, "live_attempted": True, "order_accepted": True,
+          "executed": True, "fully_executed": True, "executed_qty": 1.0,
+          "requested_qty": 1.0}, "TRADE_EXECUTED", "EXECUTED", True, True),
+        ({"ledger_ok": False, "live_attempted": True, "order_accepted": True,
+          "executed": True, "fully_executed": True, "executed_qty": 1.0,
+          "requested_qty": 1.0}, "TECHNICAL_FAILURE", "LEDGER_FAILURE", True, True),
+    ],
+)
+def test_entry_execution_outcome_classification(
+    trend, result, expected_type, expected_subtype, submitted, executed
+):
+    now = trend.datetime.now(trend.timezone.utc)
+    evaluation = trend._trend_evaluation_context(
+        trend_rows()[0][2], now,
+        {"cfg_effective": SimpleNamespace(trading_mode="LIVE"),
+         "bc": SimpleNamespace(enabled=True), "allowed_orders_entry": True},
+    )
+    decision = trend._trend_execution_decision(
+        evaluation, result, SimpleNamespace(trading_mode="LIVE"),
+        is_exit=False, reason_code=trend.DecisionReason.SSOT_EXECUTE_AND_RECORD,
+        reason_text="ENTRY", side="BUY", price=102.0,
+    )
+    assert decision.decision_type.value == expected_type
+    assert decision.decision_subtype.value == expected_subtype
+    assert decision.order_submitted is submitted
+    assert decision.trade_executed is executed
+    assert decision.details["order_accepted"] is submitted
+    assert decision.details["executed"] is executed
+
+
+@pytest.mark.parametrize("position_side, order_side", [("LONG", "SELL"), ("SHORT", "BUY")])
+def test_exit_full_fill_side_and_classification(trend, position_side, order_side):
+    now = trend.datetime.now(trend.timezone.utc)
+    evaluation = trend._trend_evaluation_context(
+        trend_rows()[0][2], now,
+        {"cfg_effective": SimpleNamespace(trading_mode="LIVE"),
+         "bc": SimpleNamespace(enabled=True), "allowed_orders_entry": True},
+    )
+    decision = trend._trend_execution_decision(
+        evaluation,
+        {"ledger_ok": True, "live_attempted": True, "order_accepted": True,
+         "executed": True, "fully_executed": True, "executed_qty": 1.0,
+         "requested_qty": 1.0},
+        SimpleNamespace(trading_mode="LIVE"), is_exit=True,
+        reason_code=trend.DecisionReason.STRATEGY_EXIT,
+        reason_text=position_side, side=order_side, price=102.0, position_id=7,
+    )
+    assert decision.decision_subtype.value == "EXIT_EXECUTED"
+    assert decision.side == order_side
+
+
+def test_trend_decision_recursively_freezes_execution_raw(trend):
+    now = trend.datetime.now(trend.timezone.utc)
+    evaluation = trend._trend_evaluation_context(
+        trend_rows()[0][2], now,
+        {"cfg_effective": SimpleNamespace(trading_mode="LIVE"),
+         "bc": SimpleNamespace(enabled=True), "allowed_orders_entry": True},
+    )
+    raw = {"ledger_ok": True, "live_attempted": True,
+           "order_accepted": True, "executed": False, "executed_qty": 0.0,
+           "resp": {"fills": [{"qty": "0"}], "tags": {"pending"},
+                    "route": ({"venue": "primary"},)}}
+    decision = trend._trend_execution_decision(
+        evaluation, raw, SimpleNamespace(trading_mode="LIVE"), is_exit=False,
+        reason_code=trend.DecisionReason.SSOT_EXECUTE_AND_RECORD,
+        reason_text="ENTRY", side="BUY", price=102.0,
+    )
+    raw["resp"]["fills"][0]["qty"] = "99"
+    assert decision.details["raw"]["resp"]["fills"][0]["qty"] == "0"
+    assert isinstance(decision.details["raw"]["resp"]["fills"], tuple)
+    assert isinstance(decision.details["raw"]["resp"]["tags"], frozenset)
+    assert isinstance(decision.details["raw"]["resp"]["route"], tuple)
+
+
+@pytest.mark.parametrize(
+    "case, attempted, accepted, executed_qty, fully, expected_subtype, event_reason",
+    [
+        ("not_attempted", False, False, 0.0, False, "EXECUTION_NOT_ATTEMPTED", None),
+        ("rejected", True, False, 0.0, False, "ORDER_REJECTED", "ACK_NO_FILL"),
+        ("ack_only", True, True, 0.0, False, "ORDER_ACCEPTED_NOT_FILLED", "ORDER_ACCEPTED_PENDING_FILL"),
+        ("partial", True, True, 0.04, False, "PARTIAL_EXECUTION", "OK"),
+        ("full", True, True, 0.1, True, "EXIT_EXECUTED", "OK"),
+    ],
+)
+def test_live_standard_exit_runtime_matrix(
+    harness, case, attempted, accepted, executed_qty, fully, expected_subtype,
+    event_reason,
+):
+    harness.trading_mode = "LIVE"
+    harness.set_position(entry_price=100.0, qty=0.1)
+    harness.execution_live_attempted = attempted
+    harness.execution_order_accepted = accepted
+    harness.execution_executed_qty = executed_qty
+    harness.execution_fully_executed = fully
+    harness.execution_live_ok = executed_qty > 0
+    observed = harness.cycle(trend_rows(current=102.0))
+
+    assert observed.final_decision.decision_subtype.value == expected_subtype
+    assert observed.final_decision.order_submitted is accepted
+    assert observed.final_decision.trade_executed is (executed_qty > 0)
+    assert len(observed.execution_attempts) == 1
+    assert observed.operation_log[-1] == "strategy_event:RUN_END"
+    sent = [e for e in observed.strategy_events if e.get("event_type") == "LIVE_ORDER_SENT"]
+    assert ([e["reason"] for e in sent] or [None])[-1] == event_reason
+    if accepted:
+        assert observed.position_after is None
+        assert len(observed.position_mutations) == 1
+    else:
+        assert observed.position_after[2] == 0.1
+        assert observed.position_mutations == ()
+    if case == "partial":
+        assert observed.final_decision.details["position_mutation_semantics"] == "LEGACY_CALLER_LIVE_OK"
+        assert observed.position_after is None
+
+
+def test_real_exit_adapter_db_guard_failure_runtime_chronology(
+    harness, monkeypatch,
+):
+    harness.trading_mode = "LIVE"
+    harness.set_position(entry_price=102.0, qty=0.1, age_minutes=10)
+    harness.profit_lock_state = "TRIGGERED"
+    install_real_exit_runtime_boundary(
+        harness, monkeypatch, {}, ledger_ok=False,
+    )
+    observed = harness.cycle(trend_rows(current=102.5))
+    decision = observed.final_decision
+    assert decision.decision_type.value == "TECHNICAL_FAILURE"
+    assert decision.decision_subtype.value == "LEDGER_FAILURE"
+    assert decision.entry_attempted is False
+    assert decision.order_submitted is False
+    assert decision.trade_executed is False
+    assert decision.details["blocked_reason"] == "DB_GUARD_DUPLICATE"
+    assert observed.position_after is not None
+    assert observed.position_mutations == ()
+    assert len(observed.execution_attempts) == 1
+    assert "execution:place_live_order" not in observed.operation_log
+    blocked = next(
+        event for event in observed.strategy_events
+        if event.get("event_type") == "BLOCKED"
+    )
+    assert blocked["reason"] == "DB_GUARD_DUPLICATE"
+    log = observed.operation_log
+    assert log.index("strategy_event:EXIT_SIGNAL") < log.index("execution:exit")
+    assert log.index("execution:exit") < log.index("strategy_event:BLOCKED")
+    assert log.index("strategy_event:BLOCKED") < log.index("strategy_event:RUN_END")
+    assert observed.operation_log[-1] == "strategy_event:RUN_END"
+
+
+def test_real_panic_preflight_suppression_preserves_chronology(
+    harness, monkeypatch,
+):
+    harness.runtime_mode = "PANIC"
+    harness.trading_mode = "LIVE"
+    harness.set_position(side="LONG", entry_price=100.0, qty=0.1)
+    install_real_exit_runtime_boundary(
+        harness, monkeypatch, {},
+        preflight_result={"ok": False, "reason": "PANIC_PREFLIGHT_BLOCK"},
+    )
+    lookups = []
+    monkeypatch.setattr(
+        harness.module, "get_open_position",
+        lambda: lookups.append("lookup") or harness.position,
+    )
+    monkeypatch.setattr(
+        harness.module, "safe_close_if_open",
+        harness.production_safe_close_if_open,
+    )
+    monkeypatch.setattr(
+        harness.module, "can_trade",
+        lambda *_a, **_k: (True, {"why": "panic-boundary-test"}),
+    )
+    observed = harness.cycle(trend_rows(current=100.0))
+    decision = observed.final_decision
+    assert decision.decision_type.value == "ACTION_SUPPRESSED"
+    assert decision.decision_subtype.value == "EXECUTION_NOT_ATTEMPTED"
+    assert decision.action == "SUPPRESS"
+    assert decision.entry_attempted is False
+    assert decision.order_submitted is False
+    assert decision.trade_executed is False
+    assert decision.details["blocked_reason"] == "PANIC_PREFLIGHT_BLOCK"
+    assert decision.details["raw"]["resp"]["reason"] == "PANIC_PREFLIGHT_BLOCK"
+    assert len(lookups) == 1
+    assert len(observed.execution_attempts) == 1
+    assert "execution:place_live_order" not in observed.operation_log
+    assert observed.position_after is not None
+    assert not any(m.operation == "CLOSE" for m in observed.position_mutations)
+    blocked_index = observed.operation_log.index("strategy_event:BLOCKED")
+    blocked_event = next(
+        event for event in observed.strategy_events
+        if event.get("event_type") == "BLOCKED"
+    )
+    assert blocked_event["reason"] == "PANIC_PREFLIGHT_BLOCK"
+    config_index = observed.operation_log.index("strategy_event:CONFIG_APPLIED")
+    mode_index = observed.operation_log.index("state_change:mode")
+    assert blocked_index < config_index < mode_index
+    assert observed.operation_log[-1] == "strategy_event:RUN_END"
+
+
+@pytest.mark.parametrize("position_side, exit_side", [("LONG", "SELL"), ("SHORT", "BUY")])
+@pytest.mark.parametrize(
+    "accepted, executed_qty, fully, expected_subtype",
+    [
+        (False, 0.0, False, "ORDER_REJECTED"),
+        (True, 0.0, False, "ORDER_ACCEPTED_NOT_FILLED"),
+        (True, 0.04, False, "PARTIAL_EXECUTION"),
+        (True, 0.1, True, "EXIT_EXECUTED"),
+    ],
+)
+def test_panic_live_runtime_preserves_canonical_outcome(
+    harness, position_side, exit_side, accepted, executed_qty, fully,
+    expected_subtype,
+):
+    harness.runtime_mode = "PANIC"
+    harness.trading_mode = "LIVE"
+    harness.set_position(side=position_side, entry_price=100.0, qty=0.1)
+    harness.execution_order_accepted = accepted
+    harness.execution_executed_qty = executed_qty
+    harness.execution_fully_executed = fully
+    harness.execution_live_ok = executed_qty > 0
+    observed = harness.cycle(trend_rows(current=100.0))
+    decision = observed.final_decision
+    assert decision.decision_subtype.value == expected_subtype
+    assert decision.side == exit_side
+    assert decision.order_submitted is accepted
+    assert decision.trade_executed is (executed_qty > 0)
+    assert len(observed.execution_attempts) == 1
+    assert observed.operation_log[-1] == "strategy_event:RUN_END"
+    assert observed.operation_log.index("execution:exit") < observed.operation_log.index("strategy_event:LIVE_ORDER_SENT")
+    assert observed.operation_log.index("strategy_event:LIVE_ORDER_SENT") < observed.operation_log.index("strategy_event:CONFIG_APPLIED")
+    assert observed.operation_log.index("strategy_event:CONFIG_APPLIED") < observed.operation_log.index("state_change:mode")
+    assert (observed.position_after is None) is accepted
+
+
+def test_profit_lock_partial_exit_chronology_preserves_legacy_close(harness):
+    harness.runtime_mode = "NORMAL"
+    harness.trading_mode = "LIVE"
+    harness.set_position(entry_price=102.0, qty=0.1, age_minutes=10)
+    harness.profit_lock_state = "TRIGGERED"
+    harness.execution_order_accepted = True
+    harness.execution_executed_qty = 0.04
+    harness.execution_fully_executed = False
+    harness.execution_live_ok = True
+    observed = harness.cycle(trend_rows(current=102.5))
+    log = observed.operation_log
+    assert log.index("strategy_event:EXIT_SIGNAL") < log.index("execution:exit")
+    assert log.index("execution:exit") < log.index("strategy_event:LIVE_ORDER_SENT")
+    live_sent = next(
+        event for event in observed.strategy_events
+        if event.get("event_type") == "LIVE_ORDER_SENT"
+    )
+    assert live_sent["reason"] == "OK"
+    assert log.index("strategy_event:LIVE_ORDER_SENT") < log.index("state_change:close")
+    assert log.index("state_change:close") < log.index("strategy_event:RUN_END")
+    assert log.index("strategy_event:LIVE_ORDER_SENT") < log.index("strategy_event:RUN_END")
+    assert len(observed.position_mutations) == 1
+    assert observed.position_mutations[0].operation == "CLOSE"
+    assert len(observed.execution_attempts) == 1
+    assert observed.final_decision.decision_subtype.value == "PARTIAL_EXECUTION"
+
+
+def test_real_panic_db_guard_failure_preserves_chronology(harness, monkeypatch):
+    harness.runtime_mode = "PANIC"
+    harness.trading_mode = "LIVE"
+    harness.set_position(side="SHORT", entry_price=100.0, qty=0.1)
+    install_real_exit_runtime_boundary(
+        harness, monkeypatch, {}, ledger_ok=False,
+    )
+    lookups = []
+    monkeypatch.setattr(
+        harness.module, "get_open_position",
+        lambda: lookups.append("lookup") or harness.position,
+    )
+    monkeypatch.setattr(
+        harness.module, "safe_close_if_open",
+        harness.production_safe_close_if_open,
+    )
+    monkeypatch.setattr(
+        harness.module, "can_trade",
+        lambda *_a, **_k: (True, {"why": "panic-db-guard-test"}),
+    )
+    observed = harness.cycle(trend_rows(current=100.0))
+    decision = observed.final_decision
+    assert decision.decision_subtype.value == "LEDGER_FAILURE"
+    assert decision.side == "BUY"
+    assert decision.entry_attempted is False
+    assert decision.order_submitted is False
+    assert decision.trade_executed is False
+    assert decision.details["blocked_reason"] == "DB_GUARD_DUPLICATE"
+    assert len(lookups) == 1
+    assert observed.position_after is not None
+    assert len(observed.execution_attempts) == 1
+    assert "execution:place_live_order" not in observed.operation_log
+    blocked = next(
+        event for event in observed.strategy_events
+        if event.get("event_type") == "BLOCKED"
+    )
+    assert blocked["reason"] == "DB_GUARD_DUPLICATE"
+    log = observed.operation_log
+    assert log.index("execution:exit") < log.index("strategy_event:BLOCKED")
+    assert log.index("strategy_event:BLOCKED") < log.index("strategy_event:CONFIG_APPLIED")
+    assert log.index("strategy_event:CONFIG_APPLIED") < log.index("state_change:mode")
+    assert log[-1] == "strategy_event:RUN_END"
