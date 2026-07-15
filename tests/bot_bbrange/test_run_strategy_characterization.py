@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from common.decision_contract import DecisionType
+from common.decision_contract import FinalDecision, DecisionType
 
 from tests.bot_bbrange.fixtures import (
     FakeConnection,
@@ -130,7 +130,9 @@ def test_import_is_offline_and_no_new_candle_is_outside_run_strategy(bbrange):
 def test_pre_entry_data_paths(harness, row, expected_reason, expected_event):
     module, rec = harness
     observed = run_observed(module, rec, row)
-    assert observed.returned_value is None
+    assert isinstance(observed.returned_value, FinalDecision)
+    assert observed.returned_value.reason_text == expected_reason
+    assert observed.returned_value.evaluation.strategy == "BBRANGE"
     assert observed.terminal_reason == expected_reason
     assert observed.event_types == ("RUN_START", expected_event, "RUN_END")
     assert not [x for x in observed.operations if x.kind == "exchange_order"]
@@ -444,9 +446,13 @@ def test_final_decision_sink_exactly_once_for_entry_paths(
 
     decisions = []
     returned = module.run_strategy(row, decision_sink=decisions.append)
-    assert returned is None
+    assert isinstance(returned, FinalDecision)
+    assert returned.decision_type is expected_type
+    assert returned.evaluation.symbol == module.SYMBOL
+    assert returned.evaluation.interval == module.INTERVAL
+    assert returned.evaluation.strategy == module.STRATEGY_NAME
     assert len(decisions) == 1
-    assert decisions[0].decision_type is expected_type
+    assert decisions == [returned]
     assert rec.items[-1].payload["event_type"] == "RUN_END"
 
 
@@ -462,7 +468,9 @@ def test_final_decision_sink_not_called_outside_full_entry(
         monkeypatch.setattr(module, "get_open_position",
                             lambda: (17, "LONG", 0.1, 100.0, candle()[0]))
     decisions = []
-    assert module.run_strategy(row, decision_sink=decisions.append) is None
+    returned = module.run_strategy(row, decision_sink=decisions.append)
+    assert isinstance(returned, FinalDecision)
+    assert returned.evaluation.strategy == module.STRATEGY_NAME
     assert decisions == []
 
 
@@ -472,6 +480,8 @@ def test_final_decision_sink_failure_is_fail_open(harness, caplog):
     def broken_sink(_decision):
         raise RuntimeError("fixture sink failure")
 
-    assert module.run_strategy(candle(), decision_sink=broken_sink) is None
+    returned = module.run_strategy(candle(), decision_sink=broken_sink)
+    assert isinstance(returned, FinalDecision)
+    assert returned.reason_code.value == "NO_SIGNAL"
     assert rec.items[-1].payload["event_type"] == "RUN_END"
     assert "trading result unchanged" in caplog.text

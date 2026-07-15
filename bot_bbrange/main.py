@@ -12,6 +12,8 @@ from common.decision_contract import (
     DecisionSink,
     DecisionSubtype,
     EvaluationContext,
+    ExecutionOutcome,
+    ExecutionStage,
     FinalDecision,
     normalize_entry_execution_outcome,
 )
@@ -1468,10 +1470,105 @@ def get_trend(close: float, ema21: float, buffer_pct: float = TREND_BUFFER) -> s
         return "DOWN"
     return "FLAT"
 
+def _bbrange_evaluation_context(open_time, evaluation_started_at, snap=None):
+    cfg_effective = snap["cfg_effective"] if snap is not None else cfg
+    bc = snap["bc"] if snap is not None else None
+    candle_time = open_time or evaluation_started_at
+    if candle_time.tzinfo is None or candle_time.utcoffset() is None:
+        candle_time = candle_time.replace(tzinfo=timezone.utc)
+    return EvaluationContext(
+        deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        environment=DB_NAME, symbol=SYMBOL, interval=INTERVAL,
+        strategy=STRATEGY_NAME, candle_open_time=candle_time,
+        evaluation_started_at=evaluation_started_at,
+        engine_name=STRATEGY_NAME, engine_version=os.environ.get("BOT_VERSION"),
+        runtime_enabled=(bool(bc.enabled) if bc is not None else None),
+        live_orders_enabled=(bool(snap["allowed_orders_entry"])
+                             if snap is not None else None),
+        paper_mode=cfg_effective.trading_mode != "LIVE",
+        context={"contract_version": "FINAL_DECISION_V1"},
+    )
+
+
+def _bbrange_execution_outcome(result, cfg_effective):
+    if isinstance(result, ExecutionOutcome):
+        return result
+    if cfg_effective.trading_mode == "LIVE":
+        return normalize_entry_execution_outcome(
+            result,
+            requested_qty=float(result.get("requested_qty") or 0.0),
+            client_order_id=result.get("client_order_id"),
+            ledger_ok=bool(result.get("ledger_ok", False)),
+        )
+    return ExecutionOutcome.from_legacy(result, paper_mode=True)
+
+
+def _bbrange_exit_decision(evaluation, result, cfg_effective, *, reason_code,
+                            reason_text, price, position_id):
+    outcome = _bbrange_execution_outcome(result, cfg_effective)
+    details = {
+        "legacy_reason": reason_text,
+        "blocked_reason": outcome.blocked_reason,
+        "live_attempted": outcome.attempted,
+        "order_accepted": outcome.order_accepted,
+        "live_ok": outcome.operation_succeeded,
+        "executed": outcome.executed,
+        "fully_executed": outcome.fully_executed,
+        "executed_qty": outcome.executed_qty,
+        "requested_qty": outcome.requested_qty,
+        "ledger_ok": outcome.ledger_ok,
+        "execution_stage": outcome.stage.value,
+        "execution_result": outcome.raw,
+    }
+    common = dict(
+        finished_at=datetime.now(timezone.utc),
+        reference_price=Decimal(str(price)), side="SELL",
+        reason_text=reason_text, details=details,
+    )
+    if outcome.ledger_ok and (
+            cfg_effective.trading_mode != "LIVE" or outcome.fully_executed):
+        return FinalDecision.exit_result(
+            evaluation, reason_code, position_id=position_id, **common)
+    if outcome.stage in {ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED}:
+        return FinalDecision.action_suppressed(
+            evaluation, DecisionReason.EXECUTION_NOT_ATTEMPTED,
+            finished_at=common["finished_at"],
+            reference_price=common["reference_price"], side="SELL",
+            reason_text=outcome.blocked_reason or "EXIT_BLOCKED", details=details,
+        )
+    subtype = (
+        DecisionSubtype.LEDGER_FAILURE if not outcome.ledger_ok else
+        DecisionSubtype.PARTIAL_EXECUTION if outcome.executed else
+        DecisionSubtype.ORDER_ACCEPTED_NOT_FILLED if outcome.order_accepted else
+        DecisionSubtype.ORDER_REJECTED
+    )
+    return FinalDecision.technical_failure_result(
+        evaluation, DecisionReason.EXECUTION_FAILED, subtype,
+        finished_at=common["finished_at"],
+        reference_price=common["reference_price"], side="SELL",
+        reason_text=outcome.blocked_reason or "EXIT_BLOCKED",
+        signal_detected=True, entry_attempted=outcome.attempted,
+        order_submitted=outcome.order_accepted, trade_executed=outcome.executed,
+        details=details,
+    )
+
+
 def run_strategy(row, decision_sink: DecisionSink | None = None):
     evaluation_started_at = datetime.now(timezone.utc)
     open_time = (row[0] if row else None)
     price_for_events = float(row[4]) if row and row[4] is not None else None
+    evaluation = _bbrange_evaluation_context(open_time, evaluation_started_at)
+    sink_enabled = False
+
+    def finish(decision: FinalDecision):
+        if sink_enabled and decision_sink is not None:
+            try:
+                decision_sink(decision)
+            except Exception:
+                logging.exception(
+                    "BBRANGE FinalDecision sink failed; trading result unchanged"
+                )
+        return decision
 
     emit_strategy_event(
         event_type="RUN_START",
@@ -1484,13 +1581,21 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
     try:
         if not row:
             emit_blocked(reason="NO_ROW", decision=None, price=None, candle_open_time=None)
-            return
+            return finish(FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.NO_ROW,
+                finished_at=datetime.now(timezone.utc), reason_text="NO_ROW",
+                details={"has_row": False},
+            ))
 
         open_time, open_px, high_px, low_px, close_px, ema_21, rsi_14 = row
         price = float(close_px) if close_px is not None else None
         if price is None:
             emit_blocked(reason="CANDLE_MISSING_CLOSE", decision=None, price=None, candle_open_time=open_time)
-            return
+            return finish(FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.CANDLE_MISSING_CLOSE,
+                finished_at=datetime.now(timezone.utc),
+                reason_text="CANDLE_MISSING_CLOSE",
+            ))
 
         if ema_21 is None or rsi_14 is None:
             emit_blocked(
@@ -1500,13 +1605,21 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                 candle_open_time=open_time,
                 info={"ema_21": ema_21, "rsi_14": rsi_14},
             )
-            return
+            return finish(FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.INDICATORS_NOT_READY,
+                finished_at=datetime.now(timezone.utc),
+                reason_text="INDICATORS_NOT_READY",
+                details={"ema_21": ema_21, "rsi_14": rsi_14},
+            ))
 
         ema_val = float(ema_21)
         rsi_val = float(rsi_14)
 
         snap = get_runtime_snapshot(price=price, open_time=open_time)
         bc = snap["bc"]
+        evaluation = _bbrange_evaluation_context(
+            open_time, evaluation_started_at, snap=snap
+        )
         # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
         emit_regime_gate_event(
             symbol=SYMBOL,
@@ -1546,7 +1659,12 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
         # hard stop
         if bc.mode == "HALT":
             emit_blocked(reason="BOT_MODE_HALT", decision=None, price=price, candle_open_time=open_time, info={})
-            return
+            return finish(FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_MODE_HALT,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="BOT_MODE_HALT",
+            ))
 
         # PANIC: close if open + halt
         if bc.mode == "PANIC":
@@ -1563,7 +1681,14 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                         info={"pos_side": side_u},
                     )
                     set_mode("HALT", reason="SHORT found in SPOT mode")
-                    return
+                    return finish(FinalDecision.technical_failure_result(
+                        evaluation, DecisionReason.UNKNOWN,
+                        DecisionSubtype.DATA_NOT_READY,
+                        finished_at=datetime.now(timezone.utc),
+                        reference_price=Decimal(str(price)),
+                        reason_text="PANIC_SHORT_IN_SPOT",
+                        details={"pos_side": side_u},
+                    ))
 
                 res = execute_and_record(
                     side="SELL",
@@ -1581,7 +1706,19 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
                     close_position(exit_price=price, reason="PANIC", candle_open_time=open_time)
             set_mode("HALT", reason="Panic executed; halting.")
-            return
+            if pos:
+                return finish(_bbrange_exit_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.STRATEGY_EXIT,
+                    reason_text="PANIC CLOSE", price=price,
+                    position_id=int(pos[0]),
+                ))
+            return finish(FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_MODE_HALT,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="PANIC_NO_POSITION",
+            ))
 
         # =========================
         # EXIT (only LONG exists)
@@ -1602,7 +1739,14 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                     info={"pos_side": side_u},
                 )
                 set_mode("HALT", reason="SHORT found in SPOT mode")
-                return
+                return finish(FinalDecision.technical_failure_result(
+                    evaluation, DecisionReason.UNKNOWN,
+                    DecisionSubtype.DATA_NOT_READY,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)),
+                    reason_text="SHORT_POSITION_IN_SPOT",
+                    details={"pos_side": side_u},
+                ))
 
             # TP/SL intrabar based on high/low
             high_price = float(high_px) if high_px is not None else price
@@ -1636,7 +1780,11 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                         candle_open_time=open_time,
                         info={"res": res},
                     )
-                return
+                return finish(_bbrange_exit_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.TAKE_PROFIT,
+                    reason_text=reason, price=price, position_id=int(_pos_id),
+                ))
 
             if STOP_LOSS_PCT > 0 and low_price <= sl_level:
                 reason = f"BBRANGE STOP LOSS LONG intrabar low={low_price:.2f} <= sl={sl_level:.2f}"
@@ -1663,7 +1811,11 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                         candle_open_time=open_time,
                         info={"res": res},
                     )
-                return
+                return finish(_bbrange_exit_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.STOP_LOSS,
+                    reason_text=reason, price=price, position_id=int(_pos_id),
+                ))
 
             # PROFIT LOCK: percent high-watermark guard for RSI/TREND/SUPERTREND/BBRANGE.
             if pos_entry_time is not None:
@@ -1777,7 +1929,12 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                             candle_open_time=open_time,
                             info={"res": res, "exit_kind": exit_kind},
                         )
-                    return
+                    return finish(_bbrange_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.PROFIT_LOCK,
+                        reason_text=reason_profit_lock, price=price,
+                        position_id=int(_pos_id),
+                    ))
 
             # TIME EXIT
             if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
@@ -1821,42 +1978,26 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                    return
+                    return finish(_bbrange_exit_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.TIME_EXIT,
+                        reason_text=reason, price=price,
+                        position_id=int(_pos_id),
+                    ))
 
             emit_blocked(reason="POSITION_OPEN_NO_EXIT", decision=None, price=price, candle_open_time=open_time, info={"pos_side": "LONG"})
-            return
+            return finish(FinalDecision.position_hold(
+                evaluation, DecisionReason.POSITION_HOLD,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=side_u,
+                position_id=int(_pos_id), reason_text="POSITION_OPEN_NO_EXIT",
+                details={"pos_side": "LONG"},
+            ))
 
         # =========================
         # ENTRY (SPOT LONG ONLY)
         # =========================
-
-        evaluation = EvaluationContext(
-            deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
-            environment=DB_NAME,
-            symbol=SYMBOL,
-            interval=INTERVAL,
-            strategy=STRATEGY_NAME,
-            candle_open_time=open_time,
-            evaluation_started_at=evaluation_started_at,
-            engine_name=STRATEGY_NAME,
-            engine_version=os.environ.get("BOT_VERSION"),
-            market_regime=None,
-            regime_confidence=None,
-            runtime_enabled=bool(bc.enabled),
-            live_orders_enabled=bool(snap["allowed_orders_entry"]),
-            paper_mode=cfg_effective.trading_mode != "LIVE",
-            context={"contract_version": "FINAL_DECISION_V1"},
-        )
-
-        def finish(decision: FinalDecision):
-            if decision_sink is not None:
-                try:
-                    decision_sink(decision)
-                except Exception:
-                    logging.exception(
-                        "BBRANGE FinalDecision sink failed; trading result unchanged"
-                    )
-            return None
+        sink_enabled = True
 
         # disable hours
         if open_time.hour in DISABLE_HOURS_SET:
