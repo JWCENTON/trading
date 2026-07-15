@@ -1,198 +1,143 @@
-# BBRANGE Stateful Characterization & Parity Harness V1
+# BBRANGE Stateful Characterization Harness V1
 
-## 1. Scope
+## Purpose and baseline
 
-Offline golden-master tests for `bot_bbrange.main.run_strategy`, its `execute_and_record` boundary and import safety. The only runtime change is lazy creation of the same process-wide exchange client; database, adapter policy, execution behavior, containers and services are unchanged.
+This offline harness freezes the observed stateful behavior of BBRANGE at
+baseline `43765cfa7063ee72588a8b901916be49b4897b3c`. It is characterization,
+not a strategy correction. Production code, database schema, runtime config,
+deployment and VPS state are unchanged.
 
-## 2. Why BBRANGE
+The repository already contained isolated import and single-cycle tests. V1
+adds a mutable state model and multi-cycle scenarios without changing
+`bot_bbrange/main.py`.
 
-BBRANGE is the least complex representative pilot: one spot-long entry direction, explicit ENTRY/EXIT sections, 29 returns and six execution calls. It still covers regime, risk, sizing, PAPER lifecycle, LIVE suppression/failure/fill and existing-position exits.
+## Lifecycle and fixture model
 
-## 3. Existing Lifecycle Map
+The real `run_strategy(row)` is imported under an isolated module name with a
+synthetic environment and a strict exchange object. Unexpected exchange access
+fails immediately. Fixed UTC candles and deterministic band frames control
+data and indicators. Runtime mode, bot enablement, regime, PAPER/LIVE mode,
+execution result and profit-lock result are explicit harness state.
 
-```text
-main_loop new closed candle
--> RUN_START
--> data/runtime snapshot + heartbeat
--> HALT/PANIC
--> existing-position exit management, or
--> entry gates -> signal -> sizing -> execute_and_record
--> RUN_END in finally
-```
+The recorder retains ordered strategy events, regime events, heartbeat, fake
+DB lifecycle, execution calls, position open/close mutations, mode changes and
+profit-lock persistence events. The returned value and position are captured
+after every cycle. No real DB, network, order or background loop is used.
 
-`NO_NEW_CANDLE` is handled in `main_loop` and does not call `run_strategy`. Every characterized `run_strategy` path returns legacy `None`.
-
-## 4. Dependency Map
-
-| Class | Dependencies | Harness treatment |
-|---|---|---|
-| Import-time state | ENV parsing and `RuntimeConfig.from_env`; exchange client is lazy | synthetic ENV; blocked-I/O isolated import |
-| Easy monkeypatch | events, heartbeat, runtime snapshot, position lookup, regime, sizing, settings, win streak, dataframe read | recorder/stubs |
-| Fake adapter | DB connections/cursors/commit/rollback; exchange access | strict fakes; unexpected exchange call fails |
-| Time-sensitive | `datetime.now()` in profit-lock/time-exit age | fixed old entry time and deterministic decision stubs |
-| Hidden globals | thresholds, disable hours, PAPER explore flags, cached lazy client | patched per test and restored by pytest |
-| Side effects | strategy/entry events, simulated ledger, LIVE order, position open/close/attach, mode | captured in ordered recorder |
-
-No sleep or main loop is invoked. No `.env` file is loaded.
-
-## 5. Early-Return Inventory
-
-All 29 source returns were classified. “Covered” may share a parameterized terminal category test.
-
-| Line | Condition/category | Entry/exit | Baseline reason/effect | Status |
-|---:|---|---|---|---|
-| 1347 | no row | pre-entry | NO_ROW / SKIP | covered |
-| 1353 | missing close | pre-entry | CANDLE_MISSING_CLOSE | classified with data-not-ready; not direct |
-| 1363 | indicators missing | pre-entry | INDICATORS_NOT_READY | covered |
-| 1409 | HALT | pre-entry | BOT_MODE_HALT | covered |
-| 1426 | PANIC short in spot | exit safety | ERROR + HALT | impossible from valid LONG fixture |
-| 1444 | PANIC completion | operational | no-position has no terminal reason | covered/risk |
-| 1465 | existing short | exit safety | ERROR + HALT | impossible under spot invariant |
-| 1499 | take profit | exit | execution + close TAKE_PROFIT | covered |
-| 1526 | stop loss | exit | execution + close STOP_LOSS | covered |
-| 1640 | profit lock | exit | exit signal/execution/close | covered |
-| 1684 | time exit | exit | EXIT_TIME/execution/close | covered |
-| 1687 | position hold | exit | POSITION_OPEN_NO_EXIT | covered |
-| 1702 | disabled hour | entry | DISABLE_HOURS | covered |
-| 1706 | bot disabled | entry | BOT_DISABLED | covered |
-| 1763 | daily loss | entry | DAILY_MAX_LOSS_POSITIONS | covered |
-| 1782 | insufficient candles | entry | NOT_ENOUGH_CANDLES | covered |
-| 1794 | BB unavailable | entry | BB_NOT_READY | covered |
-| 1807 | BB too narrow | entry | BB_WIDTH_TOO_LOW | covered |
-| 1828 | trend rejected | entry | TREND_NOT_FLAT | covered |
-| 1848 | no signal | entry | NO_SIGNAL | covered |
-| 1859 | extreme RSI | entry | RSI_EXTREME_BLOCK | covered |
-| 1868 | RSI maximum | entry | RSI_LONG_MAX_BLOCK | covered |
-| 1879 | defensive SELL in spot | entry | SPOT_SHORT_BLOCK | unreachable: decision is hard-coded BUY |
-| 1907 | regime blocked | entry | REGIME_BLOCK | covered |
-| 1997 | zero sizing | entry | SIZING_QTY_ZERO | covered |
-| 2014 | ledger/duplicate failure | entry | helper event; outer returns silently | covered/risk |
-| 2019 | LIVE not attempted | entry | helper emits LIVE_ENTRY_NOT_ATTEMPTED | covered |
-| 2030 | LIVE attempted, not filled | entry | LIVE_ENTRY_NOT_FILLED | covered |
-| 2041 | successful completion | entry | POSITION_OPENED | covered PAPER/LIVE boundary |
-
-Terminal categories: 25 directly reproduced, three structurally unreachable/invariant-only, one data-ready sibling classified but not directly reproduced. All 29 are accounted for; 0 unknown returns.
-
-## 6. Entry/Exit Boundary
-
-The harness separates scenarios by prepared `get_open_position()`. A position fixture enters exit management; `None` enters full entry evaluation. It never interprets POSITION_OPEN_NO_EXIT as a NO_TRADE entry result.
-
-## 7. Test Architecture
-
-`tests/bot_bbrange/fixtures.py` defines immutable recorded operations, observed behavior, deterministic candle/dataframe fixtures, fake DB and strict exchange. The test imports production source under a unique module name, verifies that the client cache is initially empty, then injects the factory result. Helper boundaries are monkeypatched only after import.
-
-## 8. Fake DB
-
-`FakeConnection`/`FakeCursor` record SQL, parameters, cursor lifecycle, commit and rollback. Most strategy tests mock higher-level helpers, which avoids pretending to parse PostgreSQL. The LIVE fill test uses fake connection lifecycle for order-ID attachment.
-
-## 9. Fake Exchange
-
-`StrictFakeExchange` raises on every unexpected attribute access. LIVE order outcomes are injected by monkeypatching the already imported `place_live_order` boundary. Therefore an accidental direct network/exchange call fails immediately.
-
-## 10. Time Control
-
-Candles use the fixed UTC time `2026-07-12T12:00:00+00:00`. Exit-age tests use a fixed older entry time and deterministic profit-lock result. Wall clock does not appear in golden assertions. Three suite runs produced identical test counts/results.
-
-## 11. Scenario Matrix
-
-37 tests cover the original 28 offline characterization scenarios plus exactly-once FinalDecision sink behavior for entry, zero-emission behavior outside the entry boundary and fail-open sink exception behavior.
-
-## 12. Golden Behavior Model
-
-`BbrangeObservedBehavior` freezes returned value, terminal reason, ordered event types/reasons and all recorded operations. `Recorder` retains operation order. Assertions include legacy return (`None`), event reason/type, execution count and position/simulation effects.
-
-## 13. Characterized Risks
-
-1. PANIC with no position emits RUN_START/RUN_END and changes mode to HALT but has no terminal strategy reason.
-2. Duplicate ledger guard emits DB_GUARD_DUPLICATE inside `execute_and_record`; outer `run_strategy` returns silently.
-3. A successful PAPER helper reports `live_ok=True`, despite no LIVE attempt; callers use this as generic success.
-4. LIVE suppression writes `SIM_ORDER_CREATED` before `LIVE_ENTRY_NOT_ATTEMPTED`; this ledger artifact can make retry hit DB_GUARD_DUPLICATE.
-5. POSITION_OPENED is emitted after PAPER success as well as LIVE success; its name does not encode environment.
-6. NO_NEW_CANDLE is high-volume IDLE telemetry outside entry evaluation.
-
-These are baselines, not fixes.
-
-## 14. Uncovered Paths
-
-Direct fixtures do not reproduce invalid SHORT positions in spot mode, the hard-coded-unreachable defensive SELL block, or the exact missing-close sibling of other data-not-ready paths. Maker/cancel exit internals are outside `run_strategy` helper boundary. These gaps are explicit and require no production seam for the FinalDecision entry refactor.
-
-## 15. Import-Time Side Effect and Root Cause
-
-The former module-level `client = get_market_data_client()` called the exchange-neutral factory while `bot_bbrange.main` was imported. With `EXCHANGE` absent, the shared factory defaults to `BINANCE`; `BinanceMarketDataAdapter.__init__` constructs `python-binance`'s `Client`, whose constructor performs an exchange `ping`. The exact chain was:
+Observed lifecycle:
 
 ```text
-import bot_bbrange.main
--> module-level get_market_data_client()
--> EXCHANGE default BINANCE
--> BinanceMarketDataAdapter()
--> binance.client.Client(...)
--> Client.ping()
--> HTTPS api.binance.com
+RUN_START -> runtime snapshot/regime/heartbeat
+-> position management OR entry gates/signal/sizing/execution
+-> terminal event -> RUN_END (finally)
 ```
 
-The side effect was factory-wide at the BBRANGE call site: an explicitly configured OKX runtime would also have constructed its adapter during import, although the observed network request was Binance-specific because of the global factory fallback.
+## Behavior matrix
 
-## 16. Lazy Client Model and Runtime Lifecycle
+| Scenario | Initial state | Input | Expected path/effects | Persisted state |
+|---|---|---|---|---|
+| No signal | no position | neutral candle | SKIP/NO_SIGNAL, no execution | none |
+| Invalid data | no position | missing EMA or invalid history | SKIP, no execution | none |
+| Control block | HALT/disabled | entry candidate | BLOCKED, no execution | none |
+| Regime block | regime deny | entry candidate | REGIME_BLOCK, no execution | none |
+| PAPER entry | no position | below-band candidate | one execution/open/event | position |
+| LIVE fill | no position | candidate + fill | one order/open/event | position |
+| Suppressed/rejected/duplicate | no position | candidate + outcome | one attempt, no open | none |
+| Hold | open LONG | neutral range | POSITION_OPEN_NO_EXIT | same position |
+| TP/SL | open LONG | threshold candle | one exit and one close | none |
+| Profit lock | open LONG | armed then giveback | persisted event then one close | none after trigger |
+| PANIC | open LONG | PANIC cycle | one exit/close; existing lifecycle retained | none |
+| Error/recovery | no position | injected runtime error then neutral candle | RUN_END on error; next cycle succeeds | isolated |
 
-`get_exchange_client()` now owns a module-local `_exchange_client` cache. Import leaves the cache empty and makes zero factory calls. First runtime use calls the existing exchange-neutral `get_market_data_client()` exactly once; later uses return the same instance. `main_loop()` resolves the cached client before schema or DB setup, preserving the worker's former one-client lifecycle and initialization ordering once the process is actually started.
+## Stateful sequences
 
-All former global-client consumers use the accessor: candle fetch, sizing, order placement and runtime trade ingestion. No adapter selection or execution-layer behavior changed. A factory exception remains unmasked, leaves the cache empty and occurs only on runtime use. The shared factory logs its selected adapter before construction, matching the existing error-observability model.
+- no position/no signal -> entry candidate -> position open -> hold -> take-profit close;
+- regime block -> unblock -> LIVE suppression -> retry -> confirmed entry;
+- profit-lock armed event -> state retained -> trailing giveback -> close;
+- exception in one cycle -> restored dependency -> normal next cycle.
 
-## 17. Import Safety Tests
+The existing single-cycle suite additionally covers insufficient candles,
+unavailable/narrow bands, trend and RSI filters, daily loss, zero sizing,
+time exit, PAPER ledger duplication, LIVE pending/fill boundaries and
+FinalDecision sink behavior already present in the baseline.
 
-`tests/bot_bbrange/test_import_safety.py` loads the production file under an isolated module name while blocking socket connects, `requests`, `urllib3`, `psycopg2.connect` and `time.sleep`. It proves import performs no network/DB connection or worker sleep and leaves the client cache empty. Lifecycle tests prove the `0 -> 1 -> 1` factory-call sequence and deferred, propagated initialization failure.
+## Exactly-once guarantees characterized
 
-The canonical clean-process import is also validated from repository root:
+Entry outcome tests assert one execution call and at most one position open.
+Hold asserts zero execution calls. TP, SL, profit-lock and PANIC assert one
+execution and one close mutation. Event order asserts RUN_START first and
+RUN_END last. Multi-cycle assertions use only effects created within each
+cycle, preventing accumulated recorder state from hiding duplicates.
 
-```text
-python3 -c "import bot_bbrange.main; print('IMPORT_OK')"
-```
+## Legacy findings — DOCUMENTED_NOT_FIXED
 
-## 18. Known Global Exchange Fallback Risk
+### BBR-SC-001 — PANIC without a position has no terminal strategy reason
 
-The shared `get_market_data_client()` still defaults to Binance when `EXCHANGE` is missing. This is a repository-wide policy outside this slice. BBRANGE import no longer activates that fallback; normal runtime configuration must still set the intended exchange before first client use.
+- Path: `run_strategy`, PANIC/no-position branch.
+- Observed: mode changes to HALT between RUN_START/RUN_END without a terminal
+  strategy reason.
+- Test: `test_panic_without_position_preserves_halt_side_effects`.
+- Risk: telemetry consumers may see an apparently reasonless cycle.
+- Future recommendation: define a canonical operational terminal outcome.
+- Status: `DOCUMENTED_NOT_FIXED`.
 
-## 19. Test Results
+### BBR-SC-002 — PAPER success reports legacy `live_ok=True`
 
-```text
-pre-refactor characterization run 1: 28 passed in 0.62s
-pre-refactor characterization run 2: 28 passed in 0.62s
-pre-refactor characterization run 3: 28 passed in 0.60s
-post-refactor characterization + sink: 36 passed
-existing offline contract tests: 18 passed in 0.08s
-import-safety/lifecycle/failure tests: 3 passed
-current contract tests: 17 passed
-current BBRANGE tests: 40 passed (37 parity + 3 import/client tests)
-combined run 1: 57 passed in 0.78s
-combined run 2: 57 passed in 0.71s
-combined run 3: 57 passed in 0.72s
-Learning Engine tests: 18 passed in 0.08s
-canonical import: IMPORT_OK
-blocked-I/O import: BLOCKED_IO_IMPORT_OK
-py_compile: PASS
-git diff --check: PASS
-```
+- Path: `execute_and_record`, PAPER entry.
+- Observed: the flag acts as generic success although no live order occurred.
+- Test: `test_execute_and_record_duplicate_paper_and_live_suppressed`.
+- Risk: ambiguous environment semantics for downstream consumers.
+- Future recommendation: separate ledger success from live fill status.
+- Status: `DOCUMENTED_NOT_FIXED`.
 
-## 20. Coverage Results
+### BBR-SC-003 — LIVE suppression leaves a simulated-order ledger artifact
 
-- source returns: 29;
-- classified returns: 29;
-- directly reproduced returns/categories: 25;
-- scenario tests: 37;
-- characterized risks: 6;
-- unknown paths: 0;
-- explicitly uncovered/invariant paths: 4.
+- Path: `execute_and_record`, LIVE execution-disabled path.
+- Observed: SIM_ORDER_CREATED precedes LIVE_ENTRY_NOT_ATTEMPTED; retry can meet
+  DB_GUARD_DUPLICATE.
+- Test: `test_execute_and_record_duplicate_paper_and_live_suppressed`.
+- Risk: a suppressed attempt can influence retry eligibility.
+- Future recommendation: review ledger identity in a separate execution slice.
+- Status: `DOCUMENTED_NOT_FIXED`.
 
-Percentage line coverage was not collected because `pytest-cov` is not a repository dependency and behavioral terminal coverage is the acceptance metric.
+### BBR-SC-004 — POSITION_OPENED is environment-neutral
 
-## 21. Readiness for FinalDecision Refactor
+- Path: successful PAPER and LIVE outer entry completion.
+- Observed: both emit POSITION_OPENED although their execution semantics differ.
+- Test: `test_entry_execution_outer_contract` and stateful entry outcomes.
+- Risk: event-name-only consumers cannot distinguish simulation from live fill.
+- Future recommendation: use canonical decision metadata, not event-name inference.
+- Status: `DOCUMENTED_NOT_FIXED`.
 
-The harness establishes stable baselines for the entry/exit boundary and the critical PAPER/LIVE transitions. A future refactor can extract the entry section and compare event/order/position recorder sequences against these tests. The uncovered invalid-state paths should remain outer SYSTEM_NOT_EVALUATED/technical paths rather than entry decisions.
+### BBR-SC-005 — Several no-action outcomes use SKIP/BLOCKED taxonomy
 
-## 22. Explicit Non-Goals
+- Path: data, filter and no-signal early returns.
+- Observed: NO_SIGNAL is SKIP; position hold is BLOCKED with
+  POSITION_OPEN_NO_EXIT.
+- Test: lifecycle/no-signal and entry-gate characterization tests.
+- Risk: legacy event taxonomy can conflate hold, rejection and no trade.
+- Future recommendation: retain events but consume the existing canonical return
+  contract in a separately authorized integration stage.
+- Status: `DOCUMENTED_NOT_FIXED`.
 
-No new EvaluationContext/FinalDecision behavior, canonical event/identity, DB ingestion, replay, strategy/execution/profit-lock/duplicate-guard fix, deployment, restart, migration, commit or push in the import-safety slice.
+## NOT_APPLICABLE and explicit boundaries
 
-## Verdict
+- SHORT entry: not supported by the SPOT LONG-only strategy; defensive SELL is
+  structurally unreachable from the hard-coded BUY decision.
+- Band/mean-reversion exit: bands create entry signals, not a distinct open-
+  position exit branch.
+- Regime-invalidation exit: regime gating is entry-only.
+- Partial exit: no separate partial-position lifecycle exists in run_strategy.
+- Restart/reload state: strategy state is persisted through positions/path data;
+  there is no in-memory restart state machine to invoke.
+- Maker/cancel internals remain below the characterized execution boundary.
 
-**READY TO RESUME COMMIT VALIDATION**
+## Future contract work
+
+The baseline already returns `FinalDecision` on the full entry evaluation
+boundary. Any future expansion of that contract to position-management or
+outer-loop outcomes must be a separate production change and must preserve
+these ordered effects and state transitions. Characterization expectations
+must not be edited merely to make such a refactor pass.
+
+Production code changes in this stage: **0**. Deploy/runtime/VPS impact: **0**.
