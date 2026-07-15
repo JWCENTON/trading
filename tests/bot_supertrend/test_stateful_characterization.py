@@ -118,6 +118,79 @@ def use_execution(harness, scenario_name):
     harness.apply_execution_scenario(RAW_EXECUTION_SCENARIOS[scenario_name])
 
 
+def test_final_decision_no_signal_and_position_hold(harness):
+    no_signal = harness.strategy_cycle(candle(direction=1), candle(minute=-1, direction=1))
+    assert no_signal.final_decision.decision_type.value == "NO_TRADE"
+    assert no_signal.final_decision.reason_code.value == "NO_SIGNAL"
+    harness.set_position()
+    hold = harness.strategy_cycle(candle(minute=1, price=100.1), candle(direction=1))
+    assert hold.final_decision.action == "HOLD"
+    assert hold.final_decision.reason_text == "POSITION_HOLD"
+
+
+def test_final_decision_regime_block_preserves_metadata(harness):
+    harness.regime_allow = False
+    observed = harness.strategy_cycle(candle(direction=1), candle(minute=-1, direction=-1))
+    decision = observed.final_decision
+    assert decision.decision_type.value == "ENTRY_BLOCKED"
+    assert decision.reason_text == "REGIME_BLOCK"
+    assert decision.details["why"] == "fixture"
+    assert not observed.attempts
+
+
+@pytest.mark.parametrize(
+    "scenario, decision_type, subtype",
+    [
+        ("PAPER", "PAPER_SIMULATION", "PAPER_ONLY"),
+        ("LIVE_SUPPRESSION", "ACTION_SUPPRESSED", "EXECUTION_NOT_ATTEMPTED"),
+        ("ENTRY_FULL", "TRADE_EXECUTED", "EXECUTED"),
+        ("ENTRY_PARTIAL", "TECHNICAL_FAILURE", "PARTIAL_EXECUTION"),
+        ("ENTRY_ACK_ONLY", "TECHNICAL_FAILURE", "ORDER_ACCEPTED_NOT_FILLED"),
+        ("ENTRY_REJECTION", "TECHNICAL_FAILURE", "ORDER_REJECTED"),
+        ("DB_GUARD", "TECHNICAL_FAILURE", "LEDGER_FAILURE"),
+    ],
+)
+def test_final_decision_entry_execution_mapping(
+    harness, scenario, decision_type, subtype,
+):
+    use_execution(harness, scenario)
+    observed = harness.strategy_cycle(candle(direction=1), candle(minute=-1, direction=-1))
+    decision = observed.final_decision
+    assert decision.decision_type.value == decision_type
+    assert decision.decision_subtype.value == subtype
+    assert decision.details["legacy_reason"].startswith("SUPERTREND flip DOWN->UP")
+    assert decision.details["execution_stage"]
+    assert len(observed.attempts) == 1
+
+
+@pytest.mark.parametrize(
+    "price, reason",
+    [(102.0, "TAKE_PROFIT"), (99.0, "STOP_LOSS")],
+)
+def test_final_decision_exit_reason_and_exactly_once(harness, price, reason):
+    use_execution(harness, "EXIT_FULL")
+    harness.set_position()
+    observed = harness.strategy_cycle(candle(price=price), candle(minute=-1))
+    decision = observed.final_decision
+    assert decision.action == "EXIT"
+    assert decision.reason_code.value == reason
+    assert decision.details["legacy_reason"] == decision.reason_text
+    assert len(observed.attempts) == 1
+    assert sum(mutation[0] == "CLOSE" for mutation in observed.mutations) == 1
+
+
+def test_final_decision_profit_lock_and_flip(harness):
+    use_execution(harness, "PAPER")
+    harness.set_position()
+    harness.profit_lock_state = "TRIGGERED"
+    profit_lock = harness.strategy_cycle(candle(price=100.4), candle(minute=-1))
+    assert profit_lock.final_decision.reason_code.value == "PROFIT_LOCK"
+    harness.set_position()
+    harness.profit_lock_state = "DISABLED"
+    flip = harness.strategy_cycle(candle(minute=1, direction=-1), candle(direction=1))
+    assert flip.final_decision.reason_code.value == "STRATEGY_EXIT"
+
+
 def test_entry_hold_hold_flip_exit_sequence(harness):
     use_execution(harness, "ENTRY_FULL")
     entry = harness.strategy_cycle(candle(direction=1), candle(minute=-1, direction=-1))

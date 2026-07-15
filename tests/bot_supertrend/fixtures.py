@@ -462,12 +462,13 @@ class SupertrendHarness:
     def strategy_cycle(self, latest, prev):
         start = (len(self.events), len(self.attempts), len(self.mutations), len(self.operation_log))
         self.strategy_cycle_invocations += 1
-        self.module.run_strategy(latest, prev)
+        final_decision = self.module.run_strategy(latest, prev)
         e, a, mu, log = start
         return SimpleNamespace(
             events=tuple(self.events[e:]), attempts=tuple(self.attempts[a:]),
             mutations=tuple(self.mutations[mu:]),
             operation_log=tuple(self.operation_log[log:]), position=self.position,
+            final_decision=final_decision,
         )
 
 class StrictExchangeBoundary:

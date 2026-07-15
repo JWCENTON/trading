@@ -36,7 +36,15 @@ from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_loc
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
-from common.decision_contract import normalize_entry_execution_outcome
+from common.decision_contract import (
+    DecisionReason,
+    DecisionSubtype,
+    EvaluationContext,
+    ExecutionOutcome,
+    ExecutionStage,
+    FinalDecision,
+    normalize_entry_execution_outcome,
+)
 
 
 logging.basicConfig(
@@ -1656,6 +1664,102 @@ def get_prev_closed_candle():
 # =========================
 # Strategy Logic (SPOT LONG-only)
 # =========================
+def _as_aware_utc(value):
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _supertrend_evaluation_context(open_time, evaluation_started_at, snap=None):
+    cfg_effective = snap["cfg_effective"] if snap is not None else cfg
+    bc = snap["bc"] if snap is not None else None
+    return EvaluationContext(
+        deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        environment=DB_NAME,
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+        candle_open_time=_as_aware_utc(open_time),
+        evaluation_started_at=evaluation_started_at,
+        engine_name=STRATEGY_NAME,
+        engine_version=os.environ.get("BOT_VERSION"),
+        runtime_enabled=(bool(bc.enabled) if bc is not None else None),
+        live_orders_enabled=(
+            bool(snap["allowed_orders_entry"]) if snap is not None else None
+        ),
+        paper_mode=cfg_effective.trading_mode != "LIVE",
+        context={"contract_version": "FINAL_DECISION_V1"},
+    )
+
+
+def _supertrend_outcome(result, cfg_effective):
+    if isinstance(result, ExecutionOutcome):
+        return result
+    if cfg_effective.trading_mode == "LIVE":
+        return normalize_entry_execution_outcome(
+            result,
+            requested_qty=float(result.get("requested_qty") or 0.0),
+            client_order_id=result.get("client_order_id"),
+            ledger_ok=bool(result.get("ledger_ok", False)),
+        )
+    return ExecutionOutcome.from_legacy(
+        result, paper_mode=True
+    )
+
+
+def _supertrend_execution_decision(evaluation, result, cfg_effective, *,
+                                   reason_code, reason_text, side, price,
+                                   position_id=None, is_exit=False):
+    outcome = _supertrend_outcome(result, cfg_effective)
+    details = {
+        "blocked_reason": outcome.blocked_reason,
+        "live_attempted": outcome.attempted,
+        "order_accepted": outcome.order_accepted,
+        "live_ok": outcome.operation_succeeded,
+        "executed": outcome.executed,
+        "fully_executed": outcome.fully_executed,
+        "executed_qty": outcome.executed_qty,
+        "requested_qty": outcome.requested_qty,
+        "ledger_ok": outcome.ledger_ok,
+        "execution_stage": outcome.stage.value,
+        "execution_result": outcome.raw,
+        "legacy_reason": reason_text,
+    }
+    common = dict(
+        finished_at=datetime.now(timezone.utc),
+        reference_price=Decimal(str(price)),
+        side=side,
+        reason_text=reason_text,
+        details=details,
+    )
+    if outcome.ledger_ok and cfg_effective.trading_mode != "LIVE":
+        factory = FinalDecision.exit_result if is_exit else FinalDecision.paper_simulation
+        return factory(evaluation, reason_code, position_id=position_id, **common) \
+            if is_exit else factory(evaluation, reason_code, **common)
+    if outcome.ledger_ok and outcome.fully_executed:
+        factory = FinalDecision.exit_result if is_exit else FinalDecision.trade_executed_result
+        return factory(evaluation, reason_code, position_id=position_id, **common)
+    if outcome.stage in {ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED}:
+        return FinalDecision.action_suppressed(
+            evaluation, DecisionReason.EXECUTION_NOT_ATTEMPTED,
+            finished_at=common["finished_at"], reference_price=common["reference_price"],
+            side=side, reason_text=outcome.blocked_reason or reason_text,
+            details=details,
+        )
+    subtype = (
+        DecisionSubtype.LEDGER_FAILURE if not outcome.ledger_ok else
+        DecisionSubtype.PARTIAL_EXECUTION if outcome.executed else
+        DecisionSubtype.ORDER_ACCEPTED_NOT_FILLED if outcome.order_accepted else
+        DecisionSubtype.ORDER_REJECTED
+    )
+    return FinalDecision.technical_failure_result(
+        evaluation, DecisionReason.EXECUTION_FAILED, subtype,
+        signal_detected=True, entry_attempted=outcome.attempted,
+        order_submitted=outcome.order_accepted, trade_executed=outcome.executed,
+        **common,
+    )
+
+
 def run_strategy(latest, prev):
     """
     Entry (LONG-only SPOT):
@@ -1677,6 +1781,7 @@ def run_strategy(latest, prev):
     _, prev_close, _, _, _, _, prev_st_dir = prev
 
 
+    evaluation_started_at = datetime.now(timezone.utc)
     price = float(close_price)
     emit_strategy_event(
         event_type="RUN_START",
@@ -1694,6 +1799,9 @@ def run_strategy(latest, prev):
         # snapshot + basic tick event
         snap = get_runtime_snapshot(price=price, open_time=open_time)
         bc = snap["bc"]
+        evaluation = _supertrend_evaluation_context(
+            open_time, evaluation_started_at, snap=snap
+        )
         # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
         emit_regime_gate_event(
             symbol=SYMBOL,
@@ -1731,7 +1839,12 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"mode": "HALT"},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_MODE_HALT,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="BOT_MODE_HALT",
+            )
 
         if bc.mode == "PANIC":
             # close if open (SELL), then halt
@@ -1761,10 +1874,20 @@ def run_strategy(latest, prev):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                    return
+                    return _supertrend_execution_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.STRATEGY_EXIT,
+                        reason_text="PANIC CLOSE LONG", side="SELL", price=price,
+                        position_id=int(pos[0]), is_exit=True,
+                    )
             # after panic, HALT
             set_mode("HALT", reason="Panic executed; halting.")
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_MODE_HALT,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="PANIC_HALTED",
+            )
 
         # indicators readiness
         if st_dir is None or prev_st_dir is None or atr_14 is None:
@@ -1775,7 +1898,12 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"st_dir": st_dir, "prev_st_dir": prev_st_dir, "atr_14": atr_14},
             )
-            return
+            return FinalDecision.system_not_evaluated(
+                evaluation, DecisionReason.INDICATORS_NOT_READY,
+                finished_at=datetime.now(timezone.utc),
+                reason_text="INDICATORS_NOT_READY",
+                details={"st_dir": st_dir, "prev_st_dir": prev_st_dir, "atr_14": atr_14},
+            )
 
         st_dir_curr = int(st_dir)
         st_dir_prev = int(prev_st_dir)
@@ -1816,7 +1944,12 @@ def run_strategy(latest, prev):
                     candle_open_time=open_time,
                     info={"pos_side": str(pos_side)},
                 )
-                return
+                return FinalDecision.technical_failure_result(
+                    evaluation, DecisionReason.UNKNOWN, DecisionSubtype.DATA_NOT_READY,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)), reason_text="UNSUPPORTED_POSITION_SIDE",
+                    details={"pos_side": str(pos_side)},
+                )
 
             pos_qty = float(pos_qty)
             pos_entry_price = float(pos_entry_price)
@@ -1862,7 +1995,11 @@ def run_strategy(latest, prev):
                         candle_open_time=open_time,
                         info={"res": res},
                     )
-                return
+                return _supertrend_execution_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.TAKE_PROFIT, reason_text=reason,
+                    side="SELL", price=price, position_id=int(pos[0]), is_exit=True,
+                )
 
             # Stop loss
             drop_pct = -change_pct
@@ -1904,7 +2041,11 @@ def run_strategy(latest, prev):
                         candle_open_time=open_time,
                         info={"res": res},
                     )
-                return
+                return _supertrend_execution_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.STOP_LOSS, reason_text=reason,
+                    side="SELL", price=price, position_id=int(pos[0]), is_exit=True,
+                )
 
             # PROFIT LOCK: percent high-watermark guard for RSI/TREND/SUPERTREND/BBRANGE.
             if pos_entry_time is not None:
@@ -2031,7 +2172,12 @@ def run_strategy(latest, prev):
                             candle_open_time=open_time,
                             info={"res": res, "exit_kind": exit_kind},
                         )
-                    return
+                    return _supertrend_execution_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.PROFIT_LOCK,
+                        reason_text=reason_profit_lock, side="SELL", price=price,
+                        position_id=int(pos[0]), is_exit=True,
+                    )
 
             # TIME EXIT
             if time_exit_enabled and max_pos_minutes > 0 and pos_entry_time is not None:
@@ -2088,7 +2234,11 @@ def run_strategy(latest, prev):
                             candle_open_time=open_time,
                             info={"res": res},
                         )
-                    return
+                    return _supertrend_execution_decision(
+                        evaluation, res, cfg_effective,
+                        reason_code=DecisionReason.TIME_EXIT, reason_text=reason,
+                        side="SELL", price=price, position_id=int(pos[0]), is_exit=True,
+                    )
 
             # Optional: exit on flip down
             if EXIT_ON_FLIP_DOWN and st_dir_prev == 1 and st_dir_curr == -1:
@@ -2129,9 +2279,19 @@ def run_strategy(latest, prev):
                         candle_open_time=open_time,
                         info={"res": res},
                     )
-                return
+                return _supertrend_execution_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.STRATEGY_EXIT, reason_text=reason,
+                    side="SELL", price=price, position_id=int(pos[0]), is_exit=True,
+                )
 
-            return  # position open -> no new entries
+            return FinalDecision.position_hold(
+                evaluation, DecisionReason.POSITION_HOLD,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side=str(pos_side).upper(),
+                position_id=int(pos[0]), reason_text="POSITION_HOLD",
+                details={"change_pct": change_pct},
+            )  # position open -> no new entries
 
         # =========================
         # ENTRY gates (no position)
@@ -2144,7 +2304,12 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.BOT_DISABLED,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="BOT_DISABLED",
+            )
 
         # Hour gate (UTC)
         hour_utc = open_time.hour
@@ -2156,7 +2321,13 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"hour_utc": hour_utc, "disable_hours": sorted(DISABLE_HOURS_SET)},
             )
-            return
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.DISABLE_HOURS,
+                DecisionSubtype.EXECUTION_DISABLED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="DISABLE_HOURS",
+                details={"hour_utc": hour_utc, "disable_hours": sorted(DISABLE_HOURS_SET)},
+            )
 
         # Daily loss gate — SSOT = positions. PAPER: telemetry only. LIVE: hard-block by positions.
         if DAILY_MAX_LOSS_PCT > 0:
@@ -2209,7 +2380,15 @@ def run_strategy(latest, prev):
                         candle_open_time=open_time,
                         info={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
                     )
-                    return
+                    return FinalDecision.entry_blocked(
+                        evaluation, DecisionReason.DAILY_MAX_LOSS_POSITIONS,
+                        DecisionSubtype.RISK_BLOCKED,
+                        finished_at=datetime.now(timezone.utc),
+                        reference_price=Decimal(str(price)), side="BUY",
+                        reason_text="DAILY_MAX_LOSS_POSITIONS",
+                        signal_detected=False,
+                        details={**pos_payload, "limit_pct": float(DAILY_MAX_LOSS_PCT)},
+                    )
 
         # Volatility gate
         if atr_pct is None or atr_pct < MIN_ATR_PCT:
@@ -2220,7 +2399,13 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"atr_pct": float(atr_pct) if atr_pct is not None else None, "min": float(MIN_ATR_PCT)},
             )
-            return
+            return FinalDecision.signal_rejected(
+                evaluation, DecisionReason.UNKNOWN,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                reason_text="ATR_TOO_LOW",
+                details={"atr_pct": atr_pct, "min": float(MIN_ATR_PCT)},
+            )
 
         # Signal: flip -1 -> +1 => BUY
         if not (st_dir_prev == -1 and st_dir_curr == 1):
@@ -2231,7 +2416,12 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"st_dir_prev": int(st_dir_prev), "st_dir_curr": int(st_dir_curr)},
             )
-            return
+            return FinalDecision.no_trade(
+                evaluation, DecisionReason.NO_SIGNAL,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), reason_text="NO_SIGNAL",
+                details={"st_dir_prev": st_dir_prev, "st_dir_curr": st_dir_curr},
+            )
 
         decision = "BUY"
         reason = f"SUPERTREND flip DOWN->UP (dir {st_dir_prev}->{st_dir_curr})"
@@ -2263,7 +2453,14 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"why": gate_entry.why, "regime": gate_entry.regime, "meta": gate_entry.meta},
             )
-            return
+            return FinalDecision.entry_blocked(
+                evaluation, DecisionReason.REGIME_BLOCK,
+                DecisionSubtype.REGIME_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)), side="BUY",
+                reason_text="REGIME_BLOCK",
+                details={"why": gate_entry.why, "regime": gate_entry.regime, "meta": gate_entry.meta},
+            )
 
         emit_strategy_event(
             event_type="SIGNAL",
@@ -2359,12 +2556,20 @@ def run_strategy(latest, prev):
         )
         if not res["ledger_ok"]:
             logging.info("SUPERTREND: entry blocked/failed -> not opening position.")
-            return
+            return _supertrend_execution_decision(
+                evaluation, res, cfg_effective,
+                reason_code=DecisionReason.SSOT_EXECUTE_AND_RECORD,
+                reason_text=reason, side="BUY", price=price,
+            )
 
         if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
             # NOT_ATTEMPTED jest już emitowane w execute_and_record() (SSOT)
             if not res.get("live_attempted", False):
-                return
+                return _supertrend_execution_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.EXECUTION_NOT_ATTEMPTED,
+                    reason_text=reason, side="BUY", price=price,
+                )
 
             # attempted, ale brak fill -> logujemy tutaj
             emit_strategy_event(
@@ -2375,7 +2580,11 @@ def run_strategy(latest, prev):
                 candle_open_time=open_time,
                 info={"res": res},
             )
-            return
+            return _supertrend_execution_decision(
+                evaluation, res, cfg_effective,
+                reason_code=DecisionReason.EXECUTION_FAILED,
+                reason_text=reason, side="BUY", price=price,
+            )
 
         # 2) positions hard-truth
         # Position OPEN is created inside execute_and_record() (SSOT).
@@ -2393,7 +2602,11 @@ def run_strategy(latest, prev):
                 )
             },
         )
-        return
+        return _supertrend_execution_decision(
+            evaluation, res, cfg_effective,
+            reason_code=DecisionReason.SSOT_EXECUTE_AND_RECORD,
+            reason_text=reason, side="BUY", price=price,
+        )
 
     finally:
         emit_strategy_event(
