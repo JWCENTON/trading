@@ -87,6 +87,11 @@ LOCAL LIVE:  .env.okx.live
 LOCAL PAPER: .env.okx.paper
 ```
 
+LOCAL PAPER używa publicznych danych produkcyjnego OKX z `OKX_TESTNET=false`,
+ale utrzymuje lokalną symulację przez `TRADING_MODE=PAPER`,
+`LIVE_ORDERS_ENABLED=0` i `OKX_EXECUTION_ENABLED=0`. Legacy `.env.paper` nie
+jest konfiguracją rolloutów OKX PAPER.
+
 LOCAL PAPER wymaga dodatkowo `--profile legacy-paper-ui`.
 
 Migracje należy wykonywać przez `psql -v ON_ERROR_STOP=1`, żeby zatrzymać rollout na pierwszym błędzie SQL.
