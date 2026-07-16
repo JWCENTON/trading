@@ -15,8 +15,11 @@ def module(monkeypatch):
 class FakeProcess:
     pid = 123
 
+    def __init__(self, return_code=None):
+        self.return_code = return_code
+
     def poll(self):
-        return None
+        return self.return_code
 
 
 class FakeClock:
@@ -217,3 +220,83 @@ def test_28_worker_burst_model_limits_spawns_per_second(module):
     assert count == 28
     assert max(per_second.values()) == 1
     assert starts[-1][0] == pytest.approx(40.5)
+
+
+def test_reconciliation_starts_enabled_and_stops_disabled(module):
+    enabled = row("RSI", "A", "1m")
+    disabled = row("TREND", "B", "1m", enabled=False)
+    disabled_key = module.BotKey("B", "1m", "TREND")
+    stopped = []
+    started = []
+    running = {
+        disabled_key: module.BotProc(
+            key=disabled_key,
+            popen=FakeProcess(),
+            started_at=0,
+        )
+    }
+
+    def start_batch(candidates, active, attempts, **_kwargs):
+        started.extend(key for key, _row in candidates)
+        for key, _item in candidates:
+            active[key] = module.BotProc(key, FakeProcess(), 0)
+
+    module.reconcile_worker_processes(
+        desired(module, [enabled, disabled]),
+        running,
+        {},
+        now_fn=lambda: 100,
+        stop_fn=lambda proc: stopped.append(proc.key),
+        start_batch_fn=start_batch,
+    )
+
+    assert stopped == [disabled_key]
+    assert started == [module.BotKey("A", "1m", "RSI")]
+
+
+def test_repeated_reconciliation_is_idempotent(module):
+    item = row("RSI", "A", "1m")
+    key = module.BotKey("A", "1m", "RSI")
+    running = {key: module.BotProc(key, FakeProcess(), 0)}
+    starts = []
+    stops = []
+
+    def start_batch(candidates, _active, _attempts, **_kwargs):
+        starts.extend(candidates)
+
+    for _ in range(2):
+        module.reconcile_worker_processes(
+            desired(module, [item]),
+            running,
+            {},
+            now_fn=lambda: 100,
+            stop_fn=lambda proc: stops.append(proc.key),
+            start_batch_fn=start_batch,
+        )
+
+    assert starts == []
+    assert stops == []
+    assert list(running) == [key]
+
+
+def test_restart_reconstructs_workers_without_desired_state_mutation(module):
+    item = row("SUPERTREND", "ETHUSDC", "5m")
+    starts = []
+    running = {}
+
+    def start_batch(candidates, active, attempts, **_kwargs):
+        for key, desired_row in candidates:
+            starts.append((key, desired_row.copy()))
+            active[key] = module.BotProc(key, FakeProcess(), 100)
+
+    desired_before = desired(module, [item])
+    module.reconcile_worker_processes(
+        desired_before,
+        running,
+        {},
+        now_fn=lambda: 100,
+        start_batch_fn=start_batch,
+    )
+
+    assert len(starts) == 1
+    assert desired_before == desired(module, [item])

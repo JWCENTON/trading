@@ -20,7 +20,7 @@ TRADING_MODE = trading_mode_from_env()
 # -------------------------
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s [orchestrator_v1] %(message)s",
+    format="%(asctime)s %(levelname)s [control-plane-supervisor] %(message)s",
 )
 
 log = logging.getLogger(__name__)
@@ -748,27 +748,11 @@ INSERT INTO orchestrator.decision_log(
 );
 """
 
-SQL_DISABLE_LIVE_ORDERS = """
-UPDATE bot_control
-SET live_orders_enabled = false,
-    reason = %(reason)s,
-    updated_at = now()
-WHERE symbol=%(symbol)s AND interval=%(interval)s AND strategy=%(strategy)s
-  AND live_orders_enabled = true;
-"""
-
 def set_live_orders_enabled(conn, bk: BotKey, enabled: bool, reason: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE bot_control
-            SET live_orders_enabled=%s,
-                updated_at=now(),
-                reason=%s
-            WHERE symbol=%s AND interval=%s AND strategy=%s
-              AND enabled=true
-              AND live_orders_enabled IS DISTINCT FROM %s
-        """, (enabled, reason, bk.symbol, bk.interval, bk.strategy, enabled))
-        return cur.rowcount > 0
+    raise RuntimeError(
+        "bot_control desired state is owned by automation-runner; "
+        "orchestrator writes are prohibited"
+    )
 
 
 def set_entries_and_regime(
@@ -779,37 +763,10 @@ def set_entries_and_regime(
     regime_mode: str,
     reason: str
 ) -> bool:
-    """
-    Variant A SSOT:
-      entries ON  => regime_enabled=true, regime_mode=ENFORCE
-      entries OFF => optionally regime_mode=DRY_RUN (still regime_enabled=true for telemetry)
-    """
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE bot_control
-            SET live_orders_enabled=%s,
-                regime_enabled=true,
-                regime_mode=%s,
-                updated_at=now(),
-                reason=%s
-            WHERE symbol=%s AND interval=%s AND strategy=%s
-              AND enabled=true
-              AND (
-                  live_orders_enabled IS DISTINCT FROM %s
-                  OR regime_mode IS DISTINCT FROM %s
-                  OR regime_enabled IS DISTINCT FROM true
-                  OR reason IS DISTINCT FROM %s
-              )
-        """, (
-            entries_enabled,
-            regime_mode,
-            reason,
-            bk.symbol, bk.interval, bk.strategy,
-            entries_enabled,
-            regime_mode,
-            reason,
-        ))
-        return cur.rowcount > 0
+    raise RuntimeError(
+        "bot_control desired state is owned by automation-runner; "
+        "orchestrator writes are prohibited"
+    )
 
 
 def insert_risk_metrics(conn, bk: BotKey, realized_pnl: Decimal, unrealized: Decimal, pnl_total: Decimal,
@@ -912,14 +869,10 @@ def insert_decision_log(conn, bk: BotKey, state_before: Optional[str], state_aft
 
 
 def disable_live_orders(conn, bk: BotKey, reason: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(SQL_DISABLE_LIVE_ORDERS, {
-            "symbol": bk.symbol,
-            "interval": bk.interval,
-            "strategy": bk.strategy,
-            "reason": reason,
-        })
-        return cur.rowcount > 0
+    raise RuntimeError(
+        "bot_control safety desired state is owned by automation-runner; "
+        "orchestrator writes are prohibited"
+    )
 
 
 def allocator_pick(
@@ -1319,8 +1272,12 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
     realized = load_realized_pnl_today(conn)
 
     logging.info(
-        "tick: bots=%d panic=%s actions_enabled=%s policy_version=%s",
-        len(bot_control), panic.get("panic_enabled"), effective_actions_enabled, cfg.get("policy_version")
+        "control_plane_mode=SINGLE_WRITER desired_state_source=bot_control "
+        "authority=automation_runner reconciliation_role=PROCESS_SUPERVISOR "
+        "bots=%d panic=%s legacy_actions_requested=%s",
+        len(bot_control),
+        panic.get("panic_enabled"),
+        effective_actions_enabled,
     )
 
     tick_ts = time.time()
@@ -1379,49 +1336,24 @@ def run_orchestrator_v1(conn, actions_enabled: bool):
                          realized_pnl, unrealized, pnl_total, exposure, last_price,
                          str(cfg.get("policy_version", "orc_safety_v1")))
 
-        # Decide action (DISABLE_ONLY)
-        ACTIONS_ALLOWED_STATES = {"PANIC", "HEARTBEAT_STALE", "CANDLES_STALE"}
-
-        action = "NOOP"
-        executed = False
-
-        if effective_actions_enabled and state in ACTIONS_ALLOWED_STATES:
-            if bc["live_orders_enabled"] is True:
-                executed = disable_live_orders(conn, bk, reason=f"ORC:{state}")
-                action = "DISABLE_LIVE_ORDERS"
-
         insert_decision_log(
             conn, bk,
             state_before=None,  # optionally read from bot_state before upsert
             state_after=state,
-            action=action,
-            executed=executed,
+            action="OBSERVE",
+            executed=False,
             reason_code=blocker_primary,
             reason_detail=blocker_detail,
-            meta={"policy_version": cfg.get("policy_version"), "actions_enabled": effective_actions_enabled, "tick_id": tick_id},
+            meta={
+                "control_plane_mode": "SINGLE_WRITER",
+                "desired_state_source": "bot_control",
+                "authority": "automation_runner",
+                "reconciliation_role": "PROCESS_SUPERVISOR",
+                "legacy_policy_version": cfg.get("policy_version"),
+                "legacy_actions_requested": effective_actions_enabled,
+                "tick_id": tick_id,
+            },
         )
-    # ---- ALLOCATOR / POLICY ----
-    panic_enabled = bool(panic.get("panic_enabled"))
-
-    # policy switch (from automation_kv)
-    policy = (kv_get(conn, "orc_policy_version") or "").strip() or str(cfg.get("policy_version") or "orc_safety_v1")
-    policy = policy.strip()
-
-    if (not panic_enabled) and TRADING_MODE == "LIVE":
-        # v2 runs even in REPORT_ONLY (writes decisions only). ENFORCE still needs effective_actions_enabled.
-        if policy == "v2_profit_first":
-            v2cfg = load_orc_v2_cfg(conn)
-
-            # safety: ENFORCE requires actions_enabled
-            if v2cfg.get("mode") == "ENFORCE" and not effective_actions_enabled:
-                log.warning("[v2] mode=ENFORCE but actions disabled -> forcing DRY_RUN")
-                v2cfg["mode"] = "DRY_RUN"
-
-            run_orc_v2_profit_first(conn, v2cfg, effective_actions_enabled=effective_actions_enabled, tick_id=tick_id)
-        else:
-            # legacy Phase A allocator (only when actions enabled)
-            if effective_actions_enabled and os.getenv("ORC_ALLOC_A_ENABLED", "0") == "1":
-                run_allocator_phase_a(conn, effective_actions_enabled)
 
 
 def v2_block_reason(row: dict) -> str:
@@ -1455,125 +1387,16 @@ def _v2_apply_bot_control(
     regime_mode: str,
     reason: str,
 ) -> bool:
-    """
-    Updates bot_control AND timestamps:
-      - enabling entries: set live_since=now() if was previously disabled
-      - disabling entries: set last_disabled_at=now() if was previously enabled
-    """
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE bot_control
-            SET
-              live_orders_enabled = %(loe)s,
-              regime_enabled = true,
-              regime_mode = %(rmode)s,
-              updated_at = now(),
-              reason = %(reason)s,
-
-              live_since = CASE
-                WHEN %(loe)s = true AND COALESCE(live_orders_enabled,false) = false THEN now()
-                ELSE live_since
-              END,
-
-              last_disabled_at = CASE
-                WHEN %(loe)s = false AND COALESCE(live_orders_enabled,false) = true THEN now()
-                ELSE last_disabled_at
-              END
-            WHERE symbol=%(symbol)s AND interval=%(interval)s AND strategy=%(strategy)s
-              AND enabled = true
-              AND (
-                   live_orders_enabled IS DISTINCT FROM %(loe)s
-                OR regime_mode IS DISTINCT FROM %(rmode)s
-                OR regime_enabled IS DISTINCT FROM true
-                OR reason IS DISTINCT FROM %(reason)s
-              )
-        """, {
-            "symbol": bk.symbol,
-            "interval": bk.interval,
-            "strategy": bk.strategy,
-            "loe": bool(entries_enabled),
-            "rmode": regime_mode,
-            "reason": reason,
-        })
-        return cur.rowcount > 0
+    raise RuntimeError(
+        "legacy ORC v2 bot_control writer removed; "
+        "automation-runner is authoritative"
+    )
 
 
 def apply_v2_enforce(conn, pick_set: Set[Tuple[str, str, str]], *, v2cfg: dict) -> None:
-    """
-    ENFORCE:
-      - picked slots => entries ON + regime ENFORCE
-      - non-picked slots => entries OFF + regime DRY_RUN
-
-    Cooldowns:
-      - min_live_hours: do not disable if current live period shorter than this
-      - min_off_hours:  do not enable if bot was disabled too recently
-    """
-    min_live_h = int(v2cfg.get("min_live_hours") or 0)
-    min_off_h = int(v2cfg.get("min_off_hours") or 0)
-
-    # Load current state for universe
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT symbol, interval, strategy,
-                   enabled, live_orders_enabled, regime_mode,
-                   live_since, last_disabled_at
-            FROM bot_control
-        """)
-        rows = cur.fetchall()
-
-    now = utc_now()
-
-    n_on = 0
-    n_off = 0
-    n_skip = 0
-
-    for r in rows:
-        bk = BotKey(r["symbol"], r["interval"], r["strategy"])
-        if not universe_filter(bk):
-            continue
-        if not bool(r.get("enabled", False)):
-            continue
-
-        currently_on = bool(r.get("live_orders_enabled", False))
-        live_since = r.get("live_since")
-        last_disabled_at = r.get("last_disabled_at")
-
-        want_on = (bk.symbol, bk.interval, bk.strategy) in pick_set
-
-        # cooldown: prevent flapping
-        if want_on:
-            if min_off_h > 0 and last_disabled_at is not None:
-                off_age_h = (now - last_disabled_at).total_seconds() / 3600.0
-                if off_age_h < float(min_off_h):
-                    n_skip += 1
-                    continue
-        else:
-            if min_live_h > 0 and currently_on and live_since is not None:
-                live_age_h = (now - live_since).total_seconds() / 3600.0
-                if live_age_h < float(min_live_h):
-                    n_skip += 1
-                    continue
-
-        if want_on:
-            changed = _v2_apply_bot_control(
-                conn, bk,
-                entries_enabled=True,
-                regime_mode="ENFORCE",
-                reason="ORC_V2: picked (entries ON, ENFORCE)"
-            )
-            if changed:
-                n_on += 1
-        else:
-            changed = _v2_apply_bot_control(
-                conn, bk,
-                entries_enabled=False,
-                regime_mode="DRY_RUN",
-                reason="ORC_V2: not picked (entries OFF, DRY_RUN)"
-            )
-            if changed:
-                n_off += 1
-
-    log.info("[v2] ENFORCE applied: on=%d off=%d skipped_by_cooldown=%d", n_on, n_off, n_skip)
+    raise RuntimeError(
+        "legacy ORC v2 ENFORCE removed; automation-runner is authoritative"
+    )
         
 
 def run_orc_v2_profit_first(conn, v2cfg: dict, *, effective_actions_enabled: bool, tick_id: Optional[str] = None) -> None:
@@ -1675,9 +1498,9 @@ def run_orc_v2_profit_first(conn, v2cfg: dict, *, effective_actions_enabled: boo
             allowed.add(key)
         pick_set = allowed
 
-    # 3) ENFORCE apply
-    if mode == "ENFORCE":
-        apply_v2_enforce(conn, pick_set, v2cfg=v2cfg)
+    # Legacy analytical implementation retained temporarily for historical
+    # decision-log compatibility. It is not called by the runtime loop and may
+    # not materialize bot_control desired state.
 
 
 def main():

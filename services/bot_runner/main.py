@@ -310,8 +310,61 @@ def stop_bot(proc: BotProc):
         time.sleep(0.25)
 
 
+def reconcile_worker_processes(
+    desired: Dict[BotKey, dict],
+    running: Dict[BotKey, BotProc],
+    last_restart_attempt: Dict[BotKey, float],
+    *,
+    now_fn=time.time,
+    stop_fn=stop_bot,
+    start_batch_fn=start_worker_batch,
+) -> None:
+    """Reconcile actual worker processes to read-only bot_control desired state."""
+    for key, proc in list(running.items()):
+        row = desired.get(key)
+        if not row or not row.get("enabled", False):
+            stop_fn(proc)
+            running.pop(key, None)
+
+    for key, proc in list(running.items()):
+        rc = proc.popen.poll()
+        if rc is None:
+            continue
+        now = now_fn()
+        proc.last_exit_at = now
+        proc.last_exit_code = rc
+        running.pop(key, None)
+        logger.error(
+            "EXIT  %s %s %s (rc=%s)",
+            key.strategy,
+            key.symbol,
+            key.interval,
+            rc,
+        )
+
+    candidates = []
+    now = now_fn()
+    for key, row in ordered_start_candidates(desired, running):
+        last = last_restart_attempt.get(key, 0.0)
+        if now - last >= RESTART_BACKOFF_SECONDS:
+            candidates.append((key, row))
+
+    start_batch_fn(
+        candidates,
+        running,
+        last_restart_attempt,
+        stagger_seconds=STARTUP_STAGGER_SECONDS,
+    )
+
+
 def main():
-    logger.info("bot-runner starting (TRADING_MODE=%s POLL=%ss)", TRADING_MODE, POLL_SECONDS)
+    logger.info(
+        "bot-runner starting (TRADING_MODE=%s POLL=%ss "
+        "control_plane_mode=SINGLE_WRITER desired_state_source=bot_control "
+        "authority=automation_runner reconciliation_role=PROCESS_SUPERVISOR)",
+        TRADING_MODE,
+        POLL_SECONDS,
+    )
 
     conn = db_connect()
     conn.autocommit = True
@@ -349,43 +402,10 @@ def main():
             tick_error = None
             desired = fetch_desired_configs(conn)
 
-            # 1) Zatrzymaj te, które nie powinny działać
-            for key, proc in list(running.items()):
-                row = desired.get(key)
-                if not row or not row.get("enabled", False):
-                    stop_bot(proc)
-                    running.pop(key, None)
-
-            # 2) Usuń zakończone procesy. Krok 3 uruchomi kwalifikujące się
-            # restarty: pojedynczy natychmiast, wiele jako bounded batch.
-            for key, proc in list(running.items()):
-                rc = proc.popen.poll()
-                if rc is None:
-                    continue
-                now = time.time()
-                proc.last_exit_at = now
-                proc.last_exit_code = rc
-                running.pop(key, None)
-
-                logger.error(
-                    "EXIT  %s %s %s (rc=%s)",
-                    key.strategy, key.symbol, key.interval, rc
-                )
-
-            # 3) Startuj brakujące w stabilnym, ograniczonym batchu. Pojedynczy
-            # restart/enable nie czeka, bo wait występuje tylko między elementami.
-            candidates = []
-            now = time.time()
-            for key, row in ordered_start_candidates(desired, running):
-                last = last_restart_attempt.get(key, 0.0)
-                if now - last >= RESTART_BACKOFF_SECONDS:
-                    candidates.append((key, row))
-
-            start_worker_batch(
-                candidates,
+            reconcile_worker_processes(
+                desired,
                 running,
                 last_restart_attempt,
-                stagger_seconds=STARTUP_STAGGER_SECONDS,
             )
 
             elapsed = time.perf_counter() - tick_start

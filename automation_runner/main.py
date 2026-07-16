@@ -12,6 +12,10 @@ from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.worker_heartbeat import record_worker_heartbeat
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.control_plane_authority import (
+    CONTROL_PLANE_APPLY_ADVISORY_LOCK_ID,
+    try_acquire_control_plane_apply_lock,
+)
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -214,6 +218,14 @@ def run_orc_v5_apply(conn):
     now_ts = time.time()
 
     with conn.cursor() as cur:
+        if not try_acquire_control_plane_apply_lock(cur):
+            logging.info(
+                "orc_apply: skip concurrent authoritative apply "
+                "(advisory_lock=%s)",
+                CONTROL_PLANE_APPLY_ADVISORY_LOCK_ID,
+            )
+            return
+
         # Optional KV overrides (if present)
         kv_enabled = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_enabled';")
         if kv_enabled is not None and str(kv_enabled).strip() not in ("1", "true", "TRUE", "yes", "on"):
