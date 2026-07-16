@@ -751,7 +751,11 @@ export async function getUiOpenPositions() {
 }
 
 export async function getUiRecentClosed(limit = 10) {
-  return (await getApi().get<UiRecentClosedResponse>("/ui/recent-closed", { params: { limit } })).data;
+  const response = (await getApi().get<UiRecentClosedResponse>("/ui/recent-closed", { params: { limit } })).data;
+  if (response.error || response.error_type) {
+    throw new Error("Recent closed positions are temporarily unavailable");
+  }
+  return response;
 }
 
 export async function updatePanicState(enabled: boolean, reason: string) {

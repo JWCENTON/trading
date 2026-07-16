@@ -3845,10 +3845,7 @@ def ui_recent_closed(
                 p.entry_price::double precision AS entry_price,
                 p.exit_price::double precision AS exit_price,
                 p.qty::double precision AS qty,
-                CASE
-                  WHEN p.entry_price IS NULL OR p.qty IS NULL THEN NULL
-                  ELSE (p.entry_price * p.qty)::double precision
-                END AS entry_notional_usdc,
+                denom.entry_notional_safe::double precision AS entry_notional_usdc,
                 CASE
                   WHEN p.exit_price IS NULL OR p.qty IS NULL THEN NULL
                   ELSE (p.exit_price * p.qty)::double precision
@@ -3863,27 +3860,32 @@ def ui_recent_closed(
                     ELSE (p.exit_price - p.entry_price) * p.qty
                   END
                 )::double precision AS pnl_usdc,
-                CASE
-                  WHEN COALESCE(real.entry_exec_notional_est, est.entry_notional_usdc, (p.entry_price * p.qty)) IS NULL
-                    OR COALESCE(real.entry_exec_notional_est, est.entry_notional_usdc, (p.entry_price * p.qty)) = 0
-                    THEN NULL
-                  ELSE (
-                    COALESCE(
-                      p.net_pnl_usdc,
-                      CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
-                      est.pnl_net_est_usdc,
-                      CASE
-                        WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
-                          THEN (p.entry_price - p.exit_price) * p.qty
-                        ELSE (p.exit_price - p.entry_price) * p.qty
-                      END
-                    ) / COALESCE((p.entry_price * p.qty), real.entry_exec_notional_est, est.entry_notional_usdc) * 100.0
-                  )::double precision
-                END AS pnl_pct,
+                (
+                  COALESCE(
+                    p.net_pnl_usdc,
+                    CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
+                    est.pnl_net_est_usdc,
+                    CASE
+                      WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
+                        THEN (p.entry_price - p.exit_price) * p.qty
+                      ELSE (p.exit_price - p.entry_price) * p.qty
+                    END
+                  ) / denom.entry_notional_safe * 100.0
+                )::double precision AS pnl_pct,
                 p.exit_reason
               FROM positions p
               LEFT JOIN v_positions_pnl_net_real_ssot real ON real.id = p.id
               LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
+              CROSS JOIN LATERAL (
+                SELECT NULLIF(
+                  COALESCE(
+                    real.entry_exec_notional_est,
+                    est.entry_notional_usdc,
+                    p.entry_price * p.qty
+                  ),
+                  0
+                ) AS entry_notional_safe
+              ) denom
               WHERE p.status = 'CLOSED'
                 AND p.exit_time IS NOT NULL
               ORDER BY p.exit_time DESC
@@ -3919,15 +3921,12 @@ def ui_recent_closed(
             "items": items,
         })
 
-    except Exception as e:
-        return {
-            "limit": limit,
-            "total": 0,
-            "items": [],
-            "error_type": type(e).__name__,
-            "error": str(e),
-            "note": "ui/recent-closed failed",
-        }
+    except Exception:
+        logging.exception("ui/recent-closed failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Recent closed positions are temporarily unavailable",
+        )
 
 
 @app.post("/ui/control/panic", response_model=UIControlResponse)
