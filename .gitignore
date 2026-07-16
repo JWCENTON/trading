@@ -222,7 +222,9 @@ backup/
 backups/
 *.sql
 !db/migrations/20260714_pending_entry_fill_reconciliation_v1.sql
+!db/migrations/20260716_causal_learning_telemetry_v1.sql
 !tests/postgres/pending_entry_fill_reconciliation_v1.sql
+!tests/postgres/causal_learning_telemetry_v1.sql
 *.dump
 *.bak
 
