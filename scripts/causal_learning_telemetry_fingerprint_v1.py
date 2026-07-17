@@ -17,6 +17,14 @@ EXPECTED_COUNTS = {"table": 4, "column": 117, "constraint": 30, "index": 2,
                    "trigger": 5, "function": 7, "view": 4, "flag": 3}
 ROOT = Path(__file__).resolve().parents[1]
 SQL = ROOT / "tests/postgres/causal_learning_telemetry_fingerprint_v1.sql"
+MANIFESTS = {
+    VERSION: (SQL, EXPECTED_COUNTS),
+    "causal_learning_telemetry_v1_1": (
+        ROOT / "tests/postgres/causal_learning_telemetry_fingerprint_v1_1.sql",
+        {"table": 2, "column": 60, "constraint": 9, "index": 7,
+         "trigger": 2, "function": 3, "view": 4, "flag": 2},
+    ),
+}
 def normalize(value: str | None) -> str | None:
     """Normalize catalog text to the V1 whitespace contract."""
     if value is None:
@@ -43,14 +51,14 @@ def canonicalize(records: list[dict[str, str | None]]) -> tuple[list[dict[str, s
     return normalized, payload
 
 
-def read_database(psql_args: list[str], docker_container: str | None = None) -> list[dict[str, str | None]]:
+def read_database(psql_args: list[str], docker_container: str | None = None, sql: Path = SQL) -> list[dict[str, str | None]]:
     psql = ["psql", "-X", "--no-psqlrc", "-q", "-v", "ON_ERROR_STOP=1", "-A", "-t", *psql_args]
     if docker_container:
         command = ["docker", "exec", "-i", docker_container, *psql]
-        result = subprocess.run(command, check=True, input=SQL.read_text(encoding="utf-8"),
+        result = subprocess.run(command, check=True, input=sql.read_text(encoding="utf-8"),
                                 stdout=subprocess.PIPE, text=True, encoding="utf-8")
     else:
-        command = [*psql, "-f", str(SQL)]
+        command = [*psql, "-f", str(sql)]
         result = subprocess.run(command, check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8")
     records = []
     for line in result.stdout.splitlines():
@@ -69,9 +77,9 @@ def load(path: Path) -> list[dict[str, str | None]]:
     return document["records"] if isinstance(document, dict) else document
 
 
-def write(path: Path, records: list[dict[str, str | None]]) -> None:
+def write(path: Path, records: list[dict[str, str | None]], version: str = VERSION) -> None:
     normalized, payload = canonicalize(records)
-    document = {"manifest_version": VERSION, "fingerprint": hashlib.sha256(payload).hexdigest(), "records": normalized}
+    document = {"manifest_version": version, "fingerprint": hashlib.sha256(payload).hexdigest(), "records": normalized}
     path.write_text(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
@@ -96,21 +104,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--docker-container", help="run psql inside this local PostgreSQL container")
     parser.add_argument("--output", type=Path, help="write canonical JSON manifest")
     parser.add_argument("--diff", nargs=2, type=Path, metavar=("LEFT", "RIGHT"), help="diff two saved manifests")
+    parser.add_argument("--manifest-version", choices=MANIFESTS, default=VERSION)
     args = parser.parse_args(argv)
     if args.diff:
         return int(diff(load(args.diff[0]), load(args.diff[1])))
-    records = read_database(args.psql_arg, args.docker_container)
+    sql, expected_counts = MANIFESTS[args.manifest_version]
+    records = read_database(args.psql_arg, args.docker_container, sql)
     normalized, payload = canonicalize(records)
     counts = Counter(record["record_type"] for record in normalized)
-    print(f"manifest_version={VERSION}")
+    print(f"manifest_version={args.manifest_version}")
     print(f"manifest_record_count={len(normalized)}")
     print(f"fingerprint={hashlib.sha256(payload).hexdigest()}")
     labels = {"index": "indexes"}
-    for category, expected in EXPECTED_COUNTS.items():
+    for category, expected in expected_counts.items():
         print(f"{labels.get(category, category + 's')}={counts[category]}")
     if args.output:
-        write(args.output, normalized)
-    valid = len(normalized) == sum(EXPECTED_COUNTS.values()) and all(counts[k] == v for k, v in EXPECTED_COUNTS.items())
+        write(args.output, normalized, args.manifest_version)
+    valid = len(normalized) == sum(expected_counts.values()) and all(counts[k] == v for k, v in expected_counts.items())
     if not valid:
         print("error=manifest count contract violated", file=sys.stderr)
         return 2
