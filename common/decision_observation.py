@@ -255,7 +255,9 @@ def event_from_final_decision(decision: FinalDecision, *, event_id: str,
                               exit_intent: str | None = None) -> DecisionObservationEvent:
     """Pure adapter: construct an observation without changing FinalDecision."""
     ctx = decision.evaluation
-    kind = ("TRADE" if decision.trade_executed else "EXIT" if decision.action == "EXIT"
+    kind = ("TRADE" if (decision.trade_executed or
+                        (decision.action == "SIMULATE" and decision.entry_attempted))
+            else "EXIT" if decision.action == "EXIT"
             else "HOLD" if decision.action == "HOLD"
             else "BLOCKED_BY_EXISTING_LOGIC" if decision.action in {"BLOCK", "REJECT", "SUPPRESS"}
             else "NO_TRADE")

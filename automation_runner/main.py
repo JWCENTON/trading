@@ -12,6 +12,11 @@ from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.worker_heartbeat import record_worker_heartbeat
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.decision_observation_transport import (
+    DecisionObservationOutboxConsumer,
+    TransportFlags,
+    TransportMetrics,
+)
 from common.control_plane_authority import (
     CONTROL_PLANE_APPLY_ADVISORY_LOCK_ID,
     try_acquire_control_plane_apply_lock,
@@ -41,6 +46,20 @@ def _env_bool(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 ORC_INTEGRATION_V2_APPLY_ENABLED = _env_bool("ORC_INTEGRATION_V2_APPLY_ENABLED", "0")
+
+CAUSAL_TRANSPORT_METRICS = TransportMetrics()
+
+
+def run_causal_decision_observation_consumer() -> int:
+    """Poll independently of the long-loop heartbeat; defaults are fully off."""
+    flags = TransportFlags.from_env()
+    consumer = DecisionObservationOutboxConsumer(
+        get_db_conn,
+        flags,
+        consumer_id=f"automation-runner:{os.getenv('HOSTNAME', 'unknown')}",
+        metrics=CAUSAL_TRANSPORT_METRICS,
+    )
+    return consumer.poll()
 
 
 def _sql_literal(value: str) -> str:
@@ -3180,6 +3199,12 @@ def main():
             conn.autocommit = False
 
             now = time.time()
+
+            try:
+                causal_processed = run_causal_decision_observation_consumer()
+                logging.info("causal_observation_consumer processed=%s", causal_processed)
+            except Exception:
+                logging.exception("causal_observation_consumer failed")
 
             run_daily_report(conn)
 

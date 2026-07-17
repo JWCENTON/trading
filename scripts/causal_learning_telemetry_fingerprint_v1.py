@@ -24,6 +24,11 @@ MANIFESTS = {
         {"table": 2, "column": 60, "constraint": 9, "index": 7,
          "trigger": 2, "function": 3, "view": 4, "flag": 2},
     ),
+    "causal_decision_observation_transport_v1": (
+        ROOT / "tests/postgres/causal_decision_observation_transport_fingerprint_v1.sql",
+        {"table": 1, "column": 19, "constraint": 5, "index": 1,
+         "trigger": 1, "function": 1, "flag": 4},
+    ),
 }
 def normalize(value: str | None) -> str | None:
     """Normalize catalog text to the V1 whitespace contract."""
