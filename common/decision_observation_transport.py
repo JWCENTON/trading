@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 import uuid
 from collections import Counter
@@ -22,6 +23,14 @@ from common.decision_observation import (
 TRANSPORT_SCHEMA_VERSION = "CAUSAL_DECISION_OBSERVATION_TRANSPORT_V1"
 STATUSES = frozenset({"PENDING", "PROCESSING", "RETRY", "PROCESSED",
                       "DEAD_LETTER", "IDEMPOTENCY_CONFLICT"})
+DEPLOYMENT_ENVIRONMENTS = {
+    "local-live": "trading_live",
+    "local-paper": "trading_paper",
+    "vps-live": "trading_live",
+    "vps-paper": "trading_paper",
+}
+_DIAGNOSTIC_LOCK = threading.Lock()
+_EMITTED_PRODUCER_DIAGNOSTICS: set[tuple[str, str | None, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -110,6 +119,9 @@ class DurableDecisionObservationProducer:
         if deployment not in VALID_DEPLOYMENTS or decision.evaluation.deployment_id != deployment:
             self._error("DEPLOYMENT_MISMATCH", None, decision_key)
             return decision
+        if decision.evaluation.environment != DEPLOYMENT_ENVIRONMENTS[deployment]:
+            self._error("ENVIRONMENT_MISMATCH", None, decision_key)
+            return decision
         key = decision_key or deterministic_decision_key(decision)
         try:
             stable_event_id = event_id or str(uuid.uuid5(
@@ -162,6 +174,11 @@ class DurableDecisionObservationProducer:
     def _error(self, code: str, event_id: str | None, decision_key: str | None) -> None:
         self.last_error_code = code
         self.metrics.increment("decision_observation_write_failures_total")
+        diagnostic_key = (code, self.flags.deployment_id, self.source_service)
+        with _DIAGNOSTIC_LOCK:
+            if diagnostic_key in _EMITTED_PRODUCER_DIAGNOSTICS:
+                return
+            _EMITTED_PRODUCER_DIAGNOSTICS.add(diagnostic_key)
         self.logger.error("causal_outbox_producer_failure", extra={
             "event_id": event_id, "decision_key": decision_key,
             "deployment_id": self.flags.deployment_id, "source_service": self.source_service,

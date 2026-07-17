@@ -39,6 +39,7 @@ from common.decision_contract import (
     normalize_entry_execution_outcome,
 )
 from common.partial_exit import apply_partial_exit_result
+from common.final_decision_observation_sink import finalize_decision_observation
 from common.execution import (
     place_live_order,
     place_live_exit_maker_then_market as exchange_place_live_exit_maker_then_market,
@@ -2248,7 +2249,7 @@ def _rsi_evaluation_context(open_time, evaluation_started_at, snap=None):
     )
 
 
-def build_no_new_candle_decision(row):
+def _build_no_new_candle_decision(row):
     """Return the non-persisted terminal result for main-loop candle deduplication."""
     open_time = row[0]
     now = datetime.now(timezone.utc)
@@ -2259,6 +2260,12 @@ def build_no_new_candle_decision(row):
         finished_at=now,
         reason_text="NO_NEW_CANDLE",
         details={"last_processed": str(LAST_PROCESSED_OPEN_TIME)},
+    )
+
+
+def build_no_new_candle_decision(row):
+    return finalize_decision_observation(
+        _build_no_new_candle_decision(row), source_service="bot-rsi",
     )
 
 
@@ -2458,7 +2465,7 @@ def _rsi_entry_decision(
     )
 
 
-def run_strategy(row, prev_row=None):
+def _run_strategy(row, prev_row=None):
     evaluation_started_at = datetime.now(timezone.utc)
     open_time = (row[0] if row else None)
     price_for_events = float(row[4]) if row and row[4] is not None else None
@@ -3497,7 +3504,6 @@ def run_strategy(row, prev_row=None):
             candle_open_time=open_time,
             info={"rsi_14": float(rsi_val), "ema_21": float(ema_val), "reason_text": reason},
         )
-
         # === SIZING (Model A) ===
         if cfg_effective.trading_mode == "LIVE":
             qty_btc, px_live, notional_live, step, min_qty, min_notional = compute_live_qty_from_notional(
@@ -3673,6 +3679,12 @@ def run_strategy(row, prev_row=None):
             candle_open_time=open_time,
             info={},
         )
+
+
+def run_strategy(row, prev_row=None):
+    return finalize_decision_observation(
+        _run_strategy(row, prev_row=prev_row), source_service="bot-rsi",
+    )
 
 
 # =========================

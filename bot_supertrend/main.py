@@ -46,6 +46,7 @@ from common.decision_contract import (
     normalize_entry_execution_outcome,
 )
 from common.partial_exit import apply_partial_exit_result
+from common.final_decision_observation_sink import finalize_decision_observation
 
 
 logging.basicConfig(
@@ -1789,7 +1790,7 @@ def _supertrend_execution_decision(evaluation, result, cfg_effective, *,
     )
 
 
-def run_strategy(latest, prev):
+def _run_strategy(latest, prev):
     """
     Entry (LONG-only SPOT):
       - signal: SuperTrend flip -1 -> +1
@@ -2646,6 +2647,13 @@ def run_strategy(latest, prev):
             candle_open_time=open_time,
             info={},
         )
+
+
+def run_strategy(latest, prev):
+    return finalize_decision_observation(
+        _run_strategy(latest, prev), source_service="bot-supertrend",
+    )
+
 
 LAST_PROCESSED_OPEN_TIME = None
 # =========================

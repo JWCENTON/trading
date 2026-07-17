@@ -18,6 +18,7 @@ from common.decision_contract import (
     normalize_entry_execution_outcome,
 )
 from common.partial_exit import apply_partial_exit_result
+from common.final_decision_observation_sink import finalize_decision_observation
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
@@ -1582,7 +1583,7 @@ def _bbrange_exit_decision(evaluation, result, cfg_effective, *, reason_code,
     )
 
 
-def run_strategy(row, decision_sink: DecisionSink | None = None):
+def _run_strategy(row, decision_sink: DecisionSink | None = None):
     evaluation_started_at = datetime.now(timezone.utc)
     open_time = (row[0] if row else None)
     price_for_events = float(row[4]) if row and row[4] is not None else None
@@ -2497,6 +2498,13 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
             info={},
         )
     
+
+def run_strategy(row, decision_sink: DecisionSink | None = None):
+    return finalize_decision_observation(
+        _run_strategy(row, decision_sink=decision_sink),
+        source_service="bot-bbrange",
+    )
+
 
 # =========================
 # MAIN LOOP

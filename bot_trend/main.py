@@ -51,6 +51,7 @@ from common.decision_contract import (
     normalize_entry_execution_outcome,
 )
 from common.partial_exit import apply_partial_exit_result
+from common.final_decision_observation_sink import finalize_decision_observation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -180,7 +181,7 @@ def _trend_evaluation_context(open_time, evaluation_started_at, snap=None):
     )
 
 
-def build_no_new_candle_decision(row):
+def _build_no_new_candle_decision(row):
     now = datetime.now(timezone.utc)
     return FinalDecision.idle(
         _trend_evaluation_context(row[0], now),
@@ -188,6 +189,12 @@ def build_no_new_candle_decision(row):
         finished_at=now,
         reason_text="NO_NEW_CANDLE",
         details={"last_processed": str(LAST_PROCESSED_OPEN_TIME)},
+    )
+
+
+def build_no_new_candle_decision(row):
+    return finalize_decision_observation(
+        _build_no_new_candle_decision(row), source_service="bot-trend",
     )
 
 
@@ -1936,10 +1943,10 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
     return (equity_now - equity_start_today) / equity_start_today * 100.0
 
 
-def run_trend_strategy():
+def _run_trend_strategy():
     global LAST_TREND_STATE
     evaluation_started_at = datetime.now(timezone.utc)
-    
+
     rows = get_latest_candles(limit=max(EMA_SLOW + 20, 100))
     if not rows or len(rows) < EMA_SLOW + 5:
         logging.info("TREND: not enough candles yet (have %d).", len(rows) if rows else 0)
@@ -3337,6 +3344,12 @@ def run_trend_strategy():
             candle_open_time=open_time,
             info={},
         )
+
+
+def run_trend_strategy():
+    return finalize_decision_observation(
+        _run_trend_strategy(), source_service="bot-trend",
+    )
 
 
 def fetch_klines():

@@ -82,6 +82,19 @@ def test_missing_and_mismatched_deployment_fail_open():
     assert mismatch.observe(original) is original
     assert mismatch.last_error_code == "DEPLOYMENT_MISMATCH"
 
+    wrong_environment = replace(
+        original,
+        evaluation=replace(original.evaluation, environment="trading_live"),
+    )
+    environment_mismatch = DurableDecisionObservationProducer(
+        NoConnect(), TransportFlags(decision_observation_enabled=True,
+                                    kill_switch=False,
+                                    deployment_id="local-paper"),
+        source_service="test",
+    )
+    assert environment_mismatch.observe(wrong_environment) is wrong_environment
+    assert environment_mismatch.last_error_code == "ENVIRONMENT_MISMATCH"
+
 
 def test_deterministic_key_and_semantics_cover_all_decision_kinds():
     for kind in ("NO_TRADE", "HOLD", "EXIT", "TRADE"):
@@ -153,3 +166,15 @@ def test_producer_failure_does_not_mutate_trading_state():
         source_service="test", metrics=metrics)
     assert producer.observe(original) is original
     assert metrics.counters["decision_observation_write_failures_total"] == 1
+
+
+def test_invalid_configuration_diagnostic_is_bounded(caplog):
+    original = decision()
+    for _ in range(2):
+        producer = DurableDecisionObservationProducer(
+            NoConnect(),
+            TransportFlags(decision_observation_enabled=True, kill_switch=False),
+            source_service="bounded-diagnostic-test",
+        )
+        assert producer.observe(original) is original
+    assert caplog.text.count("causal_outbox_producer_failure") == 1
