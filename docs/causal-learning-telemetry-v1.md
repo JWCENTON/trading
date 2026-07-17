@@ -128,21 +128,61 @@ A global fingerprint over namespace patterns such as `learning_%`,
 objects that legitimately differ between a minimal disposable database and an
 existing WalTrade database.
 
-The canonical migration fingerprint is therefore scoped to the explicit Causal
-Learning Telemetry V1 manifest: its four tables; columns added to Decision
-Registry, Replay and Feature Warehouse; two indexes; migration-owned
-constraints; five triggers; seven functions; four views; and three automation
-flags. Canonical rows include object type/schema/name, column type/nullability/
-default, normalized constraint/index/trigger definitions, function identity
-arguments plus normalized definition hashes, and normalized view-definition
-hashes. Rows are whitespace-normalized, sorted, contain no OIDs, owners,
-timestamps or row counts, and are then hashed with MD5.
+The canonical tool is `scripts/causal_learning_telemetry_fingerprint_v1.py`.
+Its database query is
+`tests/postgres/causal_learning_telemetry_fingerprint_v1.sql`. The manifest is
+explicit: 4 tables, 117 columns, 30 constraints, 2 indexes, 5 triggers,
+7 functions, 4 views and 3 automation flags, exactly 172 records. It does not
+use namespace patterns to discover objects.
 
-Validated on 2026-07-16:
+The canonicalization contract is version
+`causal_learning_telemetry_v1`: PostgreSQL returns five hex-encoded fields
+(`record_type`, `schema_name`, `object_name`, `subobject_name`, definition), so
+psql formatting cannot alter them. The runner decodes UTF-8, represents SQL
+NULL as JSON `null`, folds every whitespace run to one ASCII space, strips
+leading/trailing whitespace, sorts records by their four identity fields using
+Python's stable binary Unicode ordering, serializes compact JSON with sorted
+keys and LF record separators, and hashes those bytes with SHA-256. The payload
+contains no OIDs, owners, ACLs, timestamps, row counts or environment-specific
+data. Terminal, locale, pager, aligned output and psql version do not participate
+in serialization.
 
-- disposable PostgreSQL after run 1: `9f09d167a7d3f42c4c9e4eea29a59608`;
-- disposable PostgreSQL after run 2: `9f09d167a7d3f42c4c9e4eea29a59608`;
-- LOCAL LIVE: `9f09d167a7d3f42c4c9e4eea29a59608`.
+Validated on 2026-07-17 on disposable run 1, disposable run 2, LOCAL LIVE and
+LOCAL PAPER. All four manifests contain 172 records and have fingerprint:
+
+`bac94093ecba7608582e0c0ba07df2d486e384623ae5c3e89608bd0c9cd307a0`
+
+Run directly against a PostgreSQL endpoint (repeat `--psql-arg` for each native
+psql argument):
+
+```bash
+python3 scripts/causal_learning_telemetry_fingerprint_v1.py \
+  --psql-arg=-U --psql-arg=botuser --psql-arg=-d --psql-arg=trading_live \
+  --output /tmp/causal-live.json
+python3 scripts/causal_learning_telemetry_fingerprint_v1.py \
+  --psql-arg=-U --psql-arg=botuser --psql-arg=-d --psql-arg=trading_paper \
+  --output /tmp/causal-paper.json
+```
+
+For the local Compose databases, add respectively
+`--docker-container trading-live-db-1` or
+`--docker-container trading-paper-db-1`. For disposable verification, create a
+database containing the prerequisite tables used at the top of
+`tests/postgres/causal_learning_telemetry_v1.sql`, apply
+`db/migrations/20260716_causal_learning_telemetry_v1.sql`, save run 1 with
+`--output`, apply the migration again, and save run 2. This changes only the
+disposable database; LIVE and PAPER checks are read-only.
+
+Compare any two saved manifests object by object:
+
+```bash
+python3 scripts/causal_learning_telemetry_fingerprint_v1.py \
+  --diff /tmp/causal-disposable-run2.json /tmp/causal-live.json
+```
+
+The command reports missing, extra and changed definitions, not only hashes.
+Manual reconstruction of this serializer is prohibited. In particular, a
+global namespace fingerprint is not portable and must not replace this tool.
 
 ## 17. Rollout plan
 
