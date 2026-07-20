@@ -223,8 +223,16 @@ backups/
 *.sql
 !db/migrations/20260714_pending_entry_fill_reconciliation_v1.sql
 !db/migrations/20260716_causal_learning_telemetry_v1.sql
+!db/migrations/20260720_orc_immutable_apply_ledger_v1.sql
+!db/migrations/20260720_orc_immutable_apply_ledger_v1_1_counter_semantics.sql
+!db/migrations/20260720_orc_immutable_apply_ledger_v1_2_observe_only.sql
+!db/migrations/20260720_bot_control_transition_timestamps_v1.sql
 !tests/postgres/pending_entry_fill_reconciliation_v1.sql
 !tests/postgres/causal_learning_telemetry_v1.sql
+!tests/postgres/orc_ledger_fresh_v1_1.sql
+!tests/postgres/orc_ledger_upgrade_v1_1.sql
+!tests/postgres/orc_ledger_v1_2.sql
+!tests/postgres/bot_control_transition_timestamps_v1.sql
 *.dump
 *.bak
 

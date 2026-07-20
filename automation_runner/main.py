@@ -4,6 +4,9 @@ import json
 import logging
 import requests
 import shutil
+import hashlib
+import uuid
+from functools import wraps
 from datetime import datetime, timezone, date
 from pathlib import Path
 from common.reconcile_positions import reconcile_positions
@@ -20,6 +23,20 @@ from common.decision_observation_transport import (
 from common.control_plane_authority import (
     CONTROL_PLANE_APPLY_ADVISORY_LOCK_ID,
     try_acquire_control_plane_apply_lock,
+)
+from common.orc_apply_ledger import (
+    EXECUTION_MODE_APPLY,
+    EXECUTION_MODE_OBSERVE_ONLY,
+    SCHEMA_VERSION as ORC_LEDGER_SCHEMA_VERSION,
+    WriterIdentity,
+    deterministic_picks_hash,
+    insert_slot_decision,
+    validate_slot_counts,
+    make_slot_decision,
+    parse_required_execution_guard,
+    resolve_execution_mode,
+    rows_as_dicts,
+    utc_now,
 )
 
 cfg = RuntimeConfig.from_env()
@@ -46,6 +63,9 @@ def _env_bool(name: str, default: str = "0") -> bool:
     return str(os.getenv(name, default)).strip().lower() in {"1", "true", "yes", "on"}
 
 ORC_INTEGRATION_V2_APPLY_ENABLED = _env_bool("ORC_INTEGRATION_V2_APPLY_ENABLED", "0")
+ORC_LEDGER_OBSERVE_ONLY_ENABLED = _env_bool(
+    "ORC_LEDGER_OBSERVE_ONLY_ENABLED", "0"
+)
 
 CAUSAL_TRANSPORT_METRICS = TransportMetrics()
 
@@ -126,6 +146,68 @@ def upsert_kv(cur, key, value):
         ON CONFLICT (key) DO UPDATE
         SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at;
     """, (key, value))
+
+
+def _with_orc_apply_failure_ledger(function):
+    """Rollback partial work, then best-effort append a failed run header."""
+    @wraps(function)
+    def wrapped(conn, run_id=None):
+        fixed_run_id = uuid.UUID(str(run_id)) if run_id else uuid.uuid4()
+        failed_started_at = utc_now()
+        try:
+            return function(conn, run_id=fixed_run_id)
+        except Exception as exc:
+            conn.rollback()
+            error_classification = getattr(
+                exc, "error_classification", type(exc).__name__
+            )[:120]
+            try:
+                identity = WriterIdentity.from_env(cfg.trading_mode)
+                failed_completed_at = utc_now()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO orc_apply_runs_v1 (
+                             run_id,deployment_id,environment,deployment_identity,
+                             writer_service,writer_instance,writer_version,git_sha,
+                             started_at,completed_at,apply_mode,integration_version,
+                             source_view,source_candidate_count,
+                             candidate_universe_count,slot_decision_count,
+                             source_excluded_count,desired_on_count,
+                             previous_live_on_count,resulting_live_on_count,
+                             touched_on_count,touched_off_count,unchanged_on_count,
+                             unchanged_off_count,picks_hash,transaction_outcome,
+                             error_classification,duration_ms,schema_version,
+                             execution_mode
+                           ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                     0,0,0,0,0,0,0,0,0,0,0,'','ROLLED_BACK',%s,%s,%s,%s)
+                           ON CONFLICT (deployment_id,environment,run_id) DO NOTHING""",
+                        (
+                            str(fixed_run_id),identity.deployment_id,
+                            identity.environment,identity.deployment_id,
+                            identity.service,identity.instance,identity.version,
+                            identity.git_sha,failed_started_at,failed_completed_at,
+                            ORC_APPLY_MODE,ORC_APPLY_VERSION,
+                            get_active_orc_apply_view()[0],error_classification,
+                            max(0, int((failed_completed_at-failed_started_at).total_seconds()*1000)),
+                            ORC_LEDGER_SCHEMA_VERSION,
+                            (EXECUTION_MODE_OBSERVE_ONLY
+                             if identity.deployment_id.endswith("-paper")
+                             else EXECUTION_MODE_APPLY),
+                        ),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logging.exception(
+                    "orc_apply: run_id=%s outcome=ROLLBACK_EVIDENCE_FAILED error_class=%s",
+                    fixed_run_id, error_classification,
+                )
+            logging.exception(
+                "orc_apply: run_id=%s outcome=ROLLED_BACK error_class=%s",
+                fixed_run_id, error_classification,
+            )
+            raise
+    return wrapped
 
 
 def _learning_feedback_runner_stats(status: str, **extra):
@@ -223,18 +305,116 @@ def _get_int_kv(cur, key: str, default: int = 0) -> int:
         return default
     
     
-def run_orc_v5_apply(conn):
+def evaluate_orc_control_universe(
+    controls, source_by_key, picks_by_key, on_reason, off_reason, execution_mode
+):
+    decisions = []
+    for control in controls:
+        key = (control["symbol"], control["interval"], control["strategy"])
+        pick_source = picks_by_key.get(key)
+        decisions.append(
+            make_slot_decision(
+                control,
+                source_by_key.get(key),
+                want_on=pick_source is not None,
+                pick_source=pick_source,
+                on_reason=on_reason,
+                off_reason=off_reason,
+                execution_mode=execution_mode,
+            )
+        )
+    return decisions
+
+
+def persist_orc_slot_ledger(cur, run_id, identity, slot_decisions):
+    return sum(
+        insert_slot_decision(cur, run_id, identity, decision)
+        for decision in slot_decisions
+    )
+
+
+def apply_orc_control_transitions(cur, decisions, execution_mode):
+    attempted_writes = 0
+    if execution_mode == EXECUTION_MODE_OBSERVE_ONLY:
+        if any(decision["touched"] for decision in decisions):
+            raise AssertionError("OBSERVE_ONLY prepared a bot_control mutation")
+        assert attempted_writes == 0, "OBSERVE_ONLY bot_control writes attempted"
+        return attempted_writes
+    for decision in decisions:
+        if not decision["touched"]:
+            continue
+        attempted_writes += 1
+        cur.execute(
+            """UPDATE bot_control bc
+                  SET live_orders_enabled=%s,
+                      control_mode = 'AUTO',control_source = 'ORC',
+                      manual_override_reason=NULL,
+                      manual_override_updated_at=NULL,
+                      regime_enabled=true,regime_mode=%s,updated_at=now(),
+                      reason=%s,
+                      live_since=CASE WHEN %s=true AND
+                        COALESCE(bc.live_orders_enabled,false)=false
+                        THEN now() ELSE bc.live_since END,
+                      last_disabled_at=CASE WHEN %s=false AND
+                        COALESCE(bc.live_orders_enabled,false)=true
+                        THEN now() ELSE bc.last_disabled_at END
+                WHERE bc.symbol=%s AND bc.interval=%s AND bc.strategy=%s
+                  AND COALESCE(bc.control_mode,'AUTO')='AUTO'""",
+            (
+                decision["want_on"],
+                "ENFORCE" if decision["want_on"] else "DRY_RUN",
+                decision["reason"], decision["want_on"],
+                decision["want_on"], decision["symbol"],
+                decision["interval"], decision["strategy"],
+            ),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError(
+                "ORC ledger/control-plane cardinality mismatch for "
+                + decision["slot_key"]
+            )
+    return attempted_writes
+
+
+@_with_orc_apply_failure_ledger
+def run_orc_cycle(conn, run_id=None):
     """
-    LIVE: apply ORC picks view -> bot_control (DB-only), idempotent + throttled.
-    Backward-compatible function name; active policy is logged through ORC_APPLY_VERSION.
+    Evaluate ORC once, persist immutable evidence, and optionally apply transitions.
     """
 
-    # Hard enable (env) + soft enable (kv) to avoid accidental activation
-    if os.getenv("ORC_V5_APPLY_ENABLED", "0") != "1":
-        return
-
-    interval_s_env = int(os.getenv("ORC_V5_APPLY_INTERVAL_SECONDS", "60"))
     now_ts = time.time()
+    started_at = utc_now()
+    run_id = uuid.UUID(str(run_id)) if run_id else uuid.uuid4()
+    identity = WriterIdentity.from_env(cfg.trading_mode)
+    paper_observation_requested = (
+        identity.deployment_id.endswith("-paper")
+        and ORC_LEDGER_OBSERVE_ONLY_ENABLED
+    )
+    execution_mode = resolve_execution_mode(
+        identity,
+        cfg.trading_mode,
+        observe_only_enabled=ORC_LEDGER_OBSERVE_ONLY_ENABLED,
+        live_orders_enabled=(
+            parse_required_execution_guard(
+                "LIVE_ORDERS_ENABLED", os.getenv("LIVE_ORDERS_ENABLED")
+            ) if paper_observation_requested else _env_bool("LIVE_ORDERS_ENABLED", "0")
+        ),
+        execution_enabled=(
+            parse_required_execution_guard(
+                "OKX_EXECUTION_ENABLED", os.getenv("OKX_EXECUTION_ENABLED")
+            ) if paper_observation_requested else _env_bool("OKX_EXECUTION_ENABLED", "0")
+        ),
+    )
+    if execution_mode is None:
+        return
+    if (execution_mode == EXECUTION_MODE_APPLY
+            and os.getenv("ORC_V5_APPLY_ENABLED", "0") != "1"):
+        return
+    interval_s_env = int(os.getenv(
+        "ORC_V5_APPLY_INTERVAL_SECONDS" if execution_mode == EXECUTION_MODE_APPLY
+        else "ORC_LEDGER_OBSERVE_ONLY_INTERVAL_SECONDS",
+        "60",
+    ))
 
     with conn.cursor() as cur:
         if not try_acquire_control_plane_apply_lock(cur):
@@ -246,16 +426,24 @@ def run_orc_v5_apply(conn):
             return
 
         # Optional KV overrides (if present)
-        kv_enabled = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_enabled';")
-        if kv_enabled is not None and str(kv_enabled).strip() not in ("1", "true", "TRUE", "yes", "on"):
-            return
+        if execution_mode == EXECUTION_MODE_APPLY:
+            kv_enabled = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_enabled';")
+            if kv_enabled is not None and str(kv_enabled).strip() not in ("1", "true", "TRUE", "yes", "on"):
+                return
         
         # HARD SAFETY: single writer lock
         if not _is_primary_writer_v5(cur):
             logging.warning("orc_apply: version=%s mode=%s skip (orc_writer_primary is not active ORC writer)", ORC_APPLY_VERSION, ORC_APPLY_MODE)
             return
 
-        kv_interval = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_interval_s';")
+        last_ts_key = (
+            "orc_v5_apply_last_ts_s" if execution_mode == EXECUTION_MODE_APPLY
+            else "orc_ledger_observe_only_last_ts_s"
+        )
+        kv_interval = q1(cur, "SELECT value FROM automation_kv WHERE key=%s;", (
+            "orc_v5_apply_interval_s" if execution_mode == EXECUTION_MODE_APPLY
+            else "orc_ledger_observe_only_interval_s",
+        ))
         interval_s = interval_s_env
         if kv_interval is not None:
             try:
@@ -263,14 +451,9 @@ def run_orc_v5_apply(conn):
             except Exception:
                 interval_s = interval_s_env
 
-        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v5_apply_last_ts_s';")
+        last_ts_s = q1(cur, "SELECT value FROM automation_kv WHERE key=%s;", (last_ts_key,))
         last_ts = float(last_ts_s) if last_ts_s else 0.0
         if now_ts - last_ts < float(interval_s):
-            return
-
-        # Safety: only LIVE + ACTIVE automation
-        # (caller already checks, but keep it here to prevent accidental misuse)
-        if cfg.trading_mode != "LIVE":
             return
 
         active_picks_view = "v_orc_integration_v2_picks" if ORC_INTEGRATION_V2_APPLY_ENABLED else "v_orc_v7_shadow_picks"
@@ -304,135 +487,168 @@ def run_orc_v5_apply(conn):
             active_pick_reason = "ORC_INTEGRATION_V2: picked by V2 context scoring (entries ON, ENFORCE)"
             active_off_reason = "ORC_INTEGRATION_V2: not picked by V2 context scoring (entries OFF, DRY_RUN)"
 
-        sql = f"""
-        WITH picks_base AS (
-          SELECT symbol, interval, strategy
-          FROM {active_picks_view}
-          WHERE {active_picks_eligible_sql}
-        ),
-        universe AS (
-          SELECT bc.symbol, bc.interval, bc.strategy
-          FROM bot_control bc
-          LEFT JOIN picks_base pb
-            ON pb.symbol = bc.symbol
-           AND pb.interval = bc.interval
-           AND pb.strategy = bc.strategy
-          WHERE (
-              bc.enabled = true
-              OR pb.symbol IS NOT NULL
-            )
-            AND COALESCE(bc.control_mode, 'AUTO') = 'AUTO'
-            AND bc.symbol IN ('BTCUSDC','ETHUSDC','SOLUSDC','BNBUSDC')
-            AND bc.interval IN ('1m','5m')
-            AND bc.strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
-        ),
-        explore_enabled AS (
-        SELECT COALESCE((
-            SELECT value IN ('1','true','TRUE','yes','on')
-            FROM automation_kv
-            WHERE key = 'orc_v62_explore_enabled'
-        ), false) AS enabled
-        ),
-        picks AS (
-        SELECT
-            symbol,
-            interval,
-            strategy,
-            'ORC_V6_3' AS pick_source
-        FROM {active_picks_view}
-        WHERE {active_picks_eligible_sql}
-
-        UNION ALL
-
-        SELECT
-            e.symbol,
-            e.interval,
-            e.strategy,
-            'ORC_EXPLORE_V1' AS pick_source
-        FROM v_orc_exploration_picks_v1 e
-        CROSS JOIN explore_enabled x
-        WHERE x.enabled = true
-        ),
-        desired AS (
-          SELECT
-            u.*,
-            (p.symbol IS NOT NULL) AS want_on,
-            p.pick_source
-          FROM universe u
-          LEFT JOIN picks p
-            ON p.symbol=u.symbol AND p.interval=u.interval AND p.strategy=u.strategy
-        ),
-        applied AS (
-          UPDATE bot_control bc
-          SET
-            live_orders_enabled = d.want_on,
-            control_mode = 'AUTO',
-            control_source = 'ORC',
-            manual_override_reason = NULL,
-            manual_override_updated_at = NULL,
-            regime_enabled = true,
-            regime_mode = CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END,
-            updated_at = now(),
-            reason = CASE
-                WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
-                    THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
-                WHEN d.want_on
-                    THEN {_sql_literal(active_pick_reason)}
-                ELSE {_sql_literal(active_off_reason)}
-                END,
-            live_since = CASE
-              WHEN d.want_on = true AND COALESCE(bc.live_orders_enabled,false) = false THEN now()
-              ELSE bc.live_since
-            END,
-            last_disabled_at = CASE
-              WHEN d.want_on = false AND COALESCE(bc.live_orders_enabled,false) = true THEN now()
-              ELSE bc.last_disabled_at
-            END
-          FROM desired d
-          WHERE bc.symbol=d.symbol AND bc.interval=d.interval AND bc.strategy=d.strategy
-            AND COALESCE(bc.control_mode, 'AUTO') = 'AUTO'
-            AND (
-              bc.live_orders_enabled IS DISTINCT FROM d.want_on
-              OR COALESCE(bc.control_mode, 'AUTO') IS DISTINCT FROM 'AUTO'
-              OR COALESCE(bc.control_source, 'ORC') IS DISTINCT FROM 'ORC'
-              OR bc.manual_override_reason IS NOT NULL
-              OR bc.manual_override_updated_at IS NOT NULL
-              OR bc.regime_mode IS DISTINCT FROM (CASE WHEN d.want_on THEN 'ENFORCE' ELSE 'DRY_RUN' END)
-              OR bc.regime_enabled IS DISTINCT FROM true
-              OR bc.reason IS DISTINCT FROM (CASE
-                            WHEN d.want_on AND d.pick_source = 'ORC_EXPLORE_V1'
-                                THEN 'ORC_EXPLORE_V1: controlled exploration (entries ON, ENFORCE)'
-                            WHEN d.want_on
-                                THEN {_sql_literal(active_pick_reason)}
-                            ELSE {_sql_literal(active_off_reason)}
-                            END)
-            )
-          RETURNING d.want_on
+        cur.execute(
+            """SELECT candidate_universe_count,desired_on_count,
+                      previous_live_on_count,resulting_live_on_count,
+                      touched_on_count,touched_off_count,unchanged_on_count,
+                      unchanged_off_count,picks_hash
+                 FROM orc_apply_runs_v1
+                WHERE deployment_id=%s AND environment=%s AND run_id=%s""",
+            (identity.deployment_id, identity.environment, str(run_id)),
         )
-        SELECT
-          (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_V6_3')       AS core_picks_n,
-          (SELECT COUNT(*) FROM picks WHERE pick_source='ORC_EXPLORE_V1') AS explore_picks_n,
-          (SELECT COUNT(*) FROM picks)                                   AS want_on_n,
-          (SELECT COUNT(*) FROM universe)                                AS universe_n,
-          (SELECT COUNT(*) FROM applied)                                 AS touched,
-          (SELECT COUNT(*) FROM applied WHERE want_on)                   AS touched_on,
-          (SELECT COUNT(*) FROM applied WHERE NOT want_on)               AS touched_off,
-          (SELECT md5(string_agg(symbol||'|'||interval||'|'||strategy||'|'||pick_source, ',' ORDER BY symbol, interval, strategy, pick_source)) FROM picks) AS picks_hash;
-        """
+        existing_run = cur.fetchone()
+        if existing_run is not None:
+            logging.info("orc_apply: run_id=%s idempotent replay skipped", run_id)
+            return
 
-        cur.execute(sql)
-        row = cur.fetchone()
-        core_picks_n, explore_picks_n, want_on_n, universe_n, touched, touched_on, touched_off, picks_hash = row
+        cur.execute(f"SELECT * FROM {active_picks_view}")
+        source_rows = rows_as_dicts(cur)
+        candidate_source_n = len(source_rows)
+        cur.execute(
+            """SELECT key,updated_at
+                 FROM automation_kv
+                WHERE key IN ('orc_candidate_context_v1_last_ts_s',
+                              'market_memory_orc_context_v17_last_ts_s')
+                ORDER BY key"""
+        )
+        source_refresh_times = dict(cur.fetchall())
+        latest_source_refresh = max(source_refresh_times.values(), default=None)
+        for row in source_rows:
+            row["source_refresh_timestamps"] = source_refresh_times
+            row["refreshed_at"] = latest_source_refresh
+        source_by_key = {
+            (row["symbol"], row["interval"], row["strategy"]): row
+            for row in source_rows
+        }
+        eligible_field = active_picks_eligible_sql.split("=", 1)[0].strip()
+        picks_by_key = {
+            key: "ORC_V6_3"
+            for key, row in source_by_key.items()
+            if row.get(eligible_field) is True
+        }
+
+        explore_enabled = str(
+            q1(cur, "SELECT value FROM automation_kv WHERE key='orc_v62_explore_enabled';")
+            or "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        explore_keys = set()
+        if explore_enabled:
+            cur.execute(
+                """SELECT symbol,interval,strategy
+                     FROM v_orc_exploration_picks_v1
+                    WHERE eligible_exploration_v1=true"""
+            )
+            explore_keys = {tuple(row) for row in cur.fetchall()}
+            for key in explore_keys:
+                picks_by_key.setdefault(key, "ORC_EXPLORE_V1")
+
+        cur.execute(
+            """SELECT symbol,interval,strategy,enabled,live_orders_enabled,
+                      regime_enabled,regime_mode,reason,control_mode,control_source,
+                      manual_override_reason,manual_override_updated_at,
+                      live_since,last_disabled_at,updated_at
+                 FROM bot_control
+                WHERE COALESCE(control_mode,'AUTO')='AUTO'
+                  AND symbol IN ('BTCUSDC','ETHUSDC','SOLUSDC','BNBUSDC')
+                  AND interval IN ('1m','5m')
+                  AND strategy IN ('RSI','SUPERTREND','TREND','BBRANGE')
+                ORDER BY symbol,interval,strategy"""
+        )
+        controls = rows_as_dicts(cur)
+        controls = [
+            row for row in controls
+            if row["enabled"] is True
+            or (row["symbol"], row["interval"], row["strategy"]) in picks_by_key
+        ]
+        decisions = evaluate_orc_control_universe(
+            controls, source_by_key, picks_by_key, active_pick_reason,
+            active_off_reason, execution_mode,
+        )
+
+        slot_decisions = list(decisions)
+        source_excluded_count = validate_slot_counts(
+            candidate_source_n, len(decisions), len(slot_decisions)
+        )
+        inserted_slot_count = persist_orc_slot_ledger(
+            cur, run_id, identity, slot_decisions
+        )
+        validate_slot_counts(
+            candidate_source_n,
+            len(decisions),
+            len(slot_decisions),
+            inserted_slot_count,
+        )
+
+        bot_control_writes_attempted = apply_orc_control_transitions(
+            cur, decisions, execution_mode
+        )
+        if execution_mode == EXECUTION_MODE_OBSERVE_ONLY:
+            assert bot_control_writes_attempted == 0
+
+        core_picks_n = sum(d["pick_source"] == "ORC_V6_3" for d in decisions)
+        explore_picks_n = sum(d["pick_source"] == "ORC_EXPLORE_V1" for d in decisions)
+        want_on_n = sum(d["want_on"] for d in decisions)
+        universe_n = len(decisions)
+        touched_on = sum(d["state_changed"] and d["want_on"] for d in decisions)
+        touched_off = sum(d["state_changed"] and not d["want_on"] for d in decisions)
+        touched = touched_on + touched_off
+        ledger_picks_hash = deterministic_picks_hash(decisions)
+        legacy_pick_items = sorted(
+            f'{d["symbol"]}|{d["interval"]}|{d["strategy"]}|{d["pick_source"]}'
+            for d in decisions if d["want_on"]
+        )
+        picks_hash = (
+            hashlib.md5(",".join(legacy_pick_items).encode("utf-8")).hexdigest()
+            if legacy_pick_items else ""
+        )
+        completed_at = utc_now()
+        duration_ms = max(0, int((completed_at - started_at).total_seconds() * 1000))
+        previous_live_on = sum(d["previous_live"] for d in decisions)
+        resulting_live_on = sum(d["resulting_live"] for d in decisions)
+        unchanged_on = sum(d["previous_live"] and d["want_on"] for d in decisions)
+        unchanged_off = sum(not d["previous_live"] and not d["want_on"] for d in decisions)
+        cur.execute(
+            """INSERT INTO orc_apply_runs_v1 (
+                 run_id,deployment_id,environment,deployment_identity,
+                 writer_service,writer_instance,writer_version,git_sha,
+                 started_at,completed_at,apply_mode,integration_version,
+                 source_view,source_candidate_count,candidate_universe_count,
+                 slot_decision_count,source_excluded_count,desired_on_count,
+                 previous_live_on_count,resulting_live_on_count,touched_on_count,
+                 touched_off_count,unchanged_on_count,unchanged_off_count,
+                 picks_hash,transaction_outcome,error_classification,duration_ms,
+                 schema_version,execution_mode
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                         %s,%s,%s,%s,%s,%s,%s,%s,%s,'COMMITTED',NULL,%s,%s,%s)""",
+            (
+                str(run_id),identity.deployment_id,identity.environment,
+                identity.deployment_id,identity.service,identity.instance,
+                identity.version,identity.git_sha,started_at,completed_at,
+                ORC_APPLY_MODE,ORC_APPLY_VERSION,active_picks_view,
+                candidate_source_n,universe_n,inserted_slot_count,
+                source_excluded_count,want_on_n,previous_live_on,resulting_live_on,touched_on,touched_off,
+                unchanged_on,unchanged_off,ledger_picks_hash,duration_ms,
+                ORC_LEDGER_SCHEMA_VERSION,execution_mode,
+            ),
+        )
 
         stats = {
             "core_picks_n": int(core_picks_n or 0),
             "explore_picks_n": int(explore_picks_n or 0),
             "want_on_n": int(want_on_n or 0),
             "universe_n": int(universe_n or 0),
+            "source_candidate_count": candidate_source_n,
+            "candidate_universe_count": universe_n,
+            "slot_decision_count": inserted_slot_count,
+            "source_excluded_count": source_excluded_count,
+            "execution_mode": execution_mode,
+            "bot_control_writes_attempted": bot_control_writes_attempted,
             "touched": int(touched or 0),
             "touched_on": int(touched_on or 0),
             "touched_off": int(touched_off or 0),
             "picks_hash": str(picks_hash or ""),
+            "ledger_picks_hash": ledger_picks_hash,
+            "run_id": str(run_id),
             "applied_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00","Z"),
             "orc_version": ORC_APPLY_VERSION,
             "orc_mode": ORC_APPLY_MODE,
@@ -440,16 +656,23 @@ def run_orc_v5_apply(conn):
             "orc_integration_v2_apply_enabled": bool(ORC_INTEGRATION_V2_APPLY_ENABLED),
         }
 
-        upsert_kv(cur, "orc_v5_apply_mode", "automation_runner")
-        upsert_kv(cur, "orc_active_version", ORC_APPLY_VERSION)
-        upsert_kv(cur, "orc_active_mode", ORC_APPLY_MODE)
-        upsert_kv(cur, "orc_v62_explore_enabled", "0")
-        upsert_kv(cur, "orc_v63_explore_enabled", "0")
-        upsert_kv(cur, "orc_v5_apply_last_ts_s", str(now_ts))
-        upsert_kv(cur, "orc_v5_apply_last_stats_json", json.dumps(stats, sort_keys=True))
+        if execution_mode == EXECUTION_MODE_APPLY:
+            upsert_kv(cur, "orc_v5_apply_mode", "automation_runner")
+            upsert_kv(cur, "orc_active_version", ORC_APPLY_VERSION)
+            upsert_kv(cur, "orc_active_mode", ORC_APPLY_MODE)
+            upsert_kv(cur, "orc_v62_explore_enabled", "0")
+            upsert_kv(cur, "orc_v63_explore_enabled", "0")
+            upsert_kv(cur, "orc_v5_apply_last_ts_s", str(now_ts))
+            upsert_kv(cur, "orc_v5_apply_last_stats_json", json.dumps(stats, sort_keys=True))
+        else:
+            upsert_kv(cur, "orc_ledger_observe_only_last_ts_s", str(now_ts))
+            upsert_kv(cur, "orc_ledger_observe_only_last_stats_json", json.dumps(stats, sort_keys=True))
 
     conn.commit()
-    logging.info("orc_apply: version=%s mode=%s stats=%s", ORC_APPLY_VERSION, ORC_APPLY_MODE, stats)
+    logging.info(
+        "orc_cycle: run_id=%s outcome=COMMITTED execution_mode=%s duration_ms=%s version=%s mode=%s stats=%s",
+        run_id, execution_mode, duration_ms, ORC_APPLY_VERSION, ORC_APPLY_MODE, stats,
+    )
 
 
 
@@ -3359,8 +3582,10 @@ def main():
             if cfg.trading_mode == "LIVE" and mode != "DISABLE_ONLY":
                 run_promo_allocator(conn)
 
-            if cfg.trading_mode == "LIVE" and mode != "DISABLE_ONLY":
-                run_orc_v5_apply(conn)
+            if (cfg.trading_mode == "LIVE" and mode != "DISABLE_ONLY") or (
+                cfg.trading_mode == "PAPER" and ORC_LEDGER_OBSERVE_ONLY_ENABLED
+            ):
+                run_orc_cycle(conn)
 
             logging.info("tick ok")
 

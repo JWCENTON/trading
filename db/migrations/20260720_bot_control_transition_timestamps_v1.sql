@@ -1,0 +1,7 @@
+BEGIN;
+
+ALTER TABLE public.bot_control
+  ADD COLUMN IF NOT EXISTS live_since TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS last_disabled_at TIMESTAMPTZ;
+
+COMMIT;

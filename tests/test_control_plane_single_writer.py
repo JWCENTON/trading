@@ -60,12 +60,12 @@ def test_automation_keeps_authoritative_reason_family():
 
 def test_automation_apply_uses_transaction_advisory_lock():
     section = AUTOMATION[
-        AUTOMATION.index("def run_orc_v5_apply"):
+        AUTOMATION.index("def run_orc_cycle"):
         AUTOMATION.index("def run_orc_candidate_context_refresh")
     ]
     assert "try_acquire_control_plane_apply_lock(cur)" in section
     assert section.index("try_acquire_control_plane_apply_lock(cur)") < section.index(
-        "UPDATE bot_control bc"
+        "apply_orc_control_transitions"
     )
 
 
