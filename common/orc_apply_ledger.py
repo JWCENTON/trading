@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import uuid
 from copy import deepcopy
@@ -17,6 +18,8 @@ from psycopg2.extras import Json
 
 
 SCHEMA_VERSION = "ORC_APPLY_LEDGER_V1_2"
+WRITER_VERSION = "ORC_APPLY_WRITER_V1_3"
+GIT_SHA_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 EXECUTION_MODE_APPLY = "APPLY"
 EXECUTION_MODE_OBSERVE_ONLY = "OBSERVE_ONLY"
 VALID_DEPLOYMENTS = frozenset(
@@ -126,8 +129,8 @@ class WriterIdentity:
     environment: str
     service: str
     instance: str
-    version: str | None
-    git_sha: str | None
+    version: str
+    git_sha: str
 
     @classmethod
     def from_env(cls, trading_mode: str) -> "WriterIdentity":
@@ -140,13 +143,19 @@ class WriterIdentity:
         expected_mode = "LIVE" if deployment_id.endswith("-live") else "PAPER"
         if str(trading_mode).upper() != expected_mode:
             raise ValueError("DEPLOYMENT_ID does not match TRADING_MODE")
+        git_sha = str(os.getenv("GIT_SHA") or "").strip().lower()
+        if GIT_SHA_PATTERN.fullmatch(git_sha) is None:
+            raise ValueError(
+                "GIT_SHA must be immutable build metadata containing "
+                "a 40- or 64-character lowercase hexadecimal commit SHA"
+            )
         return cls(
             deployment_id=deployment_id,
             environment=ENVIRONMENT_BY_DEPLOYMENT[deployment_id],
             service="automation-runner",
             instance=str(os.getenv("ORC_WRITER_INSTANCE") or socket.gethostname()),
-            version=os.getenv("ORC_WRITER_VERSION") or None,
-            git_sha=os.getenv("GIT_SHA") or os.getenv("COMMIT_SHA") or None,
+            version=WRITER_VERSION,
+            git_sha=git_sha,
         )
 
 

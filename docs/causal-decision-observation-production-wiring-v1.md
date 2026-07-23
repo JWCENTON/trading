@@ -1,6 +1,9 @@
 # Causal Decision Observation Production Wiring Foundation V1
 
-Status: **BLOCKED UNTIL CANONICAL FINALIZATION SINK EXISTS**. Producer bot wiring is absent.
+Historical status: **SUPERSEDED**. This foundation document predates the
+canonical shared sink. Producer wiring is now present in RSI, TREND,
+SUPERTREND and BBRANGE; the authoritative rolling image contract is
+`final-decision-bot-rolling-rollout-v1.md`.
 
 ## Decision-path audit
 

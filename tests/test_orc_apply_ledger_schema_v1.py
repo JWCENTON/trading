@@ -8,6 +8,9 @@ V12 = (ROOT / "db/migrations/20260720_orc_immutable_apply_ledger_v1_2_observe_on
 BOT_CONTROL_PARITY = (ROOT / "db/migrations/20260720_bot_control_transition_timestamps_v1.sql").read_text()
 BOT_CONTROL_PARITY_PG = (ROOT / "tests/postgres/bot_control_transition_timestamps_v1.sql").read_text()
 AUTOMATION = (ROOT / "automation_runner/main.py").read_text()
+WRITER = (ROOT / "common/orc_apply_ledger.py").read_text()
+AUTOMATION_DOCKERFILE = (ROOT / "automation_runner/Dockerfile").read_text()
+COMPOSE = (ROOT / "docker-compose.yaml").read_text()
 
 
 def test_schema_is_append_only_and_duplicate_safe():
@@ -29,6 +32,41 @@ def test_additive_upgrade_preserves_legacy_rows_without_update_or_delete():
     statements = [line.strip().upper() for line in UPGRADE.splitlines()]
     assert not any(line.startswith("UPDATE ") for line in statements)
     assert not any(line.startswith("DELETE ") for line in statements)
+
+
+def test_writer_metadata_is_build_immutable_and_new_runs_receive_it():
+    assert 'WRITER_VERSION = "ORC_APPLY_WRITER_V1_3"' in WRITER
+    assert "GIT_SHA_PATTERN" in WRITER
+    assert 'os.getenv("COMMIT_SHA")' not in WRITER
+    assert 'os.getenv("ORC_WRITER_VERSION")' not in WRITER
+    assert 'ARG GIT_SHA' in AUTOMATION_DOCKERFILE
+    assert 'org.opencontainers.image.revision="${GIT_SHA}"' in AUTOMATION_DOCKERFILE
+    assert 'ENV GIT_SHA="${GIT_SHA}"' in AUTOMATION_DOCKERFILE
+    automation_build = COMPOSE[
+        COMPOSE.index("  automation-runner:"):
+        COMPOSE.index("  bot-rsi-btc:")
+    ]
+    assert "GIT_SHA: ${GIT_SHA}" in automation_build
+    committed_insert = AUTOMATION[
+        AUTOMATION.index("def run_orc_cycle"):
+        AUTOMATION.index("def run_orc_candidate_context_refresh")
+    ]
+    assert "identity.version,identity.git_sha" in committed_insert
+    diagnostic_insert = AUTOMATION[
+        AUTOMATION.index("def _with_orc_apply_failure_ledger"):
+        AUTOMATION.index("def _learning_feedback_runner_stats")
+    ]
+    assert "identity.version" in diagnostic_insert
+    assert "identity.git_sha" in diagnostic_insert
+
+
+def test_legacy_null_metadata_rows_remain_valid_without_backfill():
+    assert "writer_version TEXT," in MIGRATION
+    assert "git_sha TEXT," in MIGRATION
+    for upgrade in (UPGRADE, V12):
+        assert "UPDATE orc_apply_runs_v1" not in upgrade
+        assert "writer_version SET NOT NULL" not in upgrade
+        assert "git_sha SET NOT NULL" not in upgrade
 
 
 def test_control_mutation_and_both_ledgers_share_existing_transaction():

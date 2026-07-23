@@ -140,6 +140,8 @@ services:
     build:
       context: .
       dockerfile: automation_runner/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA}
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -154,6 +156,8 @@ services:
     build:
       context: .
       dockerfile: bot/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -180,6 +184,8 @@ services:
     build:
       context: .
       dockerfile: bot_trend/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -206,6 +212,8 @@ services:
     build:
       context: .
       dockerfile: bot_bbrange/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -232,6 +240,8 @@ services:
     build:
       context: .
       dockerfile: bot_supertrend/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA}
     restart: always
     logging:
       driver: "json-file"

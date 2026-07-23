@@ -10,6 +10,7 @@ from common.orc_apply_ledger import (
     EXECUTION_MODE_APPLY,
     EXECUTION_MODE_OBSERVE_ONLY,
     OrcObserveOnlyGuardError,
+    WRITER_VERSION,
     WriterIdentity,
     canonical_json,
     deterministic_picks_hash,
@@ -25,6 +26,12 @@ from common.orc_apply_ledger import (
 
 ON_REASON = "ORC_INTEGRATION_V2: V7 readiness + MME context picked (entries ON, ENFORCE)"
 OFF_REASON = "ORC_INTEGRATION_V2: not ready, late/exhausted, or not picked (entries OFF, DRY_RUN)"
+TEST_GIT_SHA = "d6d9c6cc50cc4f7a066445dd5d2cd0ea92264dc3"
+
+
+@pytest.fixture(autouse=True)
+def immutable_writer_metadata(monkeypatch):
+    monkeypatch.setenv("GIT_SHA", TEST_GIT_SHA)
 
 
 def control(live: bool, **overrides):
@@ -155,6 +162,39 @@ def test_deployment_identity_fails_closed(monkeypatch):
     monkeypatch.delenv("DEPLOYMENT_ID", raising=False)
     with pytest.raises(ValueError, match="DEPLOYMENT_ID"):
         WriterIdentity.from_env("LIVE")
+
+
+def test_writer_metadata_is_required_and_immutable(monkeypatch):
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+    monkeypatch.delenv("GIT_SHA")
+    monkeypatch.setenv("COMMIT_SHA", TEST_GIT_SHA)
+    monkeypatch.setenv("ORC_WRITER_VERSION", "mutable-runtime-value")
+    with pytest.raises(ValueError, match="GIT_SHA"):
+        WriterIdentity.from_env("LIVE")
+
+    monkeypatch.setenv("GIT_SHA", TEST_GIT_SHA.upper())
+    identity = WriterIdentity.from_env("LIVE")
+    assert identity.git_sha == TEST_GIT_SHA
+    assert identity.version == WRITER_VERSION
+    assert identity.version == "ORC_APPLY_WRITER_V1_3"
+
+
+@pytest.mark.parametrize("invalid_sha", ["", "d6d9c6c", "g" * 40, "a" * 39, "a" * 41])
+def test_writer_rejects_invalid_build_sha(monkeypatch, invalid_sha):
+    monkeypatch.setenv("DEPLOYMENT_ID", "vps-live")
+    monkeypatch.setenv("GIT_SHA", invalid_sha)
+    with pytest.raises(ValueError, match="GIT_SHA"):
+        WriterIdentity.from_env("LIVE")
+
+
+def test_retry_identity_is_stable_across_mutable_writer_env(monkeypatch):
+    monkeypatch.setenv("DEPLOYMENT_ID", "vps-live")
+    monkeypatch.setenv("ORC_WRITER_VERSION", "first")
+    first = WriterIdentity.from_env("LIVE")
+    monkeypatch.setenv("ORC_WRITER_VERSION", "second")
+    monkeypatch.setenv("COMMIT_SHA", "f" * 40)
+    second = WriterIdentity.from_env("LIVE")
+    assert first == second
     monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
     with pytest.raises(ValueError, match="TRADING_MODE"):
         WriterIdentity.from_env("LIVE")

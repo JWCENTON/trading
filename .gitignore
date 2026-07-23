@@ -227,6 +227,11 @@ backups/
 !db/migrations/20260723_learning_decision_98b4_repair_v1.sql
 !db/migrations/20260723_learning_canonical_manifest_rollback_v1.sql
 !db/migrations/20260723_learning_canonical_manifest_paper_rollback_v1.sql
+!db/migrations/20260724_learning_canonical_shared_rollback_v2.sql
+!db/migrations/20260724_learning_decision_98b4_rollback_v1.sql
+!db/migrations/20260724_learning_canonical_source_universe_v1_1_identity_classification.sql
+!tests/postgres/learning_canonical_shared_rollback_v2.sql
+!scripts/learning_canonical_identity_conflict_audit_v1.sql
 !tests/postgres/learning_evidence_manifest_v1.sql
 !tests/postgres/learning_canonical_fresh_install_v1.sql
 !tests/postgres/learning_canonical_production_upgrade_v1.sql
