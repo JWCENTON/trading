@@ -27,6 +27,34 @@ BEGIN
 END
 $$;
 
+-- Canonical per-slot profit-factor semantics. The manifest migration repeats
+-- this definition so an existing V1/V1.2 installation receives the identical
+-- helper without rewriting historical feedback rows.
+CREATE OR REPLACE FUNCTION learning_canonical_profit_factor_v1(
+    p_decisions INTEGER,
+    p_pnl_coverage_count INTEGER,
+    p_gross_profit_usdc NUMERIC,
+    p_gross_loss_usdc NUMERIC
+)
+RETURNS NUMERIC
+LANGUAGE SQL
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+    SELECT ROUND(CASE
+        WHEN COALESCE(p_decisions, 0) = 0 THEN NULL::NUMERIC
+        WHEN COALESCE(p_pnl_coverage_count, 0) = 0 THEN NULL::NUMERIC
+        WHEN COALESCE(ABS(p_gross_loss_usdc), 0) = 0
+             AND COALESCE(p_gross_profit_usdc, 0) > 0
+            THEN 999::NUMERIC
+        WHEN COALESCE(ABS(p_gross_loss_usdc), 0) = 0
+            THEN 0::NUMERIC
+        ELSE
+            COALESCE(p_gross_profit_usdc, 0)
+            / ABS(p_gross_loss_usdc)
+    END, 12)
+$$;
+
 -- ============================================================================
 -- 1. Aggregated learning statistics per slot
 -- ============================================================================
@@ -409,18 +437,12 @@ BEGIN
                 4
             ) AS win_rate_pct,
 
-            CASE
-                WHEN COALESCE(ABS(a.gross_loss_usdc), 0) = 0
-                     AND COALESCE(a.gross_profit_usdc, 0) > 0
-                    THEN 999::NUMERIC
-
-                WHEN COALESCE(ABS(a.gross_loss_usdc), 0) = 0
-                    THEN 0::NUMERIC
-
-                ELSE
-                    COALESCE(a.gross_profit_usdc, 0)
-                    / ABS(a.gross_loss_usdc)
-            END AS profit_factor,
+            learning_canonical_profit_factor_v1(
+                a.decisions,
+                a.decisions,
+                a.gross_profit_usdc,
+                a.gross_loss_usdc
+            ) AS profit_factor,
 
             a.avg_net_pnl_usdc AS expectancy_usdc
 

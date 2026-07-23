@@ -221,6 +221,15 @@ db_live_data/
 backup/
 backups/
 *.sql
+!db/migrations/20260721_learning_evidence_manifest_v1.sql
+!db/migrations/20260723_learning_canonical_decision_source_universe_v1.sql
+!db/migrations/20260723_learning_feedback_canonical_source_upgrade_v1.sql
+!db/migrations/20260723_learning_decision_98b4_repair_v1.sql
+!db/migrations/20260723_learning_canonical_manifest_rollback_v1.sql
+!db/migrations/20260723_learning_canonical_manifest_paper_rollback_v1.sql
+!tests/postgres/learning_evidence_manifest_v1.sql
+!tests/postgres/learning_canonical_fresh_install_v1.sql
+!tests/postgres/learning_canonical_production_upgrade_v1.sql
 !db/migrations/20260714_pending_entry_fill_reconciliation_v1.sql
 !db/migrations/20260716_causal_learning_telemetry_v1.sql
 !db/migrations/20260720_orc_immutable_apply_ledger_v1.sql

@@ -38,6 +38,9 @@ from common.orc_apply_ledger import (
     rows_as_dicts,
     utc_now,
 )
+from common.learning_evidence_context import (
+    set_learning_evidence_transaction_context,
+)
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -2292,6 +2295,9 @@ def run_learning_shadow_confidence_v14(conn, source_refresh_run_id):
 
     try:
         with conn.cursor() as cur:
+            # V1.4 owns a separate transaction, so transaction-local identity
+            # must be established again after the V1.2/V1.3 commit.
+            set_learning_evidence_transaction_context(cur)
             cur.execute(
                 """
                 SELECT to_regprocedure(
@@ -2460,6 +2466,9 @@ def run_learning_feedback_engine_refresh(conn):
     )
 
     with conn.cursor() as cur:
+        # Applies only to this feedback transaction. V1.3 and evidence capture
+        # run from triggers before this transaction commits.
+        set_learning_evidence_transaction_context(cur)
         last_check_s = q1(
             cur,
             """
@@ -2598,6 +2607,57 @@ def run_learning_feedback_engine_refresh(conn):
             min_observe_sample,
             min_action_sample,
         )
+
+        # Identity/outcome publication is the canonical producer boundary for
+        # Learning evidence. Run it before the feedback header establishes its
+        # point-in-time cutoff; warehouse PnL alone must never confer identity.
+        runtime_deployment_id = os.getenv("DEPLOYMENT_ID", "").strip()
+        deployment_scope = {
+            "local-live": "LOCAL",
+            "local-paper": "LOCAL",
+            "vps-live": "VPS",
+            "vps-paper": "VPS",
+        }.get(runtime_deployment_id)
+        if deployment_scope is None:
+            raise RuntimeError(
+                "LEARNING_CANONICAL_IDENTITY_INVALID_DEPLOYMENT_ID"
+            )
+        cur.execute(
+            """
+            SELECT to_regprocedure(
+                'refresh_decision_identity_outcome_v1'
+                '(integer,text,text,uuid)'
+            ) IS NOT NULL;
+            """
+        )
+        if not bool(cur.fetchone()[0]):
+            raise RuntimeError(
+                "LEARNING_CANONICAL_IDENTITY_PRODUCER_MISSING"
+            )
+        cur.execute(
+            """
+            SELECT refresh_decision_identity_outcome_v1(
+                %s,
+                current_database(),
+                %s
+            );
+            """,
+            (
+                max(24, window_days * 24),
+                deployment_scope,
+            ),
+        )
+        identity_result = cur.fetchone()
+        identity_result = identity_result[0] if identity_result else None
+        if not isinstance(identity_result, dict):
+            raise RuntimeError(
+                "LEARNING_CANONICAL_IDENTITY_PRODUCER_INVALID_RESULT"
+            )
+        if identity_result.get("status") != "OK":
+            raise RuntimeError(
+                "LEARNING_CANONICAL_IDENTITY_PRODUCER_FAILED: "
+                f"{identity_result}"
+            )
 
         cur.execute(
             """
