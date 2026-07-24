@@ -12,6 +12,7 @@ import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Callable
 
 from common.decision_contract import FinalDecision
@@ -73,6 +74,29 @@ class TransportMetrics:
         self.gauges[name] = value
 
 
+class ProducerObservationStatus(str, Enum):
+    ACCEPTED = "ACCEPTED"
+    IDEMPOTENT_EXISTING = "IDEMPOTENT_EXISTING"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    VALIDATION_REJECTED = "VALIDATION_REJECTED"
+    SERIALIZATION_FAILED = "SERIALIZATION_FAILED"
+    OUTBOX_WRITE_FAILED = "OUTBOX_WRITE_FAILED"
+    SKIPPED_DISABLED = "SKIPPED_DISABLED"
+    SKIPPED_KILL_SWITCH = "SKIPPED_KILL_SWITCH"
+
+
+@dataclass(frozen=True)
+class ProducerObservationResult:
+    status: ProducerObservationStatus
+    decision_key: str | None
+    outbox_event_id: str | None = None
+    skip_reason: str | None = None
+    error_class: str | None = None
+    created: bool = False
+    existing: bool = False
+    conflict: bool = False
+
+
 def _payload(event: DecisionObservationEvent) -> dict[str, Any]:
     def value(item: Any) -> Any:
         if isinstance(item, datetime):
@@ -106,33 +130,86 @@ class DurableDecisionObservationProducer:
 
     def observe(self, decision: FinalDecision, *, decision_key: str | None = None,
                 event_id: str | None = None) -> FinalDecision:
+        self.observe_with_result(
+            decision, decision_key=decision_key, event_id=event_id,
+        )
+        return decision
+
+    def observe_with_result(
+        self,
+        decision: FinalDecision,
+        *,
+        decision_key: str | None = None,
+        event_id: str | None = None,
+    ) -> ProducerObservationResult:
         if not self.flags.decision_observation_enabled:
             self.last_skip_reason = "OBSERVATION_DISABLED"
-            return decision
+            return ProducerObservationResult(
+                ProducerObservationStatus.SKIPPED_DISABLED,
+                decision_key,
+                skip_reason=self.last_skip_reason,
+            )
         if self.flags.kill_switch:
             self.last_skip_reason = "KILL_SWITCH_ACTIVE"
-            return decision
+            return ProducerObservationResult(
+                ProducerObservationStatus.SKIPPED_KILL_SWITCH,
+                decision_key,
+                skip_reason=self.last_skip_reason,
+            )
         deployment = self.flags.deployment_id
         if deployment is None:
             self._error("CONFIGURATION_INVALID", None, decision_key)
-            return decision
+            return ProducerObservationResult(
+                ProducerObservationStatus.VALIDATION_REJECTED,
+                decision_key,
+                error_class="CONFIGURATION_INVALID",
+            )
         if deployment not in VALID_DEPLOYMENTS or decision.evaluation.deployment_id != deployment:
             self._error("DEPLOYMENT_MISMATCH", None, decision_key)
-            return decision
+            return ProducerObservationResult(
+                ProducerObservationStatus.VALIDATION_REJECTED,
+                decision_key,
+                error_class="DEPLOYMENT_MISMATCH",
+            )
         if decision.evaluation.environment != DEPLOYMENT_ENVIRONMENTS[deployment]:
             self._error("ENVIRONMENT_MISMATCH", None, decision_key)
-            return decision
+            return ProducerObservationResult(
+                ProducerObservationStatus.VALIDATION_REJECTED,
+                decision_key,
+                error_class="ENVIRONMENT_MISMATCH",
+            )
         key = decision_key or deterministic_decision_key(decision)
+        stable_event_id = event_id or str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"waltrade:{deployment}:{key}"
+        ))
         try:
-            stable_event_id = event_id or str(uuid.uuid5(
-                uuid.NAMESPACE_URL, f"waltrade:{deployment}:{key}"
-            ))
             event = event_from_final_decision(
                 decision, event_id=stable_event_id, decision_key=key,
                 source_service=self.source_service, source_instance=self.source_instance,
             )
+        except (TypeError, ValueError) as exc:
+            error_class = type(exc).__name__
+            self._error("VALIDATION_REJECTED", stable_event_id, key)
+            return ProducerObservationResult(
+                ProducerObservationStatus.VALIDATION_REJECTED,
+                key,
+                outbox_event_id=stable_event_id,
+                error_class=error_class,
+            )
+        try:
             payload = _payload(event)
             digest = stable_hash(payload)
+            serialized_payload = json.dumps(payload, sort_keys=True)
+        except Exception as exc:
+            error_class = type(exc).__name__
+            self._error("SERIALIZATION_FAILED", stable_event_id, key)
+            return ProducerObservationResult(
+                ProducerObservationStatus.SERIALIZATION_FAILED,
+                key,
+                outbox_event_id=stable_event_id,
+                error_class=error_class,
+            )
+        try:
             conn = self.connection_factory()
             try:
                 with conn.cursor() as cur:
@@ -145,31 +222,60 @@ class DurableDecisionObservationProducer:
                         ON CONFLICT (deployment_id,decision_key) DO NOTHING
                         RETURNING event_id""",
                         (event.event_id, deployment, key, TRANSPORT_SCHEMA_VERSION,
-                         json.dumps(payload, sort_keys=True), digest, event.semantic_digest,
+                         serialized_payload, digest, event.semantic_digest,
                          self.source_service, self.source_instance, event.decision_created_at),
                     )
                     inserted = cur.fetchone()
                     if inserted is None:
-                        cur.execute("""SELECT event_payload_hash FROM causal_decision_observation_outbox_v1
+                        cur.execute("""SELECT event_id,event_payload_hash FROM causal_decision_observation_outbox_v1
                                     WHERE deployment_id=%s AND decision_key=%s""", (deployment, key))
-                        if cur.fetchone()[0] != digest:
+                        existing_event_id, existing_digest = cur.fetchone()
+                        if existing_digest != digest:
                             cur.execute("""UPDATE causal_decision_observation_outbox_v1
                                         SET processing_status='IDEMPOTENCY_CONFLICT',
                                             last_error_code='IDEMPOTENCY_CONFLICT',last_error_at=now()
                                         WHERE deployment_id=%s AND decision_key=%s""", (deployment, key))
                             self.metrics.increment("outbox_idempotency_conflicts_total")
                             self.last_error_code = "IDEMPOTENCY_CONFLICT"
+                            result = ProducerObservationResult(
+                                ProducerObservationStatus.IDEMPOTENCY_CONFLICT,
+                                key,
+                                outbox_event_id=str(existing_event_id),
+                                error_class="IDEMPOTENCY_CONFLICT",
+                                existing=True,
+                                conflict=True,
+                            )
+                        else:
+                            result = ProducerObservationResult(
+                                ProducerObservationStatus.IDEMPOTENT_EXISTING,
+                                key,
+                                outbox_event_id=str(existing_event_id),
+                                existing=True,
+                            )
                     else:
                         self.metrics.increment("outbox_events_created_total")
+                        result = ProducerObservationResult(
+                            ProducerObservationStatus.ACCEPTED,
+                            key,
+                            outbox_event_id=str(inserted[0]),
+                            created=True,
+                        )
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 conn.close()
-        except Exception:
-            self._error(FailureCode.DECISION_OBSERVATION_WRITE_FAILED.value, event_id, key)
-        return decision
+            return result
+        except Exception as exc:
+            error_class = type(exc).__name__
+            self._error(FailureCode.DECISION_OBSERVATION_WRITE_FAILED.value, stable_event_id, key)
+            return ProducerObservationResult(
+                ProducerObservationStatus.OUTBOX_WRITE_FAILED,
+                key,
+                outbox_event_id=stable_event_id,
+                error_class=error_class,
+            )
 
     def _error(self, code: str, event_id: str | None, decision_key: str | None) -> None:
         self.last_error_code = code

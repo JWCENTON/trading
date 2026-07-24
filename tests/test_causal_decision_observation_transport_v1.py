@@ -2,9 +2,12 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from common.decision_contract import DecisionReason, EvaluationContext, FinalDecision
 from common.decision_observation_transport import (
-    DurableDecisionObservationProducer, TransportFlags, TransportMetrics,
+    DurableDecisionObservationProducer, ProducerObservationStatus,
+    TransportFlags, TransportMetrics,
     deterministic_decision_key,
 )
 
@@ -178,3 +181,113 @@ def test_invalid_configuration_diagnostic_is_bounded(caplog):
         )
         assert producer.observe(original) is original
     assert caplog.text.count("causal_outbox_producer_failure") == 1
+
+
+class ProducerCursor:
+    def __init__(self, *, mode, event_id):
+        self.mode = mode
+        self.event_id = event_id
+        self.row = None
+        self.status_updates = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        if normalized.startswith("INSERT INTO causal_decision_observation_outbox_v1"):
+            if self.mode == "db-failure":
+                raise RuntimeError("database unavailable")
+            self.insert_digest = params[5]
+            self.row = (self.event_id,) if self.mode == "new" else None
+        elif normalized.startswith("SELECT event_id,event_payload_hash"):
+            digest = self.insert_digest if self.mode == "existing" else "different"
+            self.row = (self.event_id, digest)
+        elif normalized.startswith("UPDATE causal_decision_observation_outbox_v1"):
+            self.status_updates.append(params)
+        else:
+            raise AssertionError(normalized)
+
+    def fetchone(self):
+        return self.row
+
+
+class ProducerConnection:
+    def __init__(self, mode, event_id):
+        self.cursor_value = ProducerCursor(mode=mode, event_id=event_id)
+        self.committed = 0
+        self.rolled_back = 0
+        self.closed = 0
+
+    def cursor(self):
+        return self.cursor_value
+
+    def commit(self):
+        self.committed += 1
+
+    def rollback(self):
+        self.rolled_back += 1
+
+    def close(self):
+        self.closed += 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("new", ProducerObservationStatus.ACCEPTED),
+        ("existing", ProducerObservationStatus.IDEMPOTENT_EXISTING),
+        ("conflict", ProducerObservationStatus.IDEMPOTENCY_CONFLICT),
+        ("db-failure", ProducerObservationStatus.OUTBOX_WRITE_FAILED),
+    ],
+)
+def test_structured_producer_result_classifies_outbox_outcomes(mode, expected):
+    import uuid
+
+    event_id = uuid.uuid4()
+    conn = ProducerConnection(mode, event_id)
+    producer = DurableDecisionObservationProducer(
+        lambda: conn,
+        TransportFlags(
+            decision_observation_enabled=True,
+            kill_switch=False,
+            deployment_id="local-paper",
+        ),
+        source_service="test",
+    )
+    result = producer.observe_with_result(decision())
+    assert result.status is expected
+    if expected in {
+        ProducerObservationStatus.ACCEPTED,
+        ProducerObservationStatus.IDEMPOTENT_EXISTING,
+        ProducerObservationStatus.IDEMPOTENCY_CONFLICT,
+    }:
+        assert result.outbox_event_id == str(event_id)
+    if expected is ProducerObservationStatus.IDEMPOTENCY_CONFLICT:
+        assert result.conflict
+
+
+def test_structured_producer_result_classifies_serialization(monkeypatch):
+    producer = DurableDecisionObservationProducer(
+        NoConnect(),
+        TransportFlags(
+            decision_observation_enabled=True,
+            kill_switch=False,
+            deployment_id="local-paper",
+        ),
+        source_service="serialization-test",
+    )
+
+    def broken(_event):
+        raise TypeError("not serializable")
+
+    monkeypatch.setattr(
+        "common.decision_observation_transport._payload",
+        broken,
+    )
+    result = producer.observe_with_result(decision())
+    assert result.status is ProducerObservationStatus.SERIALIZATION_FAILED
+    assert result.error_class == "TypeError"

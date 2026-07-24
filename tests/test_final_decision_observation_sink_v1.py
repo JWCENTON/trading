@@ -4,6 +4,10 @@ from pathlib import Path
 from common.decision_contract import DecisionReason, EvaluationContext, FinalDecision
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.decision_observation_transport import TransportFlags
+from common.decision_observation_transport import (
+    ProducerObservationResult,
+    ProducerObservationStatus,
+)
 
 
 def decision():
@@ -55,9 +59,14 @@ def test_enabled_sink_attempts_once_and_is_identity_preserving(monkeypatch):
             assert observed_flags is flags
             assert source_service == "test"
 
-        def observe(self, observed):
+        def observe_with_result(self, observed, *, decision_key=None):
             attempts.append(observed)
-            return observed
+            return ProducerObservationResult(
+                ProducerObservationStatus.ACCEPTED,
+                decision_key,
+                outbox_event_id="6d77c699-9197-5550-86f0-bc959f5e3295",
+                created=True,
+            )
 
     monkeypatch.setattr(
         "common.final_decision_observation_sink.DurableDecisionObservationProducer",

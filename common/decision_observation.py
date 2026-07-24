@@ -245,6 +245,16 @@ def directional_status(net_pnl: Decimal | None, linked: bool = True, closed: boo
     return "NEUTRAL_DIRECTIONAL"
 
 
+def decision_kind_from_final_decision(decision: FinalDecision) -> str:
+    """Return the existing observation taxonomy without mutating the decision."""
+    return ("TRADE" if (decision.trade_executed or
+                        (decision.action == "SIMULATE" and decision.entry_attempted))
+            else "EXIT" if decision.action == "EXIT"
+            else "HOLD" if decision.action == "HOLD"
+            else "BLOCKED_BY_EXISTING_LOGIC" if decision.action in {"BLOCK", "REJECT", "SUPPRESS"}
+            else "NO_TRADE")
+
+
 def event_from_final_decision(decision: FinalDecision, *, event_id: str,
                               decision_key: str, source_service: str,
                               source_instance: str, confidence: Decimal | None = None,
@@ -255,12 +265,7 @@ def event_from_final_decision(decision: FinalDecision, *, event_id: str,
                               exit_intent: str | None = None) -> DecisionObservationEvent:
     """Pure adapter: construct an observation without changing FinalDecision."""
     ctx = decision.evaluation
-    kind = ("TRADE" if (decision.trade_executed or
-                        (decision.action == "SIMULATE" and decision.entry_attempted))
-            else "EXIT" if decision.action == "EXIT"
-            else "HOLD" if decision.action == "HOLD"
-            else "BLOCKED_BY_EXISTING_LOGIC" if decision.action in {"BLOCK", "REJECT", "SUPPRESS"}
-            else "NO_TRADE")
+    kind = decision_kind_from_final_decision(decision)
     payload_hash = stable_hash({"reason": decision.reason_code.value,
                                 "details": dict(decision.details)})
     return DecisionObservationEvent(
