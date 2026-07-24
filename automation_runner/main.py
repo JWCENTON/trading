@@ -9,6 +9,7 @@ import uuid
 from functools import wraps
 from datetime import datetime, timezone, date
 from pathlib import Path
+from urllib.parse import urlparse
 from common.reconcile_positions import reconcile_positions
 from common.db import get_db_conn
 from common.runtime import RuntimeConfig
@@ -3141,7 +3142,7 @@ def run_promo_allocator(conn):
 
 
 
-# --- PROMOTIONS: publish from PAPER to LIVE (v1) ---
+# --- PROMOTIONS: environment-scoped publisher (v1) ---
 import json
 import hashlib
 
@@ -3162,6 +3163,35 @@ def _sha256_canon(payload: dict) -> str:
     canon = json.dumps(payload, sort_keys=True, separators=(",",":")).encode("utf-8")
     return hashlib.sha256(canon).hexdigest()
 
+def _resolve_promotions_api_base(environ=None):
+    source = os.environ if environ is None else environ
+    deployment_id = (source.get("DEPLOYMENT_ID", "") or "").strip()
+    api_base = (source.get("INTERNAL_API_BASE", "") or "").strip()
+    expected_host = {
+        "local-live": "live-api",
+        "vps-live": "live-api",
+        "local-paper": "paper-api",
+        "vps-paper": "paper-api",
+    }.get(deployment_id)
+    parsed = urlparse(api_base)
+    if (
+        expected_host is None
+        or parsed.scheme not in {"http", "https"}
+        or parsed.hostname != expected_host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        logging.error(
+            "promotions: invalid environment-scoped INTERNAL_API_BASE "
+            "deployment_id=%s host=%s",
+            deployment_id or "<missing>",
+            parsed.hostname or "<missing>",
+        )
+        return None
+    return api_base.rstrip("/")
+
 def publish_promotions(conn):
     """
     PAPER -> LIVE publisher
@@ -3171,9 +3201,8 @@ def publish_promotions(conn):
     if os.getenv("PROMOTIONS_ENABLED", "0") != "1":
         return False
 
-    live_api_base = (os.getenv("LIVE_API_BASE", "") or "").strip()
-    if not live_api_base:
-        logging.error("promotions: LIVE_API_BASE not set; skipping")
+    promotions_api_base = _resolve_promotions_api_base()
+    if promotions_api_base is None:
         return False
 
     interval_s = int(os.getenv("PROMOTIONS_INTERVAL_SECONDS", "300"))
@@ -3364,22 +3393,13 @@ def publish_promotions(conn):
                 )
             else:
                 try:
-                    regime_promotions_api_url = os.environ.get(
-                        "PROMOTIONS_API_BASE",
-                        os.environ.get("INTERNAL_API_BASE", "http://api:8000"),
-                    )
-                    # PAPER publishes promotions to LIVE API. Existing legacy publisher resolves this to live-api;
-                    # keep the same behavior here when INTERNAL_API_BASE points at paper-api.
-                    if "paper-api" in regime_promotions_api_url:
-                        regime_promotions_api_url = regime_promotions_api_url.replace("paper-api", "live-api")
-
                     regime_promotions_token = os.environ.get("INTERNAL_API_TOKEN", "")
                     regime_promotions_headers = {}
                     if regime_promotions_token:
                         regime_promotions_headers["X-Internal-Token"] = regime_promotions_token
 
                     resp = requests.post(
-                        f"{regime_promotions_api_url.rstrip('/')}/internal/regime-promotions/upsert",
+                        f"{promotions_api_base}/internal/regime-promotions/upsert",
                         json=regime_payload,
                         headers=regime_promotions_headers,
                         timeout=10,
@@ -3416,7 +3436,7 @@ def publish_promotions(conn):
             conn.commit()
             return False
 
-        url = live_api_base.rstrip("/") + "/internal/promotions/upsert"
+        url = promotions_api_base + "/internal/promotions/upsert"
         internal_token = (os.getenv("INTERNAL_API_TOKEN", "") or "").strip()
 
         headers = {

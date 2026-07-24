@@ -14,32 +14,24 @@ The invariant applies to RSI, BBRANGE, TREND, and SUPERTREND:
 - read exception: rollback and close;
 - repeated cycles: no read transaction survives the load phase.
 
-## PAPER-to-LIVE promotions
+## Environment-scoped promotions
 
-The promotions publisher is an existing, intentional cross-environment
-control-plane flow. When `PROMOTIONS_ENABLED=1`, PAPER automation reads PAPER
-ranking data and publishes it to `LIVE_API_BASE`, normally the `live-api` alias
-on the shared `trading-edge` network.
+The promotions publisher is strictly environment-scoped. When
+`PROMOTIONS_ENABLED=1`, each automation runner reads and writes only within its
+own environment through the required `INTERNAL_API_BASE`:
 
-The LIVE endpoint writes only promotion control-plane tables:
+- LIVE uses the `live-api` alias;
+- PAPER uses the `paper-api` alias.
+
+The endpoint writes promotion control-plane tables:
 
 - `promoted_candidates` or `promoted_regime_candidates`;
 - `promotion_events` for idempotency and audit.
 
 It does not write positions, orders, or fills and does not submit an exchange
-order. Promotion rows are, however, an input to the LIVE orchestrator, so they
-can influence later slot eligibility through the established control-plane.
-The flow therefore does not mean that the LIVE data plane is completely
-unmodified: promotion control-plane tables may change, while the rollout gate
-requires no corresponding changes in `positions`, orders, or fills.
-
-For a LOCAL PAPER code-only rollout, "LOCAL LIVE untouched" therefore means:
-
-- LIVE containers, images, and restart counts are unchanged;
-- no direct changes to trading positions, orders, or fills are caused by the
-  rollout;
-- the existing, authenticated promotions upsert to the LIVE control-plane is
-  allowed and remains auditable.
+order. A deployment identity whose environment does not match the endpoint
+service is rejected before any request. Missing configuration is fail-closed;
+there is no PAPER-to-LIVE fallback.
 
 ## Exchange-call classification
 

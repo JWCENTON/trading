@@ -48,6 +48,11 @@ services:
   automation-runner:
     env_file:
       - ${ENV_FILE}
+    environment:
+      INTERNAL_API_BASE: http://live-api:8000
+    networks:
+      - default
+      - trading-edge
 
   bot-runner-orchestrator:
     build:
