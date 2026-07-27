@@ -377,6 +377,29 @@ class UITrading24hSummary(BaseModel):
     updated_at: datetime
 
 
+class CanonicalFinancialTruthResponse(BaseModel):
+    position_id: int
+    position_status: str
+    financial_truth_status: str
+    executed_entry_qty: Optional[float]
+    executed_exit_qty: Optional[float]
+    remaining_qty: Optional[float]
+    authoritative_entry_fees_usdc: Optional[float]
+    authoritative_exit_fees_usdc: Optional[float]
+    authoritative_total_fees_usdc: Optional[float]
+    authoritative_gross_pnl: Optional[float]
+    authoritative_net_pnl: Optional[float]
+    estimated_gross_pnl: Optional[float]
+    estimated_net_pnl: Optional[float]
+    authoritative_source: Optional[str]
+    authoritative_evidence: Dict
+    failure_reason: Optional[str]
+    schema_version: str
+    evidence_observed_at: Optional[datetime]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+
+
 class StrategyMetrics(BaseModel):
     symbol: str
     interval: str
@@ -3372,6 +3395,86 @@ def ops_positions_open(user: CurrentUser = Depends(require_admin)):
             "error": str(e),
             "note": "ops/positions/open not available in this environment",
         }
+
+
+@app.get(
+    "/financial-truth/positions/{position_id}",
+    response_model=CanonicalFinancialTruthResponse,
+)
+def canonical_financial_truth_position(
+    position_id: int,
+    user: CurrentUser = Depends(require_auth),
+):
+    try:
+        with db_cursor() as (_conn, cur):
+            cur.execute(
+                """
+                SELECT
+                  position_id,
+                  position_status,
+                  financial_truth_status,
+                  executed_entry_qty,
+                  executed_exit_qty,
+                  remaining_qty,
+                  authoritative_entry_fees_usdc,
+                  authoritative_exit_fees_usdc,
+                  authoritative_total_fees_usdc,
+                  authoritative_gross_pnl,
+                  authoritative_net_pnl,
+                  estimated_gross_pnl,
+                  estimated_net_pnl,
+                  authoritative_source,
+                  authoritative_evidence,
+                  failure_reason,
+                  schema_version,
+                  evidence_observed_at,
+                  created_at,
+                  updated_at
+                FROM v_canonical_financial_truth_v1
+                WHERE position_id = %s
+                """,
+                (int(position_id),),
+            )
+            row = cur.fetchone()
+    except UndefinedTable:
+        raise HTTPException(
+            status_code=503,
+            detail="canonical Financial Truth schema is not installed",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"canonical Financial Truth read failed: {e}",
+        )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="position not found")
+
+    def optional_float(value):
+        return None if value is None else float(value)
+
+    return CanonicalFinancialTruthResponse(
+        position_id=int(row[0]),
+        position_status=str(row[1]),
+        financial_truth_status=str(row[2]),
+        executed_entry_qty=optional_float(row[3]),
+        executed_exit_qty=optional_float(row[4]),
+        remaining_qty=optional_float(row[5]),
+        authoritative_entry_fees_usdc=optional_float(row[6]),
+        authoritative_exit_fees_usdc=optional_float(row[7]),
+        authoritative_total_fees_usdc=optional_float(row[8]),
+        authoritative_gross_pnl=optional_float(row[9]),
+        authoritative_net_pnl=optional_float(row[10]),
+        estimated_gross_pnl=optional_float(row[11]),
+        estimated_net_pnl=optional_float(row[12]),
+        authoritative_source=row[13],
+        authoritative_evidence=row[14] or {},
+        failure_reason=row[15],
+        schema_version=str(row[16]),
+        evidence_observed_at=row[17],
+        created_at=row[18],
+        updated_at=row[19],
+    )
 
 
 @app.get("/ops/live-attempts")
