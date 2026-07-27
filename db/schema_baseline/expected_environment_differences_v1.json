@@ -1,0 +1,95 @@
+{
+  "baseline_version": "WALTRADE_DATABASE_BASELINE_V1",
+  "default_for_unlisted_mismatch": "UNEXPECTED",
+  "stale_rule_policy": "FAIL",
+  "rules": [
+    {
+      "classification": "UNEXPECTED_DRIFT",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "allocation_policy", "object_type": "TABLE", "parent_relation": "", "schema": "public"},
+      "reason": "LIVE has a populated allocation-policy table shape while PAPER exposes a zero-column relation; no canonical source proves this divergence.",
+      "risk_class": "P0",
+      "source_evidence": "Read-only full-catalog evidence 2026-07-24"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "p_symbol text, p_interval text, p_strategy text", "object_name": "fn_refresh_adaptive_sizing_for_slot", "object_type": "FUNCTION", "parent_relation": "", "schema": "public"},
+      "reason": "LIVE and PAPER definitions differ; no source migration proving the divergence is intentional.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "bot_control", "object_type": "TABLE", "parent_relation": "", "schema": "public"},
+      "reason": "LIVE and PAPER table shapes differ; canonical transition-column migration does not prove complete shape equivalence.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "orc_apply_runs_v1", "object_type": "TABLE", "parent_relation": "", "schema": "public"},
+      "reason": "LIVE and PAPER ledger header shapes differ and require explicit migration provenance review.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "slot_capital_policy", "object_type": "TABLE", "parent_relation": "", "schema": "public"},
+      "reason": "LIVE and PAPER policy table shapes differ without accepted canonical evidence.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "v_orc_candidates_v5c", "object_type": "VIEW", "parent_relation": "", "schema": "public"},
+      "reason": "ORC candidate view definitions differ; intentionality is not established by catalog state alone.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "v_orc_picks_v5", "object_type": "VIEW", "parent_relation": "", "schema": "public"},
+      "reason": "ORC picks view definitions differ; intentionality is not established by catalog state alone.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "v_orc_v62_candidates", "object_type": "VIEW", "parent_relation": "", "schema": "public"},
+      "reason": "ORC V6.2 candidate definitions differ; intentionality is not established by catalog state alone.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "v_positions_pnl_gross_real", "object_type": "VIEW", "parent_relation": "", "schema": "public"},
+      "reason": "Critical PnL view differs and cannot be accepted without explicit semantic and migration evidence.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "v_positions_pnl_net_real_ssot", "object_type": "VIEW", "parent_relation": "", "schema": "public"},
+      "reason": "Critical net PnL SSOT view differs and cannot be accepted without explicit semantic and migration evidence.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    },
+    {
+      "classification": "BLOCKED_PENDING_DECISION",
+      "expected_applicability": "COMMON",
+      "identity": {"identity_arguments": "", "object_name": "v_slot_adaptive_sizing_v1", "object_type": "VIEW", "parent_relation": "", "schema": "public"},
+      "reason": "Adaptive-sizing view definitions differ; no accepted evidence proves an intentional environment variant.",
+      "risk_class": "P1",
+      "source_evidence": "Schema Drift Audit V1 catalog fingerprints at git 4171611e"
+    }
+  ]
+}
