@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from common.database_baseline_artifact import canonicalize_raw
 from common.schema_provenance import (
     BASELINE_VERSION,
     compare_inventory,
@@ -550,6 +551,7 @@ def main() -> int:
         "command",
         choices=(
             "inventory", "build-manifest", "build-hierarchical-manifest", "gate",
+            "canonicalize-raw",
         ),
     )
     parser.add_argument("--environment", choices=("LIVE", "PAPER"))
@@ -560,7 +562,42 @@ def main() -> int:
     parser.add_argument("--live-dependencies")
     parser.add_argument("--paper-dependencies")
     parser.add_argument("--report-dir")
+    parser.add_argument(
+        "--environment-identity",
+        choices=("LOCAL_LIVE", "LOCAL_PAPER", "VPS_LIVE", "VPS_PAPER"),
+    )
+    parser.add_argument("--raw-csv")
+    parser.add_argument("--output-dir")
+    parser.add_argument("--expected-raw-sha256")
     args = parser.parse_args()
+    if args.command == "canonicalize-raw":
+        if not args.environment_identity or not args.raw_csv or not args.output_dir:
+            parser.error(
+                "canonicalize-raw requires --environment-identity, --raw-csv "
+                "and --output-dir"
+            )
+        manifest = load_checkpoint_manifest(args.manifest)
+        differences = load_difference_contract(args.differences)
+        artifact_module = ROOT / "common" / "database_baseline_artifact.py"
+        canonicalize_raw(
+            raw_path=args.raw_csv,
+            environment_identity=args.environment_identity,
+            manifest=manifest,
+            differences=differences,
+            tracked_paths=candidate_tracked_paths(),
+            output_dir=args.output_dir,
+            canonicalizer_git_sha=subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+            ).strip(),
+            source_paths=(
+                artifact_module,
+                ROOT / "common" / "schema_provenance.py",
+                Path(args.manifest),
+                Path(args.differences),
+            ),
+            expected_raw_sha256=args.expected_raw_sha256,
+        )
+        return 0
     if args.command in {"build-manifest", "build-hierarchical-manifest"}:
         if not args.live_inventory or not args.paper_inventory:
             parser.error("build-manifest requires --live-inventory and --paper-inventory")
