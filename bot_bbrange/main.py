@@ -35,6 +35,7 @@ from common.flags import exchange_mytrades_enabled
 from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
+from common.simulated_execution_evidence import record_simulated_fill_evidence
 from common.permissions import can_trade
 from common.execution import place_live_order
 from common.bot_control import upsert_defaults, read as read_bot_control
@@ -721,7 +722,8 @@ def insert_simulated_order(
             bool(is_exit),
         ),
     )
-    inserted = cur.fetchone() is not None
+    inserted_row = cur.fetchone()
+    inserted = inserted_row[0] if inserted_row else None
     conn.commit()
     cur.close()
     conn.close()
@@ -798,8 +800,10 @@ def execute_and_record(
     # Without this, BBRANGE writes only simulated_orders/events and UI/PNL/MFE/MAE/ORC cannot learn from it.
     if cfg_used.trading_mode != "LIVE":
         try:
+            evidence_position_id = None
             if not is_exit:
                 pos_id = open_position("LONG", qty_btc, price, None)
+                evidence_position_id = pos_id
                 emit_strategy_event(
                     event_type="PAPER_POSITION_OPENED",
                     decision=side,
@@ -809,6 +813,10 @@ def execute_and_record(
                     info={"pos_id": pos_id, "qty_btc": float(qty_btc), "reason_text": reason},
                 )
             else:
+                open_before_close = get_open_position()
+                evidence_position_id = (
+                    int(open_before_close[0]) if open_before_close else None
+                )
                 closed_ok = close_position(price, reason, candle_open_time)
                 emit_strategy_event(
                     event_type="PAPER_POSITION_CLOSED",
@@ -818,6 +826,29 @@ def execute_and_record(
                     candle_open_time=candle_open_time,
                     info={"qty_btc": float(qty_btc), "reason_text": reason},
                 )
+            if (
+                evidence_position_id
+                and isinstance(inserted, int)
+                and not isinstance(inserted, bool)
+            ):
+                try:
+                    record_simulated_fill_evidence(
+                        get_db_conn,
+                        client=get_exchange_client(),
+                        simulated_order_id=int(inserted),
+                        position_id=int(evidence_position_id),
+                        environment="paper",
+                        deployment_id=os.environ.get(
+                            "DEPLOYMENT_ID",
+                            os.environ.get(
+                                "WALTRADE_DEPLOYMENT_ID", "local-paper"
+                            ),
+                        ),
+                    )
+                except Exception:
+                    logging.exception(
+                        "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable"
+                    )
         except Exception as e:
             logging.exception("BBRANGE PAPER positions lifecycle failed is_exit=%s", bool(is_exit))
             emit_strategy_event(

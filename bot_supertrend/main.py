@@ -970,7 +970,8 @@ def insert_simulated_order(
             bool(is_exit),
         ),
     )
-    inserted = cur.fetchone() is not None
+    inserted_row = cur.fetchone()
+    inserted = inserted_row[0] if inserted_row else None
     conn.commit()
     cur.close()
     conn.close()

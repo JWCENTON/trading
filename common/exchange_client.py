@@ -10,10 +10,19 @@ import base64
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import json
 
 from common.exchange_symbols import to_exchange_symbol
+from common.financial_truth_identity import (
+    AccountIdentityCache,
+    ExchangeAccountIdentity,
+    okx_account_identity,
+)
+
+
+_OKX_ACCOUNT_IDENTITY_CACHE = AccountIdentityCache()
 
 
 class ExchangeAPIException(Exception):
@@ -194,6 +203,17 @@ class OkxMarketDataAdapter:
 
         return api_key, api_secret, passphrase
 
+    def _credential_cache_scope(self) -> str:
+        api_key, _api_secret, _passphrase = self._okx_credentials()
+        material = "|".join(
+            (
+                self.base_url,
+                api_key,
+                os.environ.get("OKX_TESTNET", "false").strip().lower(),
+            )
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
     @staticmethod
     def _okx_timestamp() -> str:
         # OKX accepts ISO-8601 UTC timestamp with milliseconds, e.g. 2020-12-08T09:08:57.715Z
@@ -249,10 +269,55 @@ class OkxMarketDataAdapter:
         url = f"{self.base_url}{url_path}"
         req = Request(url, data=data_bytes, headers=headers, method=method_u)
 
-        with urlopen(req, timeout=self.timeout) as resp:
-            raw = resp.read().decode("utf-8")
+        safe_meta = {
+            "method": method_u,
+            "base_url": self.base_url,
+            "request_path": url_path,
+            "query_present": bool(query),
+            "body_length": len(body_s),
+            "timestamp": ts,
+            "signature_length": len(sign),
+            "header_names": tuple(sorted(headers)),
+            "demo_header": "x-simulated-trading" in headers,
+            "timeout": self.timeout,
+            "http_client": "urllib.request",
+            "signer": "OkxMarketDataAdapter._sign",
+        }
+        self._last_private_request_diagnostic = safe_meta
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                safe_meta.update({
+                    "http_status": int(resp.status),
+                    "server_date": resp.headers.get("Date"),
+                })
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                error_payload = json.loads(raw)
+            except Exception:
+                error_payload = {}
+            safe_meta.update({
+                "http_status": int(exc.code),
+                "server_date": exc.headers.get("Date") if exc.headers else None,
+                "okx_code": error_payload.get("code"),
+                "okx_message": error_payload.get("msg"),
+            })
+            raise ExchangeAPIException(
+                "OKX private request rejected",
+                code=error_payload.get("code") or f"HTTP_{exc.code}",
+                raw={
+                    "http_status": int(exc.code),
+                    "code": error_payload.get("code"),
+                    "msg": error_payload.get("msg"),
+                },
+            ) from exc
 
         data = json.loads(raw)
+        safe_meta.update({
+            "okx_code": data.get("code"),
+            "okx_message": data.get("msg"),
+        })
         if str(data.get("code")) != "0":
             raise ExchangeAPIException(
                 f"OKX private request failed code={data.get('code')} msg={data.get('msg')}",
@@ -368,6 +433,42 @@ class OkxMarketDataAdapter:
             "balances": balances,
             "raw": data,
         }
+
+    def get_account_identity(
+        self,
+        *,
+        refresh: bool = False,
+    ) -> tuple[ExchangeAccountIdentity, str]:
+        """Read and cache exchange-proven account identity; never logs credentials."""
+
+        def fetch() -> ExchangeAccountIdentity:
+            try:
+                response = self._private_request("GET", "/api/v5/account/config")
+            except HTTPError as exc:
+                classification = (
+                    "ACCOUNT_IDENTITY_AUTH_ERROR"
+                    if exc.code in {401, 403}
+                    else "ACCOUNT_IDENTITY_UNAVAILABLE"
+                )
+                raise RuntimeError(classification) from exc
+            except ExchangeAPIException as exc:
+                code = str(exc.code or "")
+                classification = (
+                    "ACCOUNT_IDENTITY_AUTH_ERROR"
+                    if code in {"50110", "50111", "50112", "50113", "50114"}
+                    else "ACCOUNT_IDENTITY_UNAVAILABLE"
+                )
+                raise RuntimeError(classification) from exc
+            try:
+                return okx_account_identity(response)
+            except ValueError as exc:
+                raise RuntimeError("ACCOUNT_IDENTITY_INVALID_RESPONSE") from exc
+
+        return _OKX_ACCOUNT_IDENTITY_CACHE.get(
+            self._credential_cache_scope(),
+            fetch,
+            refresh=refresh,
+        )
 
     def get_balances(self) -> dict:
         data = self._private_request("GET", "/api/v5/account/balance")
@@ -679,4 +780,3 @@ def get_okx_spot_instrument(symbol: str) -> dict:
         raise RuntimeError(f"OKX instruments returned no data for {inst_id}")
 
     return rows[0]
-

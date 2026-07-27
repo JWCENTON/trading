@@ -18,6 +18,7 @@ from common.alerts import emit_alert_throttled
 from psycopg2.extras import execute_batch
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
+from common.simulated_execution_evidence import record_simulated_fill_evidence
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.bot_control import upsert_defaults, read as read_bot_control
@@ -364,6 +365,29 @@ def execute_and_record(
             cfg_used=cfg_used,
             reason_text=str(reason or ""),
         )
+
+        if (
+            paper_res.get("ok")
+            and paper_res.get("pos_id")
+            and isinstance(inserted, int)
+            and not isinstance(inserted, bool)
+        ):
+            try:
+                record_simulated_fill_evidence(
+                    get_db_conn,
+                    client=get_exchange_client(),
+                    simulated_order_id=int(inserted),
+                    position_id=int(paper_res["pos_id"]),
+                    environment="paper",
+                    deployment_id=os.environ.get(
+                        "DEPLOYMENT_ID",
+                        os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+                    ),
+                )
+            except Exception:
+                logging.exception(
+                    "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable"
+                )
 
         if not paper_res.get("ok", False):
             emit_strategy_event(
@@ -1853,7 +1877,8 @@ def insert_simulated_order(
             bool(is_exit),
         ),
     )
-    inserted = cur.fetchone() is not None
+    inserted_row = cur.fetchone()
+    inserted = inserted_row[0] if inserted_row else None
     conn.commit()
     cur.close()
     conn.close()

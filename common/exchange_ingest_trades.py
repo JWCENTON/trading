@@ -58,7 +58,11 @@ INSERT INTO binance_order_fills (
   commission_usdc,
   event_time,
   fill_idx,
-  raw
+  raw,
+  account_identity_id,
+  instrument_snapshot_id,
+  account_identity_status,
+  account_identity_failure_code
 )
 VALUES (
   %(source)s,
@@ -75,7 +79,11 @@ VALUES (
   %(commission_usdc)s,
   to_timestamp(%(event_time_ms)s / 1000.0),
   %(fill_idx)s,
-  %(raw)s::jsonb
+  %(raw)s::jsonb,
+  %(account_identity_id)s,
+  %(instrument_snapshot_id)s,
+  %(account_identity_status)s,
+  %(account_identity_failure_code)s
 )
 ON CONFLICT (source, trade_id) DO NOTHING;
 """
@@ -284,7 +292,102 @@ def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str
         "event_time_ms": int(t.get("time")),
         "fill_idx": int(fill_idx),
         "raw": json.dumps(t),
+        "account_identity_id": None,
+        "instrument_snapshot_id": None,
+        "account_identity_status": "MISSING",
+        "account_identity_failure_code": "ACCOUNT_IDENTITY_UNAVAILABLE",
     }
+
+
+def _persist_okx_identity_snapshot(conn, client):
+    try:
+        identity, diagnostic = client.get_account_identity()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO financial_truth_account_identity_v1 (
+                  source_authority,exchange,account_uid,main_account_uid,
+                  account_scope,identity_source,identity_version,
+                  identity_fingerprint,captured_at
+                ) VALUES (
+                  'EXCHANGE_EXECUTION',%s,%s,%s,%s,%s,%s,%s,%s
+                )
+                ON CONFLICT (identity_fingerprint) DO UPDATE
+                  SET identity_fingerprint=EXCLUDED.identity_fingerprint
+                RETURNING id
+                """,
+                (
+                    identity.exchange, identity.uid, identity.main_uid,
+                    identity.scope, identity.source, identity.version,
+                    identity.fingerprint, identity.captured_at,
+                ),
+            )
+            identity_id = int(cur.fetchone()[0])
+        logging.info(
+            "FINANCIAL_TRUTH_IDENTITY|status=%s scope=%s uid=***%s",
+            diagnostic, identity.scope, identity.uid[-4:],
+        )
+        return identity_id, "VERIFIED", None
+    except Exception as exc:
+        code = str(exc)
+        if "ACCOUNT_IDENTITY_" not in code:
+            code = "ACCOUNT_IDENTITY_UNAVAILABLE"
+        logging.warning("FINANCIAL_TRUTH_IDENTITY|status=%s", code)
+        return None, "MISSING", code
+
+
+def _persist_instrument_snapshot(conn, client, symbol: str, source: str):
+    try:
+        from common.simulated_execution_evidence import (
+            INSTRUMENT_METADATA_VERSION,
+            _assets,
+            _hash,
+            _instrument_values,
+        )
+        values = _instrument_values(client, symbol)
+        if values is None:
+            return None
+        step, min_qty, min_notional, qty_precision, price_precision = values
+        base_asset, quote_asset = _assets(symbol)
+        payload = {
+            "source_authority": "EXCHANGE_EXECUTION", "exchange": source.upper(),
+            "symbol": symbol, "base_asset": base_asset,
+            "quote_asset": quote_asset, "step_size": str(step),
+            "min_qty": str(min_qty), "min_notional": str(min_notional),
+            "quantity_precision": qty_precision, "price_precision": price_precision,
+            "source": "EXCHANGE_PUBLIC_AT_EXECUTION",
+            "version": INSTRUMENT_METADATA_VERSION,
+        }
+        fingerprint = _hash(payload)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO financial_truth_instrument_snapshot_v1 (
+                  source_authority,exchange,symbol,base_asset,quote_asset,
+                  step_size,min_qty,quantity_precision,price_precision,
+                  min_notional,metadata_source,metadata_version,
+                  metadata_fingerprint,captured_at
+                ) VALUES (
+                  'EXCHANGE_EXECUTION',%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                  'EXCHANGE_PUBLIC_AT_EXECUTION',%s,%s,clock_timestamp()
+                )
+                ON CONFLICT (metadata_fingerprint) DO UPDATE
+                  SET metadata_fingerprint=EXCLUDED.metadata_fingerprint
+                RETURNING id
+                """,
+                (
+                    source.upper(), symbol, base_asset, quote_asset, step,
+                    min_qty, qty_precision, price_precision, min_notional,
+                    INSTRUMENT_METADATA_VERSION, fingerprint,
+                ),
+            )
+            return int(cur.fetchone()[0])
+    except Exception:
+        logging.warning(
+            "FINANCIAL_TRUTH_INSTRUMENT|status=SNAPSHOT_UNAVAILABLE symbol=%s",
+            symbol,
+        )
+        return None
 
 
 def ingest_my_trades(
@@ -330,8 +433,16 @@ def ingest_my_trades(
 
     with psycopg2.connect(dsn) as conn:
         conn.autocommit = False
+        identity_id, identity_status, identity_failure = (
+            _persist_okx_identity_snapshot(conn, client)
+            if source == "okx"
+            else (None, "MISSING", "UNSUPPORTED_EXCHANGE_IDENTITY")
+        )
 
         for symbol in symbols:
+            instrument_snapshot_id = _persist_instrument_snapshot(
+                conn, client, symbol, source
+            )
             with conn.cursor() as cur:
                 state_symbol = f"{source}:{symbol}"
                 cur.execute(READ_STATE_SQL, (state_symbol,))
@@ -354,6 +465,13 @@ def ingest_my_trades(
                 continue
 
             rows = [_trade_to_row(symbol, t, fill_idx=0, source=source) for t in trades]
+            for item in rows:
+                item.update({
+                    "account_identity_id": identity_id,
+                    "instrument_snapshot_id": instrument_snapshot_id,
+                    "account_identity_status": identity_status,
+                    "account_identity_failure_code": identity_failure,
+                })
             total_fetched += len(rows)
 
             min_t = min(r["event_time_ms"] for r in rows)
@@ -361,6 +479,21 @@ def ingest_my_trades(
 
             with conn.cursor() as cur:
                 execute_batch(cur, UPSERT_TRADE_SQL, rows, page_size=500)
+                execute_batch(
+                    cur,
+                    """
+                    UPDATE binance_orders
+                    SET account_identity_id=%(account_identity_id)s,
+                        instrument_snapshot_id=%(instrument_snapshot_id)s,
+                        account_identity_status=%(account_identity_status)s,
+                        account_identity_failure_code=%(account_identity_failure_code)s
+                    WHERE exchange_source=%(source)s
+                      AND symbol=%(symbol)s AND order_id=%(order_id)s
+                      AND account_identity_id IS NULL
+                    """,
+                    rows,
+                    page_size=500,
+                )
 
             max_time = max(r["event_time_ms"] for r in rows)
             with conn.cursor() as cur:

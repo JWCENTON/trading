@@ -15,6 +15,7 @@ from dataclasses import replace
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
+from common.simulated_execution_evidence import record_simulated_fill_evidence
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from datetime import datetime, timezone, date
@@ -1237,7 +1238,8 @@ def insert_simulated_order(
             bool(is_exit),
         ),
     )
-    inserted = cur.fetchone() is not None
+    inserted_row = cur.fetchone()
+    inserted = inserted_row[0] if inserted_row else None
     conn.commit()
     if inserted:
         logging.info(
@@ -1360,6 +1362,27 @@ def execute_and_record(
             candle_open_time=candle_open_time,
             is_exit=bool(is_exit),
         )
+        if (
+            meta.get("paper_pos_id")
+            and isinstance(inserted, int)
+            and not isinstance(inserted, bool)
+        ):
+            try:
+                record_simulated_fill_evidence(
+                    get_db_conn,
+                    client=get_exchange_client(),
+                    simulated_order_id=int(inserted),
+                    position_id=int(meta["paper_pos_id"]),
+                    environment="paper",
+                    deployment_id=os.environ.get(
+                        "DEPLOYMENT_ID",
+                        os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+                    ),
+                )
+            except Exception:
+                logging.exception(
+                    "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable"
+                )
 
         emit_strategy_event(
             event_type="SSOT_PAPER_APPLY",

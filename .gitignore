@@ -233,6 +233,7 @@ backups/
 !db/migrations/20260724_learning_canonical_frozen_source_snapshot_v2.sql
 !db/migrations/20260724_learning_canonical_frozen_source_snapshot_v2_rollback.sql
 !db/migrations/20260727_canonical_financial_truth_foundation_v1.sql
+!db/migrations/20260728_canonical_financial_truth_writer_v1.sql
 !tests/postgres/learning_canonical_shared_rollback_v2.sql
 !tests/postgres/learning_canonical_frozen_source_snapshot_v2.sql
 !scripts/learning_canonical_identity_conflict_audit_v1.sql

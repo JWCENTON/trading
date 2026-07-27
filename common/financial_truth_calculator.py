@@ -1,0 +1,325 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
+import hashlib
+import json
+from typing import Iterable
+
+
+CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V1"
+
+
+def _d(value) -> Decimal | None:
+    return None if value is None else Decimal(str(value))
+
+
+def _json_value(value):
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return value
+
+
+@dataclass(frozen=True)
+class FillEvidence:
+    fill_id: str
+    order_id: str
+    position_id: int
+    purpose: str
+    side: str
+    symbol: str
+    quantity: Decimal
+    price: Decimal
+    notional: Decimal
+    fee_quantity: Decimal | None
+    fee_asset: str | None
+    authoritative_fee_usdc: Decimal | None
+    estimated_fee_usdc: Decimal | None
+    event_time: datetime
+    source_authority: str
+    source_exchange: str
+    source_environment: str
+    source_deployment_id: str
+    account_identity_fingerprint: str | None
+    instrument_metadata_fingerprint: str | None
+    step_size: Decimal | None
+    base_asset: str | None
+    quote_asset: str | None
+    source_version: str
+
+
+@dataclass(frozen=True)
+class FinancialTruthCalculation:
+    position_id: int
+    position_status: str
+    financial_truth_status: str
+    gross_entry_qty: Decimal | None
+    gross_exit_qty: Decimal | None
+    base_asset_entry_fee_qty: Decimal | None
+    base_asset_exit_fee_qty: Decimal | None
+    net_entry_inventory_qty: Decimal | None
+    net_exit_inventory_reduction_qty: Decimal | None
+    gross_remaining_execution_qty: Decimal | None
+    remaining_inventory_qty: Decimal | None
+    authoritative_entry_notional: Decimal | None
+    authoritative_exit_notional: Decimal | None
+    authoritative_entry_fees_usdc: Decimal | None
+    authoritative_exit_fees_usdc: Decimal | None
+    authoritative_fees_usdc: Decimal | None
+    authoritative_gross_pnl: Decimal | None
+    authoritative_net_pnl: Decimal | None
+    estimated_gross_pnl: Decimal | None
+    estimated_fees_usdc: Decimal | None
+    estimated_net_pnl: Decimal | None
+    entry_fill_count: int
+    exit_fill_count: int
+    first_entry_fill_at: datetime | None
+    last_entry_fill_at: datetime | None
+    first_exit_fill_at: datetime | None
+    last_exit_fill_at: datetime | None
+    source_authority: str | None
+    source_exchange: str | None
+    source_environment: str | None
+    source_deployment_id: str | None
+    source_account_identity_fingerprint: str | None
+    source_order_ids: tuple[str, ...]
+    source_fill_ids: tuple[str, ...]
+    source_fingerprint: str
+    calculation_version: str
+    failure_code: str | None
+    failure_detail: str | None
+
+    def semantic_values(self) -> dict:
+        return {
+            key: _json_value(value)
+            for key, value in asdict(self).items()
+            if key not in {"position_id"}
+        }
+
+
+def source_fingerprint(fills: Iterable[FillEvidence]) -> str:
+    payload = []
+    for fill in sorted(fills, key=lambda item: (item.event_time, item.fill_id)):
+        payload.append(
+            {
+                key: _json_value(value)
+                for key, value in asdict(fill).items()
+            }
+        )
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def classify_fee_asset_role(
+    fee_asset: str | None,
+    base_asset: str | None,
+    quote_asset: str | None,
+) -> str:
+    fee = str(fee_asset).strip().upper() if fee_asset else None
+    base = str(base_asset).strip().upper() if base_asset else None
+    quote = str(quote_asset).strip().upper() if quote_asset else None
+    if not fee or fee in {"NONE", "NULL", "UNKNOWN", "N/A"}:
+        return "UNKNOWN"
+    if base and fee == base:
+        return "BASE"
+    if quote and fee == quote:
+        return "QUOTE"
+    if base and quote:
+        return "THIRD"
+    return "UNKNOWN"
+
+
+def calculate_financial_truth(
+    *,
+    position_id: int,
+    position_status: str,
+    fills: Iterable[FillEvidence],
+    estimated_gross_pnl: Decimal | None = None,
+    estimated_fees_usdc: Decimal | None = None,
+    estimated_net_pnl: Decimal | None = None,
+) -> FinancialTruthCalculation:
+    evidence = tuple(fills)
+    fingerprint = source_fingerprint(evidence)
+    if not evidence:
+        return FinancialTruthCalculation(
+            position_id, position_status, "UNKNOWN",
+            None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None,
+            _d(estimated_gross_pnl), _d(estimated_fees_usdc),
+            _d(estimated_net_pnl), 0, 0, None, None, None, None,
+            None, None, None, None, None, (), (), fingerprint,
+            CALCULATION_VERSION, None, None,
+        )
+
+    def failed(code: str, detail: str) -> FinancialTruthCalculation:
+        first = evidence[0]
+        return FinancialTruthCalculation(
+            position_id, position_status, "FAILED",
+            None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None,
+            _d(estimated_gross_pnl), _d(estimated_fees_usdc),
+            _d(estimated_net_pnl), 0, 0, None, None, None, None,
+            first.source_authority, first.source_exchange,
+            first.source_environment, first.source_deployment_id, None,
+            tuple(sorted({f.order_id for f in evidence})),
+            tuple(sorted({f.fill_id for f in evidence})), fingerprint,
+            CALCULATION_VERSION, code, detail,
+        )
+
+    if any(fill.position_id != position_id for fill in evidence):
+        return failed("POSITION_LINKAGE_CONFLICT", "fill linked to another position")
+    identities = {f.account_identity_fingerprint for f in evidence if f.account_identity_fingerprint}
+    if len(identities) > 1:
+        return failed("ACCOUNT_IDENTITY_CONFLICT", "verified UID fingerprints differ")
+    authorities = {f.source_authority for f in evidence}
+    exchanges = {f.source_exchange for f in evidence}
+    environments = {f.source_environment for f in evidence}
+    deployments = {f.source_deployment_id for f in evidence}
+    symbols = {f.symbol for f in evidence}
+    if any(len(values) > 1 for values in (authorities, exchanges, environments, deployments, symbols)):
+        return failed("SOURCE_PROVENANCE_CONFLICT", "source provenance is inconsistent")
+    if any(f.quantity <= 0 or f.price < 0 or f.notional < 0 for f in evidence):
+        return failed("INVALID_EXECUTION_VALUE", "negative or zero execution value")
+
+    entries = tuple(f for f in evidence if f.purpose == "ENTRY")
+    exits = tuple(f for f in evidence if f.purpose == "EXIT")
+    if len(entries) + len(exits) != len(evidence):
+        return failed("INVALID_ORDER_PURPOSE", "purpose must be ENTRY or EXIT")
+
+    gross_entry = sum((f.quantity for f in entries), Decimal("0"))
+    gross_exit = sum((f.quantity for f in exits), Decimal("0"))
+    base_asset = evidence[0].base_asset
+    entry_base_fee = sum(
+        (f.fee_quantity or Decimal("0"))
+        for f in entries
+        if classify_fee_asset_role(
+            f.fee_asset, f.base_asset, f.quote_asset
+        ) == "BASE"
+    )
+    exit_base_fee = sum(
+        (f.fee_quantity or Decimal("0"))
+        for f in exits
+        if classify_fee_asset_role(
+            f.fee_asset, f.base_asset, f.quote_asset
+        ) == "BASE"
+    )
+    net_entry = gross_entry - entry_base_fee
+    net_exit_reduction = gross_exit + exit_base_fee
+    gross_remaining = gross_entry - gross_exit
+    remaining_inventory = net_entry - net_exit_reduction
+    if min(net_entry, gross_remaining, remaining_inventory) < 0:
+        return failed("EXIT_QUANTITY_EXCEEDS_ENTRY", "exit inventory exceeds entry")
+
+    entry_notional = sum((f.notional for f in entries), Decimal("0")) if entries else None
+    exit_notional = sum((f.notional for f in exits), Decimal("0")) if exits else None
+    entry_fee_values = [f.authoritative_fee_usdc for f in entries]
+    exit_fee_values = [f.authoritative_fee_usdc for f in exits]
+    entry_fees = (
+        sum((value for value in entry_fee_values if value is not None), Decimal("0"))
+        if entries and all(value is not None for value in entry_fee_values) else None
+    )
+    exit_fees = (
+        sum((value for value in exit_fee_values if value is not None), Decimal("0"))
+        if exits and all(value is not None for value in exit_fee_values) else None
+    )
+    total_fees = (
+        entry_fees + exit_fees
+        if entry_fees is not None and exit_fees is not None else None
+    )
+    estimated_fee_values = [
+        f.estimated_fee_usdc for f in evidence if f.estimated_fee_usdc is not None
+    ]
+    estimated_fees = (
+        sum(estimated_fee_values, Decimal("0"))
+        if estimated_fee_values else _d(estimated_fees_usdc)
+    )
+
+    gross_pnl = None
+    net_pnl = None
+    if gross_entry > 0 and gross_exit > 0 and entry_notional is not None:
+        exited_ratio = min(gross_exit / gross_entry, Decimal("1"))
+        allocated_entry_notional = entry_notional * exited_ratio
+        gross_pnl = exit_notional - allocated_entry_notional
+        inventory_exit_ratio = (
+            min(net_exit_reduction / net_entry, Decimal("1"))
+            if net_entry > 0 else Decimal("0")
+        )
+        allocated_entry_fees = (
+            entry_fees * inventory_exit_ratio
+            if entry_fees is not None else None
+        )
+        if allocated_entry_fees is not None and exit_fees is not None:
+            net_pnl = gross_pnl - allocated_entry_fees - exit_fees
+
+    missing = []
+    if not entries:
+        missing.append("MISSING_ENTRY_FILLS")
+    if not identities:
+        missing.append("MISSING_ACCOUNT_PROVENANCE")
+    if any(f.instrument_metadata_fingerprint is None for f in evidence):
+        if remaining_inventory != 0:
+            missing.append("MISSING_INSTRUMENT_SNAPSHOT")
+    if any(f.authoritative_fee_usdc is None for f in evidence):
+        missing.append("MISSING_AUTHORITATIVE_FEE")
+    fee_roles = tuple(
+        classify_fee_asset_role(f.fee_asset, f.base_asset, f.quote_asset)
+        for f in evidence
+    )
+    if any(role == "UNKNOWN" for role in fee_roles):
+        missing.append("FEE_ASSET_ROLE_UNKNOWN")
+    if any(
+        f.base_asset is None
+        or f.quote_asset is None
+        or f.instrument_metadata_fingerprint is None
+        for f in evidence
+    ):
+        missing.append("MISSING_INSTRUMENT_METADATA")
+    if any(
+        f.authoritative_fee_usdc is None and f.estimated_fee_usdc is not None
+        for f in evidence
+    ):
+        missing.append("FEE_VALUATION_ESTIMATED")
+    if any(role == "THIRD" for role in fee_roles):
+        missing.append("THIRD_ASSET_FEE_ESTIMATED")
+    if exit_base_fee:
+        missing.append("BASE_EXIT_FEE_SEMANTICS_UNSUPPORTED")
+    if not exits:
+        missing.append("MISSING_EXIT_FILLS")
+    steps = {f.step_size for f in evidence if f.step_size is not None}
+    if len(steps) > 1:
+        return failed("INSTRUMENT_METADATA_CONFLICT", "step size snapshots differ")
+    tolerance = next(iter(steps)) if steps else None
+    inventory_complete = remaining_inventory == 0 or (
+        tolerance is not None and remaining_inventory <= tolerance
+    )
+    if not inventory_complete:
+        missing.append("REMAINING_INVENTORY")
+    if net_pnl is None:
+        missing.append("MISSING_AUTHORITATIVE_NET_PNL")
+
+    status = "COMPLETE" if not missing else "INCOMPLETE"
+    first = evidence[0]
+    times_entry = [f.event_time for f in entries]
+    times_exit = [f.event_time for f in exits]
+    return FinancialTruthCalculation(
+        position_id, position_status, status,
+        gross_entry, gross_exit, entry_base_fee, exit_base_fee,
+        net_entry, net_exit_reduction, gross_remaining, remaining_inventory,
+        entry_notional, exit_notional, entry_fees, exit_fees, total_fees,
+        gross_pnl, net_pnl, _d(estimated_gross_pnl), estimated_fees,
+        _d(estimated_net_pnl), len(entries), len(exits),
+        min(times_entry) if times_entry else None,
+        max(times_entry) if times_entry else None,
+        min(times_exit) if times_exit else None,
+        max(times_exit) if times_exit else None,
+        first.source_authority, first.source_exchange,
+        first.source_environment, first.source_deployment_id,
+        next(iter(identities)) if identities else None,
+        tuple(sorted({f.order_id for f in evidence})),
+        tuple(sorted({f.fill_id for f in evidence})), fingerprint,
+        CALCULATION_VERSION, missing[0] if missing else None,
+        ",".join(missing) if missing else None,
+    )

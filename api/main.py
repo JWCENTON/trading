@@ -398,6 +398,28 @@ class CanonicalFinancialTruthResponse(BaseModel):
     evidence_observed_at: Optional[datetime]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
+    gross_entry_qty: Optional[float] = None
+    gross_exit_qty: Optional[float] = None
+    net_entry_inventory_qty: Optional[float] = None
+    net_exit_inventory_reduction_qty: Optional[float] = None
+    gross_remaining_execution_qty: Optional[float] = None
+    remaining_inventory_qty: Optional[float] = None
+    authoritative_entry_notional: Optional[float] = None
+    authoritative_exit_notional: Optional[float] = None
+    authoritative_fees_usdc: Optional[float] = None
+    estimated_fees_usdc: Optional[float] = None
+    source_authority: Optional[str] = None
+    source_exchange: Optional[str] = None
+    source_environment: Optional[str] = None
+    source_deployment_id: Optional[str] = None
+    source_account_identity_fingerprint: Optional[str] = None
+    source_fingerprint: Optional[str] = None
+    calculation_version: Optional[str] = None
+    writer_version: Optional[str] = None
+    calculated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    failure_code: Optional[str] = None
+    failure_detail: Optional[str] = None
 
 
 class StrategyMetrics(BaseModel):
@@ -3429,7 +3451,29 @@ def canonical_financial_truth_position(
                   schema_version,
                   evidence_observed_at,
                   created_at,
-                  updated_at
+                  updated_at,
+                  gross_entry_qty,
+                  gross_exit_qty,
+                  net_entry_inventory_qty,
+                  net_exit_inventory_reduction_qty,
+                  gross_remaining_execution_qty,
+                  remaining_inventory_qty,
+                  authoritative_entry_notional,
+                  authoritative_exit_notional,
+                  authoritative_fees_usdc,
+                  estimated_fees_usdc,
+                  source_authority,
+                  source_exchange,
+                  source_environment,
+                  source_deployment_id,
+                  source_account_identity_fingerprint,
+                  source_fingerprint,
+                  calculation_version,
+                  writer_version,
+                  calculated_at,
+                  completed_at,
+                  failure_code,
+                  failure_detail
                 FROM v_canonical_financial_truth_v1
                 WHERE position_id = %s
                 """,
@@ -3474,6 +3518,28 @@ def canonical_financial_truth_position(
         evidence_observed_at=row[17],
         created_at=row[18],
         updated_at=row[19],
+        gross_entry_qty=optional_float(row[20]),
+        gross_exit_qty=optional_float(row[21]),
+        net_entry_inventory_qty=optional_float(row[22]),
+        net_exit_inventory_reduction_qty=optional_float(row[23]),
+        gross_remaining_execution_qty=optional_float(row[24]),
+        remaining_inventory_qty=optional_float(row[25]),
+        authoritative_entry_notional=optional_float(row[26]),
+        authoritative_exit_notional=optional_float(row[27]),
+        authoritative_fees_usdc=optional_float(row[28]),
+        estimated_fees_usdc=optional_float(row[29]),
+        source_authority=row[30],
+        source_exchange=row[31],
+        source_environment=row[32],
+        source_deployment_id=row[33],
+        source_account_identity_fingerprint=row[34],
+        source_fingerprint=row[35],
+        calculation_version=row[36],
+        writer_version=row[37],
+        calculated_at=row[38],
+        completed_at=row[39],
+        failure_code=row[40],
+        failure_detail=row[41],
     )
 
 
