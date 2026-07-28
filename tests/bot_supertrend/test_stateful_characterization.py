@@ -475,7 +475,7 @@ def test_live_daily_loss_control_blocks_before_execution(harness, monkeypatch):
 
 @pytest.mark.parametrize(
     "scenario_name, closes",
-    [("PAPER", False), ("LIVE_SUPPRESSION", False),
+    [("PAPER", True), ("LIVE_SUPPRESSION", False),
      ("ENTRY_REJECTION", False), ("ENTRY_FULL", True)],
 )
 def test_paper_live_entry_boundaries(harness, scenario_name, closes):
@@ -485,14 +485,38 @@ def test_paper_live_entry_boundaries(harness, scenario_name, closes):
     assert (observed.position is not None) is closes
 
 
-def test_paper_entry_emits_position_opened_without_position_mutation(harness):
+def test_paper_entry_materializes_position_before_position_opened_event(harness):
     use_execution(harness, "PAPER")
     observed = harness.strategy_cycle(candle(direction=1), candle(minute=-1, direction=-1))
     assert len(observed.attempts) == 1
     assert "LEDGER_OK" in reasons(observed)
     assert "SSOT_EXECUTE_AND_RECORD" in reasons(observed)
-    assert observed.position is None
-    assert observed.mutations == ()
+    assert observed.position == (1, "LONG", 0.11, 100.0, candle()[0])
+    assert len(observed.mutations) == 1
+    assert observed.mutations[0][0] == "OPEN"
+    assert harness.simulated_evidence[-1] == {
+        "position_id": 1,
+        "simulated_order_id": 901,
+        "purpose": "ENTRY",
+    }
+    assert observed.operation_log.index("mutation:open") < (
+        observed.operation_log.index("event:POSITION_OPENED")
+    )
+
+
+def test_paper_open_position_blocks_later_entry_until_exit(harness):
+    use_execution(harness, "PAPER")
+    first = harness.strategy_cycle(
+        candle(direction=1), candle(minute=-1, direction=-1)
+    )
+    second = harness.strategy_cycle(
+        candle(minute=1, direction=1),
+        candle(direction=-1),
+    )
+    assert first.position is not None
+    assert second.position == first.position
+    assert second.attempts == ()
+    assert len(harness.simulated_evidence) == 1
 
 
 def run_production_execute_and_record(module, monkeypatch, production_execute, scenario):
@@ -517,8 +541,10 @@ def run_production_execute_and_record(module, monkeypatch, production_execute, s
         "exchange_status": scenario["exchange_status"],
         "resp": dict(scenario["resp"]) if scenario["resp"] is not None else None,
     }
-    monkeypatch.setattr(module, "insert_simulated_order",
-                        lambda **_k: scenario["ledger_ok"])
+    monkeypatch.setattr(
+        module, "insert_simulated_order",
+        lambda **_k: 901 if scenario["ledger_ok"] else None,
+    )
     monkeypatch.setattr(module, "emit_strategy_event", lambda **_k: None)
     monkeypatch.setattr(module, "get_open_position", lambda: None)
     monkeypatch.setattr(module, "get_exchange_client", lambda: object())
@@ -527,6 +553,10 @@ def run_production_execute_and_record(module, monkeypatch, production_execute, s
     monkeypatch.setattr(module, "build_live_entry_intent_client_order_id",
                         lambda *_a, **_k: scenario["client_order_id"])
     monkeypatch.setattr(module, "open_position_from_live_ack", lambda **_k: 77)
+    monkeypatch.setattr(module, "open_position", lambda *_a, **_k: 77)
+    monkeypatch.setattr(
+        module, "record_simulated_fill_evidence", lambda *_a, **_k: True
+    )
 
     cfg = SimpleNamespace(
         symbol="BTCUSDC", interval="1m", trading_mode=scenario["trading_mode"],
@@ -557,6 +587,11 @@ def test_fixture_raw_execution_result_matches_production_return_shape(
     production = run_production_execute_and_record(
         harness.module, monkeypatch, harness.production_execute_and_record, scenario,
     )
+    if scenario_name == "PAPER":
+        fixture_result = {
+            **fixture_result,
+            "position_id": 77,
+        }
     assert fixture_result == production
     if scenario["resp"] is not None:
         assert fixture_result["resp"]["scenario_marker"] == scenario["resp"]["scenario_marker"]
@@ -737,8 +772,14 @@ def test_exit_matrix_and_chronology(harness, price, age, flip, expected_reason):
     observed = harness.strategy_cycle(latest, prev)
     assert observed.position is None
     assert observed.mutations[-1][3] == expected_reason
+    assert harness.simulated_evidence[-1] == {
+        "position_id": 1,
+        "simulated_order_id": 901,
+        "purpose": "EXIT",
+    }
     log = observed.operation_log
     assert log.index("execution:exit") < log.index("mutation:close")
+    assert log.index("evidence:exit") < log.index("mutation:close")
     assert log.index("mutation:close") < log.index("event:RUN_END")
     assert log[-1] == "event:RUN_END"
 

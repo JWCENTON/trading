@@ -47,6 +47,7 @@ from common.decision_contract import (
 )
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
+from common.simulated_execution_evidence import record_simulated_fill_evidence
 
 
 logging.basicConfig(
@@ -635,7 +636,14 @@ def attach_exit_order_id(pos_id: int, order_id: str, client_order_id: str) -> No
     conn.close()
 
 
-def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str | None) -> int | None:
+def open_position(
+    side: str,
+    qty: float,
+    entry_price: float,
+    entry_client_order_id: str | None,
+    *,
+    entry_time=None,
+) -> int | None:
     # SPOT-only: LONG only
     if str(side).upper() != "LONG":
         return None
@@ -664,10 +672,11 @@ def open_position(side: str, qty: float, entry_price: float, entry_client_order_
         INSERT INTO positions(
           symbol, strategy, interval, status, side, qty, entry_price, entry_time, entry_client_order_id
         )
-        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
+        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, COALESCE(%s, now()), %s)
         RETURNING id;
         """,
         (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price),
+         entry_time,
          (str(entry_client_order_id) if entry_client_order_id else None)),
     )
     pos_id = int(cur.fetchone()[0])
@@ -734,20 +743,39 @@ def open_position_from_live_ack(
     return pos_id
 
 
-def close_position(exit_price: float, reason: str,  candle_open_time) -> bool:
+def close_position(
+    exit_price: float,
+    reason: str,
+    candle_open_time,
+    *,
+    expected_position_id: int | None = None,
+) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT id, side, entry_price, entry_time
-        FROM positions
-        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
-        ORDER BY entry_time DESC
-        LIMIT 1;
-        """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
-    )
+    if expected_position_id is None:
+        cur.execute(
+            """
+            SELECT id, side, entry_price, entry_time
+            FROM positions
+            WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+            ORDER BY entry_time DESC
+            LIMIT 1;
+            """,
+            (SYMBOL, STRATEGY_NAME, INTERVAL),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, side, entry_price, entry_time
+            FROM positions
+            WHERE id=%s AND symbol=%s AND strategy=%s AND interval=%s
+              AND status='OPEN'
+            """,
+            (
+                int(expected_position_id), SYMBOL, STRATEGY_NAME, INTERVAL,
+            ),
+        )
     row = cur.fetchone()
 
     if not row:
@@ -1037,15 +1065,70 @@ def execute_and_record(
         info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
     )
 
-    # PAPER => traktujemy jako wykonane
+    # PAPER: materialize the standard position lifecycle after ledger success.
+    # LIVE remains below and never creates a position before confirmed execution.
     if cfg_used.trading_mode != "LIVE":
+        if is_exit:
+            open_row = get_open_position()
+            position_id = int(open_row[0]) if open_row else None
+            if position_id is None:
+                return {
+                    "ledger_ok": False,
+                    "live_attempted": False,
+                    "live_ok": False,
+                    "paper_executed": False,
+                    "blocked_reason": "EXIT_NO_OPEN_POSITION",
+                    "client_order_id": None,
+                    "resp": None,
+                    "position_id": None,
+                    "simulated_order_id": int(inserted),
+                }
+        else:
+            position_id = open_position(
+                "LONG",
+                float(qty_btc),
+                float(price),
+                None,
+                entry_time=candle_open_time,
+            )
+            if position_id is None:
+                return {
+                    "ledger_ok": False,
+                    "live_attempted": False,
+                    "live_ok": False,
+                    "paper_executed": False,
+                    "blocked_reason": "PAPER_POSITION_OPEN_FAILED",
+                    "client_order_id": None,
+                    "resp": None,
+                    "position_id": None,
+                    "simulated_order_id": int(inserted),
+                }
+        try:
+            record_simulated_fill_evidence(
+                get_db_conn,
+                client=get_exchange_client(),
+                simulated_order_id=int(inserted),
+                position_id=int(position_id),
+                environment="paper",
+                deployment_id=os.environ.get(
+                    "DEPLOYMENT_ID",
+                    os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+                ),
+            )
+        except Exception:
+            logging.exception(
+                "FINANCIAL_TRUTH_EVIDENCE|SUPERTREND paper persistence unavailable"
+            )
         return {
             "ledger_ok": True,
             "live_attempted": False,
             "live_ok": True,
+            "paper_executed": True,
             "blocked_reason": None,
             "client_order_id": None,
             "resp": None,
+            "position_id": int(position_id),
+            "simulated_order_id": int(inserted),
         }
 
     # LIVE: permission gate
@@ -1895,7 +1978,11 @@ def _run_strategy(latest, prev):
                         allow_meta=snap["allow_meta_exit"],
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=price, reason="PANIC", candle_open_time=open_time)
+                        close_position(
+                            exit_price=price, reason="PANIC",
+                            candle_open_time=open_time,
+                            expected_position_id=res.get("position_id"),
+                        )
                     else:
                         emit_strategy_event(
                             event_type="BLOCKED",
@@ -2016,7 +2103,11 @@ def _run_strategy(latest, prev):
                     allow_meta=snap["allow_meta_exit"],
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(exit_price=price, reason="TAKE_PROFIT_LONG", candle_open_time=open_time)
+                    close_position(
+                        exit_price=price, reason="TAKE_PROFIT_LONG",
+                        candle_open_time=open_time,
+                        expected_position_id=res.get("position_id"),
+                    )
                 else:
                     emit_strategy_event(
                         event_type="BLOCKED",
@@ -2062,7 +2153,11 @@ def _run_strategy(latest, prev):
                     allow_meta=snap["allow_meta_exit"],
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(exit_price=price, reason="STOP_LOSS_LONG", candle_open_time=open_time)
+                    close_position(
+                        exit_price=price, reason="STOP_LOSS_LONG",
+                        candle_open_time=open_time,
+                        expected_position_id=res.get("position_id"),
+                    )
                 else:
                     emit_strategy_event(
                         event_type="BLOCKED",
@@ -2193,7 +2288,11 @@ def _run_strategy(latest, prev):
                         allow_meta=snap["allow_meta_exit"],
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=price, reason=exit_kind, candle_open_time=open_time)
+                        close_position(
+                            exit_price=price, reason=exit_kind,
+                            candle_open_time=open_time,
+                            expected_position_id=res.get("position_id"),
+                        )
                     else:
                         emit_strategy_event(
                             event_type="BLOCKED",
@@ -2255,7 +2354,11 @@ def _run_strategy(latest, prev):
                         allow_meta=snap["allow_meta_exit"],
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(exit_price=price, reason="TIME_EXIT_LONG", candle_open_time=open_time)
+                        close_position(
+                            exit_price=price, reason="TIME_EXIT_LONG",
+                            candle_open_time=open_time,
+                            expected_position_id=res.get("position_id"),
+                        )
                     else:
                         emit_strategy_event(
                             event_type="BLOCKED",
@@ -2300,7 +2403,11 @@ def _run_strategy(latest, prev):
                     allow_meta=snap["allow_meta_exit"],
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(exit_price=price, reason="FLIP_DOWN_EXIT", candle_open_time=open_time)
+                    close_position(
+                        exit_price=price, reason="FLIP_DOWN_EXIT",
+                        candle_open_time=open_time,
+                        expected_position_id=res.get("position_id"),
+                    )
                 else:
                     emit_strategy_event(
                         event_type="BLOCKED",
@@ -2630,7 +2737,9 @@ def _run_strategy(latest, prev):
                     float(res["executed_qty"])
                     if cfg_effective.trading_mode == "LIVE"
                     else float(qty_btc)
-                )
+                ),
+                "position_id": res.get("position_id"),
+                "simulated_order_id": res.get("simulated_order_id"),
             },
         )
         return _supertrend_execution_decision(

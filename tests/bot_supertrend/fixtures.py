@@ -239,6 +239,7 @@ class SupertrendHarness:
         self.mutations: list[tuple] = []
         self.operation_log: list[str] = []
         self.exit_evidence: dict[str, float] = {}
+        self.simulated_evidence: list[dict[str, Any]] = []
         self.last_execution_result = None
         self._install()
 
@@ -339,8 +340,45 @@ class SupertrendHarness:
             self.last_execution_result = result
             return result
         if scenario["trading_mode"] != "LIVE":
-            result = {"ledger_ok": True, "live_attempted": False, "live_ok": True,
-                      "blocked_reason": None, "client_order_id": None, "resp": None}
+            simulated_order_id = 901
+            if attempt.is_exit:
+                position_id = int(self.position[0]) if self.position else None
+                if position_id is None:
+                    result = {
+                        "ledger_ok": False, "live_attempted": False,
+                        "live_ok": False, "paper_executed": False,
+                        "blocked_reason": "EXIT_NO_OPEN_POSITION",
+                        "client_order_id": None, "resp": None,
+                        "position_id": None,
+                        "simulated_order_id": simulated_order_id,
+                    }
+                    self.last_execution_result = result
+                    return result
+            else:
+                before = self.position
+                self.position = (
+                    1, "LONG", attempt.qty, float(kwargs["price"]),
+                    kwargs["candle_open_time"],
+                )
+                position_id = int(self.position[0])
+                self.mutations.append(("OPEN", before, self.position))
+                self.operation_log.append("mutation:open")
+            evidence = {
+                "position_id": position_id,
+                "simulated_order_id": simulated_order_id,
+                "purpose": "EXIT" if attempt.is_exit else "ENTRY",
+            }
+            self.simulated_evidence.append(evidence)
+            self.operation_log.append(
+                "evidence:exit" if attempt.is_exit else "evidence:entry"
+            )
+            result = {
+                "ledger_ok": True, "live_attempted": False, "live_ok": True,
+                "paper_executed": True, "blocked_reason": None,
+                "client_order_id": None, "resp": None,
+                "position_id": position_id,
+                "simulated_order_id": simulated_order_id,
+            }
             self.last_execution_result = result
             return result
         executed_qty = scenario["executed_qty"]
@@ -404,7 +442,13 @@ class SupertrendHarness:
     def _unexpected_sleep(self, *_args, **_kwargs):
         raise AssertionError("unexpected sleep/background work")
 
-    def _close(self, *, exit_price, reason, candle_open_time):
+    def _close(
+        self, *, exit_price, reason, candle_open_time,
+        expected_position_id=None,
+    ):
+        if expected_position_id is not None:
+            assert self.position is not None
+            assert int(self.position[0]) == int(expected_position_id)
         before = self.position
         self.position = None
         self.mutations.append(("CLOSE", before, None, reason))

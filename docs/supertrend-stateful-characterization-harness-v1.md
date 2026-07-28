@@ -56,11 +56,13 @@ reversals produce `BLOCKED / NO_SIGNAL`; low volatility produces `ATR_TOO_LOW`.
 Sizing uses the existing notional calculation, optional manual addon and win-streak
 boost. There is no explicit strategy-level zero-quantity rejection: the resulting
 quantity is passed to the existing execution boundary. Successful LIVE entry
-position creation occurs inside `execute_and_record()` as SSOT. PAPER returns a
-simulated success and the caller emits `POSITION_OPENED /
-SSOT_EXECUTE_AND_RECORD`, but the current PAPER path does not call the production
-position writer or materialize position state. LIVE suppression and attempted
-no-fill do not create a position.
+position creation occurs inside `execute_and_record()` as SSOT. The original
+harness characterized a legacy PAPER gap in which the caller emitted
+`POSITION_OPENED / SSOT_EXECUTE_AND_RECORD` without materializing position
+state. C2.1B replaces that non-normative assertion: successful PAPER entry now
+creates the standard position before telemetry and records direct simulated
+execution evidence. LIVE suppression and attempted no-fill do not create a
+position.
 
 ## Exit paths
 
@@ -193,9 +195,10 @@ cannot alter the active scenario or the resulting execution behavior.
   partial quantity mutation or durable pending-exit guard exists here.
 - **Medium — silent HOLD:** an OPEN position with no exit trigger emits heartbeat
   and `RUN_END` but no explicit HOLD event.
-- **Medium — PAPER position event/state mismatch:** PAPER entry reports simulated
-  success and emits `POSITION_OPENED`, but does not call the production position
-  writer, so later cycles do not observe a materialized OPEN position from it.
+- **Resolved by C2.1B — PAPER position event/state mismatch:** the former
+  assertion was characterization of a legacy gap, not a business requirement.
+  PAPER entry now materializes the standard OPEN position before emitting
+  `POSITION_OPENED` and records direct Financial Truth evidence.
 - **Low — sizing zero:** there is no explicit strategy gate after sizing; zero is
   forwarded to `execute_and_record()`.
 - **Info — LONG-only:** entries are BUY/LONG and exits are SELL. There is no SHORT
