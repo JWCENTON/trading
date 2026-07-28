@@ -3,12 +3,21 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from enum import Enum
 import hashlib
 import json
 from typing import Iterable
 
 
 CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V1"
+
+
+class NonCanonicalFinancialTruthIssue(str, Enum):
+    POSITION_LIFECYCLE_NOT_CLOSED = "POSITION_LIFECYCLE_NOT_CLOSED"
+
+
+def is_noncanonical_financial_truth_issue(value: object) -> bool:
+    return any(value == issue.value for issue in NonCanonicalFinancialTruthIssue)
 
 
 def _d(value) -> Decimal | None:
@@ -210,8 +219,16 @@ def calculate_financial_truth(
     net_exit_reduction = gross_exit + exit_base_fee
     gross_remaining = gross_entry - gross_exit
     remaining_inventory = net_entry - net_exit_reduction
-    if min(net_entry, gross_remaining, remaining_inventory) < 0:
-        return failed("EXIT_QUANTITY_EXCEEDS_ENTRY", "exit inventory exceeds entry")
+    quantity_conflict = min(
+        net_entry, gross_remaining, remaining_inventory
+    ) < 0
+    lifecycle_conflict = (
+        bool(exits) and str(position_status).upper() != "CLOSED"
+    )
+    if quantity_conflict and not lifecycle_conflict:
+        return failed(
+            "EXIT_QUANTITY_EXCEEDS_ENTRY", "exit inventory exceeds entry"
+        )
 
     entry_notional = sum((f.notional for f in entries), Decimal("0")) if entries else None
     exit_notional = sum((f.notional for f in exits), Decimal("0")) if exits else None
@@ -288,6 +305,13 @@ def calculate_financial_truth(
         missing.append("BASE_EXIT_FEE_SEMANTICS_UNSUPPORTED")
     if not exits:
         missing.append("MISSING_EXIT_FILLS")
+    elif lifecycle_conflict:
+        missing.insert(
+            0,
+            NonCanonicalFinancialTruthIssue.POSITION_LIFECYCLE_NOT_CLOSED.value,
+        )
+    if quantity_conflict:
+        missing.append("EXIT_QUANTITY_EXCEEDS_ENTRY")
     steps = {f.step_size for f in evidence if f.step_size is not None}
     if len(steps) > 1:
         return failed("INSTRUMENT_METADATA_CONFLICT", "step size snapshots differ")

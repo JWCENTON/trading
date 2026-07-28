@@ -63,3 +63,7 @@ combined review before any runtime rollout. Only after that review may planning
 start
 with LOCAL PAPER; LIVE remains a separate decision. There are no schema or data
 changes in C2.1A to reverse.
+
+C2.1D adds lifecycle qualification without changing this routing: COMPLETE
+requires `positions.status=CLOSED`. OPEN plus EXIT evidence is a typed
+non-canonical conflict and causes zero canonical or audit writes.

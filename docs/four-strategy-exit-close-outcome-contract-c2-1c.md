@@ -26,3 +26,10 @@ execution, risk, sizing, signals, and exit ordering are unchanged.
 This contract is forward-only. It performs no schema migration, backfill,
 historical repair, or reconstruction. C2.1 is not deployed and requires a
 repeated combined final review before any image build or rollout.
+
+C2.1D further requires `positions.status=CLOSED` before Financial Truth can be
+COMPLETE. Execution evidence alone is not lifecycle completion. An OPEN
+position with EXIT evidence is the typed, non-canonical
+`POSITION_LIFECYCLE_NOT_CLOSED` conflict. It is never written by apply.
+BBRANGE close exceptions now fail closed, and a missing
+`position_close_succeeded` field never defaults to EXIT success.

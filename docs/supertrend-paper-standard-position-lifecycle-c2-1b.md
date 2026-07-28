@@ -75,3 +75,8 @@ Execution branches are explicitly PAPER or LIVE; unknown mode fails before any
 order, position, evidence, or exchange mutation. This policy is forward-only:
 there is no migration, backfill, or historical reconstruction. C2.1 remains
 local and not deployed pending repeated combined review.
+
+Financial Truth consumes both evidence and the standard position lifecycle.
+EXIT evidence records execution, while `positions.status=CLOSED` records the
+lifecycle transition. C2.1D requires both for COMPLETE; OPEN plus EXIT evidence
+remains non-canonical and non-writing.

@@ -208,3 +208,58 @@ def test_four_strategy_exit_result_requires_successful_close(
         assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
         assert result.get("ledger_ok", False) is False or strategy == "SUPERTREND"
     assert len(close_calls) <= 1
+
+
+@pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))
+def test_four_strategy_close_exception_never_reports_success(
+    monkeypatch, strategy
+):
+    module = load_strategy(monkeypatch, strategy)
+    monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 701)
+    monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
+    monkeypatch.setattr(module, "get_exchange_client", lambda: object())
+    monkeypatch.setattr(
+        module, "record_simulated_fill_evidence", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        module, "get_open_position", lambda: (77, "LONG", 0.1, 100.0, NOW)
+    )
+
+    error = RuntimeError("close unavailable")
+    if strategy in {"RSI", "TREND"}:
+        apply_name = "ssot_apply_positions_paper"
+        monkeypatch.setattr(
+            module, apply_name,
+            lambda **_kwargs: (_ for _ in ()).throw(error),
+        )
+    else:
+        monkeypatch.setattr(
+            module, "close_position",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+        )
+
+    config = SimpleNamespace(
+        symbol="BTCUSDC", interval="1m", trading_mode="PAPER",
+        live_orders_enabled=False, quote_asset="USDC",
+    )
+    kwargs = dict(
+        side="SELL", price=101.0, qty_btc=0.1, reason="exception-contract",
+        candle_open_time=NOW, is_exit=True, cfg_used=config,
+        allow_live_orders=False, allow_meta={},
+    )
+    if strategy in {"TREND", "BBRANGE"}:
+        kwargs.update(rsi_14=50.0, ema_21=100.0)
+
+    if strategy in {"RSI", "TREND"}:
+        with pytest.raises(RuntimeError, match="close unavailable"):
+            module.execute_and_record(**kwargs)
+        return
+
+    result = module.execute_and_record(**kwargs)
+    if strategy == "SUPERTREND":
+        result = module._close_supertrend_exit(
+            result, exit_price=101.0, reason="exception-contract",
+            candle_open_time=NOW,
+        )
+    assert result["position_close_succeeded"] is False
+    assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"

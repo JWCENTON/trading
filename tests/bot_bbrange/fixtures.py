@@ -241,6 +241,19 @@ class StatefulBbrangeHarness:
                 OPEN_TIME - timedelta(minutes=5),
             )
             self.recorder.add("position_open", position_id=self.next_position_id)
+        if (
+            kwargs["is_exit"]
+            and self.trading_mode == "PAPER"
+            and result["ledger_ok"]
+            and self.position is not None
+            and "position_close_succeeded" not in result
+        ):
+            self._close(
+                exit_price=kwargs["price"],
+                reason=kwargs["reason"],
+                candle_open_time=kwargs["candle_open_time"],
+            )
+            result["position_close_succeeded"] = True
         return result
 
     def _close(self, **kwargs):

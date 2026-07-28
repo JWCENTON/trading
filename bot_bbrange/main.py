@@ -878,21 +878,35 @@ def execute_and_record(
                     )
         except Exception as e:
             logging.exception("BBRANGE PAPER positions lifecycle failed is_exit=%s", bool(is_exit))
+            blocked_reason = (
+                "POSITION_CLOSE_FAILED"
+                if is_exit else "PAPER_POSITIONS_LIFECYCLE_FAILED"
+            )
             emit_strategy_event(
                 event_type="ERROR",
                 decision=side,
-                reason="PAPER_POSITIONS_LIFECYCLE_FAILED",
+                reason=blocked_reason,
                 price=price,
                 candle_open_time=candle_open_time,
-                info={"error": str(e), "is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
+                info={
+                    "error": str(e),
+                    "is_exit": bool(is_exit),
+                    "qty_btc": float(qty_btc),
+                    "reason_text": reason,
+                    "position_id": evidence_position_id,
+                    "simulated_order_id": inserted,
+                    "symbol": cfg_used.symbol,
+                    "interval": cfg_used.interval,
+                },
             )
             return {
-                "ledger_ok": True,
+                "ledger_ok": False,
                 "live_attempted": False,
                 "live_ok": False,
-                "blocked_reason": "PAPER_POSITIONS_LIFECYCLE_FAILED",
+                "blocked_reason": blocked_reason,
                 "client_order_id": None,
                 "resp": None,
+                "position_close_succeeded": False if is_exit else None,
             }
 
         return {
@@ -1614,8 +1628,16 @@ def _bbrange_exit_decision(evaluation, result, cfg_effective, *, reason_code,
         reference_price=Decimal(str(price)), side="SELL",
         reason_text=reason_text, details=details,
     )
+    paper_close_succeeded = (
+        cfg_effective.trading_mode == "PAPER"
+        and result.get("position_close_succeeded") is True
+    )
     if outcome.ledger_ok and (
-            cfg_effective.trading_mode != "LIVE" or outcome.fully_executed):
+            paper_close_succeeded
+            or (
+                cfg_effective.trading_mode == "LIVE"
+                and outcome.fully_executed
+            )):
         return FinalDecision.exit_result(
             evaluation, reason_code, position_id=position_id, **common)
     if outcome.stage in {ExecutionStage.SUPPRESSED, ExecutionStage.NOT_ATTEMPTED}:

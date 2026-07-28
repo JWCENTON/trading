@@ -103,7 +103,9 @@ def test_stop_loss_confirmed_close_exactly_once(stateful_bbrange):
     assert observed.returned_value.reason_code.value == "STOP_LOSS"
     assert kinds(observed).count("execution") == 1
     assert kinds(observed).count("position_close") == 1
-    assert next(x for x in observed.operations if x.kind == "position_close").payload["reason"] == "STOP_LOSS"
+    assert "STOP LOSS" in next(
+        x for x in observed.operations if x.kind == "position_close"
+    ).payload["reason"]
 
 
 def test_profit_lock_armed_state_persists_then_giveback_exits(stateful_bbrange):

@@ -7,7 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from common.decision_contract import FinalDecision, DecisionType
+from common.decision_contract import (
+    DecisionReason,
+    DecisionType,
+    EvaluationContext,
+    FinalDecision,
+)
 
 from tests.bot_bbrange.fixtures import (
     FakeConnection,
@@ -408,6 +413,103 @@ def test_execute_and_record_live_failure_and_fill(bbrange, monkeypatch):
     assert filled["live_ok"] is True
     assert len([x for x in rec.items if x.kind == "position_insert"]) == 1
     assert len([x for x in rec.items if x.kind == "position_attach"]) == 1
+
+
+def exit_evaluation(module):
+    now = candle()[0]
+    return EvaluationContext(
+        deployment_id="local-paper",
+        environment="trading_paper",
+        symbol=module.SYMBOL,
+        interval=module.INTERVAL,
+        strategy=module.STRATEGY_NAME,
+        candle_open_time=now,
+        evaluation_started_at=now,
+        engine_name=module.STRATEGY_NAME,
+        paper_mode=True,
+    )
+
+
+def test_paper_close_exception_fails_closed(bbrange, monkeypatch):
+    events = []
+    monkeypatch.setattr(bbrange, "insert_simulated_order", lambda **_kwargs: 501)
+    monkeypatch.setattr(
+        bbrange, "get_open_position",
+        lambda: (77, "LONG", 0.1, 100.0, candle()[0]),
+    )
+    monkeypatch.setattr(
+        bbrange, "close_position",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("db unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        bbrange, "emit_strategy_event",
+        lambda **event: events.append(event),
+    )
+    cfg = runtime_snapshot()["cfg_effective"]
+
+    result = bbrange.execute_and_record(
+        "SELL", 101.0, 0.1, "test-close", candle()[0], is_exit=True,
+        cfg_used=cfg, allow_live_orders=False, allow_meta={},
+        rsi_14=50.0, ema_21=100.0,
+    )
+    decision = bbrange._bbrange_exit_decision(
+        exit_evaluation(bbrange), result, cfg,
+        reason_code=DecisionReason.TAKE_PROFIT,
+        reason_text="test-close", price=101.0, position_id=77,
+    )
+
+    assert result["ledger_ok"] is False
+    assert result["position_close_succeeded"] is False
+    assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
+    assert decision.action != "EXIT"
+    assert not any(
+        event["event_type"] == "PAPER_POSITION_CLOSED" for event in events
+    )
+    failure = next(event for event in events if event["reason"] == "POSITION_CLOSE_FAILED")
+    assert failure["info"]["position_id"] == 77
+    assert failure["info"]["simulated_order_id"] == 501
+
+
+@pytest.mark.parametrize(
+    ("result", "successful"),
+    [
+        (
+            {
+                "ledger_ok": True, "live_ok": True,
+                "blocked_reason": None,
+            },
+            False,
+        ),
+        (
+            {
+                "ledger_ok": True, "live_ok": True,
+                "blocked_reason": None,
+                "position_close_succeeded": True,
+            },
+            True,
+        ),
+        (
+            {
+                "ledger_ok": False, "live_ok": False,
+                "blocked_reason": "POSITION_CLOSE_FAILED",
+                "position_close_succeeded": False,
+            },
+            False,
+        ),
+    ],
+)
+def test_paper_exit_decision_requires_explicit_close_success(
+    bbrange, result, successful
+):
+    cfg = runtime_snapshot()["cfg_effective"]
+    decision = bbrange._bbrange_exit_decision(
+        exit_evaluation(bbrange), result, cfg,
+        reason_code=DecisionReason.TAKE_PROFIT,
+        reason_text="test-close", price=101.0, position_id=77,
+    )
+    assert (decision.action == "EXIT") is successful
 
 
 @pytest.mark.parametrize(

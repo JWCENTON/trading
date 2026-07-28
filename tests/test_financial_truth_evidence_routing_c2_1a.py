@@ -38,6 +38,21 @@ def evidence_row(
     )
 
 
+def complete_fills(deployment="local-paper"):
+    entry = list(evidence_row("simulated", deployment=deployment))
+    exit_fill = list(evidence_row("simulated", deployment=deployment))
+    exit_fill[0] = "simulated:2"
+    exit_fill[1] = "order-2"
+    exit_fill[3] = "EXIT"
+    exit_fill[4] = "SELL"
+    exit_fill[7] = "12"
+    exit_fill[8] = "12"
+    return tuple(
+        FinancialTruthSourceRepository._fill(tuple(row))
+        for row in (entry, exit_fill)
+    )
+
+
 def schema_rows(contract):
     return [
         (table_name, column_name)
@@ -449,3 +464,78 @@ def test_apply_valid_canonical_outcome_still_calls_writer(monkeypatch):
     assert len(write_calls) == 1
     assert outcome["written"] is True
     assert outcome["calculation"].financial_truth_status == "INCOMPLETE"
+
+
+def test_apply_open_lifecycle_conflict_never_calls_canonical_or_audit_writer(
+    monkeypatch,
+):
+    enable_paper_apply(monkeypatch)
+    reconciler = FinancialTruthReconciler(ApplyConnection)
+    monkeypatch.setattr(
+        reconciler.sources,
+        "read_position_and_fills",
+        lambda *_args, **_kwargs: (
+            POSITION, complete_fills(), None,
+        ),
+    )
+    monkeypatch.setattr(
+        CanonicalFinancialTruthWriteRepository,
+        "lock_position",
+        lambda *_args: None,
+    )
+    write_calls = []
+    monkeypatch.setattr(
+        CanonicalFinancialTruthWriteRepository,
+        "write",
+        lambda *_args, **_kwargs: write_calls.append((_args, _kwargs)),
+    )
+
+    outcome = reconciler.reconcile(
+        7, requested_mode="apply",
+        evidence_context=ExecutionEvidenceContext(
+            "paper", "OKX", "local-paper"
+        ),
+    )
+
+    assert write_calls == []
+    assert outcome["written"] is False
+    assert outcome["calculation"].financial_truth_status == "INCOMPLETE"
+    assert (
+        outcome["calculation"].failure_code
+        == "POSITION_LIFECYCLE_NOT_CLOSED"
+    )
+
+
+def test_apply_closed_complete_lifecycle_calls_single_writer(monkeypatch):
+    enable_paper_apply(monkeypatch)
+    reconciler = FinancialTruthReconciler(ApplyConnection)
+    closed_position = (7, "CLOSED", None, None, None)
+    monkeypatch.setattr(
+        reconciler.sources,
+        "read_position_and_fills",
+        lambda *_args, **_kwargs: (
+            closed_position, complete_fills(), None,
+        ),
+    )
+    monkeypatch.setattr(
+        CanonicalFinancialTruthWriteRepository,
+        "lock_position",
+        lambda *_args: None,
+    )
+    write_calls = []
+    monkeypatch.setattr(
+        CanonicalFinancialTruthWriteRepository,
+        "write",
+        lambda *_args, **_kwargs: write_calls.append((_args, _kwargs)) or True,
+    )
+
+    outcome = reconciler.reconcile(
+        7, requested_mode="apply",
+        evidence_context=ExecutionEvidenceContext(
+            "paper", "OKX", "local-paper"
+        ),
+    )
+
+    assert len(write_calls) == 1
+    assert outcome["written"] is True
+    assert outcome["calculation"].financial_truth_status == "COMPLETE"

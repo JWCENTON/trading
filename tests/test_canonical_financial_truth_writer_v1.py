@@ -106,6 +106,50 @@ def test_complete_execution_evidence_is_complete():
     assert result.authoritative_net_pnl == Decimal("9.80")
 
 
+def test_open_position_with_complete_execution_is_lifecycle_conflict():
+    result = calculate_financial_truth(
+        position_id=1,
+        position_status="OPEN",
+        fills=(
+            fill("1", "ENTRY", "10", "2"),
+            fill("2", "EXIT", "10", "3"),
+        ),
+    )
+    assert result.financial_truth_status == "INCOMPLETE"
+    assert result.failure_code == "POSITION_LIFECYCLE_NOT_CLOSED"
+    assert "POSITION_LIFECYCLE_NOT_CLOSED" in result.failure_detail
+
+
+def test_open_entry_only_remains_missing_exit_incomplete():
+    result = calculate_financial_truth(
+        position_id=1, position_status="OPEN",
+        fills=(fill("1", "ENTRY", "10", "2"),),
+    )
+    assert result.financial_truth_status == "INCOMPLETE"
+    assert result.failure_code == "MISSING_EXIT_FILLS"
+
+
+def test_closed_position_missing_exit_remains_incomplete():
+    result = calculate(fill("1", "ENTRY", "10", "2"))
+    assert result.financial_truth_status == "INCOMPLETE"
+    assert result.failure_code == "MISSING_EXIT_FILLS"
+
+
+def test_open_position_with_two_exit_fills_never_complete():
+    result = calculate_financial_truth(
+        position_id=1,
+        position_status="OPEN",
+        fills=(
+            fill("1", "ENTRY", "10", "2"),
+            fill("2", "EXIT", "6", "3"),
+            fill("3", "EXIT", "6", "3"),
+        ),
+    )
+    assert result.financial_truth_status == "INCOMPLETE"
+    assert result.failure_code == "POSITION_LIFECYCLE_NOT_CLOSED"
+    assert "EXIT_QUANTITY_EXCEEDS_ENTRY" in result.failure_detail
+
+
 def test_multiple_fills_and_proportional_entry_cost():
     result = calculate(
         fill("1", "ENTRY", "4", "2", authoritative_fee="0.04"),

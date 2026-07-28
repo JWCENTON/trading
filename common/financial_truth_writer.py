@@ -4,7 +4,10 @@ from dataclasses import dataclass, replace
 import os
 from typing import Callable
 
-from common.financial_truth_calculator import calculate_financial_truth
+from common.financial_truth_calculator import (
+    calculate_financial_truth,
+    is_noncanonical_financial_truth_issue,
+)
 from common.financial_truth_repository import (
     CanonicalFinancialTruthWriteRepository,
     ExecutionEvidenceContext,
@@ -113,6 +116,15 @@ class FinancialTruthReconciler:
                             failure_code=source_issue.value,
                             failure_detail=source_issue.value,
                         )
+                        return {
+                            "mode": mode,
+                            "calculated": True,
+                            "written": False,
+                            "calculation": calculation,
+                        }
+                    if is_noncanonical_financial_truth_issue(
+                        calculation.failure_code
+                    ):
                         return {
                             "mode": mode,
                             "calculated": True,
