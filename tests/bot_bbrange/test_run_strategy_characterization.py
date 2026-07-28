@@ -472,6 +472,94 @@ def test_paper_close_exception_fails_closed(bbrange, monkeypatch):
     assert failure["info"]["simulated_order_id"] == 501
 
 
+@pytest.mark.parametrize("closed_ok", [True, False])
+def test_paper_close_event_type_matches_mutation(
+    bbrange, monkeypatch, closed_ok
+):
+    events = []
+    monkeypatch.setattr(bbrange, "insert_simulated_order", lambda **_kwargs: 501)
+    monkeypatch.setattr(
+        bbrange, "get_open_position",
+        lambda: (77, "LONG", 0.1, 100.0, candle()[0]),
+    )
+
+    def close(*_args, **_kwargs):
+        if closed_ok:
+            bbrange.emit_strategy_event(
+                event_type="POSITION_CLOSED", decision=None,
+                reason="test-close", price=101.0,
+                candle_open_time=candle()[0], info={"position_id": 77},
+            )
+        return closed_ok
+
+    monkeypatch.setattr(bbrange, "close_position", close)
+    monkeypatch.setattr(
+        bbrange, "record_simulated_fill_evidence",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(bbrange, "get_exchange_client", lambda: object())
+    monkeypatch.setattr(
+        bbrange, "emit_strategy_event", lambda **event: events.append(event)
+    )
+    cfg = runtime_snapshot()["cfg_effective"]
+
+    result = bbrange.execute_and_record(
+        "SELL", 101.0, 0.1, "test-close", candle()[0], is_exit=True,
+        cfg_used=cfg, allow_live_orders=False, allow_meta={},
+        rsi_14=50.0, ema_21=100.0,
+    )
+
+    closed = [
+        event for event in events if "CLOSED" in event["event_type"]
+    ]
+    failed = [
+        event for event in events
+        if event["event_type"] == "POSITION_CLOSE_FAILED"
+    ]
+    assert len(closed) == (1 if closed_ok else 0)
+    assert len(failed) == (0 if closed_ok else 1)
+    assert result["ledger_ok"] is closed_ok
+    assert result["position_close_succeeded"] is closed_ok
+
+
+@pytest.mark.parametrize("position_id", [44, None])
+def test_paper_open_event_type_matches_mutation(
+    bbrange, monkeypatch, position_id
+):
+    events = []
+    monkeypatch.setattr(bbrange, "insert_simulated_order", lambda **_kwargs: 501)
+    monkeypatch.setattr(
+        bbrange, "open_position",
+        lambda *_args, **_kwargs: position_id,
+    )
+    monkeypatch.setattr(
+        bbrange, "record_simulated_fill_evidence",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(bbrange, "get_exchange_client", lambda: object())
+    monkeypatch.setattr(
+        bbrange, "emit_strategy_event", lambda **event: events.append(event)
+    )
+    cfg = runtime_snapshot()["cfg_effective"]
+
+    bbrange.execute_and_record(
+        "BUY", 100.0, 0.1, "test-open", candle()[0], is_exit=False,
+        cfg_used=cfg, allow_live_orders=False, allow_meta={},
+        rsi_14=50.0, ema_21=100.0,
+    )
+
+    opened = [
+        event for event in events if "OPENED" in event["event_type"]
+    ]
+    assert len(opened) == (1 if position_id else 0)
+    if not position_id:
+        assert any(
+            event["event_type"] == "BLOCKED"
+            and event["reason"] == "POSITIONS_OPEN_SKIPPED"
+            for event in events
+        )
+
+
 @pytest.mark.parametrize(
     ("result", "successful"),
     [

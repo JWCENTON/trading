@@ -80,3 +80,8 @@ Financial Truth consumes both evidence and the standard position lifecycle.
 EXIT evidence records execution, while `positions.status=CLOSED` records the
 lifecycle transition. C2.1D requires both for COMPLETE; OPEN plus EXIT evidence
 remains non-canonical and non-writing.
+
+C2.1E confirms that SUPERTREND's caller owns `POSITION_OPENED` after the
+position-producing execution result, while the conditional close helper owns
+`POSITION_CLOSED`. Callers do not duplicate either success event. Failure
+telemetry is separate from success event types.

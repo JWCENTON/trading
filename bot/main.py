@@ -378,6 +378,31 @@ def execute_and_record(
             reason_text=str(reason or ""),
         )
 
+        if paper_res.get("ok") and is_exit:
+            emit_strategy_event(
+                event_type="POSITION_CLOSED",
+                decision=side,
+                reason=str(reason or "PAPER_EXIT"),
+                price=float(price),
+                candle_open_time=candle_open_time,
+                info={
+                    "position_id": int(paper_res["pos_id"]),
+                    "simulated_order_id": (
+                        int(inserted)
+                        if isinstance(inserted, int)
+                        and not isinstance(inserted, bool)
+                        else None
+                    ),
+                    "symbol": cfg_used.symbol,
+                    "interval": cfg_used.interval,
+                    "strategy": STRATEGY_NAME,
+                    "exit_reason": str(reason or "PAPER_EXIT"),
+                    "exit_price": float(price),
+                    "quantity": float(qty_btc),
+                    "timestamp": candle_open_time,
+                },
+            )
+
         if (
             paper_res.get("ok")
             and paper_res.get("pos_id")

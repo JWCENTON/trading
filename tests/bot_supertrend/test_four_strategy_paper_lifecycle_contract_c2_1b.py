@@ -143,18 +143,27 @@ def test_four_strategy_exit_result_requires_successful_close(
 ):
     module = load_strategy(monkeypatch, strategy)
     close_calls = []
+    events = []
     monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 601)
     monkeypatch.setattr(
         module, "record_simulated_fill_evidence", lambda *_args, **_kwargs: True
     )
     monkeypatch.setattr(module, "get_exchange_client", lambda: object())
-    monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        module, "emit_strategy_event", lambda **event: events.append(event)
+    )
     monkeypatch.setattr(
         module, "get_open_position", lambda: (77, "LONG", 0.1, 100.0, NOW)
     )
 
     def close(*_args, **_kwargs):
         close_calls.append(77)
+        if close_result:
+            module.emit_strategy_event(
+                event_type="POSITION_CLOSED", decision=None,
+                reason="contract", price=101.0, candle_open_time=NOW,
+                info={"position_id": 77},
+            )
         return close_result
 
     monkeypatch.setattr(module, "close_position", close)
@@ -170,17 +179,21 @@ def test_four_strategy_exit_result_requires_successful_close(
             },
         )
     elif strategy == "TREND":
-        monkeypatch.setattr(
-            module,
-            "ssot_apply_positions_paper",
-            lambda **_kwargs: {
+        def apply_trend(**_kwargs):
+            closed = close()
+            return {
                 "paper_pos_action": (
-                    "EXIT_CLOSED" if close_result
+                    "EXIT_CLOSED" if closed
                     else "EXIT_POSITION_CLOSE_FAILED"
                 ),
                 "paper_pos_id": 77,
-                "position_close_succeeded": close_result,
-            },
+                "position_close_succeeded": closed,
+            }
+
+        monkeypatch.setattr(
+            module,
+            "ssot_apply_positions_paper",
+            apply_trend,
         )
 
     config = SimpleNamespace(
@@ -204,9 +217,20 @@ def test_four_strategy_exit_result_requires_successful_close(
     assert result.get("position_close_succeeded", close_result) is close_result
     if close_result:
         assert result["blocked_reason"] is None
+        assert sum(
+            event["event_type"] == "POSITION_CLOSED" for event in events
+        ) == 1
     else:
         assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
         assert result.get("ledger_ok", False) is False or strategy == "SUPERTREND"
+        assert not any(
+            "CLOSED" in event["event_type"] for event in events
+        )
+        assert sum(
+            event["event_type"] in {"POSITION_CLOSE_FAILED", "BLOCKED"}
+            and event["reason"] == "POSITION_CLOSE_FAILED"
+            for event in events
+        ) == 1
     assert len(close_calls) <= 1
 
 

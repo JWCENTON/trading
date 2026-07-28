@@ -33,3 +33,8 @@ position with EXIT evidence is the typed, non-canonical
 `POSITION_LIFECYCLE_NOT_CLOSED` conflict. It is never written by apply.
 BBRANGE close exceptions now fail closed, and a missing
 `position_close_succeeded` field never defaults to EXIT success.
+
+C2.1E makes telemetry follow the same committed mutation boundary. A success
+event is emitted exactly once and only after OPEN/CLOSE mutation success.
+Skipped, false, rolled-back, or exceptional mutations use failure/blocked
+telemetry and never an event type containing OPENED or CLOSED.

@@ -816,7 +816,9 @@ def execute_and_record(
                 pos_id = open_position("LONG", qty_btc, price, None)
                 evidence_position_id = pos_id
                 emit_strategy_event(
-                    event_type="PAPER_POSITION_OPENED",
+                    event_type=(
+                        "PAPER_POSITION_OPENED" if pos_id else "BLOCKED"
+                    ),
                     decision=side,
                     reason="POSITIONS_OPEN_OK" if pos_id else "POSITIONS_OPEN_SKIPPED",
                     price=price,
@@ -829,15 +831,23 @@ def execute_and_record(
                     int(open_before_close[0]) if open_before_close else None
                 )
                 closed_ok = close_position(price, reason, candle_open_time)
-                emit_strategy_event(
-                    event_type="PAPER_POSITION_CLOSED",
-                    decision=side,
-                    reason="POSITIONS_CLOSE_OK" if closed_ok else "POSITIONS_CLOSE_SKIPPED",
-                    price=price,
-                    candle_open_time=candle_open_time,
-                    info={"qty_btc": float(qty_btc), "reason_text": reason},
-                )
                 if not closed_ok:
+                    emit_strategy_event(
+                        event_type="POSITION_CLOSE_FAILED",
+                        decision=side,
+                        reason="POSITION_CLOSE_FAILED",
+                        price=price,
+                        candle_open_time=candle_open_time,
+                        info={
+                            "position_id": evidence_position_id,
+                            "simulated_order_id": inserted,
+                            "symbol": cfg_used.symbol,
+                            "interval": cfg_used.interval,
+                            "strategy": STRATEGY_NAME,
+                            "qty_btc": float(qty_btc),
+                            "exit_reason": reason,
+                        },
+                    )
                     logging.error(
                         "POSITION_CLOSE_FAILED strategy=%s position_id=%s "
                         "simulated_order_id=%s exit_reason=%s symbol=%s interval=%s",

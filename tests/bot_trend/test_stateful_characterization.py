@@ -724,6 +724,64 @@ def test_operation_log_freezes_boundary_chronology(harness):
     assert exited.operation_log.index("state_change:close") < exited.operation_log.index("strategy_event:RUN_END")
 
 
+@pytest.mark.parametrize("inserted_id", [77, None])
+def test_position_open_event_requires_returned_insert_id(
+    harness, monkeypatch, inserted_id
+):
+    events = []
+
+    class Cursor:
+        def __init__(self):
+            self.fetches = iter((None, None if inserted_id is None else (inserted_id,)))
+
+        def execute(self, *_args, **_kwargs):
+            pass
+
+        def fetchone(self):
+            return next(self.fetches)
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self):
+            self.cur = Cursor()
+            self.commits = 0
+
+        def cursor(self):
+            return self.cur
+
+        def commit(self):
+            self.commits += 1
+
+        def close(self):
+            pass
+
+    connection = Connection()
+    monkeypatch.setattr(harness.module, "get_db_conn", lambda: connection)
+    monkeypatch.setattr(
+        harness.module, "emit_strategy_event",
+        lambda **event: events.append(event),
+    )
+
+    result = harness.module.open_position(
+        side="LONG", qty=0.1, entry_price=100.0,
+        open_time=trend_rows()[0][0], entry_client_order_id=None,
+    )
+
+    assert result == inserted_id
+    opened = [event for event in events if event["event_type"] == "POSITION_OPENED"]
+    assert len(opened) == (1 if inserted_id else 0)
+    if inserted_id:
+        assert opened[0]["info"]["position_id"] == inserted_id
+    else:
+        assert any(
+            event["event_type"] == "BLOCKED"
+            and event["reason"] == "POSITION_OPEN_FAILED"
+            for event in events
+        )
+
+
 @pytest.mark.parametrize(
     "result, expected_type, expected_subtype, submitted, executed",
     [

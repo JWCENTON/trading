@@ -625,18 +625,28 @@ def open_position(side: str, qty: float, entry_price: float, open_time, *, entry
     pos_id = int(row[0]) if row else None
     cur.close()
     conn.close()
-    logging.info(
-        "TREND: position OPENED side=%s qty=%.8f entry=%.2f open_time=%s",
-        side, float(qty), float(entry_price), str(open_time)
-    )
-    emit_strategy_event(
-        event_type="POSITION_OPENED",
-        decision="BUY" if str(side).upper() == "LONG" else "SELL",
-        reason="OK",
-        price=entry_price,
-        candle_open_time=open_time,
-        info={"side": side, "qty": float(qty), "entry_price": float(entry_price), "entry_client_order_id": entry_client_order_id},
-    )
+    if pos_id is not None:
+        logging.info(
+            "TREND: position OPENED side=%s qty=%.8f entry=%.2f open_time=%s",
+            side, float(qty), float(entry_price), str(open_time)
+        )
+        emit_strategy_event(
+            event_type="POSITION_OPENED",
+            decision="BUY" if str(side).upper() == "LONG" else "SELL",
+            reason="OK",
+            price=entry_price,
+            candle_open_time=open_time,
+            info={"position_id": pos_id, "side": side, "qty": float(qty), "entry_price": float(entry_price), "entry_client_order_id": entry_client_order_id},
+        )
+    else:
+        emit_strategy_event(
+            event_type="BLOCKED",
+            decision="BUY" if str(side).upper() == "LONG" else "SELL",
+            reason="POSITION_OPEN_FAILED",
+            price=entry_price,
+            candle_open_time=open_time,
+            info={"side": side, "qty": float(qty), "entry_price": float(entry_price)},
+        )
     return pos_id
 
 
@@ -1426,6 +1436,22 @@ def execute_and_record(
                 "symbol=%s interval=%s",
                 STRATEGY_NAME, meta.get("paper_pos_id"), reason,
                 cfg_used.symbol, cfg_used.interval,
+            )
+            emit_strategy_event(
+                event_type="POSITION_CLOSE_FAILED",
+                decision=side,
+                reason="POSITION_CLOSE_FAILED",
+                price=price,
+                candle_open_time=candle_open_time,
+                info={
+                    "position_id": meta.get("paper_pos_id"),
+                    "simulated_order_id": inserted,
+                    "symbol": cfg_used.symbol,
+                    "interval": cfg_used.interval,
+                    "strategy": STRATEGY_NAME,
+                    "exit_reason": reason,
+                    "quantity": float(qty_btc),
+                },
             )
             return {
                 "ledger_ok": False,

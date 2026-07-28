@@ -807,6 +807,79 @@ def test_execute_and_record_propagates_order_accepted(
 
 
 @pytest.mark.parametrize(
+    ("paper_result", "closed_events", "failure_reason"),
+    [
+        (
+            {
+                "ok": True, "blocked_reason": None, "pos_id": 77,
+                "client_order_id": "paper-exit",
+            },
+            1,
+            None,
+        ),
+        (
+            {
+                "ok": False, "blocked_reason": "POSITION_CLOSE_FAILED",
+                "pos_id": 77, "client_order_id": "paper-exit",
+            },
+            0,
+            "POSITION_CLOSE_FAILED",
+        ),
+        (
+            {
+                "ok": False, "blocked_reason": "PAPER_CLOSE_FAILED",
+                "pos_id": 77, "client_order_id": "paper-exit",
+            },
+            0,
+            "PAPER_CLOSE_FAILED",
+        ),
+    ],
+)
+def test_paper_close_telemetry_follows_committed_result(
+    rsi, monkeypatch, paper_result, closed_events, failure_reason
+):
+    events = []
+    monkeypatch.setattr(rsi, "insert_simulated_order", lambda **_kwargs: 501)
+    monkeypatch.setattr(
+        rsi, "ssot_apply_positions_paper",
+        lambda **_kwargs: dict(paper_result),
+    )
+    monkeypatch.setattr(
+        rsi, "record_simulated_fill_evidence",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(rsi, "get_exchange_client", lambda: object())
+    monkeypatch.setattr(
+        rsi, "emit_strategy_event", lambda **event: events.append(event)
+    )
+    cfg = runtime_snapshot()["cfg_effective"]
+    cfg.symbol = rsi.SYMBOL
+    cfg.interval = rsi.INTERVAL
+
+    result = rsi.execute_and_record(
+        side="SELL", price=101.0, qty_btc=0.1, reason="PAPER EXIT",
+        candle_open_time=candle()[0], is_exit=True, cfg_used=cfg,
+        allow_live_orders=False, allow_meta={},
+    )
+
+    closed = [
+        event for event in events if event["event_type"] == "POSITION_CLOSED"
+    ]
+    assert len(closed) == closed_events
+    if closed:
+        assert closed[0]["info"]["position_id"] == 77
+        assert closed[0]["info"]["simulated_order_id"] == 501
+        assert closed[0]["info"]["quantity"] == 0.1
+    if failure_reason:
+        assert result["ledger_ok"] is False
+        assert any(
+            event["event_type"] == "BLOCKED"
+            and event["reason"] == failure_reason
+            for event in events
+        )
+
+
+@pytest.mark.parametrize(
     (
         "case", "ledger_ok", "attempted", "accepted", "executed",
         "include_ack", "blocked_reason", "decision_type", "subtype",
