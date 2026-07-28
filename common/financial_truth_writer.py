@@ -9,6 +9,7 @@ from common.financial_truth_repository import (
     CanonicalFinancialTruthWriteRepository,
     ExecutionEvidenceContext,
     FinancialTruthSourceRepository,
+    is_source_readiness_issue,
 )
 
 
@@ -78,11 +79,11 @@ class FinancialTruthReconciler:
                 estimated_fees_usdc=position[3],
                 estimated_net_pnl=position[4],
             )
-            if source_issue and calculation.financial_truth_status == "UNKNOWN":
+            if is_source_readiness_issue(source_issue):
                 calculation = replace(
                     calculation,
-                    failure_code=source_issue,
-                    failure_detail=source_issue,
+                    failure_code=source_issue.value,
+                    failure_detail=source_issue.value,
                 )
             return {
                 "mode": mode, "calculated": True, "written": False,
@@ -106,15 +107,18 @@ class FinancialTruthReconciler:
                         estimated_fees_usdc=position[3],
                         estimated_net_pnl=position[4],
                     )
-                    if (
-                        source_issue
-                        and calculation.financial_truth_status == "UNKNOWN"
-                    ):
+                    if is_source_readiness_issue(source_issue):
                         calculation = replace(
                             calculation,
-                            failure_code=source_issue,
-                            failure_detail=source_issue,
+                            failure_code=source_issue.value,
+                            failure_detail=source_issue.value,
                         )
+                        return {
+                            "mode": mode,
+                            "calculated": True,
+                            "written": False,
+                            "calculation": calculation,
+                        }
                     written = CanonicalFinancialTruthWriteRepository.write(
                         cur, calculation, invocation_type="CLI",
                         invocation_identity=invocation_identity,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timezone
 from decimal import Decimal
+from enum import Enum
 from typing import Callable
 
 from common.financial_truth_calculator import FillEvidence
@@ -27,6 +28,21 @@ class ExecutionEvidenceContext:
         object.__setattr__(self, "environment", environment)
         object.__setattr__(self, "exchange", exchange)
         object.__setattr__(self, "deployment_id", deployment_id)
+
+
+class SourceReadinessIssue(str, Enum):
+    NO_EXECUTION_EVIDENCE = "NO_EXECUTION_EVIDENCE"
+    SIMULATED_EXECUTION_SCHEMA_UNSUPPORTED = (
+        "SIMULATED_EXECUTION_SCHEMA_UNSUPPORTED"
+    )
+    EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED = (
+        "EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED"
+    )
+
+
+def is_source_readiness_issue(value: object) -> bool:
+    """Return whether a source outcome is categorically non-writable."""
+    return isinstance(value, SourceReadinessIssue)
 
 
 SIMULATED_SCHEMA_CONTRACT = {
@@ -135,7 +151,7 @@ class FinancialTruthSourceRepository:
             cur.execute(
                 """
                 SELECT id,status,gross_pnl_usdc,fees_usdc,net_pnl_usdc
-                FROM positions WHERE id=%s
+                FROM public.positions WHERE id=%s
                 """,
                 (int(position_id),),
             )
@@ -144,7 +160,11 @@ class FinancialTruthSourceRepository:
                 raise LookupError("POSITION_NOT_FOUND")
             if context.environment == "paper":
                 if not self._supports(cur, SIMULATED_SCHEMA_CONTRACT):
-                    return position, (), "SIMULATED_EXECUTION_SCHEMA_UNSUPPORTED"
+                    return (
+                        position,
+                        (),
+                        SourceReadinessIssue.SIMULATED_EXECUTION_SCHEMA_UNSUPPORTED,
+                    )
                 cur.execute(
                     """
                 SELECT
@@ -157,10 +177,10 @@ class FinancialTruthSourceRepository:
                   im.quote_asset, sf.source_authority, 'SIMULATOR',
                   sf.environment, sf.deployment_id,
                   sf.simulation_model_version, sf.execution_at
-                FROM simulated_execution_fills_v1 sf
-                LEFT JOIN financial_truth_account_identity_v1 ai
+                FROM public.simulated_execution_fills_v1 sf
+                LEFT JOIN public.financial_truth_account_identity_v1 ai
                   ON ai.id=sf.account_identity_id
-                LEFT JOIN financial_truth_instrument_snapshot_v1 im
+                LEFT JOIN public.financial_truth_instrument_snapshot_v1 im
                   ON im.id=sf.instrument_snapshot_id
                 WHERE sf.position_id=%s
                   AND lower(sf.environment)=%s
@@ -175,7 +195,11 @@ class FinancialTruthSourceRepository:
                 rows = list(cur.fetchall())
             else:
                 if not self._supports(cur, EXCHANGE_SCHEMA_CONTRACT):
-                    return position, (), "EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED"
+                    return (
+                        position,
+                        (),
+                        SourceReadinessIssue.EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED,
+                    )
                 cur.execute(
                     """
                     SELECT
@@ -206,13 +230,13 @@ class FinancialTruthSourceRepository:
                       'EXCHANGE_EXECUTION', f.source,
                       %s, %s,
                       'EXCHANGE_FILL_V1', f.event_time
-                    FROM binance_order_fills f
-                    JOIN binance_orders bo
+                    FROM public.binance_order_fills f
+                    JOIN public.binance_orders bo
                       ON bo.exchange_source=f.source
                      AND bo.symbol=f.symbol AND bo.order_id=f.order_id
-                    LEFT JOIN financial_truth_account_identity_v1 ai
+                    LEFT JOIN public.financial_truth_account_identity_v1 ai
                       ON ai.id=f.account_identity_id
-                    LEFT JOIN financial_truth_instrument_snapshot_v1 im
+                    LEFT JOIN public.financial_truth_instrument_snapshot_v1 im
                       ON im.id=f.instrument_snapshot_id
                     WHERE COALESCE(bo.reconciled_position_id,bo.position_id)=%s
                       AND lower(f.source)=%s
@@ -227,7 +251,7 @@ class FinancialTruthSourceRepository:
                 rows = list(cur.fetchall())
             fills = tuple(self._fill(row) for row in rows)
             return position, fills, (
-                None if fills else "NO_EXECUTION_EVIDENCE"
+                None if fills else SourceReadinessIssue.NO_EXECUTION_EVIDENCE
             )
         finally:
             cur.close()

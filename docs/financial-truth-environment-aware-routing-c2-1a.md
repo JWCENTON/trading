@@ -16,6 +16,9 @@ canonical environment, exchange identity and deployment identity.
 - LIVE reads only the exchange execution tables. Their historical
   `binance_*` names are storage-compatibility names; active exchange identity
   comes from the explicit context.
+- Current active exchange identity is `EXCHANGE=OKX`.
+- `binance_orders` and `binance_order_fills` are legacy storage compatibility
+  names; they do not determine current exchange identity.
 - Unknown environments fail closed before an evidence connection or query.
 - PAPER and LIVE evidence are never mixed or used as mutual fallbacks.
 
@@ -27,6 +30,18 @@ column used by that source query. Missing PAPER capability produces
 `EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED`. A supported but empty source produces
 `NO_EXECUTION_EVIDENCE`. These are controlled UNKNOWN results, not SQL
 exceptions. Detection never relies on catching `UndefinedColumn`.
+
+All three controlled source-readiness outcomes are a typed, categorical
+non-write boundary:
+
+- `NO_EXECUTION_EVIDENCE`
+- `SIMULATED_EXECUTION_SCHEMA_UNSUPPORTED`
+- `EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED`
+
+They never produce a canonical or canonical-audit write, including when
+`apply` was requested. A Financial Truth calculation reached with valid source
+evidence retains the existing canonical write policy; the boundary does not
+disable apply generally.
 
 ## Scope and data policy
 
@@ -41,7 +56,8 @@ evidence linkage. That lifecycle decision is deferred to Patch C2.1B.
 
 ## Rollout and rollback
 
-Roll out the reviewed image to LOCAL PAPER first, validate both real LOCAL and
-legacy VPS PAPER schema shapes, then deploy the same immutable image to VPS
-PAPER. LIVE rollout remains separate. Rollback is an image rollback; there are
-no schema or data changes to reverse.
+This patch is not ready for rollout and does not establish full strategy
+coverage. SUPERTREND completion remains mandatory before any C2.1 runtime
+rollout. After that separate prerequisite and review, rollout planning starts
+with LOCAL PAPER; LIVE remains a separate decision. There are no schema or data
+changes in C2.1A to reverse.
