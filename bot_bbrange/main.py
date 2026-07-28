@@ -756,6 +756,17 @@ def execute_and_record(
 
     Zwraca dict: ledger_ok/live_attempted/live_ok/blocked_reason/client_order_id/resp
     """
+    trading_mode = str(cfg_used.trading_mode).upper()
+    if trading_mode not in {"PAPER", "LIVE"}:
+        logging.error(
+            "BBRANGE: invalid trading mode; execution fail-closed mode=%r",
+            cfg_used.trading_mode,
+        )
+        return {
+            "ledger_ok": False, "live_attempted": False, "live_ok": False,
+            "blocked_reason": "INVALID_TRADING_MODE", "client_order_id": None,
+            "resp": None,
+        }
     inserted = insert_simulated_order(
         symbol=cfg_used.symbol,
         interval=cfg_used.interval,
@@ -798,7 +809,7 @@ def execute_and_record(
 
     # PAPER => simulated fill + positions lifecycle.
     # Without this, BBRANGE writes only simulated_orders/events and UI/PNL/MFE/MAE/ORC cannot learn from it.
-    if cfg_used.trading_mode != "LIVE":
+    if trading_mode == "PAPER":
         try:
             evidence_position_id = None
             if not is_exit:
@@ -826,6 +837,22 @@ def execute_and_record(
                     candle_open_time=candle_open_time,
                     info={"qty_btc": float(qty_btc), "reason_text": reason},
                 )
+                if not closed_ok:
+                    logging.error(
+                        "POSITION_CLOSE_FAILED strategy=%s position_id=%s "
+                        "simulated_order_id=%s exit_reason=%s symbol=%s interval=%s",
+                        STRATEGY_NAME, evidence_position_id, inserted, reason,
+                        cfg_used.symbol, cfg_used.interval,
+                    )
+                    return {
+                        "ledger_ok": False,
+                        "live_attempted": False,
+                        "live_ok": False,
+                        "blocked_reason": "POSITION_CLOSE_FAILED",
+                        "client_order_id": None,
+                        "resp": None,
+                        "position_close_succeeded": False,
+                    }
             if (
                 evidence_position_id
                 and isinstance(inserted, int)
@@ -875,6 +902,7 @@ def execute_and_record(
             "blocked_reason": None,
             "client_order_id": None,
             "resp": None,
+            "position_close_succeeded": True if is_exit else None,
         }
 
     if not allow_live_orders:
@@ -1764,7 +1792,10 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                     rsi_14=rsi_val,
                     ema_21=ema_val,
                 )
-                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                if res["ledger_ok"] and res["live_ok"] and (
+                    cfg_effective.trading_mode == "LIVE"
+                    or "position_close_succeeded" not in res
+                ):
                     close_position(exit_price=price, reason="PANIC", candle_open_time=open_time)
             set_mode("HALT", reason="Panic executed; halting.")
             if pos:
@@ -1831,7 +1862,10 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                     rsi_14=rsi_val,
                     ema_21=ema_val,
                 )
-                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                if res["ledger_ok"] and res["live_ok"] and (
+                    cfg_effective.trading_mode == "LIVE"
+                    or "position_close_succeeded" not in res
+                ):
                     close_position(exit_price=price, reason="TAKE_PROFIT", candle_open_time=open_time)
                 else:
                     emit_blocked(
@@ -1862,7 +1896,10 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                     rsi_14=rsi_val,
                     ema_21=ema_val,
                 )
-                if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                if res["ledger_ok"] and res["live_ok"] and (
+                    cfg_effective.trading_mode == "LIVE"
+                    or "position_close_succeeded" not in res
+                ):
                     close_position(exit_price=price, reason="STOP_LOSS", candle_open_time=open_time)
                 else:
                     emit_blocked(
@@ -1980,7 +2017,10 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                         rsi_14=rsi_val,
                         ema_21=ema_val,
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if res["ledger_ok"] and res["live_ok"] and (
+                        cfg_effective.trading_mode == "LIVE"
+                        or "position_close_succeeded" not in res
+                    ):
                         close_position(exit_price=price, reason=exit_kind, candle_open_time=open_time)
                     else:
                         emit_blocked(
@@ -2029,7 +2069,10 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                         rsi_14=rsi_val,
                         ema_21=ema_val,
                     )
-                    if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
+                    if res["ledger_ok"] and res["live_ok"] and (
+                        cfg_effective.trading_mode == "LIVE"
+                        or "position_close_succeeded" not in res
+                    ):
                         close_position(exit_price=price, reason="TIME_EXIT", candle_open_time=open_time)
                     else:
                         emit_blocked(

@@ -1027,6 +1027,22 @@ def execute_and_record(
     Zwraca dict:
       ledger_ok/live_attempted/live_ok/blocked_reason/client_order_id/resp
     """
+    trading_mode = str(cfg_used.trading_mode).upper()
+    if trading_mode not in {"PAPER", "LIVE"}:
+        logging.error(
+            "SUPERTREND: invalid trading mode; execution fail-closed mode=%r",
+            cfg_used.trading_mode,
+        )
+        return {
+            "ledger_ok": False,
+            "live_attempted": False,
+            "live_ok": False,
+            "paper_executed": False,
+            "blocked_reason": "INVALID_TRADING_MODE",
+            "client_order_id": None,
+            "resp": None,
+        }
+
     inserted = insert_simulated_order(
         symbol=cfg_used.symbol,
         interval=cfg_used.interval,
@@ -1067,7 +1083,7 @@ def execute_and_record(
 
     # PAPER: materialize the standard position lifecycle after ledger success.
     # LIVE remains below and never creates a position before confirmed execution.
-    if cfg_used.trading_mode != "LIVE":
+    if trading_mode == "PAPER":
         if is_exit:
             open_row = get_open_position()
             position_id = int(open_row[0]) if open_row else None
@@ -1131,6 +1147,8 @@ def execute_and_record(
             "simulated_order_id": int(inserted),
         }
 
+    # Explicit LIVE branch: unknown modes returned before any mutation above.
+    assert trading_mode == "LIVE"
     # LIVE: permission gate
     if not allow_live_orders:
         logging.warning(
@@ -1846,6 +1864,26 @@ def _supertrend_execution_decision(evaluation, result, cfg_effective, *,
         reason_text=reason_text,
         details=details,
     )
+    if (
+        is_exit
+        and result.get("position_close_succeeded") is False
+    ):
+        return FinalDecision.technical_failure_result(
+            evaluation, DecisionReason.EXECUTION_FAILED,
+            DecisionSubtype.LEDGER_FAILURE,
+            signal_detected=True,
+            entry_attempted=outcome.attempted,
+            order_submitted=outcome.order_accepted,
+            **{
+                **common,
+                "reason_text": "POSITION_CLOSE_FAILED",
+                "details": {
+                    **details,
+                    "blocked_reason": "POSITION_CLOSE_FAILED",
+                    "position_close_succeeded": False,
+                },
+            },
+        )
     if outcome.ledger_ok and cfg_effective.trading_mode != "LIVE":
         factory = FinalDecision.exit_result if is_exit else FinalDecision.paper_simulation
         return factory(evaluation, reason_code, position_id=position_id, **common) \
@@ -1872,6 +1910,63 @@ def _supertrend_execution_decision(evaluation, result, cfg_effective, *,
         order_submitted=outcome.order_accepted, trade_executed=outcome.executed,
         **common,
     )
+
+
+def _close_supertrend_exit(
+    result: dict,
+    *,
+    exit_price: float,
+    reason: str,
+    candle_open_time,
+) -> dict:
+    """Bind an exit outcome to the exact conditional position close."""
+    if not result.get("ledger_ok"):
+        return result
+    try:
+        closed = close_position(
+            exit_price=exit_price,
+            reason=reason,
+            candle_open_time=candle_open_time,
+            expected_position_id=result.get("position_id"),
+        )
+    except Exception:
+        logging.exception(
+            "POSITION_CLOSE_FAILED strategy=%s position_id=%s simulated_order_id=%s "
+            "exit_reason=%s symbol=%s interval=%s",
+            STRATEGY_NAME, result.get("position_id"),
+            result.get("simulated_order_id"), reason, SYMBOL, INTERVAL,
+        )
+        return {
+            **result,
+            "position_close_succeeded": False,
+            "blocked_reason": "POSITION_CLOSE_FAILED",
+        }
+    if not closed:
+        logging.error(
+            "POSITION_CLOSE_FAILED strategy=%s position_id=%s simulated_order_id=%s "
+            "exit_reason=%s symbol=%s interval=%s",
+            STRATEGY_NAME, result.get("position_id"),
+            result.get("simulated_order_id"), reason, SYMBOL, INTERVAL,
+        )
+        emit_strategy_event(
+            event_type="POSITION_CLOSE_FAILED",
+            decision=None,
+            reason="POSITION_CLOSE_FAILED",
+            price=exit_price,
+            candle_open_time=candle_open_time,
+            info={
+                "position_id": result.get("position_id"),
+                "simulated_order_id": result.get("simulated_order_id"),
+                "exit_reason": reason,
+                "symbol": SYMBOL,
+                "interval": INTERVAL,
+            },
+        )
+    return {
+        **result,
+        "position_close_succeeded": bool(closed),
+        "blocked_reason": None if closed else "POSITION_CLOSE_FAILED",
+    }
 
 
 def _run_strategy(latest, prev):
@@ -1978,10 +2073,10 @@ def _run_strategy(latest, prev):
                         allow_meta=snap["allow_meta_exit"],
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(
+                        res = _close_supertrend_exit(
+                            res,
                             exit_price=price, reason="PANIC",
                             candle_open_time=open_time,
-                            expected_position_id=res.get("position_id"),
                         )
                     else:
                         emit_strategy_event(
@@ -2103,10 +2198,10 @@ def _run_strategy(latest, prev):
                     allow_meta=snap["allow_meta_exit"],
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(
+                    res = _close_supertrend_exit(
+                        res,
                         exit_price=price, reason="TAKE_PROFIT_LONG",
                         candle_open_time=open_time,
-                        expected_position_id=res.get("position_id"),
                     )
                 else:
                     emit_strategy_event(
@@ -2153,10 +2248,10 @@ def _run_strategy(latest, prev):
                     allow_meta=snap["allow_meta_exit"],
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(
+                    res = _close_supertrend_exit(
+                        res,
                         exit_price=price, reason="STOP_LOSS_LONG",
                         candle_open_time=open_time,
-                        expected_position_id=res.get("position_id"),
                     )
                 else:
                     emit_strategy_event(
@@ -2288,10 +2383,10 @@ def _run_strategy(latest, prev):
                         allow_meta=snap["allow_meta_exit"],
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(
+                        res = _close_supertrend_exit(
+                            res,
                             exit_price=price, reason=exit_kind,
                             candle_open_time=open_time,
-                            expected_position_id=res.get("position_id"),
                         )
                     else:
                         emit_strategy_event(
@@ -2354,10 +2449,10 @@ def _run_strategy(latest, prev):
                         allow_meta=snap["allow_meta_exit"],
                     )
                     if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                        close_position(
+                        res = _close_supertrend_exit(
+                            res,
                             exit_price=price, reason="TIME_EXIT_LONG",
                             candle_open_time=open_time,
-                            expected_position_id=res.get("position_id"),
                         )
                     else:
                         emit_strategy_event(
@@ -2403,10 +2498,10 @@ def _run_strategy(latest, prev):
                     allow_meta=snap["allow_meta_exit"],
                 )
                 if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                    close_position(
+                    res = _close_supertrend_exit(
+                        res,
                         exit_price=price, reason="FLIP_DOWN_EXIT",
                         candle_open_time=open_time,
-                        expected_position_id=res.get("position_id"),
                     )
                 else:
                     emit_strategy_event(

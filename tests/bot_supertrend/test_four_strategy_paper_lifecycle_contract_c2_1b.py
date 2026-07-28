@@ -134,3 +134,77 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
     assert [item["environment"] for item in evidence] == ["paper", "paper"]
     assert entry["ledger_ok"] is True
     assert exit_result["ledger_ok"] is True
+
+
+@pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))
+@pytest.mark.parametrize("close_result", [True, False])
+def test_four_strategy_exit_result_requires_successful_close(
+    monkeypatch, strategy, close_result
+):
+    module = load_strategy(monkeypatch, strategy)
+    close_calls = []
+    monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 601)
+    monkeypatch.setattr(
+        module, "record_simulated_fill_evidence", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(module, "get_exchange_client", lambda: object())
+    monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        module, "get_open_position", lambda: (77, "LONG", 0.1, 100.0, NOW)
+    )
+
+    def close(*_args, **_kwargs):
+        close_calls.append(77)
+        return close_result
+
+    monkeypatch.setattr(module, "close_position", close)
+    if strategy == "RSI":
+        monkeypatch.setattr(
+            module,
+            "ssot_apply_positions_paper",
+            lambda **_kwargs: {
+                "ok": close_result,
+                "blocked_reason": None if close_result else "POSITION_CLOSE_FAILED",
+                "pos_id": 77,
+                "client_order_id": None,
+            },
+        )
+    elif strategy == "TREND":
+        monkeypatch.setattr(
+            module,
+            "ssot_apply_positions_paper",
+            lambda **_kwargs: {
+                "paper_pos_action": (
+                    "EXIT_CLOSED" if close_result
+                    else "EXIT_POSITION_CLOSE_FAILED"
+                ),
+                "paper_pos_id": 77,
+                "position_close_succeeded": close_result,
+            },
+        )
+
+    config = SimpleNamespace(
+        symbol="BTCUSDC", interval="1m", trading_mode="PAPER",
+        live_orders_enabled=False, quote_asset="USDC",
+    )
+    kwargs = dict(
+        side="SELL", price=101.0, qty_btc=0.1, reason="contract",
+        candle_open_time=NOW, is_exit=True, cfg_used=config,
+        allow_live_orders=False, allow_meta={},
+    )
+    if strategy in {"TREND", "BBRANGE"}:
+        kwargs.update(rsi_14=50.0, ema_21=100.0)
+
+    result = module.execute_and_record(**kwargs)
+    if strategy == "SUPERTREND":
+        result = module._close_supertrend_exit(
+            result, exit_price=101.0, reason="contract", candle_open_time=NOW
+        )
+
+    assert result.get("position_close_succeeded", close_result) is close_result
+    if close_result:
+        assert result["blocked_reason"] is None
+    else:
+        assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
+        assert result.get("ledger_ok", False) is False or strategy == "SUPERTREND"
+    assert len(close_calls) <= 1

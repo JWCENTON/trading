@@ -50,14 +50,16 @@ behavior. It adds no migration and performs no backfill. Historical positions
 without persisted C2 evidence remain UNKNOWN or INCOMPLETE. RSI, TREND and
 BBRANGE hooks are unchanged.
 
-SUPERTREND evidence is explicitly out of scope because its PAPER lifecycle
+At the C2.1A stage, SUPERTREND evidence was explicitly out of scope because its PAPER lifecycle
 does not currently create a canonical position required by the non-null
 evidence linkage. That lifecycle decision is deferred to Patch C2.1B.
 
 ## Rollout and rollback
 
-This patch is not ready for rollout and does not establish full strategy
-coverage. SUPERTREND completion remains mandatory before any C2.1 runtime
-rollout. After that separate prerequisite and review, rollout planning starts
+That prerequisite was subsequently implemented by C2.1B. C2.1C aligns exit
+outcomes with conditional position-close state across all four strategies.
+The combined C2.1 series is still not deployed and still requires repeated
+combined review before any runtime rollout. Only after that review may planning
+start
 with LOCAL PAPER; LIVE remains a separate decision. There are no schema or data
 changes in C2.1A to reverse.

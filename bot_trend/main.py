@@ -1292,8 +1292,16 @@ def ssot_apply_positions_paper(
     if not pos:
         return {"paper_pos_action": "EXIT_SKIPPED_NO_OPEN", "paper_pos_id": None}
 
-    close_position(exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time)
-    return {"paper_pos_action": "EXIT_CLOSED", "paper_pos_id": int(pos[0])}
+    closed = close_position(
+        exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time
+    )
+    return {
+        "paper_pos_action": (
+            "EXIT_CLOSED" if closed else "EXIT_POSITION_CLOSE_FAILED"
+        ),
+        "paper_pos_id": int(pos[0]),
+        "position_close_succeeded": bool(closed),
+    }
 
 
 def execute_and_record(
@@ -1311,6 +1319,14 @@ def execute_and_record(
     ema_21: float | None = None,
     pos_id: int | None = None,
 ):
+    trading_mode = str(cfg_used.trading_mode).upper()
+    if trading_mode not in {"PAPER", "LIVE"}:
+        logging.error("TREND: invalid trading mode; execution fail-closed mode=%r", cfg_used.trading_mode)
+        return {
+            "ledger_ok": False, "live_attempted": False, "live_ok": False,
+            "blocked_reason": "INVALID_TRADING_MODE", "client_order_id": None,
+            "resp": None,
+        }
     # 1) DB guard FIRST
     inserted = insert_simulated_order(
         symbol=cfg_used.symbol,
@@ -1354,7 +1370,7 @@ def execute_and_record(
     )
 
     # 2) PAPER SSOT: update positions even in PAPER (Variant A)
-    if cfg_used.trading_mode != "LIVE":
+    if trading_mode == "PAPER":
         meta = ssot_apply_positions_paper(
             side=side,
             price=float(price),
@@ -1404,6 +1420,23 @@ def execute_and_record(
                 "resp": meta,
             }
 
+        if meta.get("paper_pos_action") == "EXIT_POSITION_CLOSE_FAILED":
+            logging.error(
+                "POSITION_CLOSE_FAILED strategy=%s position_id=%s exit_reason=%s "
+                "symbol=%s interval=%s",
+                STRATEGY_NAME, meta.get("paper_pos_id"), reason,
+                cfg_used.symbol, cfg_used.interval,
+            )
+            return {
+                "ledger_ok": False,
+                "live_attempted": False,
+                "live_ok": False,
+                "blocked_reason": "POSITION_CLOSE_FAILED",
+                "client_order_id": None,
+                "resp": meta,
+                "position_close_succeeded": False,
+            }
+
         # jeśli ENTRY i już była OPEN -> traktuj jako "ALREADY_OPEN" (ledger zostaje)
         if meta.get("paper_pos_action") == "ENTRY_SKIPPED_ALREADY_OPEN":
             return {
@@ -1422,6 +1455,9 @@ def execute_and_record(
             "blocked_reason": None,
             "client_order_id": None,
             "resp": meta,
+            "position_close_succeeded": (
+                True if is_exit else None
+            ),
         }
 
     if not allow_live_orders:
@@ -2183,7 +2219,8 @@ def _run_trend_strategy():
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         return final_decision
 
-                    close_position(exit_price=price, reason="TAKE_PROFIT_LONG", open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason="TAKE_PROFIT_LONG", open_time=open_time)
                     return final_decision
 
                 drop_pct = -change_pct
@@ -2231,7 +2268,8 @@ def _run_trend_strategy():
                         logging.info("TREND: exit suppressed/failed -> not closing position.")
                         return final_decision
 
-                    close_position(exit_price=price, reason="STOP_LOSS_LONG", open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason="STOP_LOSS_LONG", open_time=open_time)
                     return final_decision
 
             elif pos_side == "SHORT":
@@ -2279,7 +2317,8 @@ def _run_trend_strategy():
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: exit suppressed/failed -> not closing position.")
                         return final_decision
-                    close_position(exit_price=price, reason="TAKE_PROFIT_SHORT", open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason="TAKE_PROFIT_SHORT", open_time=open_time)
                     return final_decision
 
                 rise_pct = -change_pct
@@ -2325,7 +2364,8 @@ def _run_trend_strategy():
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: exit suppressed/failed -> not closing position.")
                         return final_decision
-                    close_position(exit_price=price, reason="STOP_LOSS_SHORT", open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason="STOP_LOSS_SHORT", open_time=open_time)
                     return final_decision
                 
             # --- GUARDED PROFIT: shared decision layer, local TREND execution ---
@@ -2417,7 +2457,8 @@ def _run_trend_strategy():
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: guarded exit suppressed/failed -> not closing position.")
                         return final_decision
-                    close_position(exit_price=price, reason="GUARDED_PROFIT_LONG", open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason="GUARDED_PROFIT_LONG", open_time=open_time)
                     return final_decision
 
             # --- ADAPTIVE EARLY CUT (SHADOW ONLY): telemetry, no real exit ---
@@ -2635,7 +2676,8 @@ def _run_trend_strategy():
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         logging.info("TREND: profit-lock exit suppressed/failed -> not closing position.")
                         return final_decision
-                    close_position(exit_price=price, reason=exit_kind, open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason=exit_kind, open_time=open_time)
                     return final_decision
 
             # --- EARLY EXIT: cut losers earlier than TIMEOUT/SL to make TIMEOUT non-negative on average ---
@@ -2685,7 +2727,8 @@ def _run_trend_strategy():
                                 position_id=int(pos[0]),
                             )
                             if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                                close_position(exit_price=price, reason="EARLY_CUT_LONG", open_time=open_time)
+                                if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                                    close_position(exit_price=price, reason="EARLY_CUT_LONG", open_time=open_time)
                             return final_decision
 
                     elif pos_side == "SHORT":
@@ -2727,7 +2770,8 @@ def _run_trend_strategy():
                                 position_id=int(pos[0]),
                             )
                             if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                                close_position(exit_price=price, reason="EARLY_CUT_SHORT", open_time=open_time)
+                                if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                                    close_position(exit_price=price, reason="EARLY_CUT_SHORT", open_time=open_time)
                             return final_decision
 
             # =========================
@@ -2820,7 +2864,8 @@ def _run_trend_strategy():
                             price=price, position_id=int(pos[0]),
                         )
                         if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                            close_position(exit_price=price, reason="TIME_EXIT_PROFIT_FADED", open_time=open_time)
+                            if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                                close_position(exit_price=price, reason="TIME_EXIT_PROFIT_FADED", open_time=open_time)
                         return final_decision
 
                     # 3) hard final timeout after extension window
@@ -2864,7 +2909,8 @@ def _run_trend_strategy():
                             price=price, position_id=int(pos[0]),
                         )
                         if res["ledger_ok"] and (cfg_effective.trading_mode != "LIVE" or res["live_ok"]):
-                            close_position(exit_price=price, reason="TIME_EXIT_HARD", open_time=open_time)
+                            if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                                close_position(exit_price=price, reason="TIME_EXIT_HARD", open_time=open_time)
                         return final_decision
 
                     side_timeout = "SELL" if pos_side == "LONG" else "BUY"
@@ -2924,7 +2970,8 @@ def _run_trend_strategy():
                         return final_decision
                     if cfg_effective.trading_mode == "LIVE" and not res["live_ok"]:
                         return final_decision
-                    close_position(exit_price=price, reason="TIMEOUT", open_time=open_time)
+                    if cfg_effective.trading_mode == "LIVE" or "position_close_succeeded" not in res:
+                        close_position(exit_price=price, reason="TIMEOUT", open_time=open_time)
                     return final_decision
 
             return FinalDecision.position_hold(

@@ -59,3 +59,19 @@ All active PAPER strategies now use the standard Position Lifecycle and direct
 Financial Truth execution evidence contract. SUPERTREND PAPER can therefore
 participate in restart-safe position management, UI and ORC position readers,
 Financial Truth, Learning outcomes and the common decision-quality loop.
+
+## C2.1C close-outcome clarification
+
+A simulated exit order and EXIT evidence represent execution evidence; neither
+is equivalent to a successful position close. The boolean result of the exact,
+conditional position close is authoritative for the lifecycle outcome.
+`POSITION_CLOSED` and successful EXIT FinalDecision are permitted only after
+`close=True`. A false or operationally failed close produces the explicit
+`POSITION_CLOSE_FAILED` outcome while the position remains logically OPEN.
+
+Evidence persistence remains fail-open: evidence failure does not retry or undo
+a successful close, and Financial Truth may remain UNKNOWN or INCOMPLETE.
+Execution branches are explicitly PAPER or LIVE; unknown mode fails before any
+order, position, evidence, or exchange mutation. This policy is forward-only:
+there is no migration, backfill, or historical reconstruction. C2.1 remains
+local and not deployed pending repeated combined review.

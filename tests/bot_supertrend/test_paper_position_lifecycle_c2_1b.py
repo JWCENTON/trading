@@ -224,3 +224,92 @@ def test_exit_evidence_failure_still_reaches_existing_close_path(
     assert observed.position is None
     assert sum(item[0] == "CLOSE" for item in observed.mutations) == 1
     assert "paper persistence unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("close_behavior", [False, RuntimeError("db unavailable")])
+def test_paper_exit_close_failure_is_not_success(
+    harness, monkeypatch, close_behavior, caplog
+):
+    harness.set_position(price=100.0)
+    module = harness.module
+    monkeypatch.setattr(module, "execute_and_record", harness.production_execute_and_record)
+    monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 501)
+    monkeypatch.setattr(
+        module, "record_simulated_fill_evidence", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(module, "get_exchange_client", lambda: object())
+
+    def close(*_args, **_kwargs):
+        if isinstance(close_behavior, Exception):
+            raise close_behavior
+        return close_behavior
+
+    monkeypatch.setattr(module, "close_position", close)
+    observed = harness.strategy_cycle(candle(price=102.0), candle(minute=-1))
+
+    assert observed.final_decision.action != "EXIT"
+    assert observed.final_decision.reason_text == "POSITION_CLOSE_FAILED"
+    assert harness.position is not None
+    assert not any(event.get("event_type") == "POSITION_CLOSED" for event in observed.events)
+    assert "POSITION_CLOSE_FAILED" in caplog.text
+
+
+def test_two_exit_close_attempts_have_one_success_and_one_stale_failure(
+    supertrend, monkeypatch
+):
+    state = {"open": True, "calls": 0}
+    events = []
+
+    def conditional_close(**kwargs):
+        assert kwargs["expected_position_id"] == 77
+        state["calls"] += 1
+        if not state["open"]:
+            return False
+        state["open"] = False
+        events.append("POSITION_CLOSED")
+        return True
+
+    monkeypatch.setattr(supertrend, "close_position", conditional_close)
+    monkeypatch.setattr(
+        supertrend, "emit_strategy_event",
+        lambda **event: events.append(event["event_type"]),
+    )
+    base = {
+        "ledger_ok": True,
+        "position_id": 77,
+        "simulated_order_id": 501,
+    }
+
+    first = supertrend._close_supertrend_exit(
+        base, exit_price=101.0, reason="test", candle_open_time=candle()[0]
+    )
+    second = supertrend._close_supertrend_exit(
+        {**base, "simulated_order_id": 502},
+        exit_price=101.0, reason="test", candle_open_time=candle()[0],
+    )
+
+    assert first["position_close_succeeded"] is True
+    assert second["position_close_succeeded"] is False
+    assert second["blocked_reason"] == "POSITION_CLOSE_FAILED"
+    assert state["calls"] == 2
+    assert events.count("POSITION_CLOSED") == 1
+    assert events.count("POSITION_CLOSE_FAILED") == 1
+
+
+def test_unknown_mode_fails_before_any_execution_mutation(supertrend, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        supertrend, "insert_simulated_order",
+        lambda **_kwargs: calls.append("simulated-order"),
+    )
+    config = paper_config()
+    config.trading_mode = "PPAER"
+
+    result = supertrend.execute_and_record(
+        side="BUY", price=100.0, qty_btc=0.125, reason="invalid-mode",
+        candle_open_time=candle()[0], is_exit=False, cfg_used=config,
+        allow_live_orders=False, allow_meta={},
+    )
+
+    assert result["blocked_reason"] == "INVALID_TRADING_MODE"
+    assert calls == []

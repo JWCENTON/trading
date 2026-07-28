@@ -311,6 +311,18 @@ def execute_and_record(
       nawet jeżeli LIVE order jest suppressed/disabled.
     - Dzięki temu strategia aktualizuje positions i może testować EXIT/TP/SL/TIME_EXIT.
     """
+    trading_mode = str(cfg_used.trading_mode).upper()
+    if trading_mode not in {"PAPER", "LIVE"}:
+        logging.error(
+            "RSI: invalid trading mode; execution fail-closed mode=%r",
+            cfg_used.trading_mode,
+        )
+        return {
+            "ledger_ok": False, "live_attempted": False,
+            "order_accepted": False, "live_ok": False,
+            "blocked_reason": "INVALID_TRADING_MODE",
+            "client_order_id": None, "resp": None,
+        }
 
     # 1) DB guard FIRST
     inserted = insert_simulated_order(
@@ -355,7 +367,7 @@ def execute_and_record(
     )
 
     # 2) PAPER: also write SSOT positions (hard truth), but do not send exchange orders
-    if cfg_used.trading_mode != "LIVE":
+    if trading_mode == "PAPER":
         paper_res = ssot_apply_positions_paper(
             side=side,
             price=float(price),
@@ -1760,9 +1772,19 @@ def ssot_apply_positions_paper(
                 exit_time=now(),
                 exit_reason=%s
             WHERE id=%s AND status='OPEN'
+            RETURNING id
             """,
             (float(price), enriched_reason, int(pos_id)),
         )
+        closed = cur_exec.fetchone() is not None
+        if not closed:
+            conn_exec.rollback()
+            return {
+                "ok": False,
+                "blocked_reason": "POSITION_CLOSE_FAILED",
+                "pos_id": int(pos_id),
+                "client_order_id": client_order_id,
+            }
         conn_exec.commit()
     except Exception:
         conn_exec.rollback()
