@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from typing import Callable
 
 from common.financial_truth_calculator import calculate_financial_truth
 from common.financial_truth_repository import (
     CanonicalFinancialTruthWriteRepository,
+    ExecutionEvidenceContext,
     FinancialTruthSourceRepository,
 )
 
@@ -56,21 +57,33 @@ class FinancialTruthReconciler:
         position_id: int,
         *,
         requested_mode: str,
-        environment: str,
+        evidence_context: ExecutionEvidenceContext,
         invocation_identity: str | None = None,
     ):
-        activation = WriterActivation.from_environment(environment)
+        if not isinstance(evidence_context, ExecutionEvidenceContext):
+            raise TypeError("EXECUTION_EVIDENCE_CONTEXT_REQUIRED")
+        activation = WriterActivation.from_environment(
+            evidence_context.environment
+        )
         if requested_mode == "disabled":
             return {"mode": "disabled", "calculated": False, "written": False}
         mode = activation.authorize(requested_mode)
         if mode in {"dry-run", "shadow"}:
-            position, fills = self.sources.read_position_and_fills(position_id)
+            position, fills, source_issue = self.sources.read_position_and_fills(
+                position_id, context=evidence_context
+            )
             calculation = calculate_financial_truth(
                 position_id=position[0], position_status=position[1], fills=fills,
                 estimated_gross_pnl=position[2],
                 estimated_fees_usdc=position[3],
                 estimated_net_pnl=position[4],
             )
+            if source_issue and calculation.financial_truth_status == "UNKNOWN":
+                calculation = replace(
+                    calculation,
+                    failure_code=source_issue,
+                    failure_detail=source_issue,
+                )
             return {
                 "mode": mode, "calculated": True, "written": False,
                 "calculation": calculation,
@@ -82,8 +95,10 @@ class FinancialTruthReconciler:
                     CanonicalFinancialTruthWriteRepository.lock_position(
                         cur, position_id
                     )
-                    position, fills = self.sources.read_position_and_fills(
-                        position_id, connection=conn
+                    position, fills, source_issue = (
+                        self.sources.read_position_and_fills(
+                            position_id, context=evidence_context, connection=conn
+                        )
                     )
                     calculation = calculate_financial_truth(
                         position_id=position[0], position_status=position[1],
@@ -91,6 +106,15 @@ class FinancialTruthReconciler:
                         estimated_fees_usdc=position[3],
                         estimated_net_pnl=position[4],
                     )
+                    if (
+                        source_issue
+                        and calculation.financial_truth_status == "UNKNOWN"
+                    ):
+                        calculation = replace(
+                            calculation,
+                            failure_code=source_issue,
+                            failure_detail=source_issue,
+                        )
                     written = CanonicalFinancialTruthWriteRepository.write(
                         cur, calculation, invocation_type="CLI",
                         invocation_identity=invocation_identity,

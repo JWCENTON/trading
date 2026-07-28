@@ -9,6 +9,7 @@ import sys
 import psycopg2
 
 from common.financial_truth_writer import FinancialTruthReconciler
+from common.financial_truth_repository import ExecutionEvidenceContext
 
 
 def _connection_factory(expected_environment: str):
@@ -53,12 +54,19 @@ def main(argv=None) -> int:
     if len(position_ids) > args.limit:
         raise SystemExit("explicit position IDs exceed --limit")
     reconciler = FinancialTruthReconciler(_connection_factory(args.environment))
+    context = ExecutionEvidenceContext(
+        environment=args.environment,
+        exchange=os.environ.get("EXCHANGE"),
+        deployment_id=os.environ.get("DEPLOYMENT_ID")
+        or os.environ.get("WALTRADE_DEPLOYMENT_ID")
+        or "",
+    )
     results = []
     for position_id in position_ids:
         outcome = reconciler.reconcile(
             position_id,
             requested_mode=args.mode,
-            environment=args.environment,
+            evidence_context=context,
             invocation_identity="LOCAL_CLI",
         )
         if outcome.get("calculation") is not None:

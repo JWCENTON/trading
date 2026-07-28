@@ -1,10 +1,65 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timezone
 from decimal import Decimal
 from typing import Callable
 
 from common.financial_truth_calculator import FillEvidence
+
+
+@dataclass(frozen=True)
+class ExecutionEvidenceContext:
+    environment: str
+    exchange: str | None
+    deployment_id: str
+
+    def __post_init__(self):
+        environment = str(self.environment).strip().lower()
+        exchange = str(self.exchange).strip().upper() if self.exchange else None
+        deployment_id = str(self.deployment_id).strip()
+        if environment not in {"paper", "live"}:
+            raise ValueError("INVALID_EXECUTION_EVIDENCE_ENVIRONMENT")
+        if environment == "live" and not exchange:
+            raise ValueError("LIVE_EXECUTION_EVIDENCE_EXCHANGE_REQUIRED")
+        if not deployment_id:
+            raise ValueError("EXECUTION_EVIDENCE_DEPLOYMENT_REQUIRED")
+        object.__setattr__(self, "environment", environment)
+        object.__setattr__(self, "exchange", exchange)
+        object.__setattr__(self, "deployment_id", deployment_id)
+
+
+SIMULATED_SCHEMA_CONTRACT = {
+    "simulated_execution_fills_v1": {
+        "id", "simulated_order_id", "position_id", "order_purpose", "side",
+        "symbol", "fill_qty", "fill_price", "fill_notional", "fee_qty",
+        "fee_asset", "authoritative_fee_usdc", "estimated_fee_usdc",
+        "account_identity_id", "instrument_snapshot_id", "source_authority",
+        "environment", "deployment_id", "simulation_model_version",
+        "execution_at",
+    },
+    "financial_truth_account_identity_v1": {"id", "identity_fingerprint"},
+    "financial_truth_instrument_snapshot_v1": {
+        "id", "metadata_fingerprint", "step_size", "base_asset", "quote_asset",
+    },
+}
+
+EXCHANGE_SCHEMA_CONTRACT = {
+    "binance_orders": {
+        "exchange_source", "reconciled_position_id", "position_id",
+        "order_purpose", "order_id", "symbol",
+    },
+    "binance_order_fills": {
+        "id", "source", "order_id", "symbol", "side", "executed_qty",
+        "avg_price", "quote_notional_usdc", "commission_amount",
+        "commission_asset", "commission_usdc", "event_time",
+        "account_identity_id", "instrument_snapshot_id",
+    },
+    "financial_truth_account_identity_v1": {"id", "identity_fingerprint"},
+    "financial_truth_instrument_snapshot_v1": {
+        "id", "metadata_fingerprint", "step_size", "base_asset", "quote_asset",
+    },
+}
 
 
 def normalize_optional_asset(value) -> str | None:
@@ -46,7 +101,33 @@ class FinancialTruthSourceRepository:
             event_time=row[23].astimezone(timezone.utc),
         )
 
-    def read_position_and_fills(self, position_id: int, *, connection=None):
+    @staticmethod
+    def _supports(cur, contract: dict[str, set[str]]) -> bool:
+        cur.execute(
+            """
+            SELECT table_name,column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name=ANY(%s)
+            """,
+            (list(contract),),
+        )
+        available: dict[str, set[str]] = {}
+        for table_name, column_name in cur.fetchall():
+            available.setdefault(str(table_name), set()).add(str(column_name))
+        return all(
+            required.issubset(available.get(table_name, set()))
+            for table_name, required in contract.items()
+        )
+
+    def read_position_and_fills(
+        self,
+        position_id: int,
+        *,
+        context: ExecutionEvidenceContext,
+        connection=None,
+    ):
+        if not isinstance(context, ExecutionEvidenceContext):
+            raise TypeError("EXECUTION_EVIDENCE_CONTEXT_REQUIRED")
         owned = connection is None
         conn = connection or self.connection_factory()
         cur = conn.cursor()
@@ -61,8 +142,11 @@ class FinancialTruthSourceRepository:
             position = cur.fetchone()
             if position is None:
                 raise LookupError("POSITION_NOT_FOUND")
-            cur.execute(
-                """
+            if context.environment == "paper":
+                if not self._supports(cur, SIMULATED_SCHEMA_CONTRACT):
+                    return position, (), "SIMULATED_EXECUTION_SCHEMA_UNSUPPORTED"
+                cur.execute(
+                    """
                 SELECT
                   'simulated:' || sf.id::text, sf.simulated_order_id::text,
                   sf.position_id, sf.order_purpose, sf.side, sf.symbol,
@@ -79,13 +163,19 @@ class FinancialTruthSourceRepository:
                 LEFT JOIN financial_truth_instrument_snapshot_v1 im
                   ON im.id=sf.instrument_snapshot_id
                 WHERE sf.position_id=%s
+                  AND lower(sf.environment)=%s
+                  AND sf.deployment_id=%s
                 ORDER BY sf.execution_at,sf.id
-                """,
-                (int(position_id),),
-            )
-            rows = list(cur.fetchall())
-            cur.execute("SELECT to_regclass('public.binance_orders')")
-            if cur.fetchone()[0] is not None:
+                    """,
+                    (
+                        int(position_id), context.environment,
+                        context.deployment_id,
+                    ),
+                )
+                rows = list(cur.fetchall())
+            else:
+                if not self._supports(cur, EXCHANGE_SCHEMA_CONTRACT):
+                    return position, (), "EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED"
                 cur.execute(
                     """
                     SELECT
@@ -114,10 +204,7 @@ class FinancialTruthSourceRepository:
                       ai.identity_fingerprint, im.metadata_fingerprint,
                       im.step_size, im.base_asset, im.quote_asset,
                       'EXCHANGE_EXECUTION', f.source,
-                      current_database(), COALESCE(
-                        NULLIF(current_setting('waltrade.deployment_id',true),''),
-                        'UNVERIFIED_DEPLOYMENT'
-                      ),
+                      %s, %s,
                       'EXCHANGE_FILL_V1', f.event_time
                     FROM binance_order_fills f
                     JOIN binance_orders bo
@@ -128,12 +215,20 @@ class FinancialTruthSourceRepository:
                     LEFT JOIN financial_truth_instrument_snapshot_v1 im
                       ON im.id=f.instrument_snapshot_id
                     WHERE COALESCE(bo.reconciled_position_id,bo.position_id)=%s
+                      AND lower(f.source)=%s
                     ORDER BY f.event_time,f.id
                     """,
-                    (int(position_id), int(position_id)),
+                    (
+                        int(position_id), context.environment,
+                        context.deployment_id, int(position_id),
+                        context.exchange.lower(),
+                    ),
                 )
-                rows.extend(cur.fetchall())
-            return position, tuple(self._fill(row) for row in rows)
+                rows = list(cur.fetchall())
+            fills = tuple(self._fill(row) for row in rows)
+            return position, fills, (
+                None if fills else "NO_EXECUTION_EVIDENCE"
+            )
         finally:
             cur.close()
             if owned:
