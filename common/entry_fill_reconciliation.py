@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -64,8 +65,22 @@ def _refresh_entry_inventory_projection(cur, position_id: int) -> None:
             inventory_calculated_at=clock_timestamp()
         FROM entry_evidence e
         WHERE p.id=e.id AND p.status='OPEN'
+          AND EXISTS (
+            SELECT 1 FROM runtime_contract_adoption_v1 adoption
+            WHERE adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+              AND adoption.environment=lower(%s)
+              AND adoption.deployment_id=%s
+              AND p.entry_time>=adoption.adopted_at
+          )
         """,
-            (int(position_id),),
+            (
+                int(position_id),
+                os.getenv("ENVIRONMENT", ""),
+                (
+                    os.getenv("DEPLOYMENT_ID")
+                    or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+                ),
+            ),
         )
     except AssertionError:
         # Lightweight characterization cursors intentionally implement only
@@ -127,7 +142,8 @@ WHERE bo.order_purpose = 'ENTRY'
   AND COALESCE(bo.reconciliation_status, '') NOT IN (
     'AMBIGUOUS_ENTRY_FILL',
     'OPEN_POSITION_ORDER_MISMATCH',
-    'LATE_ENTRY_FILL_AFTER_POSITION_CLOSED'
+    'LATE_ENTRY_FILL_AFTER_POSITION_CLOSED',
+    'LEGACY_RECONSTRUCTION_BLOCKED'
   )
   AND (
     ft.fill_count > COALESCE(bo.reconciled_fill_count, 0)
@@ -323,6 +339,36 @@ def _position_identity_matches(
     )
 
 
+def _is_forward_c2_2_position(cur, position_id: int) -> bool:
+    try:
+        cur.execute(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM positions p
+              JOIN runtime_contract_adoption_v1 adoption
+                ON adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+               AND adoption.environment=lower(%s)
+               AND adoption.deployment_id=%s
+               AND p.entry_time>=adoption.adopted_at
+              WHERE p.id=%s
+            )
+            """,
+            (
+                os.getenv("ENVIRONMENT", ""),
+                (
+                    os.getenv("DEPLOYMENT_ID")
+                    or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+                ),
+                int(position_id),
+            ),
+        )
+        return bool(cur.fetchone()[0])
+    except AssertionError:
+        # Characterization cursors predate the additive generation query.
+        return True
+
+
 def _apply_exact_position(
     cur,
     position,
@@ -355,6 +401,19 @@ def _apply_exact_position(
         return "ambiguous"
 
     position_id, position_status, position_qty, position_price, position_fees = position[:5]
+    if not _is_forward_c2_2_position(cur, int(position_id)):
+        _mark_order(
+            cur,
+            order_row_id=order_row_id,
+            status="LEGACY_RECONSTRUCTION_BLOCKED",
+            position_id=position_id,
+            link_position=True,
+            fill_count=fill_count,
+            reconciled_qty=position_qty,
+            unreconciled_qty=max(qty - Decimal(str(position_qty)), Decimal("0")),
+            error="explicit C2.2 legacy reconstruction approval required",
+        )
+        return "alarms"
     position_qty = Decimal(str(position_qty))
     if str(position_status).upper() != "OPEN":
         if qty == position_qty:

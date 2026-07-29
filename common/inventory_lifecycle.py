@@ -6,6 +6,7 @@ from decimal import Decimal
 from common.inventory_quantity import (
     ExitInventoryStatus,
     InstrumentExecutionLimits,
+    InventoryEvidenceStatus,
     InventoryQuantity,
     classify_exit_inventory,
 )
@@ -49,6 +50,24 @@ def apply_inventory_lifecycle_mutation(
             ),
             inventory=inventory,
             limits=limits,
+        )
+
+    if (
+        inventory.evidence_status is InventoryEvidenceStatus.INCOMPLETE
+        or (
+            classification is not None
+            and classification.status is ExitInventoryStatus.INCOMPLETE_EVIDENCE
+        )
+    ):
+        return InventoryMutationResult(
+            int(position_id),
+            (
+                classification.status
+                if classification is not None
+                else ExitInventoryStatus.INCOMPLETE_EVIDENCE
+            ),
+            False,
+            "UNCHANGED",
         )
 
     terminal = classification and classification.status in {

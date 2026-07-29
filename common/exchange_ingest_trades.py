@@ -11,6 +11,11 @@ import psycopg2
 from psycopg2.extras import execute_batch
 
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.exchange_fill_change_control import (
+    FillMutationDecision,
+    mark_fill_change_applied,
+    register_fill_change,
+)
 from common.exchange_identity import normalize_exchange_source
 from common.flags import trading_mode
 
@@ -282,10 +287,13 @@ WITH sell_orders AS (
    AND bo.order_id=s.order_id
   JOIN positions p ON p.id=bo.position_id
   WHERE bo.order_purpose='EXIT' AND bo.position_id IS NOT NULL
-    AND (
-      s.executed_qty>COALESCE(bo.reconciled_executed_qty,0)
-      OR p.inventory_calculated_at IS NULL
-      OR p.inventory_calculated_at<s.evidence_updated_at
+    AND s.order_id=ANY(%s)
+    AND EXISTS (
+      SELECT 1 FROM runtime_contract_adoption_v1 adoption
+      WHERE adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+        AND adoption.environment=lower(%s)
+        AND adoption.deployment_id=%s
+        AND p.entry_time>=adoption.adopted_at
     )
   FOR UPDATE OF bo
 ), applied_orders AS (
@@ -401,7 +409,9 @@ WITH sell_orders AS (
     exit_order_id=COALESCE(p.exit_order_id,c.order_id),
     exit_client_order_id=COALESCE(NULLIF(p.exit_client_order_id,''),c.clordid),
     inventory_calculated_at=clock_timestamp()
-  FROM classified c WHERE p.id=c.position_id AND p.status='OPEN'
+  FROM classified c
+  WHERE p.id=c.position_id AND p.status='OPEN'
+    AND c.classification<>'INCOMPLETE_EVIDENCE'
   RETURNING p.id,c.order_id,c.gross_entry,c.entry_base_fee,c.net_entry,
     c.gross_exit,c.remaining,c.lot_size,c.min_size,c.min_notional,
     c.classification
@@ -485,11 +495,22 @@ def _commission_usdc(symbol: str, commission, commission_asset, price):
 
 
 
-def reconcile_okx_exit_fills(conn, *, source: str, since_ms: int) -> int:
+def reconcile_okx_exit_fills(
+    conn,
+    *,
+    source: str,
+    since_ms: int,
+    changed_order_ids: Iterable[str] = (),
+    environment: str | None = None,
+    deployment_id: str | None = None,
+) -> int:
     """
     Reconcile accepted OKX SELL fills back into positions SSOT.
     """
     if str(source).lower() != "okx":
+        return 0
+    changed_orders = [str(value) for value in changed_order_ids]
+    if not changed_orders:
         return 0
     with conn.cursor() as cur:
         cur.execute(
@@ -501,7 +522,21 @@ def reconcile_okx_exit_fills(conn, *, source: str, since_ms: int) -> int:
                 RECONCILE_OKX_EXIT_FILLS_C2_2_SQL
                 if c2_2_ready else RECONCILE_OKX_EXIT_FILLS_SQL
             ),
-            (str(source).lower(), int(since_ms)),
+            (
+                (
+                    str(source).lower(),
+                    int(since_ms),
+                    changed_orders,
+                    str(environment or os.getenv("ENVIRONMENT", "")).lower(),
+                    str(
+                        deployment_id
+                        or os.getenv("DEPLOYMENT_ID")
+                        or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+                    ),
+                )
+                if c2_2_ready
+                else (str(source).lower(), int(since_ms))
+            ),
         )
         return int(cur.rowcount or 0)
 
@@ -664,6 +699,8 @@ def ingest_my_trades(
 
     total_fetched = 0
     min_event_time_ms_seen: Optional[int] = None
+    accepted_changes = []
+    changed_exit_order_ids: set[str] = set()
 
     with psycopg2.connect(dsn) as conn:
         conn.autocommit = False
@@ -690,13 +727,28 @@ def ingest_my_trades(
             fetch_start = start_ms + 1  # anti-dup
 
             try:
-                trades = client.get_my_trades(symbol=symbol, startTime=fetch_start, limit=api_limit)
+                trades = client.get_my_trades(
+                    symbol=symbol,
+                    startTime=fetch_start,
+                    correctionLookbackMs=lookback_ms_default,
+                    limit=api_limit,
+                )
             except Exception as e:
                 logging.exception("EXCHANGE_INGEST|get_my_trades failed symbol=%s err=%s", symbol, str(e))
                 continue
 
             if not trades:
                 continue
+
+            logging.info(
+                "EXCHANGE_INGEST|fetch_boundary symbol=%s applied=%s mode=%s "
+                "requested=%s effective=%s",
+                symbol,
+                getattr(trades, "filter_applied", False),
+                getattr(trades, "filter_mode", "UNDECLARED"),
+                getattr(trades, "requested_boundary", fetch_start),
+                getattr(trades, "effective_boundary", None),
+            )
 
             rows = [_trade_to_row(symbol, t, fill_idx=0, source=source) for t in trades]
             for item in rows:
@@ -708,11 +760,40 @@ def ingest_my_trades(
                 })
             total_fetched += len(rows)
 
-            min_t = min(r["event_time_ms"] for r in rows)
+            accepted_rows = []
+            with conn.cursor() as cur:
+                for item in rows:
+                    change = register_fill_change(
+                        cur,
+                        item,
+                        account_identity_key=(
+                            str(identity_id)
+                            if identity_id is not None
+                            else f"{source}:ACCOUNT_IDENTITY_MISSING"
+                        ),
+                    )
+                    if change.permits_mutation:
+                        accepted_rows.append(item)
+                        accepted_changes.append(change)
+                        if str(item["side"]).upper() == "SELL":
+                            changed_exit_order_ids.add(str(item["order_id"]))
+                    elif (
+                        change.decision
+                        is FillMutationDecision.AMBIGUOUS_CORRECTION
+                    ):
+                        logging.error(
+                            "EXCHANGE_INGEST|decision=%s symbol=%s trade_id=%s",
+                            change.decision.value, symbol, item["trade_id"],
+                        )
+
+            if not accepted_rows:
+                continue
+
+            min_t = min(r["event_time_ms"] for r in accepted_rows)
             min_event_time_ms_seen = min_t if min_event_time_ms_seen is None else min(min_event_time_ms_seen, min_t)
 
             with conn.cursor() as cur:
-                execute_batch(cur, UPSERT_TRADE_SQL, rows, page_size=500)
+                execute_batch(cur, UPSERT_TRADE_SQL, accepted_rows, page_size=500)
                 execute_batch(
                     cur,
                     """
@@ -725,11 +806,11 @@ def ingest_my_trades(
                       AND symbol=%(symbol)s AND order_id=%(order_id)s
                       AND account_identity_id IS NULL
                     """,
-                    rows,
+                    accepted_rows,
                     page_size=500,
                 )
 
-            max_time = max(r["event_time_ms"] for r in rows)
+            max_time = max(r["event_time_ms"] for r in accepted_rows)
             with conn.cursor() as cur:
                 cur.execute(UPSERT_STATE_SQL, (state_symbol, max_time))
 
@@ -781,10 +862,23 @@ def ingest_my_trades(
 
         if min_event_time_ms_seen is not None:
             try:
-                reconciled_exits = reconcile_okx_exit_fills(conn, source=source, since_ms=min_event_time_ms_seen)
+                reconciled_exits = reconcile_okx_exit_fills(
+                    conn,
+                    source=source,
+                    since_ms=min_event_time_ms_seen,
+                    changed_order_ids=changed_exit_order_ids,
+                    environment=os.getenv("ENVIRONMENT"),
+                    deployment_id=(
+                        os.getenv("DEPLOYMENT_ID")
+                        or os.getenv("WALTRADE_DEPLOYMENT_ID")
+                    ),
+                )
             except Exception:
                 logging.exception("EXCHANGE_INGEST|exit fill reconciliation failed source=%s", source)
 
+        with conn.cursor() as cur:
+            for change in accepted_changes:
+                mark_fill_change_applied(cur, change)
         conn.commit()
 
     if reconciled_exits:

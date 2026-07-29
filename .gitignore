@@ -235,8 +235,10 @@ backups/
 !db/migrations/20260727_canonical_financial_truth_foundation_v1.sql
 !db/migrations/20260728_canonical_financial_truth_writer_v1.sql
 !db/migrations/20260729_fee_aware_inventory_terminal_dust_c2_2.sql
+!db/migrations/20260729_legacy_replay_change_high_water_c2_2_1.sql
 !tests/postgres/learning_canonical_shared_rollback_v2.sql
 !tests/postgres/learning_canonical_frozen_source_snapshot_v2.sql
+!tests/postgres/c2_2_1_runtime_equivalent.sql
 !scripts/learning_canonical_identity_conflict_audit_v1.sql
 !tests/postgres/learning_evidence_manifest_v1.sql
 !tests/postgres/learning_canonical_fresh_install_v1.sql

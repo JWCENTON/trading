@@ -25,6 +25,25 @@ from common.financial_truth_identity import (
 _OKX_ACCOUNT_IDENTITY_CACHE = AccountIdentityCache()
 
 
+class FillFetchResult(list):
+    """List-compatible fill result with an explicit fetch-boundary contract."""
+
+    def __init__(
+        self,
+        values,
+        *,
+        filter_applied: bool,
+        filter_mode: str,
+        requested_boundary: int | None,
+        effective_boundary: int | None,
+    ):
+        super().__init__(values)
+        self.filter_applied = bool(filter_applied)
+        self.filter_mode = str(filter_mode)
+        self.requested_boundary = requested_boundary
+        self.effective_boundary = effective_boundary
+
+
 class ExchangeAPIException(Exception):
     def __init__(self, message: str, *, code=None, raw=None):
         super().__init__(message)
@@ -687,6 +706,19 @@ class OkxMarketDataAdapter:
         )
 
         rows = data.get("data") or []
+        requested_boundary = kwargs.get("startTime")
+        effective_boundary = None
+        if requested_boundary is not None:
+            requested_boundary = int(requested_boundary)
+            correction_lookback_ms = max(
+                0, int(kwargs.get("correctionLookbackMs") or 0)
+            )
+            effective_boundary = requested_boundary - correction_lookback_ms
+            rows = [
+                row for row in rows
+                if row.get("ts") is not None
+                and int(row["ts"]) >= effective_boundary
+            ]
         out = []
 
         for r in rows:
@@ -712,7 +744,17 @@ class OkxMarketDataAdapter:
                 "raw": r,
             })
 
-        return out
+        return FillFetchResult(
+            out,
+            filter_applied=requested_boundary is not None,
+            filter_mode=(
+                "LOCAL_EVENT_TIME_GTE"
+                if requested_boundary is not None
+                else "OKX_CURSOR_ONLY"
+            ),
+            requested_boundary=requested_boundary,
+            effective_boundary=effective_boundary,
+        )
 
     def _request(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}{path}?{urlencode(params)}"
