@@ -8,6 +8,11 @@ import os
 import uuid
 
 from common.financial_truth_identity import IDENTITY_VERSION
+from common.inventory_lifecycle import apply_inventory_lifecycle_mutation
+from common.inventory_quantity import (
+    InstrumentExecutionLimits,
+    project_inventory_from_execution_evidence,
+)
 
 
 SIMULATION_MODEL_VERSION = "PAPER_SIMULATOR_FINANCIAL_MODEL_V1"
@@ -214,6 +219,84 @@ def record_simulated_fill_evidence(
                         _hash(source_payload),
                     ),
                 )
-                return cur.rowcount == 1
+                fill_inserted = cur.rowcount == 1
+
+                cur.execute(
+                    """
+                    SELECT order_purpose,fill_qty,fee_qty,fee_asset,
+                           fill_price,execution_at,simulated_order_id
+                    FROM simulated_execution_fills_v1
+                    WHERE position_id=%s
+                    ORDER BY execution_at,id
+                    """,
+                    (int(position_id),),
+                )
+                fill_rows = cur.fetchall()
+                entry_fills = []
+                exit_fills = []
+                latest_exit_price = None
+                latest_exit_time = None
+                latest_exit_order_id = None
+                for (
+                    purpose, fill_qty, fee_qty, fee_asset, evidence_price,
+                    evidence_time, evidence_order_id,
+                ) in fill_rows:
+                    item = {
+                        "executed_qty": fill_qty,
+                        "commission_amount": fee_qty,
+                        "commission_asset": fee_asset,
+                    }
+                    if str(purpose).upper() == "ENTRY":
+                        entry_fills.append(item)
+                    else:
+                        exit_fills.append(item)
+                        latest_exit_price = Decimal(str(evidence_price))
+                        latest_exit_time = evidence_time
+                        latest_exit_order_id = str(evidence_order_id)
+
+                inventory = project_inventory_from_execution_evidence(
+                    symbol=str(symbol),
+                    entry_fills=entry_fills,
+                    exit_fills=exit_fills,
+                    quote_asset=quote_asset,
+                )
+                cur.execute(
+                    """
+                    SELECT qty,COALESCE(cumulative_exit_executed_qty,0)
+                    FROM positions WHERE id=%s FOR UPDATE
+                    """,
+                    (int(position_id),),
+                )
+                position = cur.fetchone()
+                if position is None:
+                    raise RuntimeError("simulated fill position missing")
+                previous_qty, previous_high_water = position
+                if metadata is None:
+                    limits = InstrumentExecutionLimits(
+                        None, None, None, None, False
+                    )
+                else:
+                    step, min_qty, min_notional, _, _ = metadata
+                    limits = InstrumentExecutionLimits(
+                        Decimal(str(step)), Decimal(str(min_qty)),
+                        Decimal(str(min_notional)), fill_price, True,
+                    )
+                apply_inventory_lifecycle_mutation(
+                    cur,
+                    position_id=int(position_id),
+                    order_id=(
+                        latest_exit_order_id
+                        or f"simulated-entry-{int(simulated_order_id)}"
+                    ),
+                    inventory=inventory,
+                    limits=limits,
+                    previous_remaining_qty=Decimal(str(previous_qty)),
+                    previous_exit_high_water=Decimal(str(previous_high_water)),
+                    has_exit_evidence=bool(exit_fills),
+                    exit_price=latest_exit_price,
+                    exit_time=latest_exit_time,
+                    execution_source="PAPER_SIMULATED",
+                )
+                return fill_inserted
     finally:
         conn.close()

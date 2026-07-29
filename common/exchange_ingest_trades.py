@@ -85,7 +85,54 @@ VALUES (
   %(account_identity_status)s,
   %(account_identity_failure_code)s
 )
-ON CONFLICT (source, trade_id) DO NOTHING;
+ON CONFLICT (source, trade_id) DO UPDATE SET
+  order_id=EXCLUDED.order_id,
+  symbol=EXCLUDED.symbol,
+  side=EXCLUDED.side,
+  role=EXCLUDED.role,
+  executed_qty=EXCLUDED.executed_qty,
+  avg_price=EXCLUDED.avg_price,
+  quote_notional_usdc=EXCLUDED.quote_notional_usdc,
+  commission_amount=EXCLUDED.commission_amount,
+  commission_asset=EXCLUDED.commission_asset,
+  commission_usdc=EXCLUDED.commission_usdc,
+  event_time=EXCLUDED.event_time,
+  raw=EXCLUDED.raw,
+  account_identity_id=COALESCE(
+    EXCLUDED.account_identity_id,binance_order_fills.account_identity_id
+  ),
+  instrument_snapshot_id=COALESCE(
+    EXCLUDED.instrument_snapshot_id,binance_order_fills.instrument_snapshot_id
+  ),
+  account_identity_status=EXCLUDED.account_identity_status,
+  account_identity_failure_code=EXCLUDED.account_identity_failure_code
+WHERE (
+  binance_order_fills.order_id,
+  binance_order_fills.symbol,
+  binance_order_fills.side,
+  binance_order_fills.role,
+  binance_order_fills.executed_qty,
+  binance_order_fills.avg_price,
+  binance_order_fills.quote_notional_usdc,
+  binance_order_fills.commission_amount,
+  binance_order_fills.commission_asset,
+  binance_order_fills.commission_usdc,
+  binance_order_fills.event_time,
+  binance_order_fills.raw
+) IS DISTINCT FROM (
+  EXCLUDED.order_id,
+  EXCLUDED.symbol,
+  EXCLUDED.side,
+  EXCLUDED.role,
+  EXCLUDED.executed_qty,
+  EXCLUDED.avg_price,
+  EXCLUDED.quote_notional_usdc,
+  EXCLUDED.commission_amount,
+  EXCLUDED.commission_asset,
+  EXCLUDED.commission_usdc,
+  EXCLUDED.event_time,
+  EXCLUDED.raw
+);
 """
 
 READ_STATE_SQL = """
@@ -212,6 +259,183 @@ WHERE p.id = c.position_id
   AND p.status = 'OPEN';
 """
 
+RECONCILE_OKX_EXIT_FILLS_C2_2_SQL = """
+WITH sell_orders AS (
+  SELECT f.source,f.symbol,f.order_id,
+         NULLIF(f.raw->'raw'->>'clOrdId','') AS clordid,
+         MIN(f.event_time) AS exit_time,
+         MAX(f.event_time) AS evidence_updated_at,
+         SUM(f.executed_qty) AS executed_qty,
+         CASE WHEN SUM(f.executed_qty)>0
+           THEN SUM(f.executed_qty*f.avg_price)/SUM(f.executed_qty)
+           ELSE MAX(f.avg_price) END AS avg_exit_price
+  FROM binance_order_fills f
+  WHERE f.source=%s AND f.side='SELL'
+    AND f.event_time>=to_timestamp(%s/1000.0)
+  GROUP BY f.source,f.symbol,f.order_id,NULLIF(f.raw->'raw'->>'clOrdId','')
+), pending_orders AS (
+  SELECT bo.id,bo.position_id,s.executed_qty,
+         s.executed_qty-COALESCE(bo.reconciled_executed_qty,0) delta_qty,
+         s.avg_exit_price,s.exit_time,s.order_id,s.clordid
+  FROM binance_orders bo JOIN sell_orders s
+    ON bo.exchange_source=s.source AND bo.symbol=s.symbol
+   AND bo.order_id=s.order_id
+  JOIN positions p ON p.id=bo.position_id
+  WHERE bo.order_purpose='EXIT' AND bo.position_id IS NOT NULL
+    AND (
+      s.executed_qty>COALESCE(bo.reconciled_executed_qty,0)
+      OR p.inventory_calculated_at IS NULL
+      OR p.inventory_calculated_at<s.evidence_updated_at
+    )
+  FOR UPDATE OF bo
+), applied_orders AS (
+  UPDATE binance_orders bo
+  SET reconciled_executed_qty=po.executed_qty,
+      reconciled_position_id=bo.position_id,reconciled_at=now(),
+      reconciliation_status='RECONCILED',
+      last_reconciliation_action='EXIT_FILL_DELTA_APPLIED',
+      unreconciled_qty=0,reconciliation_error=NULL
+  FROM pending_orders po WHERE bo.id=po.id
+  RETURNING bo.position_id,po.avg_exit_price,po.exit_time,po.order_id,po.clordid
+), affected AS (
+  SELECT position_id,MAX(avg_exit_price) avg_exit_price,
+         MAX(exit_time) exit_time,MAX(order_id) order_id,MAX(clordid) clordid
+  FROM applied_orders GROUP BY position_id
+), evidence AS (
+  SELECT p.id position_id,
+    SUM(f.executed_qty) FILTER (WHERE bo.order_purpose='ENTRY') gross_entry,
+    SUM(CASE WHEN bo.order_purpose='ENTRY'
+              AND upper(f.commission_asset)=upper(
+                CASE WHEN p.symbol LIKE '%%USDC'
+                  THEN left(p.symbol,length(p.symbol)-4)
+                  WHEN p.symbol LIKE '%%USDT'
+                  THEN left(p.symbol,length(p.symbol)-4) ELSE '' END)
+             THEN f.commission_amount ELSE 0 END) entry_base_fee,
+    SUM(f.executed_qty) FILTER (WHERE bo.order_purpose='EXIT') gross_exit,
+    SUM(CASE WHEN bo.order_purpose='EXIT'
+              AND upper(f.commission_asset)=upper(
+                CASE WHEN p.symbol LIKE '%%USDC'
+                  THEN left(p.symbol,length(p.symbol)-4)
+                  WHEN p.symbol LIKE '%%USDT'
+                  THEN left(p.symbol,length(p.symbol)-4) ELSE '' END)
+             THEN f.commission_amount ELSE 0 END) exit_base_fee,
+    BOOL_AND(f.commission_asset IS NOT NULL
+             AND f.commission_amount IS NOT NULL) fee_complete
+  FROM affected a JOIN positions p ON p.id=a.position_id
+  JOIN binance_orders bo
+    ON bo.position_id=p.id OR bo.order_id=p.entry_order_id
+  JOIN binance_order_fills f ON f.order_id=bo.order_id
+  GROUP BY p.id
+), instrument AS (
+  SELECT DISTINCT ON (e.position_id) e.position_id,
+         s.step_size lot_size,s.min_qty min_size,s.min_notional,
+         c.close price,
+         c.open_time>=clock_timestamp()-interval '20 minutes' price_fresh
+  FROM evidence e JOIN positions p ON p.id=e.position_id
+  LEFT JOIN binance_order_fills f ON f.order_id=p.entry_order_id
+  LEFT JOIN financial_truth_instrument_snapshot_v1 s
+    ON s.id=f.instrument_snapshot_id
+  LEFT JOIN LATERAL (
+    SELECT close,open_time FROM candles
+    WHERE symbol=p.symbol ORDER BY open_time DESC LIMIT 1
+  ) c ON true
+  ORDER BY e.position_id,s.captured_at DESC NULLS LAST
+), classified AS (
+  SELECT a.*,e.gross_entry,e.entry_base_fee,e.gross_exit,e.exit_base_fee,
+    e.gross_entry-e.entry_base_fee AS net_entry,
+    e.gross_exit+e.exit_base_fee AS exit_reduction,
+    GREATEST(0,e.gross_entry-e.entry_base_fee-e.gross_exit-e.exit_base_fee)
+      AS remaining,
+    i.lot_size,i.min_size,i.min_notional,i.price,i.price_fresh,e.fee_complete,
+    CASE
+      WHEN NOT e.fee_complete THEN 'INCOMPLETE_EVIDENCE'
+      WHEN e.gross_entry-e.entry_base_fee-e.gross_exit-e.exit_base_fee
+             <= 0.000000000001 THEN 'FULLY_EXECUTED_CLOSE'
+      WHEN i.lot_size IS NULL OR i.min_size IS NULL
+        OR (COALESCE(i.min_notional,0)>0 AND NOT COALESCE(i.price_fresh,false))
+        THEN 'INCOMPLETE_EVIDENCE'
+      WHEN floor(
+             GREATEST(0,e.gross_entry-e.entry_base_fee-e.gross_exit-e.exit_base_fee)
+             / i.lot_size
+           )*i.lot_size < i.min_size
+        OR (
+          COALESCE(i.min_notional,0)>0
+          AND floor(
+            GREATEST(0,e.gross_entry-e.entry_base_fee-e.gross_exit-e.exit_base_fee)
+            / i.lot_size
+          )*i.lot_size*i.price < i.min_notional
+        ) THEN 'TERMINAL_DUST_CLOSE'
+      ELSE 'PARTIAL_REDUCTION'
+    END classification
+  FROM affected a JOIN evidence e ON e.position_id=a.position_id
+  LEFT JOIN instrument i ON i.position_id=a.position_id
+), mutated AS (
+  UPDATE positions p SET
+    gross_entry_executed_qty=c.gross_entry,
+    entry_base_fee_qty=c.entry_base_fee,
+    net_entry_inventory_qty=c.net_entry,
+    cumulative_exit_executed_qty=c.gross_exit,
+    exit_inventory_reduction_qty=c.exit_reduction,
+    remaining_inventory_qty=c.remaining,
+    qty=c.remaining,
+    inventory_evidence_status=CASE
+      WHEN c.classification='INCOMPLETE_EVIDENCE' THEN 'INCOMPLETE'
+      ELSE 'COMPLETE' END,
+    status=CASE WHEN c.classification IN
+      ('FULLY_EXECUTED_CLOSE','TERMINAL_DUST_CLOSE') THEN 'CLOSED' ELSE 'OPEN' END,
+    terminal_dust_qty=CASE WHEN c.classification='TERMINAL_DUST_CLOSE'
+      THEN c.remaining ELSE NULL END,
+    terminal_reason=CASE WHEN c.classification='TERMINAL_DUST_CLOSE'
+      THEN 'TERMINAL_DUST' ELSE NULL END,
+    exit_price=CASE WHEN c.classification IN
+      ('FULLY_EXECUTED_CLOSE','TERMINAL_DUST_CLOSE') THEN c.avg_exit_price
+      ELSE p.exit_price END,
+    exit_time=CASE WHEN c.classification IN
+      ('FULLY_EXECUTED_CLOSE','TERMINAL_DUST_CLOSE') THEN c.exit_time
+      ELSE p.exit_time END,
+    exit_reason=CASE WHEN c.classification='TERMINAL_DUST_CLOSE'
+      THEN 'TERMINAL_DUST'
+      WHEN c.classification='FULLY_EXECUTED_CLOSE'
+      THEN COALESCE(NULLIF(p.exit_reason,''),'RECONCILED_OKX_EXIT_FILL')
+      ELSE p.exit_reason END,
+    exit_order_id=COALESCE(p.exit_order_id,c.order_id),
+    exit_client_order_id=COALESCE(NULLIF(p.exit_client_order_id,''),c.clordid),
+    inventory_calculated_at=clock_timestamp()
+  FROM classified c WHERE p.id=c.position_id AND p.status='OPEN'
+  RETURNING p.id,c.order_id,c.gross_entry,c.entry_base_fee,c.net_entry,
+    c.gross_exit,c.remaining,c.lot_size,c.min_size,c.min_notional,
+    c.classification
+)
+INSERT INTO position_lifecycle_events_c2_2(
+  position_id,order_id,mutation_kind,mutation_high_water,payload
+)
+SELECT id,order_id,
+  CASE classification
+    WHEN 'TERMINAL_DUST_CLOSE' THEN 'POSITION_CLOSED_TERMINAL_DUST'
+    WHEN 'FULLY_EXECUTED_CLOSE' THEN 'POSITION_CLOSED'
+    ELSE 'POSITION_REDUCED' END,
+  gross_exit,
+  jsonb_build_object(
+    'position_id',id,'order_id',order_id,
+    'gross_entry_executed_qty',gross_entry,
+    'entry_base_fee_qty',entry_base_fee,
+    'net_entry_inventory_qty',net_entry,
+    'cumulative_exit_executed_qty',gross_exit,
+    'remaining_inventory_qty',remaining,
+    'terminal_dust_qty',CASE WHEN classification='TERMINAL_DUST_CLOSE'
+      THEN remaining ELSE 0 END,
+    'dust_qty',CASE WHEN classification='TERMINAL_DUST_CLOSE'
+      THEN remaining ELSE 0 END,
+    'lotSz',lot_size,'minSz',min_size,'min_notional',min_notional,
+    'terminal_reason',CASE WHEN classification='TERMINAL_DUST_CLOSE'
+      THEN 'TERMINAL_DUST' ELSE NULL END,
+    'financial_truth_status','UNKNOWN'
+  )
+FROM mutated
+WHERE classification<>'INCOMPLETE_EVIDENCE'
+ON CONFLICT DO NOTHING
+"""
+
 
 def _mk_dsn(*, host: str, port: int, dbname: str, user: str, password: str) -> str:
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
@@ -268,7 +492,17 @@ def reconcile_okx_exit_fills(conn, *, source: str, since_ms: int) -> int:
     if str(source).lower() != "okx":
         return 0
     with conn.cursor() as cur:
-        cur.execute(RECONCILE_OKX_EXIT_FILLS_SQL, (str(source).lower(), int(since_ms)))
+        cur.execute(
+            "SELECT to_regclass('public.position_lifecycle_events_c2_2')"
+        )
+        c2_2_ready = cur.fetchone()[0] is not None
+        cur.execute(
+            (
+                RECONCILE_OKX_EXIT_FILLS_C2_2_SQL
+                if c2_2_ready else RECONCILE_OKX_EXIT_FILLS_SQL
+            ),
+            (str(source).lower(), int(since_ms)),
+        )
         return int(cur.rowcount or 0)
 
 
