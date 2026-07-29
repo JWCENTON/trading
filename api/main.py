@@ -4003,6 +4003,65 @@ def ui_recent_closed(
             create_trade_position_notifications(cur)
             _conn.commit()
             cur.execute("""
+              WITH recent_positions AS (
+                SELECT
+                  p.*,
+                  real.ssot_state,
+                  real.entry_exec_notional_est,
+                  real.pnl_net_real_usdc,
+                  est.entry_notional_usdc AS estimated_entry_notional_usdc,
+                  est.pnl_net_est_usdc
+                FROM positions p
+                LEFT JOIN v_positions_pnl_net_real_ssot real
+                  ON real.id = p.id
+                LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
+                WHERE p.status = 'CLOSED'
+                  AND p.exit_time IS NOT NULL
+                ORDER BY p.exit_time DESC
+                LIMIT %s
+              ),
+              execution_evidence AS (
+                SELECT
+                  p.*,
+                  simulated.simulated_entry_notional_usdc,
+                  simulated.simulated_exit_notional_usdc,
+                  simulated.simulated_entry_fill_count,
+                  simulated.simulated_exit_fill_count
+                FROM recent_positions p
+                LEFT JOIN LATERAL (
+                  SELECT
+                    SUM(f.fill_qty * f.fill_price)
+                      FILTER (WHERE f.order_purpose = 'ENTRY')
+                      AS simulated_entry_notional_usdc,
+                    SUM(f.fill_qty * f.fill_price)
+                      FILTER (WHERE f.order_purpose = 'EXIT')
+                      AS simulated_exit_notional_usdc,
+                    COUNT(*) FILTER (WHERE f.order_purpose = 'ENTRY')
+                      AS simulated_entry_fill_count,
+                    COUNT(*) FILTER (WHERE f.order_purpose = 'EXIT')
+                      AS simulated_exit_fill_count
+                  FROM simulated_execution_fills_v1 f
+                  WHERE f.position_id = p.id
+                ) simulated ON TRUE
+              ),
+              resolved AS (
+                SELECT
+                  p.*,
+                  NULLIF(
+                    COALESCE(
+                      p.entry_exec_notional_est,
+                      p.simulated_entry_notional_usdc,
+                      p.estimated_entry_notional_usdc,
+                      p.entry_price * p.qty
+                    ),
+                    0
+                  ) AS entry_notional_safe,
+                  COALESCE(
+                    p.simulated_exit_notional_usdc,
+                    p.exit_price * p.qty
+                  ) AS exit_notional_safe
+                FROM execution_evidence p
+              )
               SELECT
                 p.id,
                 p.exit_time,
@@ -4014,15 +4073,15 @@ def ui_recent_closed(
                 p.entry_price::double precision AS entry_price,
                 p.exit_price::double precision AS exit_price,
                 p.qty::double precision AS qty,
-                denom.entry_notional_safe::double precision AS entry_notional_usdc,
-                CASE
-                  WHEN p.exit_price IS NULL OR p.qty IS NULL THEN NULL
-                  ELSE (p.exit_price * p.qty)::double precision
-                END AS exit_notional_usdc,
+                p.entry_notional_safe::double precision
+                  AS entry_notional_usdc,
+                p.exit_notional_safe::double precision
+                  AS exit_notional_usdc,
                 COALESCE(
                   p.net_pnl_usdc,
-                  CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
-                  est.pnl_net_est_usdc,
+                  CASE WHEN p.ssot_state = 'OK'
+                    THEN p.pnl_net_real_usdc ELSE NULL END,
+                  p.pnl_net_est_usdc,
                   CASE
                     WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
                       THEN (p.entry_price - p.exit_price) * p.qty
@@ -4032,33 +4091,19 @@ def ui_recent_closed(
                 (
                   COALESCE(
                     p.net_pnl_usdc,
-                    CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
-                    est.pnl_net_est_usdc,
+                    CASE WHEN p.ssot_state = 'OK'
+                      THEN p.pnl_net_real_usdc ELSE NULL END,
+                    p.pnl_net_est_usdc,
                     CASE
                       WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
                         THEN (p.entry_price - p.exit_price) * p.qty
                       ELSE (p.exit_price - p.entry_price) * p.qty
                     END
-                  ) / denom.entry_notional_safe * 100.0
+                  ) / p.entry_notional_safe * 100.0
                 )::double precision AS pnl_pct,
                 p.exit_reason
-              FROM positions p
-              LEFT JOIN v_positions_pnl_net_real_ssot real ON real.id = p.id
-              LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
-              CROSS JOIN LATERAL (
-                SELECT NULLIF(
-                  COALESCE(
-                    real.entry_exec_notional_est,
-                    est.entry_notional_usdc,
-                    p.entry_price * p.qty
-                  ),
-                  0
-                ) AS entry_notional_safe
-              ) denom
-              WHERE p.status = 'CLOSED'
-                AND p.exit_time IS NOT NULL
+              FROM resolved p
               ORDER BY p.exit_time DESC
-              LIMIT %s
             """, (limit,))
             rows = cur.fetchall()
 
