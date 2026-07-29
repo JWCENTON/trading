@@ -17,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "db/migrations/20260714_pending_entry_fill_reconciliation_v1.sql"
 
 
+@pytest.fixture(autouse=True)
+def immutable_runtime_revision(monkeypatch):
+    monkeypatch.setenv("GIT_SHA", "2" * 40)
+
+
 def reconcile_pending_entry_fills(conn, **kwargs):
     kwargs.setdefault("trading_mode", "LIVE")
     return _reconcile_pending_entry_fills(conn, **kwargs)

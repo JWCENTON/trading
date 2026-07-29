@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from common.contract_adoption import require_runtime_git_revision
 from common.runtime import normalize_trading_mode
 
 
@@ -71,20 +72,21 @@ def _refresh_entry_inventory_projection(cur, position_id: int) -> None:
               AND adoption.status='ACTIVE'
               AND adoption.environment=lower(%s)
               AND adoption.deployment_id=%s
+              AND adoption.git_revision=%s
               AND (
                 (
                   p.inventory_contract_adoption_id=adoption.adoption_id
                   AND p.inventory_contract_generation=adoption.generation
                 )
                 OR (
+                  is_existing_projected_c2_2_compatible(
+                    p.id, adoption.environment
+                  )
+                )
+                OR (
                   p.inventory_contract_adoption_id IS NULL
                   AND p.inventory_contract_generation IS NULL
-                  AND (
-                    p.entry_time>=adoption.adopted_at
-                    OR is_existing_projected_c2_2_compatible(
-                      p.id, adoption.environment
-                    )
-                  )
+                  AND p.entry_time>=adoption.adopted_at
                 )
               )
           )
@@ -96,6 +98,7 @@ def _refresh_entry_inventory_projection(cur, position_id: int) -> None:
                     os.getenv("DEPLOYMENT_ID")
                     or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
                 ),
+                require_runtime_git_revision(),
             ),
         )
     except AssertionError:
@@ -367,20 +370,21 @@ def _is_forward_c2_2_position(cur, position_id: int) -> bool:
                AND adoption.status='ACTIVE'
                AND adoption.environment=lower(%s)
                AND adoption.deployment_id=%s
+               AND adoption.git_revision=%s
                AND (
                  (
                    p.inventory_contract_adoption_id=adoption.adoption_id
                    AND p.inventory_contract_generation=adoption.generation
                  )
                  OR (
+                   is_existing_projected_c2_2_compatible(
+                     p.id, adoption.environment
+                   )
+                 )
+                 OR (
                    p.inventory_contract_adoption_id IS NULL
                    AND p.inventory_contract_generation IS NULL
-                   AND (
-                     p.entry_time>=adoption.adopted_at
-                     OR is_existing_projected_c2_2_compatible(
-                       p.id, adoption.environment
-                     )
-                   )
+                   AND p.entry_time>=adoption.adopted_at
                  )
                )
               WHERE p.id=%s
@@ -392,6 +396,7 @@ def _is_forward_c2_2_position(cur, position_id: int) -> bool:
                     os.getenv("DEPLOYMENT_ID")
                     or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
                 ),
+                require_runtime_git_revision(),
                 int(position_id),
             ),
         )

@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 
+from common.contract_adoption import require_runtime_git_revision
 from common.financial_truth_identity import IDENTITY_VERSION
 from common.inventory_lifecycle import apply_inventory_lifecycle_mutation
 from common.inventory_quantity import (
@@ -34,6 +35,7 @@ def paper_position_mutation_allowed_cursor(
                AND adoption.environment='paper'
                AND adoption.deployment_id=%s
                AND adoption.status='ACTIVE'
+               AND adoption.git_revision=%s
               WHERE p.id=%s
                 AND (
                   (
@@ -41,17 +43,21 @@ def paper_position_mutation_allowed_cursor(
                     AND p.inventory_contract_generation=adoption.generation
                   )
                   OR (
+                    is_existing_projected_c2_2_compatible(p.id,'paper')
+                  )
+                  OR (
                     p.inventory_contract_adoption_id IS NULL
                     AND p.inventory_contract_generation IS NULL
-                    AND (
-                      p.entry_time>=adoption.adopted_at
-                      OR is_existing_projected_c2_2_compatible(p.id,'paper')
-                    )
+                    AND p.entry_time>=adoption.adopted_at
                   )
                 )
             )
             """,
-            (str(deployment_id), int(position_id)),
+            (
+                str(deployment_id),
+                require_runtime_git_revision(),
+                int(position_id),
+            ),
         )
         return bool(cur.fetchone()[0])
     except AssertionError:
@@ -138,19 +144,24 @@ def record_simulated_fill_evidence(
                 symbol, side, price, qty, is_exit, execution_at = order
                 cur.execute(
                     """
-                    SELECT adoption.adoption_id,adoption.generation,
+                    SELECT
+                      COALESCE(
+                        p.inventory_contract_adoption_id,
+                        adoption.adoption_id
+                      ),
+                      COALESCE(
+                        p.inventory_contract_generation,
+                        adoption.generation
+                      ),
                       CASE
-                        WHEN p.inventory_contract_adoption_id IS NOT NULL
-                         AND (
-                           p.inventory_contract_adoption_id<>adoption.adoption_id
-                           OR p.inventory_contract_generation<>adoption.generation
-                         ) THEN 'ADOPTION_GENERATION_MISMATCH'
                         WHEN p.inventory_contract_adoption_id=adoption.adoption_id
                          AND p.inventory_contract_generation=adoption.generation
                           THEN 'FORWARD_C2_2'
                         WHEN is_existing_projected_c2_2_compatible(
                           p.id,'paper'
                         ) THEN 'EXISTING_PROJECTED_C2_2'
+                        WHEN p.inventory_contract_adoption_id IS NOT NULL
+                          THEN 'ADOPTION_GENERATION_MISMATCH'
                         WHEN p.inventory_contract_adoption_id IS NULL
                          AND p.inventory_contract_generation IS NULL
                          AND p.entry_time>=adoption.adopted_at
@@ -163,10 +174,15 @@ def record_simulated_fill_evidence(
                      AND adoption.environment='paper'
                      AND adoption.deployment_id=%s
                      AND adoption.status='ACTIVE'
+                     AND adoption.git_revision=%s
                     WHERE p.id=%s
                     FOR UPDATE OF p
                     """,
-                    (str(deployment_id), int(position_id)),
+                    (
+                        str(deployment_id),
+                        require_runtime_git_revision(),
+                        int(position_id),
+                    ),
                 )
                 generation_gate = cur.fetchone()
                 if generation_gate is None:

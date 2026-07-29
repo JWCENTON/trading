@@ -46,9 +46,11 @@ forward position first commits an accepted lifecycle mutation. Legacy rows
 remain NULL. The ingestion ledger stores the active adoption and generation
 resolved before evidence application.
 
-An attributed position is mutable only while its exact generation is ACTIVE.
-Unattributed pre-C2.2.2 rows may continue only through the evidence-backed
-existing-projection predicate. An attribution mismatch fails closed.
+An attributed position from the current generation follows the forward path.
+A position owned by an older generation may continue only through the
+evidence-backed existing-projection predicate and retains its immutable
+ownership. An attribution mismatch without complete compatible evidence fails
+closed.
 
 ## Mutation gate
 
@@ -90,3 +92,37 @@ Runtime rollback alone is not a data rollback.
 
 Keep the dump until the bounded observation and rollback window close and all
 high-water comparisons pass.
+
+## C2.2.4 atomic active-generation replacement
+
+`replace_active_contract_adoption` replaces one explicitly named ACTIVE row
+with one explicitly named PREPARED row. The caller supplies both adoption IDs,
+the expected old generation and Git revision, the candidate Git revision,
+environment, deployment and reason. The helper takes the same
+transaction-scoped advisory lock as activation, locks both rows `FOR UPDATE`,
+checks scope and generation ordering, and reads `clock_timestamp()` once.
+The old `deactivated_at` and new `adopted_at` therefore identify one transition
+boundary. The partial unique ACTIVE index remains the final database guard.
+
+A successful transition leaves the old generation `SUPERSEDED`, the candidate
+`ACTIVE`, and links `supersedes_adoption_id` to the old row. An exact retry
+returns `ALREADY_REPLACED` without mutation. Partial or mismatched state fails
+closed with a specific replacement error; lifecycle history is never repaired
+or rewritten implicitly.
+
+Every mutation lookup binds the ACTIVE row to the immutable `GIT_SHA` embedded
+in the running image. An old runtime cannot consume a newer ACTIVE generation
+during the activation-to-start boundary. Position ownership is separate: a
+complete evidence-backed position attributed to an older generation keeps
+that attribution and follows existing-projected compatibility. New forward
+positions receive the current runtime generation.
+
+The operational order is build and verify candidate images, create PREPARED,
+stop the old mutation-capable bot-runner, atomically replace ACTIVE, start the
+candidate immediately, and verify its image/Git identity.
+
+If the candidate cannot start, never reactivate a historical `SUPERSEDED` row.
+Prepare a higher recovery generation for the prior runtime and use
+`rollback_active_to_prepared_contract_adoption` to atomically mark the failed
+candidate `ROLLED_BACK` and activate recovery. History remains immutable: old
+`SUPERSEDED`, failed `ROLLED_BACK`, recovery `ACTIVE`.

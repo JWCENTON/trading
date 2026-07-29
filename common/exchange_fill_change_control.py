@@ -7,6 +7,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping
 
+from common.contract_adoption import require_runtime_git_revision
+
 
 class FillMutationDecision(str, Enum):
     NEW_AUTHORITATIVE_EVIDENCE = "NEW_AUTHORITATIVE_EVIDENCE"
@@ -219,24 +221,29 @@ def _resolve_row_generation(cur, row: Mapping[str, Any]):
         SELECT
           CASE
             WHEN adoption.adoption_id IS NULL THEN 'ADOPTION_NOT_ACTIVE'
-            WHEN p.inventory_contract_adoption_id IS NOT NULL
-             AND (
-               p.inventory_contract_adoption_id <> adoption.adoption_id
-               OR p.inventory_contract_generation <> adoption.generation
-             ) THEN 'ADOPTION_GENERATION_MISMATCH'
             WHEN p.inventory_contract_adoption_id = adoption.adoption_id
              AND p.inventory_contract_generation = adoption.generation
               THEN 'FORWARD_C2_2'
             WHEN is_existing_projected_c2_2_compatible(
               p.id, adoption.environment
             ) THEN 'EXISTING_PROJECTED_C2_2'
+            WHEN p.inventory_contract_adoption_id IS NOT NULL
+              THEN 'ADOPTION_GENERATION_MISMATCH'
             WHEN p.inventory_contract_adoption_id IS NULL
              AND p.inventory_contract_generation IS NULL
              AND p.entry_time >= adoption.adopted_at THEN 'FORWARD_C2_2'
             ELSE 'LEGACY_UNPROJECTED'
           END,
-          adoption.adoption_id,
-          adoption.generation
+          CASE
+            WHEN p.inventory_contract_adoption_id IS NOT NULL
+              THEN p.inventory_contract_adoption_id
+            ELSE adoption.adoption_id
+          END,
+          CASE
+            WHEN p.inventory_contract_generation IS NOT NULL
+              THEN p.inventory_contract_generation
+            ELSE adoption.generation
+          END
         FROM positions p
         LEFT JOIN binance_orders bo
           ON bo.position_id = p.id OR bo.order_id = p.entry_order_id
@@ -245,6 +252,7 @@ def _resolve_row_generation(cur, row: Mapping[str, Any]):
          AND adoption.status = 'ACTIVE'
          AND adoption.environment = lower(%s)
          AND adoption.deployment_id = %s
+         AND adoption.git_revision = %s
         WHERE p.entry_order_id = %s OR p.exit_order_id = %s
            OR bo.order_id = %s
         ORDER BY p.id
@@ -253,6 +261,7 @@ def _resolve_row_generation(cur, row: Mapping[str, Any]):
         (
             str(row.get("environment") or "").lower(),
             str(row.get("deployment_id") or ""),
+            require_runtime_git_revision(),
             str(row.get("order_id") or ""),
             str(row.get("order_id") or ""),
             str(row.get("order_id") or ""),

@@ -10,6 +10,7 @@ from typing import Iterable, Dict, Any, Optional
 import psycopg2
 from psycopg2.extras import execute_batch
 
+from common.contract_adoption import require_runtime_git_revision
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
 from common.exchange_fill_change_control import (
     FillMutationDecision,
@@ -283,7 +284,12 @@ WITH sell_orders AS (
   SELECT bo.id,bo.position_id,s.executed_qty,
          s.executed_qty-COALESCE(bo.reconciled_executed_qty,0) delta_qty,
          s.avg_exit_price,s.exit_time,s.order_id,s.clordid,
-         adoption.adoption_id,adoption.generation
+         COALESCE(
+           p.inventory_contract_adoption_id,adoption.adoption_id
+         ) adoption_id,
+         COALESCE(
+           p.inventory_contract_generation,adoption.generation
+         ) generation
   FROM binance_orders bo JOIN sell_orders s
     ON bo.exchange_source=s.source AND bo.symbol=s.symbol
    AND bo.order_id=s.order_id
@@ -295,6 +301,7 @@ WITH sell_orders AS (
       AND a.status='ACTIVE'
       AND a.environment=lower(%s)
       AND a.deployment_id=%s
+      AND a.git_revision=%s
     LIMIT 1
   ) adoption ON true
   WHERE bo.order_purpose='EXIT' AND bo.position_id IS NOT NULL
@@ -305,14 +312,14 @@ WITH sell_orders AS (
             AND p.inventory_contract_generation=adoption.generation
           )
           OR (
+            is_existing_projected_c2_2_compatible(
+              p.id, adoption.environment
+            )
+          )
+          OR (
             p.inventory_contract_adoption_id IS NULL
             AND p.inventory_contract_generation IS NULL
-            AND (
-              p.entry_time>=adoption.adopted_at
-              OR is_existing_projected_c2_2_compatible(
-                p.id, adoption.environment
-              )
-            )
+            AND p.entry_time>=adoption.adopted_at
           )
     )
   FOR UPDATE OF bo
@@ -560,6 +567,7 @@ def reconcile_okx_exit_fills(
                         or os.getenv("DEPLOYMENT_ID")
                         or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
                     ),
+                    require_runtime_git_revision(),
                     changed_orders,
                 )
                 if c2_2_ready

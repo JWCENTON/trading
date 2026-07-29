@@ -1,11 +1,18 @@
 import copy
 import json
 
+import pytest
+
 from common.exchange_fill_change_control import (
     FillMutationDecision,
     mark_fill_change_applied,
     register_fill_change,
 )
+
+
+@pytest.fixture(autouse=True)
+def immutable_runtime_revision(monkeypatch):
+    monkeypatch.setenv("GIT_SHA", "2" * 40)
 
 
 class LedgerCursor:
@@ -36,7 +43,7 @@ class LedgerCursor:
         self.result = None
         self.rowcount = 0
         if "SELECT CASE" in sql and "FROM positions p" in sql:
-            order_id = str(params[2])
+            order_id = str(params[3])
             self.result = self.resolutions[order_id]
             return
         if (
