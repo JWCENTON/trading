@@ -30,6 +30,11 @@ becomes the OCI `org.opencontainers.image.revision` label and runtime
 `GIT_SHA`. There is no `COMMIT_SHA` fallback and no runtime working-tree
 lookup.
 
+The API image follows the same immutable identity contract. Compose passes
+`GIT_SHA`; `api/Dockerfile` validates the complete revision, exports it to the
+runtime and writes `org.opencontainers.image.revision`. Candidate validation
+must inspect this label before replacing any PAPER or LIVE API component.
+
 ## Expected LOCAL LIVE process inventory
 
 The reviewed invariant is 28 unique child identities:
