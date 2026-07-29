@@ -13,6 +13,7 @@ from psycopg2.extras import execute_batch
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
 from common.exchange_fill_change_control import (
     FillMutationDecision,
+    attribute_fill_change_position,
     mark_fill_change_applied,
     register_fill_change,
 )
@@ -281,19 +282,38 @@ WITH sell_orders AS (
 ), pending_orders AS (
   SELECT bo.id,bo.position_id,s.executed_qty,
          s.executed_qty-COALESCE(bo.reconciled_executed_qty,0) delta_qty,
-         s.avg_exit_price,s.exit_time,s.order_id,s.clordid
+         s.avg_exit_price,s.exit_time,s.order_id,s.clordid,
+         adoption.adoption_id,adoption.generation
   FROM binance_orders bo JOIN sell_orders s
     ON bo.exchange_source=s.source AND bo.symbol=s.symbol
    AND bo.order_id=s.order_id
   JOIN positions p ON p.id=bo.position_id
+  JOIN LATERAL (
+    SELECT a.adoption_id,a.generation,a.environment,a.adopted_at
+    FROM runtime_contract_adoption_v2 a
+    WHERE a.contract_name='FEE_AWARE_INVENTORY_C2_2'
+      AND a.status='ACTIVE'
+      AND a.environment=lower(%s)
+      AND a.deployment_id=%s
+    LIMIT 1
+  ) adoption ON true
   WHERE bo.order_purpose='EXIT' AND bo.position_id IS NOT NULL
     AND s.order_id=ANY(%s)
-    AND EXISTS (
-      SELECT 1 FROM runtime_contract_adoption_v1 adoption
-      WHERE adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
-        AND adoption.environment=lower(%s)
-        AND adoption.deployment_id=%s
-        AND p.entry_time>=adoption.adopted_at
+    AND (
+          (
+            p.inventory_contract_adoption_id=adoption.adoption_id
+            AND p.inventory_contract_generation=adoption.generation
+          )
+          OR (
+            p.inventory_contract_adoption_id IS NULL
+            AND p.inventory_contract_generation IS NULL
+            AND (
+              p.entry_time>=adoption.adopted_at
+              OR is_existing_projected_c2_2_compatible(
+                p.id, adoption.environment
+              )
+            )
+          )
     )
   FOR UPDATE OF bo
 ), applied_orders AS (
@@ -304,10 +324,12 @@ WITH sell_orders AS (
       last_reconciliation_action='EXIT_FILL_DELTA_APPLIED',
       unreconciled_qty=0,reconciliation_error=NULL
   FROM pending_orders po WHERE bo.id=po.id
-  RETURNING bo.position_id,po.avg_exit_price,po.exit_time,po.order_id,po.clordid
+  RETURNING bo.position_id,po.avg_exit_price,po.exit_time,po.order_id,po.clordid,
+    po.adoption_id,po.generation
 ), affected AS (
   SELECT position_id,MAX(avg_exit_price) avg_exit_price,
-         MAX(exit_time) exit_time,MAX(order_id) order_id,MAX(clordid) clordid
+         MAX(exit_time) exit_time,MAX(order_id) order_id,MAX(clordid) clordid,
+         MAX(adoption_id) adoption_id,MAX(generation) generation
   FROM applied_orders GROUP BY position_id
 ), evidence AS (
   SELECT p.id position_id,
@@ -408,6 +430,12 @@ WITH sell_orders AS (
       ELSE p.exit_reason END,
     exit_order_id=COALESCE(p.exit_order_id,c.order_id),
     exit_client_order_id=COALESCE(NULLIF(p.exit_client_order_id,''),c.clordid),
+    inventory_contract_adoption_id=COALESCE(
+      p.inventory_contract_adoption_id,c.adoption_id
+    ),
+    inventory_contract_generation=COALESCE(
+      p.inventory_contract_generation,c.generation
+    ),
     inventory_calculated_at=clock_timestamp()
   FROM classified c
   WHERE p.id=c.position_id AND p.status='OPEN'
@@ -526,13 +554,13 @@ def reconcile_okx_exit_fills(
                 (
                     str(source).lower(),
                     int(since_ms),
-                    changed_orders,
                     str(environment or os.getenv("ENVIRONMENT", "")).lower(),
                     str(
                         deployment_id
                         or os.getenv("DEPLOYMENT_ID")
                         or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
                     ),
+                    changed_orders,
                 )
                 if c2_2_ready
                 else (str(source).lower(), int(since_ms))
@@ -757,6 +785,11 @@ def ingest_my_trades(
                     "instrument_snapshot_id": instrument_snapshot_id,
                     "account_identity_status": identity_status,
                     "account_identity_failure_code": identity_failure,
+                    "environment": os.getenv("ENVIRONMENT", ""),
+                    "deployment_id": (
+                        os.getenv("DEPLOYMENT_ID")
+                        or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+                    ),
                 })
             total_fetched += len(rows)
 
@@ -773,6 +806,7 @@ def ingest_my_trades(
                         ),
                     )
                     if change.permits_mutation:
+                        attribute_fill_change_position(cur, item, change)
                         accepted_rows.append(item)
                         accepted_changes.append(change)
                         if str(item["side"]).upper() == "SELL":

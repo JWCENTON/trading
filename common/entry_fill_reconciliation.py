@@ -66,11 +66,27 @@ def _refresh_entry_inventory_projection(cur, position_id: int) -> None:
         FROM entry_evidence e
         WHERE p.id=e.id AND p.status='OPEN'
           AND EXISTS (
-            SELECT 1 FROM runtime_contract_adoption_v1 adoption
+            SELECT 1 FROM runtime_contract_adoption_v2 adoption
             WHERE adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+              AND adoption.status='ACTIVE'
               AND adoption.environment=lower(%s)
               AND adoption.deployment_id=%s
-              AND p.entry_time>=adoption.adopted_at
+              AND (
+                (
+                  p.inventory_contract_adoption_id=adoption.adoption_id
+                  AND p.inventory_contract_generation=adoption.generation
+                )
+                OR (
+                  p.inventory_contract_adoption_id IS NULL
+                  AND p.inventory_contract_generation IS NULL
+                  AND (
+                    p.entry_time>=adoption.adopted_at
+                    OR is_existing_projected_c2_2_compatible(
+                      p.id, adoption.environment
+                    )
+                  )
+                )
+              )
           )
         """,
             (
@@ -346,11 +362,27 @@ def _is_forward_c2_2_position(cur, position_id: int) -> bool:
             SELECT EXISTS (
               SELECT 1
               FROM positions p
-              JOIN runtime_contract_adoption_v1 adoption
+              JOIN runtime_contract_adoption_v2 adoption
                 ON adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+               AND adoption.status='ACTIVE'
                AND adoption.environment=lower(%s)
                AND adoption.deployment_id=%s
-               AND p.entry_time>=adoption.adopted_at
+               AND (
+                 (
+                   p.inventory_contract_adoption_id=adoption.adoption_id
+                   AND p.inventory_contract_generation=adoption.generation
+                 )
+                 OR (
+                   p.inventory_contract_adoption_id IS NULL
+                   AND p.inventory_contract_generation IS NULL
+                   AND (
+                     p.entry_time>=adoption.adopted_at
+                     OR is_existing_projected_c2_2_compatible(
+                       p.id, adoption.environment
+                     )
+                   )
+                 )
+               )
               WHERE p.id=%s
             )
             """,

@@ -35,7 +35,10 @@ from common.flags import exchange_mytrades_enabled
 from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
-from common.simulated_execution_evidence import record_simulated_fill_evidence
+from common.simulated_execution_evidence import (
+    paper_position_mutation_allowed_cursor,
+    record_simulated_fill_evidence,
+)
 from common.permissions import can_trade
 from common.execution import place_live_order
 from common.bot_control import upsert_defaults, read as read_bot_control
@@ -520,6 +523,21 @@ def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
         return False
 
     pos_id, pos_side, pos_entry_price, pos_entry_time = row
+    if (
+        str(os.getenv("TRADING_MODE", "")).upper() == "PAPER"
+        and not paper_position_mutation_allowed_cursor(
+            cur,
+            position_id=int(pos_id),
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+        )
+    ):
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
 
     enriched_reason = build_exit_reason_context(
         base_reason=reason,

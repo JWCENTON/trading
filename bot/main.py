@@ -18,7 +18,10 @@ from common.alerts import emit_alert_throttled
 from psycopg2.extras import execute_batch
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
-from common.simulated_execution_evidence import record_simulated_fill_evidence
+from common.simulated_execution_evidence import (
+    paper_position_mutation_allowed_cursor,
+    record_simulated_fill_evidence,
+)
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from common.bot_control import upsert_defaults, read as read_bot_control
@@ -1751,7 +1754,6 @@ def ssot_apply_positions_paper(
     pos_id = int(open_row[0]) if open_row else None
     if not pos_id:
         return {"ok": False, "blocked_reason": "EXIT_NO_OPEN_POSITION", "pos_id": None, "client_order_id": None}
-
     client_order_id = make_client_order_id(
         cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag="X"
     )
@@ -1760,6 +1762,20 @@ def ssot_apply_positions_paper(
     conn_exec = get_db_conn()
     cur_exec = conn_exec.cursor()
     try:
+        deployment_id = os.environ.get(
+            "DEPLOYMENT_ID",
+            os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+        )
+        if not paper_position_mutation_allowed_cursor(
+            cur_exec, position_id=pos_id, deployment_id=deployment_id
+        ):
+            conn_exec.rollback()
+            return {
+                "ok": False,
+                "blocked_reason": "PAPER_ADOPTION_GENERATION_BLOCKED",
+                "pos_id": pos_id,
+                "client_order_id": client_order_id,
+            }
         attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
 
         # 2) close position (this is the hard-truth close for PAPER)

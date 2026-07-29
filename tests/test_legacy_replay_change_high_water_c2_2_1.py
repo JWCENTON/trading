@@ -65,8 +65,10 @@ def test_migration_is_additive_and_never_auto_adopts_or_backfills():
     assert "EXCHANGE_FILL_INGESTION_STATE_V2" in upper
     assert {item.value for item in InventoryRowGeneration} == {
         "FORWARD_C2_2",
+        "EXISTING_PROJECTED_C2_2",
         "LEGACY_UNPROJECTED",
         "LEGACY_RECONSTRUCTION_APPROVED",
+        "ADOPTION_GENERATION_MISMATCH",
     }
 
 
@@ -74,8 +76,9 @@ def test_live_mutation_requires_changed_order_and_forward_adoption():
     sql = RECONCILE_OKX_EXIT_FILLS_C2_2_SQL
     assert "p.inventory_calculated_at IS NULL" not in sql
     assert "s.order_id=ANY(%s)" in sql
-    assert "runtime_contract_adoption_v1" in sql
+    assert "runtime_contract_adoption_v2" in sql
     assert "p.entry_time>=adoption.adopted_at" in sql
+    assert "is_existing_projected_c2_2_compatible" in sql
     assert "c.classification<>'INCOMPLETE_EVIDENCE'" in sql
 
 

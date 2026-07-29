@@ -15,7 +15,10 @@ from dataclasses import replace
 from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
-from common.simulated_execution_evidence import record_simulated_fill_evidence
+from common.simulated_execution_evidence import (
+    paper_position_mutation_allowed_cursor,
+    record_simulated_fill_evidence,
+)
 from common.permissions import can_trade
 from common.regime_gate import decide_regime_gate, emit_regime_gate_event
 from datetime import datetime, timezone, date
@@ -730,6 +733,21 @@ def close_position(exit_price: float, reason: str, open_time) -> bool:
         return False
 
     pos_id, pos_side, pos_entry_price, pos_entry_time = row
+    if (
+        str(os.getenv("TRADING_MODE", "")).upper() == "PAPER"
+        and not paper_position_mutation_allowed_cursor(
+            cur,
+            position_id=int(pos_id),
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+        )
+    ):
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
 
     enriched_reason = build_exit_reason_context(
         base_reason=reason,
@@ -1301,7 +1319,6 @@ def ssot_apply_positions_paper(
     pos = get_open_position()
     if not pos:
         return {"paper_pos_action": "EXIT_SKIPPED_NO_OPEN", "paper_pos_id": None}
-
     closed = close_position(
         exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time
     )
