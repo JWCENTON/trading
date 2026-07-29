@@ -295,7 +295,7 @@ def register_fill_change(
     cur.execute(
         """
         SELECT ingestion_id,source_fingerprint,authoritative_payload,
-               correction_revision
+               correction_revision,adoption_id,contract_generation
         FROM exchange_fill_ingestion_state_v2
         WHERE source=%s AND account_identity_key=%s
           AND symbol=%s AND trade_id=%s
@@ -357,13 +357,11 @@ def register_fill_change(
                 """
                 INSERT INTO exchange_fill_ingestion_state_v2(
                   source,account_identity_key,symbol,trade_id,order_id,side,
-                  source_fingerprint,applied_fingerprint,applied_at,
-                  application_status,authoritative_payload,last_decision,
-                  correction_revision,adoption_id,contract_generation
+                  source_fingerprint,application_status,
+                  authoritative_payload,last_decision,correction_revision
                 ) VALUES (
-                  %s,%s,%s,%s,%s,%s,%s,%s,
-                  CASE WHEN %s THEN clock_timestamp() ELSE NULL END,
-                  %s,%s::jsonb,%s,CASE WHEN %s THEN 0 ELSE 1 END,%s,%s
+                  %s,%s,%s,%s,%s,%s,%s,
+                  %s,%s::jsonb,%s,CASE WHEN %s THEN 0 ELSE 1 END
                 )
                 RETURNING ingestion_id
                 """,
@@ -372,14 +370,10 @@ def register_fill_change(
                     payload["order_id"],
                     payload["side"],
                     stored_fingerprint,
-                    old_fingerprint if (same or preserve_existing) else None,
-                    same or preserve_existing,
                     status,
                     json.dumps(stored_payload, sort_keys=True),
                     decision.value,
                     same,
-                    adoption_id,
-                    contract_generation,
                 ),
             )
             return RegisteredFillChange(
@@ -392,8 +386,8 @@ def register_fill_change(
             INSERT INTO exchange_fill_ingestion_state_v2(
               source,account_identity_key,symbol,trade_id,order_id,side,
               source_fingerprint,application_status,authoritative_payload,
-              last_decision,adoption_id,contract_generation
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,'NEW',%s::jsonb,%s,%s,%s)
+              last_decision
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,'NEW',%s::jsonb,%s)
             RETURNING ingestion_id
             """,
             (
@@ -403,8 +397,6 @@ def register_fill_change(
                 fingerprint,
                 json.dumps(payload, sort_keys=True),
                 FillMutationDecision.NEW_AUTHORITATIVE_EVIDENCE.value,
-                adoption_id,
-                contract_generation,
             ),
         )
         return RegisteredFillChange(
@@ -417,7 +409,14 @@ def register_fill_change(
             contract_generation,
         )
 
-    ingestion_id, previous_fingerprint, previous_payload, revision = existing
+    (
+        ingestion_id,
+        previous_fingerprint,
+        previous_payload,
+        revision,
+        applied_adoption_id,
+        applied_generation,
+    ) = existing
     if str(previous_fingerprint) == fingerprint:
         cur.execute(
             """
@@ -431,7 +430,11 @@ def register_fill_change(
         return RegisteredFillChange(
             int(ingestion_id), FillMutationDecision.NO_CHANGE,
             fingerprint, int(revision), row_generation,
-            adoption_id, contract_generation,
+            (
+                int(applied_adoption_id)
+                if applied_adoption_id is not None else None
+            ),
+            int(applied_generation) if applied_generation is not None else None,
         )
 
     next_revision = int(revision) + 1
@@ -476,7 +479,11 @@ def register_fill_change(
 
 
 def mark_fill_change_applied(cur, change: RegisteredFillChange) -> None:
-    if not change.permits_mutation:
+    if (
+        not change.permits_mutation
+        or change.adoption_id is None
+        or change.contract_generation is None
+    ):
         return
     status = (
         "CORRECTION_APPLIED"
@@ -487,11 +494,28 @@ def mark_fill_change_applied(cur, change: RegisteredFillChange) -> None:
         """
         UPDATE exchange_fill_ingestion_state_v2
         SET applied_fingerprint=%s,applied_at=clock_timestamp(),
-            application_status=%s
+            application_status=%s,
+            adoption_id=COALESCE(adoption_id,%s),
+            contract_generation=COALESCE(contract_generation,%s)
         WHERE ingestion_id=%s
+          AND (
+            (adoption_id IS NULL AND contract_generation IS NULL)
+            OR
+            (adoption_id=%s AND contract_generation=%s)
+          )
         """,
-        (change.fingerprint, status, change.ingestion_id),
+        (
+            change.fingerprint,
+            status,
+            change.adoption_id,
+            change.contract_generation,
+            change.ingestion_id,
+            change.adoption_id,
+            change.contract_generation,
+        ),
     )
+    if cur.rowcount != 1:
+        raise RuntimeError("FILL_APPLIED_GENERATION_IMMUTABILITY_CONFLICT")
 
 
 def attribute_fill_change_position(
