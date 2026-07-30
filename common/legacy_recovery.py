@@ -554,6 +554,48 @@ class LegacyRecoveryPlanner:
         )
 
 
+def _append_execution_audit(
+    cur,
+    *,
+    incident_type: str,
+    incident_identity: str,
+    operation_type: str,
+    fingerprint: str,
+    invocation_identity: str,
+    executed_actions: Sequence[str],
+    actual_changes: Sequence[str],
+) -> None:
+    from datetime import datetime, timezone
+    from common.legacy_recovery_repository import LegacyRepairAuditRepository
+
+    now = datetime.now(timezone.utc)
+    LegacyRepairAuditRepository.append(cur, {
+        "incident_type": incident_type,
+        "incident_identity": incident_identity,
+        "operation_type": operation_type,
+        "planner_version": "LEGACY_RECOVERY_PLANNER_V2",
+        "writer_version": SERIALIZER_VERSION,
+        "semantic_fingerprint_before": fingerprint,
+        "semantic_fingerprint_expected": fingerprint,
+        "semantic_fingerprint_after": fingerprint,
+        "plan_status": "ELIGIBLE",
+        "execution_status": "APPLIED",
+        "invocation_identity": invocation_identity,
+        "requested_at": now,
+        "started_at": now,
+        "completed_at": now,
+        "actor_source": "BOUNDED_REPAIR_SERVICE",
+        "blocking_reasons": [],
+        "eligible_actions": list(executed_actions),
+        "executed_actions": list(executed_actions),
+        "expected_changes": list(actual_changes),
+        "actual_changes": list(actual_changes),
+        "post_state_invariants": ["SEMANTIC_CAS_MATCHED"],
+        "error_code": None,
+        "error_detail": None,
+    })
+
+
 class CanonicalFillLedgerRepository:
     @staticmethod
     def apply(
@@ -614,22 +656,21 @@ class CanonicalFillLedgerRepository:
         )
         if cur.rowcount != 1:
             raise RuntimeError("SEMANTIC_CAS_CONFLICT")
-        cur.execute(
-            """
-            INSERT INTO legacy_repair_audit_v1(
-              incident_type,incident_identity,semantic_fingerprint,
-              action_status,payload
-            ) VALUES ('UNAPPLIED_FILL',%s,%s,'APPLIED',%s::jsonb)
-            ON CONFLICT (incident_type,incident_identity) DO NOTHING
-            """,
-            (
-                f"{candidate.source}:{candidate.symbol}:{candidate.trade_id}",
-                expected_semantic_fingerprint,
-                json.dumps({
-                    "local_fill_id": local_fill_id,
-                    "linked_position_id": position_id,
-                    "exchange_order_id": candidate.exchange_order_id,
-                }),
+        _append_execution_audit(
+            cur, incident_type="UNAPPLIED_FILL",
+            incident_identity=(
+                f"{candidate.source}:{candidate.symbol}:{candidate.trade_id}"
+            ),
+            operation_type="RECOVER_FILL",
+            fingerprint=expected_semantic_fingerprint,
+            invocation_identity=(
+                f"recover-fill:{candidate.ingestion_id}:"
+                f"{expected_semantic_fingerprint}"
+            ),
+            executed_actions=("WRITE_CANONICAL_LOCAL_FILL", "MARK_APPLIED"),
+            actual_changes=(
+                f"local_fill_id:{local_fill_id}",
+                f"linked_position_id:{position_id}",
             ),
         )
         return True
@@ -659,28 +700,19 @@ class CanonicalFillLedgerRepository:
         )
         changed = cur.rowcount == 1
         if changed:
-            cur.execute(
-                """
-                INSERT INTO legacy_repair_audit_v1(
-                  incident_type,incident_identity,semantic_fingerprint,
-                  action_status,payload
-                ) VALUES (
-                  'UNAPPLIED_FILL',%s,%s,
-                  'EXTERNAL_OR_MANUAL_UNLINKED',%s::jsonb
-                )
-                ON CONFLICT (incident_type,incident_identity) DO NOTHING
-                """,
-                (
-                    f"{candidate.source}:{candidate.symbol}:{candidate.trade_id}",
-                    expected_semantic_fingerprint,
-                    json.dumps({
-                        "client_order_id": candidate.client_order_id,
-                        "client_order_id_present": (
-                            candidate.client_order_id is not None
-                        ),
-                        "exchange_order_id": candidate.exchange_order_id,
-                    }),
+            _append_execution_audit(
+                cur, incident_type="UNAPPLIED_FILL",
+                incident_identity=(
+                    f"{candidate.source}:{candidate.symbol}:{candidate.trade_id}"
                 ),
+                operation_type="CLASSIFY_EXTERNAL",
+                fingerprint=expected_semantic_fingerprint,
+                invocation_identity=(
+                    f"classify-external:{candidate.ingestion_id}:"
+                    f"{expected_semantic_fingerprint}"
+                ),
+                executed_actions=("CLASSIFY_EXTERNAL_OR_MANUAL",),
+                actual_changes=("ingestion_classification",),
             )
         return changed
 
@@ -704,8 +736,10 @@ class CanonicalPositionLifecycleRepairRepository:
             raise RuntimeError("POSITION_NOT_FOUND")
         cur.execute(
             """
-            SELECT semantic_fingerprint FROM legacy_repair_audit_v1
+            SELECT semantic_fingerprint_expected FROM legacy_repair_audit_v1
             WHERE incident_type='LEGACY_POSITION' AND incident_identity=%s
+              AND execution_status IN ('APPLIED','IDEMPOTENT_NO_OP')
+            ORDER BY recorded_at DESC,audit_id DESC LIMIT 1
             """,
             (str(result.position_id),),
         )
@@ -765,22 +799,19 @@ class CanonicalPositionLifecycleRepairRepository:
                 """,
                 (list(exit_order_ids),),
             )
-        cur.execute(
-            """
-            INSERT INTO legacy_repair_audit_v1(
-              incident_type,incident_identity,semantic_fingerprint,
-              action_status,raw_inventory_delta,normalized_inventory_qty,
-              precision_status,precision_source,normalization_reason,payload
-            ) VALUES (
-              'LEGACY_POSITION',%s,%s,'APPLIED',%s,%s,%s,%s,%s,%s::jsonb
-            )
-            """,
-            (
-                str(result.position_id), expected_semantic_fingerprint,
-                result.raw_remaining_qty, result.normalized_remaining_qty,
-                result.precision_status.value if result.precision_status else None,
-                result.precision_source, result.normalization_reason,
-                json.dumps({"blocking_reasons": result.blocking_reasons}),
+        _append_execution_audit(
+            cur, incident_type="LEGACY_POSITION",
+            incident_identity=str(result.position_id),
+            operation_type="REPAIR_POSITION",
+            fingerprint=expected_semantic_fingerprint,
+            invocation_identity=(
+                f"repair-position:{result.position_id}:"
+                f"{expected_semantic_fingerprint}"
+            ),
+            executed_actions=LegacyRecoveryPlanner.POSITION_ACTIONS,
+            actual_changes=(
+                "position:CLOSED", "remaining_inventory_qty:0",
+                f"raw_inventory_delta:{result.raw_remaining_qty}",
             ),
         )
         return True

@@ -95,6 +95,9 @@ def recovery_db(disposable_postgres_v16):
             """
         )
         cur.execute(
+            (ROOT / "db/migrations/20260724_database_baseline_provenance_v1.sql").read_text()
+        )
+        cur.execute(
             (ROOT / "db/migrations/20260727_canonical_financial_truth_foundation_v1.sql").read_text()
         )
         cur.execute(
@@ -241,7 +244,7 @@ def test_fixture_b_unapplied_fill_is_recovered_then_true_duplicate(recovery_db):
         )
         local_id, applied, applied_at = cur.fetchone()
         cur.execute(
-            "SELECT action_status FROM legacy_repair_audit_v1 "
+            "SELECT execution_status FROM legacy_repair_audit_v1 "
             "WHERE incident_type='UNAPPLIED_FILL'"
         )
         assert cur.fetchone() == ("APPLIED",)
