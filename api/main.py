@@ -4003,31 +4003,117 @@ def ui_recent_closed(
             create_trade_position_notifications(cur)
             _conn.commit()
             cur.execute("""
-              WITH recent_positions AS (
-                SELECT
-                  p.*,
-                  real.ssot_state,
-                  real.entry_exec_notional_est,
-                  real.pnl_net_real_usdc,
-                  est.entry_notional_usdc AS estimated_entry_notional_usdc,
-                  est.pnl_net_est_usdc
+              WITH runtime_scope AS (
+                SELECT %s::text AS trading_mode
+              ),
+              recent_positions_raw AS MATERIALIZED (
+                SELECT p.*
                 FROM positions p
-                LEFT JOIN v_positions_pnl_net_real_ssot real
-                  ON real.id = p.id
-                LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
                 WHERE p.status = 'CLOSED'
                   AND p.exit_time IS NOT NULL
                 ORDER BY p.exit_time DESC
                 LIMIT %s
               ),
+              relevant_order_ids AS MATERIALIZED (
+                SELECT p.entry_order_id AS order_id
+                FROM recent_positions_raw p
+                WHERE p.entry_order_id IS NOT NULL
+                UNION
+                SELECT p.exit_order_id AS order_id
+                FROM recent_positions_raw p
+                WHERE p.exit_order_id IS NOT NULL
+              ),
+              bounded_real_orders AS MATERIALIZED (
+                SELECT evidence.*
+                FROM relevant_order_ids relevant
+                CROSS JOIN runtime_scope scope
+                CROSS JOIN LATERAL (
+                  SELECT
+                    f.order_id,
+                    f.symbol,
+                    f.side,
+                    SUM(f.executed_qty) AS executed_qty,
+                    SUM(f.quote_notional_usdc) AS quote_notional_usdc,
+                    CASE
+                      WHEN SUM(f.executed_qty) = 0 THEN NULL
+                      ELSE SUM(f.quote_notional_usdc) / SUM(f.executed_qty)
+                    END AS avg_price,
+                    SUM(
+                      COALESCE(
+                        f.commission_usdc,
+                        CASE
+                          WHEN f.commission_asset = 'USDC'
+                            THEN f.commission_amount
+                          WHEN f.commission_asset = 'BNB'
+                            AND f.bnbusdc_price IS NOT NULL
+                            THEN f.commission_amount * f.bnbusdc_price
+                          ELSE 0
+                        END
+                      )
+                    ) AS fee_usdc
+                  FROM binance_order_fills f
+                  WHERE f.order_id = relevant.order_id
+                  GROUP BY f.order_id, f.symbol, f.side
+                ) evidence
+                WHERE scope.trading_mode = 'LIVE'
+              ),
+              bounded_paper_orders AS MATERIALIZED (
+                SELECT evidence.*
+                FROM relevant_order_ids relevant
+                CROSS JOIN runtime_scope scope
+                CROSS JOIN LATERAL (
+                  SELECT
+                    o.id::text AS order_id,
+                    o.symbol,
+                    o.side,
+                    o.quantity_btc AS executed_qty,
+                    o.price * o.quantity_btc AS quote_notional_usdc,
+                    o.price AS avg_price,
+                    0::numeric AS fee_usdc
+                  FROM simulated_orders o
+                  WHERE relevant.order_id ~ '^[0-9]+$'
+                    AND o.id = relevant.order_id::bigint
+                ) evidence
+                WHERE scope.trading_mode = 'PAPER'
+              ),
+              bounded_execution_orders AS MATERIALIZED (
+                SELECT * FROM bounded_real_orders
+                UNION ALL
+                SELECT * FROM bounded_paper_orders
+              ),
+              estimated_fee_rate AS MATERIALIZED (
+                SELECT COALESCE(
+                  NULLIF(
+                    (
+                      SELECT kv.value
+                      FROM automation_kv kv
+                      WHERE kv.key = 'FEE_PER_SIDE_PCT'
+                    ),
+                    ''
+                  )::numeric,
+                  0.00075
+                ) AS fee_per_side
+              ),
               execution_evidence AS (
                 SELECT
                   p.*,
+                  scope.trading_mode,
+                  entry_exec.executed_qty AS entry_exec_qty,
+                  entry_exec.avg_price AS entry_exec_price,
+                  entry_exec.fee_usdc AS entry_fee_usdc,
+                  exit_exec.executed_qty AS exit_exec_qty,
+                  exit_exec.avg_price AS exit_exec_price,
+                  exit_exec.fee_usdc AS exit_fee_usdc,
                   simulated.simulated_entry_notional_usdc,
                   simulated.simulated_exit_notional_usdc,
                   simulated.simulated_entry_fill_count,
                   simulated.simulated_exit_fill_count
-                FROM recent_positions p
+                FROM recent_positions_raw p
+                CROSS JOIN runtime_scope scope
+                LEFT JOIN bounded_execution_orders entry_exec
+                  ON entry_exec.order_id = p.entry_order_id
+                LEFT JOIN bounded_execution_orders exit_exec
+                  ON exit_exec.order_id = p.exit_order_id
                 LEFT JOIN LATERAL (
                   SELECT
                     SUM(f.fill_qty * f.fill_price)
@@ -4044,9 +4130,82 @@ def ui_recent_closed(
                   WHERE f.position_id = p.id
                 ) simulated ON TRUE
               ),
+              calculated AS (
+                SELECT
+                  p.*,
+                  p.entry_exec_price
+                    * COALESCE(p.exit_exec_qty, p.entry_exec_qty)
+                    AS entry_exec_notional_est,
+                  CASE
+                    WHEN p.status <> 'CLOSED' OR p.exit_time IS NULL THEN NULL
+                    WHEN UPPER(p.side) IN ('LONG', 'BUY')
+                      THEN (p.exit_exec_price - p.entry_exec_price)
+                        * COALESCE(p.exit_exec_qty, p.entry_exec_qty)
+                    WHEN UPPER(p.side) IN ('SHORT', 'SELL')
+                      THEN (p.entry_exec_price - p.exit_exec_price)
+                        * COALESCE(p.exit_exec_qty, p.entry_exec_qty)
+                    ELSE NULL
+                  END AS pnl_gross_real_usdc,
+                  CASE
+                    WHEN p.status <> 'CLOSED' OR p.exit_time IS NULL THEN NULL
+                    WHEN UPPER(p.side) IN ('LONG', 'BUY')
+                      THEN (p.exit_price - p.entry_price) * p.qty
+                    WHEN UPPER(p.side) IN ('SHORT', 'SELL')
+                      THEN (p.entry_price - p.exit_price) * p.qty
+                    ELSE NULL
+                  END AS pnl_gross_est_usdc,
+                  p.entry_price * p.qty AS estimated_entry_notional_usdc
+                FROM execution_evidence p
+              ),
               resolved AS (
                 SELECT
                   p.*,
+                  CASE
+                    WHEN p.entry_exec_price IS NULL
+                      THEN 'MISSING_ENTRY_EXEC_PRICE'
+                    WHEN p.exit_time IS NOT NULL
+                      AND p.exit_exec_price IS NULL
+                      THEN 'MISSING_EXIT_EXEC_PRICE'
+                    WHEN p.entry_order_id IS NULL
+                      OR (
+                        p.trading_mode = 'PAPER'
+                        AND NULLIF(p.entry_order_id, '') IS NULL
+                      )
+                      THEN 'MISSING_ENTRY_ORDER_ID'
+                    WHEN p.trading_mode = 'LIVE'
+                      AND p.entry_fee_usdc IS NULL
+                      THEN 'MISSING_ENTRY_FEE'
+                    WHEN p.exit_time IS NOT NULL
+                      AND (
+                        p.exit_order_id IS NULL
+                        OR (
+                          p.trading_mode = 'PAPER'
+                          AND NULLIF(p.exit_order_id, '') IS NULL
+                        )
+                      )
+                      THEN 'MISSING_EXIT_ORDER_ID'
+                    WHEN p.trading_mode = 'LIVE'
+                      AND p.exit_time IS NOT NULL
+                      AND p.exit_fee_usdc IS NULL
+                      THEN 'MISSING_EXIT_FEE'
+                    ELSE 'OK'
+                  END AS ssot_state,
+                  p.pnl_gross_real_usdc
+                    - (
+                      COALESCE(p.entry_fee_usdc, 0)
+                      + COALESCE(p.exit_fee_usdc, 0)
+                    ) AS pnl_net_real_usdc,
+                  p.pnl_gross_est_usdc
+                    - (
+                      (
+                        (p.entry_price * p.qty)
+                        + (p.exit_price * p.qty)
+                      )
+                      * (
+                        SELECT fee.fee_per_side
+                        FROM estimated_fee_rate fee
+                      )
+                    ) AS pnl_net_est_usdc,
                   NULLIF(
                     COALESCE(
                       p.entry_exec_notional_est,
@@ -4060,7 +4219,7 @@ def ui_recent_closed(
                     p.simulated_exit_notional_usdc,
                     p.exit_price * p.qty
                   ) AS exit_notional_safe
-                FROM execution_evidence p
+                FROM calculated p
               )
               SELECT
                 p.id,
@@ -4104,7 +4263,7 @@ def ui_recent_closed(
                 p.exit_reason
               FROM resolved p
               ORDER BY p.exit_time DESC
-            """, (limit,))
+            """, (TRADING_MODE, limit))
             rows = cur.fetchall()
 
         items = []

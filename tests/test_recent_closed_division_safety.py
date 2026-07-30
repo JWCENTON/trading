@@ -87,8 +87,11 @@ def test_recent_closed_sql_has_one_canonical_safe_denominator():
         "p.estimated_entry_notional_usdc",
         "p.entry_price * p.qty",
     ]
-    resolved = HANDLER[
-        HANDLER.index("resolved AS ("):HANDLER.index("FROM execution_evidence p")
+    resolved_cte = HANDLER[
+        HANDLER.index("resolved AS ("):HANDLER.index("FROM calculated p")
+    ]
+    resolved = resolved_cte[
+        resolved_cte.index("NULLIF(\n                    COALESCE("):
     ]
 
     assert [resolved.index(source) for source in precedence] == sorted(
@@ -105,17 +108,45 @@ def test_recent_closed_sql_has_one_canonical_safe_denominator():
     assert "/ COALESCE" not in HANDLER
 
 
-def test_recent_closed_limits_positions_before_simulated_fill_aggregate():
+def test_recent_closed_bounds_all_execution_evidence_after_top_n():
     limit_at = HANDLER.index("LIMIT %s")
+    relevant_at = HANDLER.index("relevant_order_ids AS MATERIALIZED")
+    real_fill_at = HANDLER.index("FROM binance_order_fills f")
+    paper_order_at = HANDLER.index("FROM simulated_orders o")
     lateral_at = HANDLER.index("LEFT JOIN LATERAL")
     fill_table_at = HANDLER.index("FROM simulated_execution_fills_v1 f")
 
-    assert limit_at < lateral_at < fill_table_at
+    assert limit_at < relevant_at < real_fill_at < lateral_at < fill_table_at
+    assert limit_at < paper_order_at
+    assert HANDLER.count("FROM relevant_order_ids relevant") == 2
+    assert "WHERE f.order_id = relevant.order_id" in HANDLER
+    assert "o.id = relevant.order_id::bigint" in HANDLER
+    assert "relevant.order_id ~ '^[0-9]+$'" in HANDLER
+    assert "v_positions_pnl_net_real_ssot" not in HANDLER
+    assert "v_positions_pnl_net_est" not in HANDLER
     assert "WHERE f.position_id = p.id" in HANDLER
     assert "FILTER (WHERE f.order_purpose = 'ENTRY')" in HANDLER
     assert "FILTER (WHERE f.order_purpose = 'EXIT')" in HANDLER
     assert "simulated_entry_fill_count" in HANDLER
     assert "simulated_exit_fill_count" in HANDLER
+
+
+def test_recent_closed_runtime_scope_and_limit_are_parameterized():
+    assert "SELECT %s::text AS trading_mode" in HANDLER
+    assert "LIMIT %s" in HANDLER
+    assert '""", (TRADING_MODE, limit))' in HANDLER
+    assert "scope.trading_mode = 'LIVE'" in HANDLER
+    assert "scope.trading_mode = 'PAPER'" in HANDLER
+
+
+def test_recent_closed_preserves_real_fee_and_side_semantics():
+    assert "f.commission_asset = 'USDC'" in HANDLER
+    assert "f.commission_asset = 'BNB'" in HANDLER
+    assert "f.bnbusdc_price IS NOT NULL" in HANDLER
+    assert "UPPER(p.side) IN ('LONG', 'BUY')" in HANDLER
+    assert "UPPER(p.side) IN ('SHORT', 'SELL')" in HANDLER
+    assert "MISSING_ENTRY_FEE" in HANDLER
+    assert "MISSING_EXIT_FEE" in HANDLER
 
 
 def test_recent_closed_payload_field_names_remain_compatible():
