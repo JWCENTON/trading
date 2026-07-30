@@ -152,7 +152,7 @@ def test_recent_closed_preserves_real_fee_and_side_semantics():
 def test_recent_closed_payload_field_names_remain_compatible():
     assert '"entry_notional_usdc": _safe_float(r[10])' in HANDLER
     assert '"pnl_usdc": pnl_usdc' in HANDLER
-    assert '"pnl_pct": _safe_float(r[13])' in HANDLER
+    assert '"pnl_pct": pnl_pct' in HANDLER
 
 
 def test_recent_closed_backend_uses_controlled_http_500():

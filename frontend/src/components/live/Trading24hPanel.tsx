@@ -19,6 +19,9 @@ export function Trading24hPanel({ trading24h }: Trading24hPanelProps) {
   const wins = trading24h?.wins_24h ?? 0;
   const losses = trading24h?.losses_24h ?? 0;
   const winRate = trading24h?.win_rate_24h ?? 0;
+  const flats = trading24h?.flats ?? 0;
+  const unresolved = trading24h?.unresolved_trades ?? 0;
+  const coverage = (trading24h?.coverage_ratio ?? 0) * 100;
   const pnlTone = pnl > 0 ? "positive" : pnl < 0 ? "negative" : "neutral";
 
   const maxCount = Math.max(wins, losses, trades, 1);
@@ -56,6 +59,16 @@ export function Trading24hPanel({ trading24h }: Trading24hPanelProps) {
             <strong>{losses}</strong>
           </div>
           <div className="dashboard-bar-row">
+            <span>Flats</span>
+            <div><i className="bar-accent" style={{ width: `${clampPct((flats / maxCount) * 100)}%` }} /></div>
+            <strong>{flats}</strong>
+          </div>
+          <div className="dashboard-bar-row">
+            <span>Unresolved</span>
+            <div><i style={{ width: `${clampPct((unresolved / maxCount) * 100)}%` }} /></div>
+            <strong>{unresolved}</strong>
+          </div>
+          <div className="dashboard-bar-row">
             <span>Win rate</span>
             <div><i className="bar-accent" style={{ width: `${clampPct(winRate)}%` }} /></div>
             <strong>{fmt(winRate)}%</strong>
@@ -77,9 +90,9 @@ export function Trading24hPanel({ trading24h }: Trading24hPanelProps) {
         </article>
 
         <article className="info-tile">
-          <span className="status-label">Wins / Losses</span>
-          <strong className="status-value">{wins} / {losses}</strong>
-          <span className="status-meta">Result split</span>
+          <span className="status-label">W / L / Flat / Unresolved</span>
+          <strong className="status-value">{wins} / {losses} / {flats} / {unresolved}</strong>
+          <span className="status-meta">Coverage {fmt(coverage)}%</span>
         </article>
 
         <article className="info-tile">

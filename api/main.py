@@ -1,4 +1,8 @@
 from common.user_settings import get_user_settings_snapshot, upsert_user_settings
+from common.closed_outcome_read_model import (
+    fetch_closed_outcome_summary,
+    fetch_closed_outcomes,
+)
 import os
 import math
 from datetime import datetime, timezone, timedelta
@@ -374,6 +378,19 @@ class UITrading24hSummary(BaseModel):
     wins_24h: int
     losses_24h: int
     win_rate_24h: float
+    window_start: datetime
+    window_end: datetime
+    timezone: str
+    resolved_trades: int
+    unresolved_trades: int
+    wins: int
+    losses: int
+    flats: int
+    net_pnl: float
+    gross_pnl: float
+    fees: float
+    coverage_ratio: float
+    outcome_source_counts: Dict[str, int]
     updated_at: datetime
 
 
@@ -3084,22 +3101,15 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
     # PAPER: synthetic account snapshot from DB
     try:
         with db_cursor() as (_conn, cur):
+            account_window_end = datetime.now(timezone.utc)
+            account_window_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            closed_stats = fetch_closed_outcome_summary(
+                cur,
+                window_start=account_window_start,
+                window_end=account_window_end,
+            )
             cur.execute("""
-              WITH closed_realized AS (
-                SELECT
-                  COALESCE(SUM(
-                    CASE
-                      WHEN UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-                        THEN (entry_price - exit_price) * qty
-                      ELSE (exit_price - entry_price) * qty
-                    END
-                  ), 0)::double precision AS realized_pnl
-                FROM positions
-                WHERE status = 'CLOSED'
-                  AND exit_price IS NOT NULL
-                  AND entry_price IS NOT NULL
-              ),
-              open_unrealized AS (
+              WITH open_unrealized AS (
                 SELECT
                   COALESCE(SUM(
                     CASE
@@ -3120,13 +3130,12 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
                 WHERE p.status = 'OPEN'
               )
               SELECT
-                COALESCE((SELECT realized_pnl FROM closed_realized), 0),
                 COALESCE((SELECT unrealized_pnl FROM open_unrealized), 0)
             """)
             row = cur.fetchone()
 
-        realized_pnl = float(row[0] or 0.0)
-        unrealized_pnl = float(row[1] or 0.0)
+        realized_pnl = float(closed_stats["net_pnl"] or 0)
+        unrealized_pnl = float(row[0] or 0.0)
         total_usdc = float(PAPER_START_USDT + realized_pnl + unrealized_pnl)
 
         assets[QUOTE_ASSET] = total_usdc
@@ -3147,47 +3156,33 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
 @app.get("/ui/trading-24h", response_model=UITrading24hSummary)
 def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
     try:
+        window_end = datetime.now(timezone.utc)
+        window_start = window_end - timedelta(hours=24)
         with db_cursor() as (_conn, cur):
-            cur.execute("""
-              WITH closed AS (
-                SELECT
-                  p.id,
-                  COALESCE(
-                    CASE WHEN real.ssot_state = 'OK' THEN real.pnl_net_real_usdc ELSE NULL END,
-                    est.pnl_net_est_usdc,
-                    CASE
-                      WHEN UPPER(COALESCE(p.side, 'LONG')) IN ('SELL', 'SHORT')
-                        THEN (p.entry_price - p.exit_price) * p.qty
-                      ELSE (p.exit_price - p.entry_price) * p.qty
-                    END
-                  ) AS pnl_net_usdc
-                FROM positions p
-                LEFT JOIN v_positions_pnl_net_real_ssot real ON real.id = p.id
-                LEFT JOIN v_positions_pnl_net_est est ON est.id = p.id
-                WHERE p.status = 'CLOSED'
-                  AND p.exit_time IS NOT NULL
-                  AND p.exit_time >= now() - INTERVAL '24 hours'
-              )
-              SELECT
-                COALESCE(SUM(pnl_net_usdc), 0)::double precision AS closed_pnl_24h,
-                COUNT(*)::int AS trades_24h,
-                COALESCE(SUM(CASE WHEN pnl_net_usdc > 0 THEN 1 ELSE 0 END), 0)::int AS wins_24h,
-                COALESCE(SUM(CASE WHEN pnl_net_usdc <= 0 THEN 1 ELSE 0 END), 0)::int AS losses_24h,
-                COALESCE(
-                  ROUND((100.0 * SUM(CASE WHEN pnl_net_usdc > 0 THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0)), 2),
-                  0
-                )::double precision AS win_rate_24h
-              FROM closed
-            """)
-            row = cur.fetchone()
+            stats = fetch_closed_outcome_summary(
+                cur, window_start=window_start, window_end=window_end
+            )
 
         return UITrading24hSummary(
-            closed_pnl_24h=_safe_float(row[0]) or 0.0,
-            trades_24h=_safe_int(row[1]),
-            wins_24h=_safe_int(row[2]),
-            losses_24h=_safe_int(row[3]),
-            win_rate_24h=_safe_float(row[4]) or 0.0,
-            updated_at=datetime.now(timezone.utc),
+            closed_pnl_24h=float(stats["net_pnl"] or 0),
+            trades_24h=stats["trades"],
+            wins_24h=stats["wins"],
+            losses_24h=stats["losses"],
+            win_rate_24h=float(stats["win_rate"]),
+            window_start=window_start,
+            window_end=window_end,
+            timezone="UTC",
+            resolved_trades=stats["resolved_trades"],
+            unresolved_trades=stats["unresolved_trades"],
+            wins=stats["wins"],
+            losses=stats["losses"],
+            flats=stats["flats"],
+            net_pnl=float(stats["net_pnl"] or 0),
+            gross_pnl=float(stats["gross_pnl"] or 0),
+            fees=float(stats["fees"] or 0),
+            coverage_ratio=float(stats["coverage_ratio"]),
+            outcome_source_counts=stats["outcome_source_counts"],
+            updated_at=window_end,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ui/trading-24h failed: {e}")
@@ -4265,10 +4260,25 @@ def ui_recent_closed(
               ORDER BY p.exit_time DESC
             """, (TRADING_MODE, limit))
             rows = cur.fetchall()
+            outcome_by_position = {}
+            if rows:
+                outcome_by_position = fetch_closed_outcomes(
+                    cur,
+                    window_start=min(row[1] for row in rows),
+                    window_end=max(row[1] for row in rows),
+                )
 
         items = []
         for r in rows:
-            pnl_usdc = _safe_float(r[12]) or 0.0
+            outcome = outcome_by_position.get(int(r[0]), {})
+            pnl_usdc = _safe_float(outcome.get("net_pnl_usdc"))
+            result_class = outcome.get("result_class", "UNRESOLVED")
+            entry_notional = _safe_float(r[10])
+            pnl_pct = (
+                pnl_usdc / entry_notional * 100.0
+                if pnl_usdc is not None and entry_notional not in (None, 0)
+                else None
+            )
             items.append({
                 "id": r[0],
                 "exit_time": r[1],
@@ -4283,9 +4293,12 @@ def ui_recent_closed(
                 "entry_notional_usdc": _safe_float(r[10]),
                 "exit_notional_usdc": _safe_float(r[11]),
                 "pnl_usdc": pnl_usdc,
-                "pnl_pct": _safe_float(r[13]),
+                "pnl_pct": pnl_pct,
                 "exit_reason": r[14],
-                "win_loss": "WIN" if pnl_usdc > 0 else "LOSS" if pnl_usdc < 0 else "FLAT",
+                "win_loss": result_class,
+                "outcome_status": outcome.get("outcome_status", "UNRESOLVED"),
+                "outcome_source": outcome.get("outcome_source", "UNRESOLVED"),
+                "evidence_complete": bool(outcome.get("evidence_complete", False)),
             })
 
         return jsonable_encoder({
@@ -5921,6 +5934,33 @@ def fetch_realized_pnl_stats(cur, start_dt, end_dt):
     Realized PnL from CLOSED positions only.
     This intentionally ignores unrealized PnL to avoid noisy alerts.
     """
+    if TRADING_MODE == "PAPER":
+        stats = fetch_closed_outcome_summary(
+            cur, window_start=start_dt, window_end=end_dt
+        )
+        resolved = stats["resolved_trades"]
+        return {
+            "trades": stats["trades"],
+            "resolved_trades": resolved,
+            "unresolved_trades": stats["unresolved_trades"],
+            "pnl_usdc": float(stats["net_pnl"] or 0),
+            "gross_pnl_usdc": float(stats["gross_pnl"] or 0),
+            "fees_usdc": float(stats["fees"] or 0),
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "flats": stats["flats"],
+            "coverage_ratio": float(stats["coverage_ratio"]),
+            "outcome_source_counts": stats["outcome_source_counts"],
+            "winrate_pct": (
+                stats["wins"] / resolved * 100.0 if resolved > 0 else 0.0
+            ),
+            "best_trade_pnl_usdc": (
+                None if stats["best_trade"] is None else float(stats["best_trade"])
+            ),
+            "worst_trade_pnl_usdc": (
+                None if stats["worst_trade"] is None else float(stats["worst_trade"])
+            ),
+        }
     cur.execute(
         """
         SELECT

@@ -423,10 +423,13 @@ export interface UiRecentClosedPosition {
   qty: number | null;
   entry_notional_usdc: number | null;
   exit_notional_usdc: number | null;
-  pnl_usdc: number;
+  pnl_usdc: number | null;
   pnl_pct: number | null;
   exit_reason: string | null;
-  win_loss: "WIN" | "LOSS" | "FLAT";
+  win_loss: "WIN" | "LOSS" | "FLAT" | "UNRESOLVED";
+  outcome_status: "RESOLVED" | "UNRESOLVED";
+  outcome_source: "STORED_PROVEN" | "SIMULATED_FILLS" | "FINANCIAL_TRUTH" | "UNRESOLVED";
+  evidence_complete: boolean;
 }
 
 export interface UiRecentClosedResponse {
@@ -548,6 +551,19 @@ export interface UiTrading24hSummary {
   wins_24h: number;
   losses_24h: number;
   win_rate_24h: number;
+  window_start: string;
+  window_end: string;
+  timezone: string;
+  resolved_trades: number;
+  unresolved_trades: number;
+  wins: number;
+  losses: number;
+  flats: number;
+  net_pnl: number;
+  gross_pnl: number;
+  fees: number;
+  coverage_ratio: number;
+  outcome_source_counts: Record<string, number>;
   updated_at: string;
 }
 
