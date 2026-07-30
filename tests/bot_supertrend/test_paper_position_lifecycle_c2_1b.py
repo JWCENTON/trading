@@ -68,6 +68,15 @@ def install_paper_boundaries(
         ),
     )
     monkeypatch.setattr(supertrend, "get_exchange_client", lambda: object())
+    monkeypatch.setattr(
+        supertrend, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
+    )
+    monkeypatch.setattr(supertrend, "persist_exit_intent", lambda *_a, **_k: "fixture")
+    monkeypatch.setattr(
+        supertrend,
+        "reconcile_terminal_compatibility_outcome",
+        lambda *_a, **_k: SimpleNamespace(applied=True, reason="RECONCILED"),
+    )
 
     def evidence(*args, **kwargs):
         evidence_calls.append((args, kwargs))

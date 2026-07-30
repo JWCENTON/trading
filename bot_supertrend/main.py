@@ -46,6 +46,11 @@ from common.decision_contract import (
     normalize_entry_execution_outcome,
 )
 from common.partial_exit import apply_partial_exit_result
+from common.supertrend_terminal_outcome import (
+    paper_supertrend_entries_enabled,
+    persist_exit_intent,
+    reconcile_terminal_compatibility_outcome,
+)
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.simulated_execution_evidence import record_simulated_fill_evidence
 
@@ -1043,6 +1048,27 @@ def execute_and_record(
             "resp": None,
         }
 
+    deployment_id = os.environ.get(
+        "DEPLOYMENT_ID", os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper")
+    )
+    if trading_mode == "PAPER" and not is_exit:
+        entries_enabled, gate_reason = paper_supertrend_entries_enabled(
+            get_db_conn, deployment_id=deployment_id
+        )
+        if not entries_enabled:
+            emit_strategy_event(
+                event_type="BLOCKED", decision=side,
+                reason="PAPER_SUPERTREND_ENTRY_CONTAINED", price=price,
+                candle_open_time=candle_open_time,
+                info={"operator_reason": gate_reason, "entry_only": True},
+            )
+            return {
+                "ledger_ok": True, "live_attempted": False, "live_ok": False,
+                "paper_executed": False,
+                "blocked_reason": "PAPER_SUPERTREND_ENTRY_CONTAINED",
+                "client_order_id": None, "resp": None,
+            }
+
     inserted = insert_simulated_order(
         symbol=cfg_used.symbol,
         interval=cfg_used.interval,
@@ -1119,6 +1145,27 @@ def execute_and_record(
                     "position_id": None,
                     "simulated_order_id": int(inserted),
                 }
+        if is_exit:
+            try:
+                persist_exit_intent(
+                    get_db_conn, position_id=int(position_id),
+                    simulated_order_id=int(inserted), deployment_id=deployment_id,
+                    symbol=cfg_used.symbol, interval=cfg_used.interval,
+                    canonical_reason_code=(
+                        "FLIP_DOWN_EXIT"
+                        if "FLIP DOWN" in str(reason).upper()
+                        else "PROFIT_LOCK_EXIT"
+                        if "PROFIT_LOCK" in str(reason).upper()
+                        else "PANIC"
+                        if "PANIC" in str(reason).upper()
+                        else "SUPERTREND_EXIT"
+                    ),
+                    raw_reason=str(reason), exit_decision_at=candle_open_time,
+                )
+            except Exception:
+                logging.exception(
+                    "SUPERTREND exit intent persistence unavailable; safe exit continues"
+                )
         try:
             record_simulated_fill_evidence(
                 get_db_conn,
@@ -1135,6 +1182,23 @@ def execute_and_record(
             logging.exception(
                 "FINANCIAL_TRUTH_EVIDENCE|SUPERTREND paper persistence unavailable"
             )
+        reconciliation = None
+        if is_exit:
+            try:
+                reconciliation = reconcile_terminal_compatibility_outcome(
+                    get_db_conn, position_id=int(position_id),
+                    simulated_order_id=int(inserted), deployment_id=deployment_id,
+                )
+                if not reconciliation.applied and reconciliation.reason != "ALREADY_RECONCILED":
+                    emit_strategy_event(
+                        event_type="SUPERTREND_OUTCOME_UNRESOLVED",
+                        decision=side, reason=reconciliation.reason, price=price,
+                        candle_open_time=candle_open_time,
+                        info={"position_id": int(position_id),
+                              "simulated_order_id": int(inserted)},
+                    )
+            except Exception:
+                logging.exception("SUPERTREND terminal compatibility reconciliation failed")
         return {
             "ledger_ok": True,
             "live_attempted": False,
@@ -1145,6 +1209,10 @@ def execute_and_record(
             "resp": None,
             "position_id": int(position_id),
             "simulated_order_id": int(inserted),
+            "terminal_outcome_reconciled": bool(
+                reconciliation and
+                (reconciliation.applied or reconciliation.reason == "ALREADY_RECONCILED")
+            ),
         }
 
     # Explicit LIVE branch: unknown modes returned before any mutation above.
@@ -1922,6 +1990,12 @@ def _close_supertrend_exit(
     """Bind an exit outcome to the exact conditional position close."""
     if not result.get("ledger_ok"):
         return result
+    if result.get("terminal_outcome_reconciled"):
+        return {
+            **result,
+            "position_close_succeeded": True,
+            "blocked_reason": None,
+        }
     try:
         closed = close_position(
             exit_price=exit_price,

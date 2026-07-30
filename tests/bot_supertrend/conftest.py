@@ -21,6 +21,9 @@ def supertrend(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
+    )
     return module
 
 

@@ -265,6 +265,16 @@ class SupertrendHarness:
         self.monkeypatch.setattr(m, "decide_regime_gate", self._regime)
         self.monkeypatch.setattr(m, "compute_qty_from_notional_safe", self._size)
         self.monkeypatch.setattr(m, "get_exchange_client", lambda: StrictExchangeBoundary())
+        self.monkeypatch.setattr(
+            m, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
+        )
+        self.monkeypatch.setattr(m, "persist_exit_intent", lambda *_a, **_k: "fixture")
+        self.monkeypatch.setattr(
+            m, "reconcile_terminal_compatibility_outcome",
+            lambda *_a, **_k: SimpleNamespace(
+                applied=False, reason="INVENTORY_NOT_TERMINAL"
+            ),
+        )
         self.monkeypatch.setattr(m, "get_db_conn", self._unexpected_db)
         self.monkeypatch.setattr(m.time, "sleep", self._unexpected_sleep)
         self.monkeypatch.setattr(m, "get_user_settings_snapshot", lambda: {})
@@ -378,6 +388,7 @@ class SupertrendHarness:
                 "client_order_id": None, "resp": None,
                 "position_id": position_id,
                 "simulated_order_id": simulated_order_id,
+                "terminal_outcome_reconciled": False,
             }
             self.last_execution_result = result
             return result

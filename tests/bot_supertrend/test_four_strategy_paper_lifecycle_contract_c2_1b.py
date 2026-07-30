@@ -31,6 +31,17 @@ def load_strategy(monkeypatch, strategy):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    if strategy == "SUPERTREND":
+        monkeypatch.setattr(
+            module, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
+        )
+        monkeypatch.setattr(module, "persist_exit_intent", lambda *_a, **_k: "fixture")
+        monkeypatch.setattr(
+            module, "reconcile_terminal_compatibility_outcome",
+            lambda *_a, **_k: SimpleNamespace(
+                applied=False, reason="INVENTORY_NOT_TERMINAL"
+            ),
+        )
     return module
 
 
@@ -69,6 +80,17 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
     monkeypatch.setattr(module, "record_simulated_fill_evidence", record)
     monkeypatch.setattr(module, "get_exchange_client", lambda: object())
     monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
+    if strategy == "SUPERTREND":
+        monkeypatch.setattr(
+            module, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
+        )
+        monkeypatch.setattr(module, "persist_exit_intent", lambda *_a, **_k: "fixture")
+        monkeypatch.setattr(
+            module, "reconcile_terminal_compatibility_outcome",
+            lambda *_a, **_k: SimpleNamespace(
+                applied=False, reason="INVENTORY_NOT_TERMINAL"
+            ),
+        )
     if hasattr(module, "open_position"):
         monkeypatch.setattr(module, "open_position", open_position)
     if hasattr(module, "close_position"):
