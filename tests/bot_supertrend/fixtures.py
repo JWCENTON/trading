@@ -268,6 +268,9 @@ class SupertrendHarness:
         self.monkeypatch.setattr(
             m, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
         )
+        self.monkeypatch.setattr(
+            m, "expire_paper_supertrend_slot_canaries", lambda *_a, **_k: 0
+        )
         self.monkeypatch.setattr(m, "persist_exit_intent", lambda *_a, **_k: "fixture")
         self.monkeypatch.setattr(
             m, "reconcile_terminal_compatibility_outcome",

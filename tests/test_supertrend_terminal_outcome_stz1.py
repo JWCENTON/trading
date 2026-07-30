@@ -24,6 +24,9 @@ def test_entry_gate_is_strategy_scoped_entry_only_and_operator_owned():
     order = BOT.index("insert_simulated_order(", gate)
     assert gate < order
     assert "and not is_exit" in BOT[gate - 800:gate + 800]
+    assert "symbol=cfg_used.symbol" in BOT
+    assert "interval=cfg_used.interval" in BOT
+    assert "SLOT_CANARY_CONSUMED" in SOURCE
 
 
 def test_exit_intent_is_immutable_and_contains_no_outcome_state():

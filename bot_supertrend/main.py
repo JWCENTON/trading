@@ -47,6 +47,7 @@ from common.decision_contract import (
 )
 from common.partial_exit import apply_partial_exit_result
 from common.supertrend_terminal_outcome import (
+    expire_paper_supertrend_slot_canaries,
     paper_supertrend_entries_enabled,
     persist_exit_intent,
     reconcile_terminal_compatibility_outcome,
@@ -1052,9 +1053,14 @@ def execute_and_record(
         "DEPLOYMENT_ID", os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper")
     )
     if trading_mode == "PAPER" and not is_exit:
-        entries_enabled, gate_reason = paper_supertrend_entries_enabled(
-            get_db_conn, deployment_id=deployment_id
-        )
+        try:
+            entries_enabled, gate_reason = paper_supertrend_entries_enabled(
+                get_db_conn, deployment_id=deployment_id,
+                symbol=cfg_used.symbol, interval=cfg_used.interval,
+            )
+        except Exception:
+            logging.exception("PAPER SUPERTREND entry gate unavailable; fail closed")
+            entries_enabled, gate_reason = False, "ENTRY_GATE_UNAVAILABLE"
         if not entries_enabled:
             emit_strategy_event(
                 event_type="BLOCKED", decision=side,
@@ -2059,6 +2065,19 @@ def _run_strategy(latest, prev):
       - DB guard (is_exit=True)
       - execute_and_record(SELL) then close_position
     """
+    if str(os.environ.get("TRADING_MODE", "")).upper() == "PAPER":
+        try:
+            expire_paper_supertrend_slot_canaries(
+                get_db_conn,
+                deployment_id=os.environ.get(
+                    "DEPLOYMENT_ID",
+                    os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+                ),
+            )
+        except Exception:
+            # Maintenance must never block an existing safe exit. Any later
+            # entry attempt still fails closed in execute_and_record().
+            logging.exception("PAPER SUPERTREND canary expiry maintenance failed")
 
     open_time, close_price, ema_21, rsi_14, atr_14, st_val, st_dir = latest
     _, prev_close, _, _, _, _, prev_st_dir = prev

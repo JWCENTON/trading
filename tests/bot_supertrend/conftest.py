@@ -24,6 +24,9 @@ def supertrend(monkeypatch):
     monkeypatch.setattr(
         module, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
     )
+    monkeypatch.setattr(
+        module, "expire_paper_supertrend_slot_canaries", lambda *_a, **_k: 0
+    )
     return module
 
 

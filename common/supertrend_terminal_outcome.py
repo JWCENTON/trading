@@ -10,22 +10,87 @@ PRODUCER_VERSION = "SUPERTREND_TERMINAL_COMPAT_V1"
 
 
 def paper_supertrend_entries_enabled(
-    connection_factory, *, deployment_id: str
+    connection_factory, *, deployment_id: str,
+    symbol: str | None = None, interval: str | None = None,
 ) -> tuple[bool, str | None]:
     conn = connection_factory()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT entries_enabled,operator_reason
-                FROM paper_strategy_entry_gate_v1
-                WHERE environment='paper' AND deployment_id=%s
-                  AND strategy='SUPERTREND'
-                """,
-                (deployment_id,),
-            )
-            row = cur.fetchone()
-            return (True, None) if row is None else (bool(row[0]), str(row[1]))
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT entries_enabled,operator_reason
+                    FROM paper_strategy_entry_gate_v1
+                    WHERE environment='paper' AND deployment_id=%s
+                      AND strategy='SUPERTREND'
+                    FOR UPDATE
+                    """,
+                    (deployment_id,),
+                )
+                row = cur.fetchone()
+                if row is None or bool(row[0]):
+                    return True, None if row is None else str(row[1])
+                if not symbol or not interval:
+                    return False, str(row[1])
+                cur.execute(
+                    """
+                    UPDATE paper_strategy_slot_canary_v1
+                    SET enabled=false,changed_at=clock_timestamp()
+                    WHERE environment='paper' AND deployment_id=%s
+                      AND strategy='SUPERTREND' AND enabled=true
+                      AND expires_at<=clock_timestamp()
+                    """,
+                    (deployment_id,),
+                )
+                cur.execute(
+                    """
+                    UPDATE paper_strategy_slot_canary_v1
+                    SET accepted_entries_count=accepted_entries_count+1,
+                        enabled=CASE
+                          WHEN accepted_entries_count+1>=maximum_entries
+                            THEN false
+                          ELSE enabled
+                        END,
+                        changed_at=clock_timestamp()
+                    WHERE environment='paper' AND deployment_id=%s
+                      AND strategy='SUPERTREND'
+                      AND symbol=%s AND "interval"=%s
+                      AND enabled=true
+                      AND expires_at>clock_timestamp()
+                      AND accepted_entries_count<maximum_entries
+                    RETURNING operator_reason,accepted_entries_count,enabled
+                    """,
+                    (deployment_id, str(symbol).upper(), str(interval).lower()),
+                )
+                consumed = cur.fetchone()
+                if consumed is None:
+                    return False, str(row[1])
+                return True, (
+                    f"SLOT_CANARY_CONSUMED:{consumed[0]}:"
+                    f"{consumed[1]}:{str(consumed[2]).lower()}"
+                )
+    finally:
+        conn.close()
+
+
+def expire_paper_supertrend_slot_canaries(
+    connection_factory, *, deployment_id: str
+) -> int:
+    conn = connection_factory()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE paper_strategy_slot_canary_v1
+                    SET enabled=false,changed_at=clock_timestamp()
+                    WHERE environment='paper' AND deployment_id=%s
+                      AND strategy='SUPERTREND' AND enabled=true
+                      AND expires_at<=clock_timestamp()
+                    """,
+                    (deployment_id,),
+                )
+                return int(cur.rowcount)
     finally:
         conn.close()
 
