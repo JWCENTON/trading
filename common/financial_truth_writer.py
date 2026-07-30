@@ -81,6 +81,7 @@ class FinancialTruthReconciler:
                 estimated_gross_pnl=position[2],
                 estimated_fees_usdc=position[3],
                 estimated_net_pnl=position[4],
+                position_symbol=position[5] if len(position) > 5 else None,
             )
             if is_source_readiness_issue(source_issue):
                 calculation = replace(
@@ -109,6 +110,9 @@ class FinancialTruthReconciler:
                         fills=fills, estimated_gross_pnl=position[2],
                         estimated_fees_usdc=position[3],
                         estimated_net_pnl=position[4],
+                        position_symbol=(
+                            position[5] if len(position) > 5 else None
+                        ),
                     )
                     if is_source_readiness_issue(source_issue):
                         calculation = replace(

@@ -38,6 +38,7 @@ class SourceReadinessIssue(str, Enum):
     EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED = (
         "EXCHANGE_EXECUTION_SCHEMA_UNSUPPORTED"
     )
+    SYMBOL_IDENTITY_CONFLICT = "SYMBOL_IDENTITY_CONFLICT"
 
 
 def is_source_readiness_issue(value: object) -> bool:
@@ -54,6 +55,7 @@ SIMULATED_SCHEMA_CONTRACT = {
         "environment", "deployment_id", "simulation_model_version",
         "execution_at",
     },
+    "simulated_orders": {"id", "symbol"},
     "financial_truth_account_identity_v1": {"id", "identity_fingerprint"},
     "financial_truth_instrument_snapshot_v1": {
         "id", "metadata_fingerprint", "step_size", "base_asset", "quote_asset",
@@ -150,7 +152,7 @@ class FinancialTruthSourceRepository:
         try:
             cur.execute(
                 """
-                SELECT id,status,gross_pnl_usdc,fees_usdc,net_pnl_usdc
+                SELECT id,status,gross_pnl_usdc,fees_usdc,net_pnl_usdc,symbol
                 FROM public.positions WHERE id=%s
                 """,
                 (int(position_id),),
@@ -176,8 +178,9 @@ class FinancialTruthSourceRepository:
                   im.metadata_fingerprint, im.step_size, im.base_asset,
                   im.quote_asset, sf.source_authority, 'SIMULATOR',
                   sf.environment, sf.deployment_id,
-                  sf.simulation_model_version, sf.execution_at
+                  sf.simulation_model_version, sf.execution_at, so.symbol
                 FROM public.simulated_execution_fills_v1 sf
+                JOIN public.simulated_orders so ON so.id=sf.simulated_order_id
                 LEFT JOIN public.financial_truth_account_identity_v1 ai
                   ON ai.id=sf.account_identity_id
                 LEFT JOIN public.financial_truth_instrument_snapshot_v1 im
@@ -193,6 +196,17 @@ class FinancialTruthSourceRepository:
                     ),
                 )
                 rows = list(cur.fetchall())
+                if any(
+                    len(row) > 24
+                    and
+                    str(row[5]).strip().upper()
+                    != str(row[24]).strip().upper()
+                    for row in rows
+                ):
+                    return (
+                        position, (),
+                        SourceReadinessIssue.SYMBOL_IDENTITY_CONFLICT,
+                    )
             else:
                 if not self._supports(cur, EXCHANGE_SCHEMA_CONTRACT):
                     return (

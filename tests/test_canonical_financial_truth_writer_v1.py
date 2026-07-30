@@ -11,6 +11,7 @@ from common.financial_truth_calculator import (
     FillEvidence,
     calculate_financial_truth,
     classify_fee_asset_role,
+    resolve_fee_asset_role,
     source_fingerprint,
 )
 from common.financial_truth_repository import normalize_optional_asset
@@ -193,7 +194,7 @@ def test_third_asset_conversion_is_estimated_and_never_complete():
     assert "THIRD_ASSET_FEE_ESTIMATED" in result.failure_detail
 
 
-def test_historical_usdc_fee_without_metadata_is_unclassified_estimate():
+def test_historical_usdc_fee_without_metadata_uses_canonical_symbol():
     entry = fill(
         "1", "ENTRY", "10", "2", fee_asset="USDC",
         authoritative_fee=None, estimated_fee="0.12", metadata=None, step=None,
@@ -215,8 +216,8 @@ def test_historical_usdc_fee_without_metadata_is_unclassified_estimate():
     assert result.authoritative_fees_usdc is None
     assert result.authoritative_net_pnl is None
     assert result.estimated_fees_usdc == Decimal("0.25")
-    assert "FEE_ASSET_ROLE_UNKNOWN" in result.failure_detail
-    assert "MISSING_INSTRUMENT_METADATA" in result.failure_detail
+    assert "FEE_ASSET_ROLE_UNKNOWN" not in result.failure_detail
+    assert "MISSING_INSTRUMENT_METADATA" not in result.failure_detail
     assert "FEE_VALUATION_ESTIMATED" in result.failure_detail
     assert "THIRD_ASSET_FEE_ESTIMATED" not in result.failure_detail
 
@@ -229,7 +230,7 @@ def test_historical_usdc_fee_without_metadata_is_unclassified_estimate():
         ("BTC", None, "USDC", "UNKNOWN"),
         ("USDC", "BTC", "USDC", "QUOTE"),
         ("BTC", "BTC", "USDC", "BASE"),
-        ("BNB", "BTC", "USDC", "THIRD"),
+        ("BNB", "BTC", "USDC", "THIRD_ASSET"),
         (None, "BTC", "USDC", "UNKNOWN"),
     ],
 )
@@ -239,6 +240,117 @@ def test_fee_asset_role_requires_sufficient_metadata(
     assert classify_fee_asset_role(
         fee_asset, base_asset, quote_asset
     ) == expected
+
+
+@pytest.mark.parametrize("symbol", ["ETHUSDC", "SOLUSDC"])
+def test_legacy_quote_fee_resolves_from_canonical_symbol(symbol):
+    result = resolve_fee_asset_role(
+        fee_asset="USDC", symbol=symbol,
+        base_asset=None, quote_asset=None,
+    )
+    assert result.fee_asset_role == "QUOTE"
+    assert result.fee_asset_role_source == "CANONICAL_SYMBOL_RESOLUTION"
+    assert result.instrument_resolution_status == "RESOLVED"
+    assert result.instrument_resolution_source == "CANONICAL_SYMBOL_RESOLUTION"
+
+
+def test_snapshot_fee_role_has_highest_priority():
+    result = resolve_fee_asset_role(
+        fee_asset="USDC", symbol="ETHUSDC",
+        base_asset="ETH", quote_asset="USDC",
+    )
+    assert result.fee_asset_role == "QUOTE"
+    assert result.fee_asset_role_source == "STORED_INSTRUMENT_SNAPSHOT"
+    assert result.instrument_resolution_source == "STORED_INSTRUMENT_SNAPSHOT"
+
+
+def test_legacy_base_fee_resolves_from_canonical_symbol():
+    result = resolve_fee_asset_role(
+        fee_asset="ETH", symbol="ETHUSDC",
+        base_asset=None, quote_asset=None,
+    )
+    assert result.fee_asset_role == "BASE"
+
+
+def test_legacy_third_asset_is_classified_but_not_complete():
+    resolution = resolve_fee_asset_role(
+        fee_asset="OKB", symbol="ETHUSDC",
+        base_asset=None, quote_asset=None,
+    )
+    assert resolution.fee_asset_role == "THIRD_ASSET"
+    entry = fill(
+        "1", "ENTRY", "10", "2", fee_asset="OKB",
+        authoritative_fee=None, estimated_fee="0.12",
+        metadata=None, step=None,
+    )
+    exit_fill = FillEvidence(**{
+        **fill("2", "EXIT", "10", "3").__dict__,
+        "symbol": "ETHUSDC", "base_asset": "ETH",
+    })
+    entry = FillEvidence(**{
+        **entry.__dict__, "symbol": "ETHUSDC",
+        "base_asset": None, "quote_asset": None,
+    })
+    result = calculate(entry, exit_fill)
+    assert result.financial_truth_status == "INCOMPLETE"
+    assert "THIRD_ASSET_FEE_ESTIMATED" in result.failure_detail
+
+
+@pytest.mark.parametrize("symbol", [None, "", "ETH-USDC", "UNKNOWN"])
+def test_missing_malformed_or_unknown_symbol_fails_closed(symbol):
+    result = resolve_fee_asset_role(
+        fee_asset="USDC", symbol=symbol,
+        base_asset=None, quote_asset=None,
+    )
+    assert result.fee_asset_role == "UNKNOWN"
+    assert result.instrument_resolution_status == "UNKNOWN"
+
+
+def test_snapshot_conflict_with_canonical_symbol_fails_closed():
+    result = resolve_fee_asset_role(
+        fee_asset="USDC", symbol="ETHUSDC",
+        base_asset="SOL", quote_asset="USDC",
+    )
+    assert result.fee_asset_role == "UNKNOWN"
+    assert result.instrument_resolution_status == "CONFLICT"
+
+
+def test_position_and_fill_symbol_conflict_fails_closed():
+    result = calculate_financial_truth(
+        position_id=1, position_status="CLOSED",
+        position_symbol="SOLUSDC",
+        fills=(
+            FillEvidence(**{**fill("1", "ENTRY", "10", "2").__dict__,
+                            "symbol": "ETHUSDC"}),
+            FillEvidence(**{**fill("2", "EXIT", "10", "3").__dict__,
+                            "symbol": "ETHUSDC"}),
+        ),
+    )
+    assert result.financial_truth_status == "FAILED"
+    assert result.failure_code == "SOURCE_PROVENANCE_CONFLICT"
+
+
+@pytest.mark.parametrize("symbol", ["ETHUSDC", "SOLUSDC"])
+def test_legacy_authoritative_usdc_fees_are_complete(symbol):
+    entry = FillEvidence(**{
+        **fill("1", "ENTRY", "10", "2", authoritative_fee="0.10").__dict__,
+        "symbol": symbol, "base_asset": symbol[:-4],
+    })
+    exit_fill = FillEvidence(**{
+        **fill(
+            "2", "EXIT", "10", "3", authoritative_fee="0.10",
+            metadata=None, step=None,
+        ).__dict__,
+        "symbol": symbol, "base_asset": None, "quote_asset": None,
+    })
+    result = calculate_financial_truth(
+        position_id=1, position_status="CLOSED",
+        position_symbol=symbol, fills=(entry, exit_fill),
+    )
+    assert result.financial_truth_status == "COMPLETE"
+    assert result.authoritative_gross_pnl == Decimal("10")
+    assert result.authoritative_fees_usdc == Decimal("0.20")
+    assert result.authoritative_net_pnl == Decimal("9.80")
 
 
 @pytest.mark.parametrize(

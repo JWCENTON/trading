@@ -8,8 +8,10 @@ import hashlib
 import json
 from typing import Iterable
 
+from common.exchange_symbols import resolve_canonical_instrument
 
-CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V1"
+
+CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V2"
 
 
 class NonCanonicalFinancialTruthIssue(str, Enum):
@@ -137,8 +139,69 @@ def classify_fee_asset_role(
     if quote and fee == quote:
         return "QUOTE"
     if base and quote:
-        return "THIRD"
+        return "THIRD_ASSET"
     return "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class FeeAssetRoleResolution:
+    fee_asset_role: str
+    fee_asset_role_source: str
+    instrument_resolution_status: str
+    instrument_resolution_source: str
+    base_asset: str | None
+    quote_asset: str | None
+
+
+def resolve_fee_asset_role(
+    *,
+    fee_asset: str | None,
+    symbol: str | None,
+    base_asset: str | None,
+    quote_asset: str | None,
+) -> FeeAssetRoleResolution:
+    fee = str(fee_asset).strip().upper() if fee_asset else None
+    stored_base = str(base_asset).strip().upper() if base_asset else None
+    stored_quote = str(quote_asset).strip().upper() if quote_asset else None
+    canonical = resolve_canonical_instrument(symbol)
+
+    if bool(stored_base) != bool(stored_quote):
+        return FeeAssetRoleResolution(
+            "UNKNOWN", "UNKNOWN", "CONFLICT",
+            "STORED_INSTRUMENT_SNAPSHOT", None, None,
+        )
+    if stored_base and stored_quote:
+        if (
+            canonical.status == "RESOLVED"
+            and (
+                canonical.base_asset != stored_base
+                or canonical.quote_asset != stored_quote
+            )
+        ):
+            return FeeAssetRoleResolution(
+                "UNKNOWN", "UNKNOWN", "CONFLICT",
+                "STORED_INSTRUMENT_SNAPSHOT", None, None,
+            )
+        role = classify_fee_asset_role(fee, stored_base, stored_quote)
+        return FeeAssetRoleResolution(
+            role,
+            "STORED_INSTRUMENT_SNAPSHOT" if role != "UNKNOWN" else "UNKNOWN",
+            "RESOLVED", "STORED_INSTRUMENT_SNAPSHOT",
+            stored_base, stored_quote,
+        )
+    if canonical.status != "RESOLVED":
+        return FeeAssetRoleResolution(
+            "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", None, None,
+        )
+    role = classify_fee_asset_role(
+        fee, canonical.base_asset, canonical.quote_asset
+    )
+    return FeeAssetRoleResolution(
+        role,
+        "CANONICAL_SYMBOL_RESOLUTION" if role != "UNKNOWN" else "UNKNOWN",
+        "RESOLVED", "CANONICAL_SYMBOL_RESOLUTION",
+        canonical.base_asset, canonical.quote_asset,
+    )
 
 
 def calculate_financial_truth(
@@ -149,6 +212,7 @@ def calculate_financial_truth(
     estimated_gross_pnl: Decimal | None = None,
     estimated_fees_usdc: Decimal | None = None,
     estimated_net_pnl: Decimal | None = None,
+    position_symbol: str | None = None,
 ) -> FinancialTruthCalculation:
     evidence = tuple(fills)
     fingerprint = source_fingerprint(evidence)
@@ -190,6 +254,16 @@ def calculate_financial_truth(
     symbols = {f.symbol for f in evidence}
     if any(len(values) > 1 for values in (authorities, exchanges, environments, deployments, symbols)):
         return failed("SOURCE_PROVENANCE_CONFLICT", "source provenance is inconsistent")
+    if (
+        position_symbol is not None
+        and {str(position_symbol).strip().upper()} != {
+            str(value).strip().upper() for value in symbols
+        }
+    ):
+        return failed(
+            "SOURCE_PROVENANCE_CONFLICT",
+            "position and fill symbols are inconsistent",
+        )
     if any(f.quantity <= 0 or f.price < 0 or f.notional < 0 for f in evidence):
         return failed("INVALID_EXECUTION_VALUE", "negative or zero execution value")
 
@@ -200,20 +274,22 @@ def calculate_financial_truth(
 
     gross_entry = sum((f.quantity for f in entries), Decimal("0"))
     gross_exit = sum((f.quantity for f in exits), Decimal("0"))
-    base_asset = evidence[0].base_asset
+    fee_role_resolutions = tuple(
+        resolve_fee_asset_role(
+            fee_asset=f.fee_asset, symbol=f.symbol,
+            base_asset=f.base_asset, quote_asset=f.quote_asset,
+        )
+        for f in evidence
+    )
     entry_base_fee = sum(
         (f.fee_quantity or Decimal("0"))
-        for f in entries
-        if classify_fee_asset_role(
-            f.fee_asset, f.base_asset, f.quote_asset
-        ) == "BASE"
+        for f, resolution in zip(evidence, fee_role_resolutions)
+        if f.purpose == "ENTRY" and resolution.fee_asset_role == "BASE"
     )
     exit_base_fee = sum(
         (f.fee_quantity or Decimal("0"))
-        for f in exits
-        if classify_fee_asset_role(
-            f.fee_asset, f.base_asset, f.quote_asset
-        ) == "BASE"
+        for f, resolution in zip(evidence, fee_role_resolutions)
+        if f.purpose == "EXIT" and resolution.fee_asset_role == "BASE"
     )
     net_entry = gross_entry - entry_base_fee
     net_exit_reduction = gross_exit + exit_base_fee
@@ -282,16 +358,19 @@ def calculate_financial_truth(
     if any(f.authoritative_fee_usdc is None for f in evidence):
         missing.append("MISSING_AUTHORITATIVE_FEE")
     fee_roles = tuple(
-        classify_fee_asset_role(f.fee_asset, f.base_asset, f.quote_asset)
-        for f in evidence
+        resolution.fee_asset_role for resolution in fee_role_resolutions
     )
     if any(role == "UNKNOWN" for role in fee_roles):
         missing.append("FEE_ASSET_ROLE_UNKNOWN")
     if any(
-        f.base_asset is None
-        or f.quote_asset is None
-        or f.instrument_metadata_fingerprint is None
-        for f in evidence
+        (
+            f.base_asset is None
+            or f.quote_asset is None
+            or f.instrument_metadata_fingerprint is None
+        )
+        and resolution.instrument_resolution_source
+        != "CANONICAL_SYMBOL_RESOLUTION"
+        for f, resolution in zip(evidence, fee_role_resolutions)
     ):
         missing.append("MISSING_INSTRUMENT_METADATA")
     if any(
@@ -299,7 +378,7 @@ def calculate_financial_truth(
         for f in evidence
     ):
         missing.append("FEE_VALUATION_ESTIMATED")
-    if any(role == "THIRD" for role in fee_roles):
+    if any(role == "THIRD_ASSET" for role in fee_roles):
         missing.append("THIRD_ASSET_FEE_ESTIMATED")
     if exit_base_fee:
         missing.append("BASE_EXIT_FEE_SEMANTICS_UNSUPPORTED")
