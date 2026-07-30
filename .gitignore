@@ -237,6 +237,7 @@ backups/
 !db/migrations/20260729_fee_aware_inventory_terminal_dust_c2_2.sql
 !db/migrations/20260729_legacy_replay_change_high_water_c2_2_1.sql
 !db/migrations/20260729_adoption_generation_lifecycle_c2_2_2.sql
+!db/migrations/20260730_legacy_position_fill_recovery_v1.sql
 !tests/postgres/learning_canonical_shared_rollback_v2.sql
 !tests/postgres/learning_canonical_frozen_source_snapshot_v2.sql
 !tests/postgres/c2_2_1_runtime_equivalent.sql
