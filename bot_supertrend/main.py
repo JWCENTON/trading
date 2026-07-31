@@ -1325,6 +1325,7 @@ def execute_and_record(
             db_conn=conn_exec,
             position_id=int(pos_id) if pos_id is not None else None,
             leg=("EXIT" if is_exit else "ENTRY"),
+            order_purpose=("EXIT" if is_exit else "ENTRY"),
             strategy=STRATEGY_NAME,
             interval=cfg_used.interval,
             exchange_source=normalize_exchange_source(

@@ -142,13 +142,15 @@ def run_entry(module, monkeypatch, result, *, ledger_ok=True, position_failure=F
     operations = []
     events = []
     positions = []
+    place_calls = []
 
     def reserve(**_kwargs):
         operations.append("ledger:reserve")
         return ledger_ok
 
-    def place(*_args, **_kwargs):
+    def place(*_args, **kwargs):
         operations.append("execution:place_live_order")
+        place_calls.append(kwargs)
         return result
 
     def open_position(**kwargs):
@@ -209,6 +211,7 @@ def run_entry(module, monkeypatch, result, *, ledger_ok=True, position_failure=F
     returned = module.execute_and_record(**kwargs)
     return SimpleNamespace(
         result=returned, positions=positions, events=events, operation_log=operations,
+        place_calls=place_calls,
     )
 
 
@@ -236,6 +239,8 @@ def test_strategy_live_entry_matrix(
     module = load_strategy(strategy)
     observed = run_entry(module, monkeypatch, execution_result(case))
     assert observed.operation_log.count("execution:place_live_order") == 1
+    assert len(observed.place_calls) == 1
+    assert observed.place_calls[0]["order_purpose"] == "ENTRY"
     if expected_position_qty is None:
         assert observed.positions == []
         assert "state_change:open" not in observed.operation_log

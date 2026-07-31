@@ -3,6 +3,7 @@ import uuid
 import time
 import logging
 from common.exchange_client import ExchangeAPIException
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import re
@@ -12,6 +13,9 @@ from common.sizing import get_symbol_filters as sizing_get_symbol_filters
 from common.exchange_identity import normalize_exchange_source
 
 _CID_RE = re.compile(r"[^A-Za-z0-9\-_]")
+_LIVE_ENTRY_DECISION_NAMESPACE = uuid.UUID(
+    "d70c5c80-9b99-5a1b-b7c5-07bce9af867c"
+)
 
 def build_live_client_order_id(symbol: str, pos_id: int, leg: str) -> str:
     """
@@ -61,6 +65,35 @@ def build_live_entry_intent_client_order_id(
     h6 = hashlib.sha1(base.encode("utf-8")).hexdigest()[:6]
     keep = 36 - (1 + len(h6))
     return f"{base[:keep]}-{h6}"
+
+
+def build_live_entry_decision_id(
+    *,
+    environment: str,
+    deployment_id: str,
+    exchange_source: str,
+    client_order_id: str,
+    symbol: str,
+    strategy: str,
+    interval: str,
+) -> uuid.UUID:
+    """Stable identity for legacy ENTRY decisions which predate decision UUIDs."""
+    payload = json.dumps(
+        {
+            "client_order_id": str(client_order_id),
+            "decision_identity_version": "LIVE_ENTRY_DECISION_ID_V1",
+            "deployment_id": str(deployment_id),
+            "environment": str(environment),
+            "exchange_source": str(exchange_source),
+            "interval": str(interval),
+            "strategy": str(strategy),
+            "symbol": str(symbol),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return uuid.uuid5(_LIVE_ENTRY_DECISION_NAMESPACE, payload)
 
 
 def _attach_order_to_position(conn, *, position_id: int, leg: str, client_order_id: str, order_id: str):
@@ -659,6 +692,80 @@ def preflight_live_order(
         return _blocked("PREFLIGHT_EXCEPTION", err=str(e))
 
 
+def _entry_submission_event_payload(result) -> list[dict]:
+    return [
+        {
+            "event_type": event.event_type.value,
+            "intent_id": str(event.intent_id),
+            "client_order_id": event.client_order_id,
+            "occurred_at": event.occurred_at.isoformat(),
+            "detail": event.detail,
+        }
+        for event in result.events
+    ]
+
+
+def _entry_submission_blocked_result(
+    *,
+    qty: float,
+    client_order_id: str | None,
+    outcome: str,
+    network_called: bool,
+    error_code: str | None,
+    events: list[dict] | None = None,
+    order_id: str | None = None,
+    exchange_status: str | None = None,
+    order_accepted: bool = False,
+):
+    return {
+        "ok": False,
+        "attempted": bool(network_called),
+        "order_accepted": bool(order_accepted),
+        "executed": False,
+        "live_ok": False,
+        "fully_executed": False,
+        "executed_qty": 0.0,
+        "requested_qty": float(qty),
+        "order_id": order_id,
+        "client_order_id": client_order_id,
+        "status": outcome,
+        "exchange_status": exchange_status or outcome,
+        "blocked": True,
+        "reason": outcome,
+        "meta": {
+            "entry_submission_error": error_code,
+            "entry_submission_events": events or [],
+        },
+        "resp": None,
+        "entry_submission_outcome": outcome,
+    }
+
+
+def _entry_submission_reconciliation_result(
+    *,
+    qty: float,
+    client_order_id: str,
+    submission_result,
+):
+    ack = submission_result.ack
+    outcome = submission_result.outcome.value
+    order_id = str(ack.exchange_order_id) if ack is not None else None
+    exchange_status = (
+        str(ack.exchange_order_status) if ack is not None else outcome
+    )
+    return _entry_submission_blocked_result(
+        qty=qty,
+        client_order_id=client_order_id,
+        outcome="ENTRY_ACK_RECONCILIATION_REQUIRES_LEI1C",
+        network_called=submission_result.network_called,
+        error_code=outcome,
+        events=_entry_submission_event_payload(submission_result),
+        order_id=order_id,
+        exchange_status=exchange_status,
+        order_accepted=ack is not None,
+    )
+
+
 def place_live_order(
     client,
     symbol: str,
@@ -679,6 +786,13 @@ def place_live_order(
     strategy: str | None = None,
     interval: str | None = None,
     exchange_source: str | None = None,
+    order_purpose: str | None = None,
+    entry_decision_id: uuid.UUID | str | None = None,
+    entry_submission_mode=None,
+    entry_submission_repository=None,
+    entry_submission_connection_factory=None,
+    entry_submission_event_sink=None,
+    entry_submission_clock=None,
 ):
     pre = preflight_live_order(
         client,
@@ -716,34 +830,267 @@ def place_live_order(
 
     qty = float(pre["qty_adj"])
 
+    is_entry_submission = str(order_purpose or "").upper() == "ENTRY"
+    selected_entry_mode = None
+    if is_entry_submission:
+        from common.entry_submission import EntrySubmissionMode
+
+        try:
+            selected_entry_mode = (
+                EntrySubmissionMode.from_env()
+                if entry_submission_mode is None
+                else entry_submission_mode
+                if isinstance(entry_submission_mode, EntrySubmissionMode)
+                else EntrySubmissionMode(str(entry_submission_mode).upper())
+            )
+        except ValueError as exc:
+            logging.error(
+                "ENTRY_NETWORK_BLOCKED_NO_COMMITTED_INTENT invalid mode: %s",
+                str(exc),
+            )
+            return _entry_submission_blocked_result(
+                qty=qty,
+                client_order_id=client_order_id,
+                outcome="ENTRY_SUBMISSION_MODE_INVALID",
+                network_called=False,
+                error_code=str(exc),
+                events=[{
+                    "event_type": "ENTRY_NETWORK_BLOCKED_NO_COMMITTED_INTENT",
+                    "detail": "MODE_INVALID",
+                }],
+            )
+
     if client_order_id is None:
+        if (
+            is_entry_submission
+            and selected_entry_mode is not None
+            and selected_entry_mode.value == "ENFORCE"
+        ):
+            logging.error(
+                "ENTRY_NETWORK_BLOCKED_NO_COMMITTED_INTENT missing deterministic CID"
+            )
+            return _entry_submission_blocked_result(
+                qty=qty,
+                client_order_id=None,
+                outcome="ENTRY_DETERMINISTIC_CLIENT_ORDER_ID_REQUIRED",
+                network_called=False,
+                error_code="ENTRY_DETERMINISTIC_CLIENT_ORDER_ID_REQUIRED",
+                events=[{
+                    "event_type": "ENTRY_NETWORK_BLOCKED_NO_COMMITTED_INTENT",
+                    "detail": "CLIENT_ORDER_ID_MISSING",
+                }],
+            )
         if trading_mode == "LIVE" and position_id is not None and leg is not None:
             leg_char = "E" if str(leg).upper().startswith("E") else "X"
             client_order_id = build_live_client_order_id(symbol, int(position_id), leg_char)
         else:
             client_order_id = str(uuid.uuid4())
 
-    try:
+    entry_submission_metadata = None
+
+    def network_submit():
         logging.info(
             "LIVE ORDER SEND symbol=%s side=%s qty=%.8f clientOrderId=%s",
-            symbol, side, qty, client_order_id
+            symbol, side, qty, client_order_id,
         )
-
         if hasattr(client, "place_market_order"):
-            resp = client.place_market_order(
+            return client.place_market_order(
                 symbol=symbol,
                 side=side,
                 quantity=_qty_to_plain_str(qty),
                 client_order_id=client_order_id,
             )
-        else:
-            resp = client.create_order(
-                symbol=symbol,
-                side=side,
-                type="MARKET",
-                quantity=_qty_to_plain_str(qty),
-                newClientOrderId=client_order_id,
+        return client.create_order(
+            symbol=symbol,
+            side=side,
+            type="MARKET",
+            quantity=_qty_to_plain_str(qty),
+            newClientOrderId=client_order_id,
+        )
+
+    try:
+        if (
+            is_entry_submission
+            and selected_entry_mode is not None
+            and selected_entry_mode.value != "OFF"
+        ):
+            from common.contract_adoption import require_runtime_git_revision
+            from common.db import get_db_conn
+            from common.entry_intent import (
+                EntryIntentDeployment,
+                EntryIntentEnvironment,
+                LiveEntryIntent,
             )
+            from common.entry_submission import (
+                EntrySubmissionExecutionOutcome,
+                EntrySubmissionRepository,
+                execute_committed_entry_submission,
+            )
+
+            clock = entry_submission_clock or (
+                lambda: datetime.now(timezone.utc)
+            )
+            repository = entry_submission_repository or EntrySubmissionRepository(
+                entry_submission_connection_factory or get_db_conn
+            )
+            try:
+                environment = EntryIntentEnvironment(str(trading_mode).lower())
+                deployment_raw = str(
+                    os.environ.get("DEPLOYMENT_ID")
+                    or os.environ.get("WALTRADE_DEPLOYMENT_ID")
+                    or ""
+                ).strip().lower()
+                deployment = EntryIntentDeployment(deployment_raw)
+                runtime_git_revision = require_runtime_git_revision()
+                adoption = repository.resolve_active_adoption(
+                    environment=environment,
+                    deployment_id=deployment,
+                    runtime_git_revision=runtime_git_revision,
+                )
+                exchange_identity = normalize_exchange_source(
+                    exchange_source
+                    or os.environ.get("EXCHANGE")
+                    or os.environ.get("EXCHANGE_PROVIDER")
+                    or "BINANCE"
+                )
+                if not strategy or not interval or not exchange_identity:
+                    raise ValueError(
+                        "ENTRY_SUBMISSION_RUNTIME_IDENTITY_INCOMPLETE"
+                    )
+                if str(side).upper() != "BUY":
+                    raise ValueError("ENTRY_SUBMISSION_SIDE_MUST_BE_BUY")
+                decision_id = (
+                    entry_decision_id
+                    if isinstance(entry_decision_id, uuid.UUID)
+                    else uuid.UUID(str(entry_decision_id))
+                    if entry_decision_id is not None
+                    else build_live_entry_decision_id(
+                        environment=environment.value,
+                        deployment_id=deployment.value,
+                        exchange_source=exchange_identity,
+                        client_order_id=str(client_order_id),
+                        symbol=str(symbol).upper(),
+                        strategy=str(strategy).upper(),
+                        interval=str(interval).lower(),
+                    )
+                )
+                intent = LiveEntryIntent.build(
+                    environment=environment,
+                    deployment_id=deployment,
+                    git_revision=runtime_git_revision,
+                    adoption_id=adoption.adoption_id,
+                    generation=adoption.generation,
+                    decision_id=decision_id,
+                    symbol=str(symbol).upper(),
+                    strategy=str(strategy).upper(),
+                    interval=str(interval).lower(),
+                    exchange_source=exchange_identity,
+                    client_order_id=str(client_order_id),
+                    requested_qty=Decimal(_qty_to_plain_str(qty)),
+                    prepared_at=clock(),
+                    producer_identity=f"bot-{str(strategy).lower()}",
+                )
+            except BaseException as exc:
+                logging.error(
+                    "ENTRY_INTENT_COMMIT_FAILED runtime identity: %s",
+                    str(exc),
+                )
+                if selected_entry_mode.value == "ENFORCE":
+                    logging.error(
+                        "ENTRY_NETWORK_BLOCKED_NO_COMMITTED_INTENT runtime identity"
+                    )
+                    return _entry_submission_blocked_result(
+                        qty=qty,
+                        client_order_id=client_order_id,
+                        outcome="ENTRY_RUNTIME_IDENTITY_MISMATCH",
+                        network_called=False,
+                        error_code=str(exc),
+                        events=[
+                            {
+                                "event_type": "ENTRY_INTENT_COMMIT_FAILED",
+                                "detail": type(exc).__name__,
+                            },
+                            {
+                                "event_type": "ENTRY_NETWORK_BLOCKED_NO_COMMITTED_INTENT",
+                                "detail": "RUNTIME_IDENTITY_MISMATCH",
+                            },
+                        ],
+                    )
+                resp = network_submit()
+            else:
+                def default_event_sink(event):
+                    logging.info(
+                        "%s intent_id=%s clientOrderId=%s detail=%s",
+                        event.event_type.value,
+                        event.intent_id,
+                        event.client_order_id,
+                        event.detail,
+                    )
+
+                lookup = getattr(
+                    client,
+                    "find_order_by_client_order_id",
+                    lambda **_kwargs: {
+                        "outcome": "ERROR",
+                        "order": None,
+                        "detail": "CLIENT_ORDER_ID_LOOKUP_UNAVAILABLE",
+                    },
+                )
+                submission_result = execute_committed_entry_submission(
+                    mode=selected_entry_mode,
+                    intent=intent,
+                    repository=repository,
+                    network_submit=network_submit,
+                    lookup_by_client_order_id=lookup,
+                    event_sink=(
+                        entry_submission_event_sink or default_event_sink
+                    ),
+                    clock=clock,
+                )
+                entry_submission_metadata = {
+                    "entry_submission_outcome": submission_result.outcome.value,
+                    "entry_intent_id": str(intent.intent_id),
+                    "entry_submission_events": _entry_submission_event_payload(
+                        submission_result
+                    ),
+                }
+                if submission_result.outcome in {
+                    EntrySubmissionExecutionOutcome.ACK_ALREADY_PERSISTED,
+                    EntrySubmissionExecutionOutcome.ACK_RECOVERED,
+                }:
+                    return _entry_submission_reconciliation_result(
+                        qty=qty,
+                        client_order_id=str(client_order_id),
+                        submission_result=submission_result,
+                    )
+                if submission_result.outcome not in {
+                    EntrySubmissionExecutionOutcome.ACK_PERSISTED,
+                    EntrySubmissionExecutionOutcome.SHADOW_NETWORK_SUBMITTED,
+                }:
+                    return _entry_submission_blocked_result(
+                        qty=qty,
+                        client_order_id=client_order_id,
+                        outcome=submission_result.outcome.value,
+                        network_called=submission_result.network_called,
+                        error_code=submission_result.error_code,
+                        events=_entry_submission_event_payload(
+                            submission_result
+                        ),
+                    )
+                resp = submission_result.raw_response
+                if not isinstance(resp, dict):
+                    return _entry_submission_blocked_result(
+                        qty=qty,
+                        client_order_id=client_order_id,
+                        outcome="ENTRY_EXCHANGE_ACK_INVALID",
+                        network_called=submission_result.network_called,
+                        error_code="ENTRY_EXCHANGE_ACK_INVALID",
+                        events=_entry_submission_event_payload(
+                            submission_result
+                        ),
+                    )
+        else:
+            resp = network_submit()
 
         status = str(resp.get("status", "")).upper()
         executed_qty = _safe_float(resp.get("executedQty"), 0.0)
@@ -833,7 +1180,7 @@ def place_live_order(
                     position_id, leg, client_order_id, str(e)
                 )
 
-        return {
+        result = {
             "ok": True,
             "attempted": True,
             "live_ok": bool(live_ok),
@@ -855,6 +1202,9 @@ def place_live_order(
             "resp": resp,
             "client_order_id": client_order_id,
         }
+        if entry_submission_metadata is not None:
+            result.update(entry_submission_metadata)
+        return result
 
     except ExchangeAPIException as e:
         logging.error(

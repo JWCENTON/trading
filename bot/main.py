@@ -618,6 +618,7 @@ def execute_and_record(
         panic_disable_trading=(os.environ.get("PANIC_DISABLE_TRADING", "0") == "1"),
         live_max_notional=float(os.environ.get("LIVE_MAX_NOTIONAL", "0")),
         skip_balance_precheck=is_exit,
+        order_purpose=("EXIT" if is_exit else "ENTRY"),
         strategy=STRATEGY_NAME,
         interval=cfg_used.interval,
         exchange_source=normalize_exchange_source(

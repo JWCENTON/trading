@@ -139,6 +139,70 @@ class BinanceMarketDataAdapter:
     def get_order_status(self, *, symbol: str, order_id):
         return self.get_order(symbol=symbol, orderId=order_id)
 
+    def find_order_by_client_order_id(
+        self, *, symbol: str, client_order_id: str
+    ) -> dict:
+        """Read-only exact order recovery by the exchange client order ID."""
+        try:
+            order = self.get_order(
+                symbol=symbol,
+                origClientOrderId=str(client_order_id),
+            )
+        except ExchangeAPIException as exc:
+            # Binance Spot documents -2013 for an order identity that does not
+            # exist. Other failures (including auth/transport) are not absence.
+            if str(exc.code) == "-2013":
+                return {
+                    "outcome": "NOT_FOUND",
+                    "order": None,
+                    "error_code": exc.code,
+                    "error_message": exc.message,
+                }
+            return {
+                "outcome": "ERROR",
+                "order": None,
+                "error_code": exc.code,
+                "error_message": exc.message,
+            }
+        except Exception as exc:
+            return {
+                "outcome": "ERROR",
+                "order": None,
+                "error_code": None,
+                "error_message": str(exc),
+            }
+
+        if order is None:
+            return {
+                "outcome": "NOT_FOUND",
+                "order": None,
+                "error_code": None,
+                "error_message": None,
+            }
+        if not isinstance(order, dict) or not order:
+            return {
+                "outcome": "AMBIGUOUS",
+                "order": None,
+                "error_code": None,
+                "error_message": "exact client order lookup returned a malformed row",
+            }
+        returned_client_order_id = str(order.get("clientOrderId") or "")
+        if returned_client_order_id != str(client_order_id) or not order.get(
+            "orderId"
+        ):
+            return {
+                "outcome": "AMBIGUOUS",
+                "order": None,
+                "error_code": None,
+                "error_message": "exchange client or order identity mismatch",
+            }
+        return {
+            "outcome": "FOUND",
+            "order": order,
+            "error_code": None,
+            "error_message": None,
+        }
+
     def cancel_order(self, **kwargs):
         try:
             return self.client.cancel_order(**kwargs)
@@ -377,7 +441,21 @@ class OkxMarketDataAdapter:
         data = self._request("/api/v5/market/ticker", {"instId": inst_id})
         if str(data.get("code")) != "0":
             raise RuntimeError(f"OKX ticker failed code={data.get('code')} msg={data.get('msg')}")
+        if not isinstance(data, dict):
+            return {
+                "outcome": "ERROR",
+                "order": None,
+                "error_code": None,
+                "error_message": "exact client order lookup returned a malformed response",
+            }
         rows = data.get("data") or []
+        if not isinstance(rows, list):
+            return {
+                "outcome": "AMBIGUOUS",
+                "order": None,
+                "error_code": None,
+                "error_message": "exact client order lookup returned malformed data",
+            }
         if not rows:
             raise RuntimeError(f"OKX ticker returned no data for {inst_id}")
         return {"symbol": symbol, "price": rows[0].get("last"), "raw": rows[0]}
@@ -618,6 +696,118 @@ class OkxMarketDataAdapter:
             "status": status_map.get(state, state.upper() if state else "UNKNOWN"),
             "executedQty": acc_fill_sz,
             "raw": raw,
+        }
+
+    def find_order_by_client_order_id(
+        self, *, symbol: str, client_order_id: str
+    ) -> dict:
+        """Read-only exact OKX order recovery using ``clOrdId``.
+
+        This deliberately does not consult ``OKX_EXECUTION_ENABLED``: order
+        recovery is an admission-safety read, not an execution operation.
+        Empty and explicitly missing identities are distinct from transport,
+        authentication, and malformed-response errors.
+        """
+        exchange_client_order_id = _okx_client_order_id(client_order_id)
+        if exchange_client_order_id is None:
+            return {
+                "outcome": "ERROR",
+                "order": None,
+                "error_code": "INVALID_CLIENT_ORDER_ID",
+                "error_message": "client_order_id is empty after OKX normalization",
+            }
+
+        inst_id = to_exchange_symbol(symbol, "OKX")
+        try:
+            data = self._private_request(
+                "GET",
+                "/api/v5/trade/order",
+                params={
+                    "instId": inst_id,
+                    "clOrdId": exchange_client_order_id,
+                },
+            )
+        except ExchangeAPIException as exc:
+            # OKX 51603 is the exact-order lookup "order does not exist"
+            # response. Treating any broader API failure as NOT_FOUND could
+            # admit a duplicate order, so every other code remains ERROR.
+            if str(exc.code) == "51603":
+                return {
+                    "outcome": "NOT_FOUND",
+                    "order": None,
+                    "error_code": exc.code,
+                    "error_message": exc.message,
+                }
+            return {
+                "outcome": "ERROR",
+                "order": None,
+                "error_code": exc.code,
+                "error_message": exc.message,
+            }
+        except Exception as exc:
+            return {
+                "outcome": "ERROR",
+                "order": None,
+                "error_code": None,
+                "error_message": str(exc),
+            }
+
+        rows = data.get("data") or []
+        if not rows:
+            return {
+                "outcome": "NOT_FOUND",
+                "order": None,
+                "error_code": None,
+                "error_message": None,
+            }
+        if len(rows) != 1 or not isinstance(rows[0], dict):
+            return {
+                "outcome": "AMBIGUOUS",
+                "order": None,
+                "error_code": None,
+                "error_message": "exact client order lookup returned multiple or malformed rows",
+            }
+
+        raw = rows[0]
+        returned_client_order_id = str(raw.get("clOrdId") or "")
+        if returned_client_order_id != exchange_client_order_id:
+            return {
+                "outcome": "AMBIGUOUS",
+                "order": None,
+                "error_code": None,
+                "error_message": "exchange client order identity mismatch",
+            }
+
+        state = str(raw.get("state", "")).lower()
+        status_map = {
+            "live": "NEW",
+            "partially_filled": "PARTIALLY_FILLED",
+            "filled": "FILLED",
+            "canceled": "CANCELED",
+        }
+        order = {
+            "symbol": symbol,
+            "exchange_symbol": inst_id,
+            "orderId": raw.get("ordId"),
+            "clientOrderId": returned_client_order_id,
+            "status": status_map.get(
+                state, state.upper() if state else "UNKNOWN"
+            ),
+            "executedQty": raw.get("accFillSz", "0"),
+            "raw": raw,
+        }
+        if not order["orderId"]:
+            return {
+                "outcome": "AMBIGUOUS",
+                "order": None,
+                "error_code": None,
+                "error_message": "exchange order identity missing",
+            }
+        return {
+            "outcome": "FOUND",
+            "order": order,
+            "error_code": None,
+            "error_message": None,
         }
 
     def cancel_order(self, **kwargs):

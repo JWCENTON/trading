@@ -1,0 +1,47 @@
+{
+  "contract_version": "LEI1B_ENTRY_SUBMISSION_ACK_V1",
+  "migration_id": "20260731_live_entry_submission_ack_v1.sql",
+  "migration_sha256": "02ab7f37a7640b32a7b48c6e763b3bce2770b1c832c718d50ea9806daabb8b60",
+  "rollback_id": "20260731_live_entry_submission_ack_v1_rollback.sql",
+  "rollback_sha256": "8c6debae6a464260dbb330cbd84ba08097857d3ffb733885a141b8b430c840e0",
+  "prerequisites": [
+    "live_entry_intents_v1",
+    "runtime_contract_adoption_v2"
+  ],
+  "tables": [
+    "live_entry_submissions_v1",
+    "live_entry_order_acks_v1"
+  ],
+  "functions": [
+    "validate_live_entry_submission_attribution_v1()",
+    "validate_live_entry_ack_attribution_v1()",
+    "prevent_live_entry_submission_history_mutation_v1()"
+  ],
+  "triggers": [
+    "live_entry_submission_validate_attribution_v1",
+    "live_entry_submission_immutable_v1",
+    "live_entry_ack_validate_attribution_v1",
+    "live_entry_ack_immutable_v1"
+  ],
+  "indexes": [
+    "live_entry_submissions_v1_pkey",
+    "ux_live_entry_submission_intent_ordinal_v1",
+    "ux_live_entry_submission_client_ordinal_v1",
+    "ix_live_entry_submission_client_v1",
+    "ix_live_entry_submission_intent_time_v1",
+    "ix_live_entry_submission_adoption_generation_v1",
+    "live_entry_order_acks_v1_pkey",
+    "ux_live_entry_ack_intent_v1",
+    "ux_live_entry_ack_client_v1",
+    "ux_live_entry_ack_exchange_order_v1",
+    "ix_live_entry_ack_client_v1",
+    "ix_live_entry_ack_exchange_order_v1",
+    "ix_live_entry_ack_adoption_generation_v1"
+  ],
+  "data_policy": {
+    "backfill": false,
+    "runtime_writer_activation": false,
+    "append_only": true,
+    "rollback_blocked_after_evidence": true
+  }
+}
