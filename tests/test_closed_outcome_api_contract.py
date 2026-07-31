@@ -43,6 +43,20 @@ def test_environment_uses_physically_isolated_query_shapes():
         build_closed_outcome_summary_sql("UNKNOWN")
 
 
+def test_summary_uses_grouped_counters_without_per_row_windows_or_json():
+    summary = build_closed_outcome_summary_sql("PAPER")
+    suffix = summary[summary.index(", summary_outcomes AS MATERIALIZED"):]
+    assert " OVER (PARTITION BY " not in suffix
+    assert "jsonb_build_object" not in suffix
+    assert "jsonb_agg" not in suffix
+    assert "GROUP BY outcome_source" in suffix
+    assert "GROUP BY quality_class" in suffix
+    assert "GROUP BY normalization_status" in suffix
+    assert "GROUP BY rollout_impact" in suffix
+    assert "strategy_events" not in summary
+    assert "binance_order_fills" not in summary
+
+
 def test_recent_rows_can_be_bounded_to_the_preselected_position_cohort():
     sql = build_closed_outcome_rows_sql("PAPER", bounded_position_ids=True)
     assert "p.id = ANY(%(position_ids)s)" in sql

@@ -684,80 +684,119 @@ SUMMARY_SQL_SUFFIX = """
     normalization_resolved_value, normalization_delta, normalization_status,
     rollout_impact
   FROM classified_outcomes
+), summary_totals AS (
+  SELECT
+    COUNT(*)::int AS trades,
+    COUNT(*) FILTER (WHERE evidence_complete)::int AS resolved_trades,
+    COUNT(*) FILTER (WHERE NOT evidence_complete)::int AS unresolved_trades,
+    COUNT(*) FILTER (WHERE result_class = 'WIN')::int AS wins,
+    COUNT(*) FILTER (WHERE result_class = 'LOSS')::int AS losses,
+    COUNT(*) FILTER (WHERE result_class = 'FLAT')::int AS flats,
+    SUM(net_pnl_usdc) FILTER (WHERE evidence_complete) AS net_pnl,
+    SUM(gross_pnl_usdc) FILTER (WHERE evidence_complete) AS gross_pnl,
+    SUM(fees_usdc) FILTER (WHERE evidence_complete) AS fees,
+    MAX(net_pnl_usdc) FILTER (WHERE evidence_complete) AS best_trade,
+    MIN(net_pnl_usdc) FILTER (WHERE evidence_complete) AS worst_trade,
+    COUNT(*) FILTER (WHERE quality_class = 'HIGH_ASSURANCE')::int
+      AS high_assurance_count,
+    COUNT(*) FILTER (WHERE quality_class = 'LEGACY_COMPATIBLE')::int
+      AS legacy_compatible_count,
+    SUM(normalization_stored_value) FILTER (
+      WHERE normalization_stored_value IS NOT NULL) AS stored_net_comparable,
+    SUM(normalization_resolved_value) FILTER (
+      WHERE normalization_stored_value IS NOT NULL
+        AND normalization_resolved_value IS NOT NULL) AS resolved_net_comparable,
+    SUM(normalization_delta) FILTER (WHERE normalization_delta IS NOT NULL)
+      AS normalization_delta,
+    CASE
+      WHEN BOOL_OR(normalization_status = 'MATERIAL_CONFLICT') THEN 'MATERIAL_CONFLICT'
+      WHEN BOOL_OR(normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION')
+        THEN 'NON_MATERIAL_NORMALIZATION'
+      WHEN BOOL_OR(normalization_status = 'ROUNDING_ONLY') THEN 'ROUNDING_ONLY'
+      WHEN BOOL_OR(normalization_status = 'EXACT_MATCH') THEN 'EXACT_MATCH'
+      ELSE 'SOURCE_NOT_COMPARABLE'
+    END AS aggregate_normalization_status,
+    COUNT(*) FILTER (
+      WHERE normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION')::int
+      AS component_rounding_accumulation_count,
+    COUNT(*) FILTER (WHERE normalization_status = 'MATERIAL_CONFLICT')::int
+      AS material_conflict_count,
+    COUNT(*) FILTER (WHERE rollout_impact IN (
+      'BLOCKING_AUTHORITATIVE_CONFLICT', 'BLOCKING_EVIDENCE_INCONSISTENT'))::int
+      AS blocking_conflict_count,
+    COUNT(*) FILTER (WHERE rollout_impact = 'NON_BLOCKING_SOURCE_SUPERSEDED')::int
+      AS superseded_conflict_count,
+    COUNT(*) FILTER (WHERE rollout_impact = 'BLOCKING_AUTHORITATIVE_CONFLICT')::int
+      AS authoritative_conflict_count,
+    COUNT(*) FILTER (WHERE rollout_impact = 'BLOCKING_EVIDENCE_INCONSISTENT')::int
+      AS evidence_inconsistent_count,
+    COUNT(*) FILTER (WHERE rollout_impact = 'NOT_EVALUABLE')::int
+      AS not_evaluable_count,
+    CASE
+      WHEN BOOL_OR(rollout_impact IN (
+        'BLOCKING_AUTHORITATIVE_CONFLICT', 'BLOCKING_EVIDENCE_INCONSISTENT'))
+        THEN 'BLOCKED'
+      WHEN BOOL_OR(rollout_impact = 'NOT_EVALUABLE') THEN 'INCOMPLETE'
+      ELSE 'PASS'
+    END AS rollout_gate_status
+  FROM summary_outcomes
+), source_counts AS (
+  SELECT COALESCE(jsonb_object_agg(outcome_source, source_count), '{}'::jsonb)
+    AS value
+  FROM (
+    SELECT outcome_source, COUNT(*)::int AS source_count
+    FROM summary_outcomes
+    WHERE outcome_source IS NOT NULL
+    GROUP BY outcome_source
+  ) counts
+), quality_counts AS (
+  SELECT COALESCE(jsonb_object_agg(quality_class, quality_count), '{}'::jsonb)
+    AS value
+  FROM (
+    SELECT quality_class, COUNT(*)::int AS quality_count
+    FROM summary_outcomes
+    WHERE quality_class IS NOT NULL
+    GROUP BY quality_class
+  ) counts
+), normalization_counts AS (
+  SELECT COALESCE(jsonb_object_agg(normalization_status, normalization_count),
+    '{}'::jsonb) AS value
+  FROM (
+    SELECT normalization_status, COUNT(*)::int AS normalization_count
+    FROM summary_outcomes
+    WHERE normalization_status IS NOT NULL
+    GROUP BY normalization_status
+  ) counts
+), rollout_counts AS (
+  SELECT COALESCE(jsonb_object_agg(rollout_impact, rollout_impact_count), '{}'::jsonb)
+    AS value
+  FROM (
+    SELECT rollout_impact, COUNT(*)::int AS rollout_impact_count
+    FROM summary_outcomes
+    WHERE rollout_impact IS NOT NULL
+    GROUP BY rollout_impact
+  ) counts
 )
 SELECT
-  COUNT(*)::int AS trades,
-  COUNT(*) FILTER (WHERE evidence_complete)::int AS resolved_trades,
-  COUNT(*) FILTER (WHERE NOT evidence_complete)::int AS unresolved_trades,
-  COUNT(*) FILTER (WHERE result_class = 'WIN')::int AS wins,
-  COUNT(*) FILTER (WHERE result_class = 'LOSS')::int AS losses,
-  COUNT(*) FILTER (WHERE result_class = 'FLAT')::int AS flats,
-  SUM(net_pnl_usdc) FILTER (WHERE evidence_complete) AS net_pnl,
-  SUM(gross_pnl_usdc) FILTER (WHERE evidence_complete) AS gross_pnl,
-  SUM(fees_usdc) FILTER (WHERE evidence_complete) AS fees,
-  MAX(net_pnl_usdc) FILTER (WHERE evidence_complete) AS best_trade,
-  MIN(net_pnl_usdc) FILTER (WHERE evidence_complete) AS worst_trade,
-  COALESCE(jsonb_object_agg(outcome_source, source_count)
-    FILTER (WHERE outcome_source IS NOT NULL), '{}'::jsonb) AS outcome_source_counts,
-  COUNT(*) FILTER (WHERE quality_class = 'HIGH_ASSURANCE')::int AS high_assurance_count,
-  COUNT(*) FILTER (WHERE quality_class = 'LEGACY_COMPATIBLE')::int AS legacy_compatible_count,
-  COALESCE(jsonb_object_agg(quality_class, quality_count)
-    FILTER (WHERE quality_class IS NOT NULL), '{}'::jsonb) AS quality_breakdown,
-  SUM(normalization_stored_value) FILTER (
-    WHERE normalization_stored_value IS NOT NULL) AS stored_net_comparable,
-  SUM(normalization_resolved_value) FILTER (
-    WHERE normalization_stored_value IS NOT NULL
-      AND normalization_resolved_value IS NOT NULL) AS resolved_net_comparable,
-  SUM(normalization_delta) FILTER (WHERE normalization_delta IS NOT NULL)
-    AS normalization_delta,
-  CASE
-    WHEN BOOL_OR(normalization_status = 'MATERIAL_CONFLICT') THEN 'MATERIAL_CONFLICT'
-    WHEN BOOL_OR(normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION')
-      THEN 'NON_MATERIAL_NORMALIZATION'
-    WHEN BOOL_OR(normalization_status = 'ROUNDING_ONLY') THEN 'ROUNDING_ONLY'
-    WHEN BOOL_OR(normalization_status = 'EXACT_MATCH') THEN 'EXACT_MATCH'
-    ELSE 'SOURCE_NOT_COMPARABLE'
-  END AS aggregate_normalization_status,
-  COUNT(*) FILTER (
-    WHERE normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION')::int
-    AS component_rounding_accumulation_count,
-  COUNT(*) FILTER (WHERE normalization_status = 'MATERIAL_CONFLICT')::int
-    AS material_conflict_count,
-  COALESCE(jsonb_object_agg(normalization_status, normalization_count)
-    FILTER (WHERE normalization_status IS NOT NULL), '{}'::jsonb)
-    AS normalization_status_counts,
-  COUNT(*) FILTER (WHERE rollout_impact IN (
-    'BLOCKING_AUTHORITATIVE_CONFLICT', 'BLOCKING_EVIDENCE_INCONSISTENT'))::int
-    AS blocking_conflict_count,
-  COUNT(*) FILTER (WHERE rollout_impact = 'NON_BLOCKING_SOURCE_SUPERSEDED')::int
-    AS superseded_conflict_count,
-  COUNT(*) FILTER (WHERE rollout_impact = 'BLOCKING_AUTHORITATIVE_CONFLICT')::int
-    AS authoritative_conflict_count,
-  COUNT(*) FILTER (WHERE rollout_impact = 'BLOCKING_EVIDENCE_INCONSISTENT')::int
-    AS evidence_inconsistent_count,
-  COUNT(*) FILTER (WHERE rollout_impact = 'NOT_EVALUABLE')::int
-    AS not_evaluable_count,
-  CASE
-    WHEN BOOL_OR(rollout_impact IN (
-      'BLOCKING_AUTHORITATIVE_CONFLICT', 'BLOCKING_EVIDENCE_INCONSISTENT'))
-      THEN 'BLOCKED'
-    WHEN BOOL_OR(rollout_impact = 'NOT_EVALUABLE') THEN 'INCOMPLETE'
-    ELSE 'PASS'
-  END AS rollout_gate_status,
-  COALESCE(jsonb_object_agg(rollout_impact, rollout_impact_count)
-    FILTER (WHERE rollout_impact IS NOT NULL), '{}'::jsonb)
-    AS rollout_impact_counts
-FROM (
-  SELECT evidence_complete, result_class, net_pnl_usdc, gross_pnl_usdc,
-    fees_usdc, outcome_source, quality_class, normalization_stored_value,
-    normalization_resolved_value, normalization_delta, normalization_status,
-    rollout_impact,
-    COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count,
-    COUNT(*) OVER (PARTITION BY quality_class)::int AS quality_count,
-    COUNT(*) OVER (PARTITION BY normalization_status)::int AS normalization_count,
-    COUNT(*) OVER (PARTITION BY rollout_impact)::int AS rollout_impact_count
-  FROM summary_outcomes c
-) outcomes
+  totals.trades, totals.resolved_trades, totals.unresolved_trades,
+  totals.wins, totals.losses, totals.flats, totals.net_pnl, totals.gross_pnl,
+  totals.fees, totals.best_trade, totals.worst_trade,
+  source_counts.value AS outcome_source_counts,
+  totals.high_assurance_count, totals.legacy_compatible_count,
+  quality_counts.value AS quality_breakdown,
+  totals.stored_net_comparable, totals.resolved_net_comparable,
+  totals.normalization_delta, totals.aggregate_normalization_status,
+  totals.component_rounding_accumulation_count, totals.material_conflict_count,
+  normalization_counts.value AS normalization_status_counts,
+  totals.blocking_conflict_count,
+  totals.superseded_conflict_count, totals.authoritative_conflict_count,
+  totals.evidence_inconsistent_count, totals.not_evaluable_count,
+  totals.rollout_gate_status, rollout_counts.value AS rollout_impact_counts
+FROM summary_totals totals
+CROSS JOIN source_counts
+CROSS JOIN quality_counts
+CROSS JOIN normalization_counts
+CROSS JOIN rollout_counts
 """
 
 
