@@ -428,8 +428,17 @@ export interface UiRecentClosedPosition {
   exit_reason: string | null;
   win_loss: "WIN" | "LOSS" | "FLAT" | "UNRESOLVED";
   outcome_status: "RESOLVED" | "UNRESOLVED";
-  outcome_source: "STORED_PROVEN" | "LEGACY_EXECUTION_PROVEN" | "PAPER_SIMULATED_FILLS" | "FINANCIAL_TRUTH" | "UNRESOLVED";
+  outcome_source: "STORED_PROVEN" | "VERIFIED_LEGACY_STORED" | "LEGACY_EXECUTION_PROVEN" | "PAPER_SIMULATED_FILLS" | "FINANCIAL_TRUTH" | "UNRESOLVED";
   evidence_complete: boolean;
+  quality_class: "HIGH_ASSURANCE" | "LEGACY_COMPATIBLE" | "LIVE_ONLY" | "UNRESOLVED";
+  normalization_status: "EXACT_MATCH" | "ROUNDING_ONLY" | "MATERIAL_CONFLICT" | "SOURCE_NOT_COMPARABLE";
+  normalization_delta: number | null;
+  normalization_version: string | null;
+  calculation_version: string;
+  stored_scale: number | null;
+  fill_scale: number | null;
+  legacy_stored_provenance: string | null;
+  legacy_fee_model: string | null;
 }
 
 export interface UiRecentClosedResponse {
@@ -540,13 +549,23 @@ export interface UiHealthResponse {
 export interface UiAccountSummary {
   total_account_value_usdc: number;
   account_value: number;
-  account_value_status: "CANONICAL" | "RECONSTRUCTED_COMPLETE" | "RECONSTRUCTED_PARTIAL" | "UNAVAILABLE";
+  account_value_status: "CANONICAL" | "RECONSTRUCTED_COMPLETE_HIGH_ASSURANCE" | "RECONSTRUCTED_COMPLETE_MIXED" | "RECONSTRUCTED_PARTIAL_HIGH_ASSURANCE" | "RECONSTRUCTED_PARTIAL_MIXED" | "UNAVAILABLE";
   realized_coverage_count: number;
   closed_positions_count: number;
   realized_coverage_pct: number;
   realized_source_breakdown: Record<string, number>;
   unrealized_pnl: number;
   calculation_method: string;
+  resolved_outcome_count: number;
+  unresolved_outcome_count: number;
+  resolved_coverage_pct: number;
+  high_assurance_count: number;
+  high_assurance_coverage_pct: number;
+  legacy_compatible_count: number;
+  legacy_compatible_coverage_pct: number;
+  quality_breakdown: Record<string, number>;
+  normalization_version?: string | null;
+  aggregate_normalization_status?: string | null;
   quote_asset: string;
   assets: Record<string, number>;
   asset_values_usdc: Record<string, number>;
@@ -572,6 +591,10 @@ export interface UiTrading24hSummary {
   fees: number;
   coverage_ratio: number;
   outcome_source_counts: Record<string, number>;
+  quality_breakdown: Record<string, number>;
+  normalization_version: string | null;
+  aggregate_normalization_status: string | null;
+  calculation_version: string;
   updated_at: string;
 }
 

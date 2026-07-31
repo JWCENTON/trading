@@ -6,6 +6,7 @@ from time import monotonic
 
 from common.closed_outcome_read_model import (
     build_closed_outcome_rows_sql,
+    fetch_closed_outcomes,
     fetch_closed_outcome_summary,
 )
 
@@ -28,6 +29,8 @@ def _database(disposable_postgres_v16, purpose):
               status TEXT NOT NULL,
               side TEXT,
               qty NUMERIC,
+              entry_price NUMERIC,
+              exit_price NUMERIC,
               exit_time TIMESTAMPTZ,
               gross_pnl_usdc NUMERIC,
               fees_usdc NUMERIC,
@@ -57,6 +60,8 @@ def _database(disposable_postgres_v16, purpose):
               position_id BIGINT NOT NULL,
               fill_index INTEGER NOT NULL,
               order_purpose TEXT NOT NULL,
+              side TEXT NOT NULL,
+              symbol TEXT NOT NULL,
               fill_qty NUMERIC NOT NULL,
               fill_price NUMERIC NOT NULL,
               fill_notional NUMERIC NOT NULL,
@@ -88,6 +93,8 @@ def _position(cur, position_id, **values):
         "status": "CLOSED",
         "side": "LONG",
         "qty": "0",
+        "entry_price": "10",
+        "exit_price": "11",
         "exit_time": "2026-07-29 12:00:00+00",
         "gross": None,
         "fees": None,
@@ -100,10 +107,10 @@ def _position(cur, position_id, **values):
     cur.execute(
         """
         INSERT INTO positions(
-          id,strategy,status,side,qty,exit_time,gross_pnl_usdc,
+          id,strategy,status,side,qty,entry_price,exit_price,exit_time,gross_pnl_usdc,
           fees_usdc,net_pnl_usdc,inventory_evidence_status,
           inventory_contract_generation,exit_context_json
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             position_id,
@@ -111,6 +118,8 @@ def _position(cur, position_id, **values):
             defaults["status"],
             defaults["side"],
             defaults["qty"],
+            defaults["entry_price"],
+            defaults["exit_price"],
             defaults["exit_time"],
             defaults["gross"],
             defaults["fees"],
@@ -126,20 +135,23 @@ def _position(cur, position_id, **values):
     )
 
 
-def _fill(cur, position_id, purpose, notional, fee="0.10", index=0, qty="1"):
+def _fill(
+    cur, position_id, purpose, notional, fee="0.10", index=0, qty="1", side=None,
+):
     cur.execute(
         """
         INSERT INTO simulated_execution_fills_v1(
-          simulated_order_id,position_id,fill_index,order_purpose,
+          simulated_order_id,position_id,fill_index,order_purpose,side,symbol,
           fill_qty,fill_price,fill_notional,authoritative_fee_usdc,
           estimated_fee_usdc
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NULL)
+        ) VALUES (%s,%s,%s,%s,%s,'BTCUSDC',%s,%s,%s,%s,NULL)
         """,
         (
             position_id * 10 + index,
             position_id,
             index,
             purpose,
+            side or ("BUY" if purpose == "ENTRY" else "SELL"),
             qty,
             notional,
             notional,
@@ -196,8 +208,8 @@ def test_canonical_contract_and_boundaries(disposable_postgres_v16):
             _fill(cur, 3, "ENTRY", "10")
             _fill(cur, 3, "EXIT", "12", index=1)
             _position(cur, 4, side="SHORT")
-            _fill(cur, 4, "ENTRY", "10")
-            _fill(cur, 4, "EXIT", "12", index=1)
+            _fill(cur, 4, "ENTRY", "10", side="SELL")
+            _fill(cur, 4, "EXIT", "12", index=1, side="BUY")
             _position(cur, 5)
             _fill(cur, 5, "ENTRY", "10", fee="0")
             _fill(cur, 5, "EXIT", "10", fee="0", index=1)
@@ -245,10 +257,10 @@ def test_canonical_contract_and_boundaries(disposable_postgres_v16):
 
             assert set(rows) == set(range(1, 11)) | {14}
             assert rows[1][2:7] == (
-                "STORED_PROVEN", Decimal("2"), Decimal("0.2"),
+                "VERIFIED_LEGACY_STORED", Decimal("2"), Decimal("0.2"),
                 Decimal("1.8"), "WIN",
             )
-            assert rows[2][2] == "STORED_PROVEN"
+            assert rows[2][2] == "VERIFIED_LEGACY_STORED"
             assert rows[2][6] == "LOSS"
             assert rows[3][2] == "PAPER_SIMULATED_FILLS"
             assert rows[3][5] == Decimal("1.80")
@@ -276,7 +288,7 @@ def test_canonical_contract_and_boundaries(disposable_postgres_v16):
             assert summary["outcome_source_counts"] == {
                 "FINANCIAL_TRUTH": 1,
                 "PAPER_SIMULATED_FILLS": 4,
-                "STORED_PROVEN": 2,
+                "VERIFIED_LEGACY_STORED": 2,
                 "UNRESOLVED": 4,
             }
             cur.execute("SELECT count(*) FROM positions")
@@ -431,5 +443,132 @@ def test_environment_isolation_and_paper_complexity_gate(disposable_postgres_v16
                 params,
             )
             assert "binance_order_fills" not in str(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _paper_fixture_with_rounding_deltas(cur, stored_nets, deltas, start_id):
+    for offset, (stored_net, delta) in enumerate(zip(stored_nets, deltas)):
+        position_id = start_id + offset
+        resolved_net = stored_net + delta
+        fee = Decimal("0.01")
+        _position(
+            cur, position_id, gross=str(stored_net + fee), fees=str(fee),
+            net=str(stored_net), provenance="CLOSED_OUTCOME_V1",
+        )
+        _fill(cur, position_id, "ENTRY", "20", fee="0.005")
+        _fill(
+            cur, position_id, "EXIT", str(Decimal("20") + resolved_net + fee),
+            fee="0.005", index=1,
+        )
+
+
+def test_vps_37_production_shape_prefers_fill_precision(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16, "vps_37_production")
+    stored_nets = [Decimal("0.04")] * 28 + [Decimal("-0.04")] * 8 + [Decimal("-0.06620976")]
+    deltas = [Decimal("-0.0000000004")] * 36 + [Decimal("0.0000000000952")]
+    try:
+        with conn.cursor() as cur:
+            _paper_fixture_with_rounding_deltas(cur, stored_nets, deltas, 50000)
+            conn.commit()
+            rows = fetch_closed_outcomes(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+            summary = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+        assert sum(stored_nets) == Decimal("0.7337902400000")
+        assert summary["net_pnl"] == Decimal("0.7337902256952")
+        assert summary["normalization_delta"] == Decimal("-0.0000000143048")
+        assert summary["aggregate_normalization_status"] == "ROUNDING_ONLY"
+        assert summary["outcome_source_counts"] == {"PAPER_SIMULATED_FILLS": 37}
+        assert (summary["wins"], summary["losses"], summary["flats"]) == (28, 9, 0)
+        assert all(row["normalization_status"] == "ROUNDING_ONLY" for row in rows.values())
+        assert all(row["calculation_version"] == "CLOSED_OUTCOME_PAPER_V2" for row in rows.values())
+        assert all(row["stored_scale"] is not None for row in rows.values())
+        assert all(row["fill_scale"] is not None for row in rows.values())
+        assert all(row["legacy_stored_provenance"] == "CLOSED_OUTCOME_V1" for row in rows.values())
+        assert sum(row["normalization_stored_value"] for row in rows.values()) == Decimal("0.7337902400000")
+        assert sum(row["normalization_resolved_value"] for row in rows.values()) == Decimal("0.7337902256952")
+    finally:
+        conn.close()
+
+
+def test_vps_current_33_production_shape(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16, "vps_33_current")
+    stored_nets = [Decimal("0.01")] * 23 + [Decimal("-0.02")] * 9 + [Decimal("-0.06722983")]
+    deltas = [Decimal("-0.0000000006")] * 32 + [Decimal("-0.00000000125743894532204")]
+    try:
+        with conn.cursor() as cur:
+            _paper_fixture_with_rounding_deltas(cur, stored_nets, deltas, 51000)
+            conn.commit()
+            summary = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+        assert sum(stored_nets) == Decimal("-0.01722983")
+        assert summary["net_pnl"] == Decimal("-0.01722985045743894532204")
+        assert summary["aggregate_normalization_status"] == "ROUNDING_ONLY"
+        assert (summary["wins"], summary["losses"], summary["flats"]) == (23, 10, 0)
+    finally:
+        conn.close()
+
+
+def test_simulated_material_conflict_wins_with_diagnostic(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16, "paper_material_conflict")
+    try:
+        with conn.cursor() as cur:
+            _position(cur, 52000, gross="1.1", fees="0.1", net="1.0")
+            _fill(cur, 52000, "ENTRY", "10", fee="0.1")
+            _fill(cur, 52000, "EXIT", "12", fee="0.1", index=1)
+            _position(cur, 52001, gross="1.1", fees="0.1", net="1.0")
+            _fill(cur, 52001, "ENTRY", "10", fee="0.1")
+            conn.commit()
+            cur.execute(build_closed_outcome_rows_sql("PAPER"), {
+                "window_start": START, "window_end": END,
+            })
+            rows = {row[0]: row for row in cur.fetchall()}
+        assert rows[52000][2] == "PAPER_SIMULATED_FILLS"
+        assert rows[52000][12] == "MATERIAL_CONFLICT"
+        assert rows[52000][11] == "LEGACY_STORED_CONFLICT"
+        assert rows[52001][2] == "UNRESOLVED"
+        assert "SIMULATED_EVIDENCE_INCOMPLETE" in rows[52001][9]
+    finally:
+        conn.close()
+
+
+def test_vps_mixed_quality_all_history_coverage(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16, "vps_mixed_coverage")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO positions(
+                  id,status,side,qty,entry_price,exit_price,exit_time,
+                  gross_pnl_usdc,fees_usdc,net_pnl_usdc
+                )
+                SELECT 60000+n,'CLOSED','LONG',0,10,11,%s,0.02,0.01,0.01
+                FROM generate_series(1,6271) n
+                """, (START,),
+            )
+            for position_id in range(70001, 70166):
+                _position(cur, position_id)
+                _fill(cur, position_id, "ENTRY", "10", fee="0.1")
+                _fill(cur, position_id, "EXIT", "11", fee="0.1", index=1)
+            for position_id in range(80001, 80004):
+                _position(cur, position_id, entry_price=None, exit_price=None)
+            conn.commit()
+            summary = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+        assert summary["trades"] == 6439
+        assert summary["resolved_trades"] == 6436
+        assert summary["unresolved_trades"] == 3
+        assert summary["high_assurance_count"] == 165
+        assert summary["legacy_compatible_count"] == 6271
+        assert summary["outcome_source_counts"] == {
+            "PAPER_SIMULATED_FILLS": 165,
+            "UNRESOLVED": 3,
+            "VERIFIED_LEGACY_STORED": 6271,
+        }
     finally:
         conn.close()

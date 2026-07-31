@@ -21,9 +21,9 @@ export function AccountSnapshotPanel({ account }: AccountSnapshotPanelProps) {
   const isExchangeTruth = account?.calculation_method === "LIVE_EXCHANGE_BALANCES_MARKED_TO_USDC";
   const accountLabel = isExchangeTruth
     ? "Total account value"
-    : account?.account_value_status === "RECONSTRUCTED_COMPLETE"
+    : account?.account_value_status?.startsWith("RECONSTRUCTED_COMPLETE")
       ? "Reconstructed account value"
-      : account?.account_value_status === "RECONSTRUCTED_PARTIAL"
+      : account?.account_value_status?.startsWith("RECONSTRUCTED_PARTIAL")
         ? "Partial reconstructed estimate"
         : account?.account_value_status === "CANONICAL"
           ? "Canonical account value"
@@ -42,7 +42,7 @@ export function AccountSnapshotPanel({ account }: AccountSnapshotPanelProps) {
         <span className="status-meta">
           {isExchangeTruth
             ? `Tracked assets: ${assetOrder.join(" / ")}`
-            : `Realized coverage: ${account?.realized_coverage_count ?? 0}/${account?.closed_positions_count ?? 0} (${(account?.realized_coverage_pct ?? 0).toFixed(2)}%)`}
+            : `Resolved: ${account?.resolved_outcome_count ?? 0}/${account?.closed_positions_count ?? 0} · High assurance: ${account?.high_assurance_count ?? 0} · Legacy compatible: ${account?.legacy_compatible_count ?? 0} · Unresolved: ${account?.unresolved_outcome_count ?? 0}`}
         </span>
       </div>
 

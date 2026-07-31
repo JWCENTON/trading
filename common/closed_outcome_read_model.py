@@ -8,10 +8,13 @@ from typing import Any
 OUTCOME_SOURCE_PRECEDENCE = (
     "FINANCIAL_TRUTH",
     "LEGACY_EXECUTION_PROVEN",
-    "STORED_PROVEN",
     "PAPER_SIMULATED_FILLS",
+    "VERIFIED_LEGACY_STORED",
     "UNRESOLVED",
 )
+
+PAPER_OUTCOME_NORMALIZATION_VERSION = "PAPER_OUTCOME_NORMALIZATION_V1"
+PAPER_OUTCOME_CALCULATION_VERSION = "CLOSED_OUTCOME_PAPER_V2"
 
 
 LIVE_CLOSED_OUTCOME_CTE = """
@@ -247,7 +250,25 @@ closed_outcomes AS (
     CASE
       WHEN legacy_blocking_reasons IS NOT NULL THEN legacy_blocking_reasons
       ELSE ARRAY[]::text[]
-    END AS blocking_reasons
+    END AS blocking_reasons,
+    CASE WHEN financial_truth_complete THEN 'HIGH_ASSURANCE'
+      WHEN legacy_complete THEN 'LIVE_ONLY'
+      WHEN stored_proven THEN 'LEGACY_COMPATIBLE'
+      ELSE 'UNRESOLVED' END AS quality_class,
+    CASE WHEN stored_proven THEN 'VERIFIED_LEGACY_STORED'
+      ELSE 'LEGACY_STORED_INCOMPLETE' END AS legacy_stored_status,
+    'SOURCE_NOT_COMPARABLE'::text AS normalization_status,
+    stored_net AS normalization_stored_value,
+    CASE WHEN financial_truth_complete THEN ft_net
+      WHEN legacy_complete THEN legacy_net
+      WHEN stored_proven THEN stored_net END AS normalization_resolved_value,
+    NULL::numeric AS normalization_delta,
+    NULL::text AS normalization_version,
+    'CLOSED_OUTCOME_LIVE_V1'::text AS calculation_version,
+    CASE WHEN stored_net IS NOT NULL THEN scale(stored_net) END AS stored_scale,
+    NULL::integer AS fill_scale,
+    NULL::text AS legacy_stored_provenance,
+    NULL::text AS legacy_fee_model
   FROM evidence
 ),
 classified_outcomes AS (
@@ -277,6 +298,7 @@ bounded_financial_truth AS MATERIALIZED (
 ),
 bounded_simulated_fills AS MATERIALIZED (
   SELECT f.position_id,
+    COUNT(*) AS fill_count,
     COUNT(*) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_fill_count,
     COUNT(*) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_fill_count,
     SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_qty,
@@ -285,21 +307,42 @@ bounded_simulated_fills AS MATERIALIZED (
     SUM(f.fill_notional) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_notional,
     SUM(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc)) AS total_fees,
     BOOL_AND(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc) IS NOT NULL)
-      AS fees_complete
+      AS fees_complete,
+    BOOL_AND(upper(replace(f.symbol, '-', '')) = upper(replace(p.symbol, '-', '')))
+      AS symbols_consistent,
+    BOOL_AND(
+      (f.order_purpose = 'ENTRY' AND upper(f.side) =
+        CASE WHEN upper(coalesce(p.side, 'LONG')) IN ('SELL', 'SHORT') THEN 'SELL' ELSE 'BUY' END)
+      OR
+      (f.order_purpose = 'EXIT' AND upper(f.side) =
+        CASE WHEN upper(coalesce(p.side, 'LONG')) IN ('SELL', 'SHORT') THEN 'BUY' ELSE 'SELL' END)
+    ) AS sides_consistent,
+    GREATEST(COALESCE(MAX(scale(f.fill_qty)), 0),
+      COALESCE(MAX(scale(f.fill_notional)), 0),
+      COALESCE(MAX(scale(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc))), 0))
+      AS fill_scale
   FROM simulated_execution_fills_v1 f
   JOIN bounded_positions p ON p.id = f.position_id
   WHERE f.order_purpose IN ('ENTRY', 'EXIT')
   GROUP BY f.position_id
 ),
+bounded_correction_orders AS MATERIALIZED (
+  SELECT DISTINCT i.order_id
+  FROM exchange_fill_ingestion_state_v2 i
+  WHERE i.application_status IN ('CORRECTION_PENDING', 'AMBIGUOUS')
+),
 evidence AS (
   SELECT p.id AS position_id, p.side,
+    p.entry_price, p.exit_price, p.qty,
+    p.exit_context_json,
     p.gross_pnl_usdc AS stored_gross, p.fees_usdc AS stored_fees,
     p.net_pnl_usdc AS stored_net,
     ft.authoritative_gross_pnl AS ft_gross,
     COALESCE(ft.authoritative_fees_usdc,
       ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) AS ft_fees,
     ft.authoritative_net_pnl AS ft_net,
-    fills.entry_notional, fills.exit_notional, fills.total_fees,
+    fills.fill_count, fills.entry_notional, fills.exit_notional, fills.total_fees,
+    fills.symbols_consistent, fills.sides_consistent, fills.fill_scale,
     (ft.position_id IS NOT NULL AND ft.authoritative_gross_pnl IS NOT NULL
       AND ft.authoritative_net_pnl IS NOT NULL
       AND COALESCE(ft.authoritative_fees_usdc,
@@ -307,50 +350,110 @@ evidence AS (
     ) AS financial_truth_complete,
     (p.gross_pnl_usdc IS NOT NULL AND p.fees_usdc IS NOT NULL
       AND p.net_pnl_usdc IS NOT NULL
-      AND p.inventory_evidence_status = 'COMPLETE'
-      AND p.inventory_contract_generation IS NOT NULL
-      AND p.exit_context_json->>'outcome_provenance' = 'CLOSED_OUTCOME_V1'
+      AND p.entry_price IS NOT NULL AND p.exit_price IS NOT NULL
+      AND p.entry_price <> 0
+      AND (COALESCE(p.qty, 0) > 0 OR p.entry_price <> p.exit_price)
       AND abs(p.net_pnl_usdc - (p.gross_pnl_usdc - p.fees_usdc)) <= 0.00000001
-      AND NOT (p.gross_pnl_usdc = 0 AND p.fees_usdc = 0 AND p.net_pnl_usdc = 0)
-    ) AS stored_proven,
+      AND entry_correction.order_id IS NULL
+      AND exit_correction.order_id IS NULL
+    ) AS legacy_stored_structurally_valid,
     (COALESCE(fills.entry_fill_count, 0) > 0
       AND COALESCE(fills.exit_fill_count, 0) > 0
       AND fills.entry_qty IS NOT NULL AND fills.exit_qty IS NOT NULL
       AND fills.entry_qty = fills.exit_qty
       AND fills.entry_notional IS NOT NULL AND fills.exit_notional IS NOT NULL
       AND fills.fees_complete IS TRUE AND fills.total_fees IS NOT NULL
+      AND fills.symbols_consistent IS TRUE AND fills.sides_consistent IS TRUE
+      AND entry_correction.order_id IS NULL
+      AND exit_correction.order_id IS NULL
     ) AS fills_complete
   FROM bounded_positions p
   LEFT JOIN bounded_financial_truth ft ON ft.position_id = p.id
   LEFT JOIN bounded_simulated_fills fills ON fills.position_id = p.id
+  LEFT JOIN bounded_correction_orders entry_correction
+    ON entry_correction.order_id = p.entry_order_id
+  LEFT JOIN bounded_correction_orders exit_correction
+    ON exit_correction.order_id = p.exit_order_id
 ),
-closed_outcomes AS (
-  SELECT position_id,
-    CASE WHEN financial_truth_complete OR stored_proven OR fills_complete
-      THEN 'RESOLVED' ELSE 'UNRESOLVED' END AS outcome_status,
+resolved_evidence AS (
+  SELECT *,
+    (legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
+      AND NOT financial_truth_complete) AS verified_legacy_stored,
     CASE WHEN financial_truth_complete THEN 'FINANCIAL_TRUTH'
-      WHEN stored_proven THEN 'STORED_PROVEN'
       WHEN fills_complete THEN 'PAPER_SIMULATED_FILLS'
-      ELSE 'UNRESOLVED' END AS outcome_source,
+      WHEN legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
+        THEN 'VERIFIED_LEGACY_STORED'
+      ELSE 'UNRESOLVED' END AS selected_source,
     CASE WHEN financial_truth_complete THEN ft_gross
-      WHEN stored_proven THEN stored_gross
       WHEN fills_complete AND UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
         THEN entry_notional - exit_notional
-      WHEN fills_complete THEN exit_notional - entry_notional END::numeric AS gross_pnl_usdc,
+      WHEN fills_complete THEN exit_notional - entry_notional
+      WHEN legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
+        THEN stored_gross END::numeric AS resolved_gross,
     CASE WHEN financial_truth_complete THEN ft_fees
-      WHEN stored_proven THEN stored_fees
-      WHEN fills_complete THEN total_fees END::numeric AS fees_usdc,
+      WHEN fills_complete THEN total_fees
+      WHEN legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
+        THEN stored_fees END::numeric AS resolved_fees,
     CASE WHEN financial_truth_complete THEN ft_net
-      WHEN stored_proven THEN stored_net
       WHEN fills_complete AND UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
         THEN entry_notional - exit_notional - total_fees
       WHEN fills_complete THEN exit_notional - entry_notional - total_fees
-      END::numeric AS net_pnl_usdc,
-    (financial_truth_complete OR stored_proven OR fills_complete) AS evidence_complete,
-    CASE WHEN financial_truth_complete OR stored_proven OR fills_complete
-      THEN 'COMPLETE' ELSE 'INCOMPLETE' END AS evidence_status,
-    ARRAY[]::text[] AS blocking_reasons
+      WHEN legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
+        THEN stored_net END::numeric AS resolved_net
   FROM evidence
+),
+closed_outcomes AS (
+  SELECT position_id,
+    CASE WHEN selected_source <> 'UNRESOLVED' THEN 'RESOLVED'
+      ELSE 'UNRESOLVED' END AS outcome_status,
+    selected_source AS outcome_source,
+    resolved_gross AS gross_pnl_usdc,
+    resolved_fees AS fees_usdc,
+    resolved_net AS net_pnl_usdc,
+    (selected_source <> 'UNRESOLVED') AS evidence_complete,
+    CASE WHEN selected_source <> 'UNRESOLVED' THEN 'COMPLETE'
+      ELSE 'INCOMPLETE' END AS evidence_status,
+    ARRAY_REMOVE(ARRAY[
+      CASE WHEN COALESCE(fill_count, 0) > 0 AND NOT fills_complete
+        THEN 'SIMULATED_EVIDENCE_INCOMPLETE' END,
+      CASE WHEN stored_net IS NOT NULL AND NOT legacy_stored_structurally_valid
+        THEN 'LEGACY_STORED_INCOMPLETE' END
+    ], NULL) AS blocking_reasons,
+    CASE WHEN selected_source IN ('FINANCIAL_TRUTH', 'PAPER_SIMULATED_FILLS')
+      THEN 'HIGH_ASSURANCE'
+      WHEN selected_source = 'VERIFIED_LEGACY_STORED' THEN 'LEGACY_COMPATIBLE'
+      ELSE 'UNRESOLVED' END AS quality_class,
+    CASE
+      WHEN legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
+        THEN 'VERIFIED_LEGACY_STORED'
+      WHEN legacy_stored_structurally_valid AND fills_complete
+        AND stored_net IS NOT NULL AND resolved_net IS NOT NULL
+        AND abs(resolved_net - stored_net) <=
+          0.5 * power(10::numeric, -LEAST(scale(stored_net), 18))
+        THEN 'VERIFIED_LEGACY_STORED'
+      WHEN stored_net IS NOT NULL AND (COALESCE(fill_count, 0) > 0 OR
+        NOT legacy_stored_structurally_valid) THEN 'LEGACY_STORED_CONFLICT'
+      ELSE 'LEGACY_STORED_INCOMPLETE'
+    END AS legacy_stored_status,
+    CASE
+      WHEN stored_net IS NULL OR resolved_net IS NULL THEN 'SOURCE_NOT_COMPARABLE'
+      WHEN stored_net = resolved_net THEN 'EXACT_MATCH'
+      WHEN abs(resolved_net - stored_net) <=
+        0.5 * power(10::numeric, -LEAST(scale(stored_net), 18)) THEN 'ROUNDING_ONLY'
+      ELSE 'MATERIAL_CONFLICT'
+    END AS normalization_status,
+    stored_net AS normalization_stored_value,
+    resolved_net AS normalization_resolved_value,
+    CASE WHEN stored_net IS NOT NULL AND resolved_net IS NOT NULL
+      THEN resolved_net - stored_net END AS normalization_delta,
+    'PAPER_OUTCOME_NORMALIZATION_V1'::text AS normalization_version,
+    'CLOSED_OUTCOME_PAPER_V2'::text AS calculation_version,
+    CASE WHEN stored_net IS NOT NULL THEN scale(stored_net) END AS stored_scale,
+    fill_scale,
+    exit_context_json->>'outcome_provenance' AS legacy_stored_provenance,
+    COALESCE(exit_context_json->>'fee_model',
+      exit_context_json->>'fee_model_version') AS legacy_fee_model
+  FROM resolved_evidence
 ),
 classified_outcomes AS (
   SELECT *, CASE WHEN NOT evidence_complete THEN 'UNRESOLVED'
@@ -364,7 +467,11 @@ classified_outcomes AS (
 ROWS_SQL_SUFFIX = """
 SELECT
   position_id, outcome_status, outcome_source, gross_pnl_usdc, fees_usdc,
-  net_pnl_usdc, result_class, evidence_complete, evidence_status, blocking_reasons
+  net_pnl_usdc, result_class, evidence_complete, evidence_status, blocking_reasons,
+  quality_class, legacy_stored_status, normalization_status,
+  normalization_stored_value, normalization_resolved_value, normalization_delta,
+  normalization_version, calculation_version, stored_scale, fill_scale,
+  legacy_stored_provenance, legacy_fee_model
 FROM classified_outcomes
 ORDER BY position_id
 """
@@ -384,9 +491,27 @@ SELECT
   MAX(net_pnl_usdc) FILTER (WHERE evidence_complete) AS best_trade,
   MIN(net_pnl_usdc) FILTER (WHERE evidence_complete) AS worst_trade,
   COALESCE(jsonb_object_agg(outcome_source, source_count)
-    FILTER (WHERE outcome_source IS NOT NULL), '{}'::jsonb) AS outcome_source_counts
+    FILTER (WHERE outcome_source IS NOT NULL), '{}'::jsonb) AS outcome_source_counts,
+  COUNT(*) FILTER (WHERE quality_class = 'HIGH_ASSURANCE')::int AS high_assurance_count,
+  COUNT(*) FILTER (WHERE quality_class = 'LEGACY_COMPATIBLE')::int AS legacy_compatible_count,
+  COALESCE(jsonb_object_agg(quality_class, quality_count)
+    FILTER (WHERE quality_class IS NOT NULL), '{}'::jsonb) AS quality_breakdown,
+  SUM(normalization_stored_value) FILTER (
+    WHERE normalization_stored_value IS NOT NULL) AS stored_net_comparable,
+  SUM(normalization_resolved_value) FILTER (
+    WHERE normalization_stored_value IS NOT NULL
+      AND normalization_resolved_value IS NOT NULL) AS resolved_net_comparable,
+  SUM(normalization_delta) FILTER (WHERE normalization_delta IS NOT NULL)
+    AS normalization_delta,
+  CASE
+    WHEN BOOL_OR(normalization_status = 'MATERIAL_CONFLICT') THEN 'MATERIAL_CONFLICT'
+    WHEN BOOL_OR(normalization_status = 'ROUNDING_ONLY') THEN 'ROUNDING_ONLY'
+    WHEN BOOL_OR(normalization_status = 'EXACT_MATCH') THEN 'EXACT_MATCH'
+    ELSE 'SOURCE_NOT_COMPARABLE'
+  END AS aggregate_normalization_status
 FROM (
-  SELECT c.*, COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count
+  SELECT c.*, COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count,
+    COUNT(*) OVER (PARTITION BY quality_class)::int AS quality_count
   FROM classified_outcomes c
 ) outcomes
 """
@@ -455,6 +580,17 @@ def fetch_closed_outcome_summary(
             else Decimal("0")
         ),
         "outcome_source_counts": dict(row[11] or {}),
+        "high_assurance_count": int(row[12] or 0),
+        "legacy_compatible_count": int(row[13] or 0),
+        "quality_breakdown": dict(row[14] or {}),
+        "stored_net_comparable": row[15],
+        "resolved_net_comparable": row[16],
+        "normalization_delta": row[17],
+        "aggregate_normalization_status": row[18],
+        "normalization_version": (
+            PAPER_OUTCOME_NORMALIZATION_VERSION
+            if str(environment).strip().upper() == "PAPER" else None
+        ),
     }
 
 
@@ -486,6 +622,18 @@ def fetch_closed_outcomes(
             "evidence_complete": bool(row[7]),
             "evidence_status": row[8],
             "blocking_reasons": list(row[9] or []),
+            "quality_class": row[10],
+            "legacy_stored_status": row[11],
+            "normalization_status": row[12],
+            "normalization_stored_value": row[13],
+            "normalization_resolved_value": row[14],
+            "normalization_delta": row[15],
+            "normalization_version": row[16],
+            "calculation_version": row[17],
+            "stored_scale": row[18],
+            "fill_scale": row[19],
+            "legacy_stored_provenance": row[20],
+            "legacy_fee_model": row[21],
         }
         for row in cur.fetchall()
     }

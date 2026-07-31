@@ -376,6 +376,16 @@ class UIAccountSummary(BaseModel):
     realized_source_breakdown: Dict[str, int]
     unrealized_pnl: float
     calculation_method: str
+    resolved_outcome_count: int
+    unresolved_outcome_count: int
+    resolved_coverage_pct: float
+    high_assurance_count: int
+    high_assurance_coverage_pct: float
+    legacy_compatible_count: int
+    legacy_compatible_coverage_pct: float
+    quality_breakdown: Dict[str, int]
+    normalization_version: Optional[str] = None
+    aggregate_normalization_status: Optional[str] = None
     quote_asset: str
     assets: Dict[str, float]
     asset_values_usdc: Dict[str, float]
@@ -401,6 +411,10 @@ class UITrading24hSummary(BaseModel):
     fees: float
     coverage_ratio: float
     outcome_source_counts: Dict[str, int]
+    quality_breakdown: Dict[str, int]
+    normalization_version: Optional[str] = None
+    aggregate_normalization_status: Optional[str] = None
+    calculation_version: str
     updated_at: datetime
 
 
@@ -3110,6 +3124,14 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             realized_source_breakdown={"LIVE_EXCHANGE_BALANCES": 1},
             unrealized_pnl=0.0,
             calculation_method="LIVE_EXCHANGE_BALANCES_MARKED_TO_USDC",
+            resolved_outcome_count=0,
+            unresolved_outcome_count=0,
+            resolved_coverage_pct=100.0,
+            high_assurance_count=0,
+            high_assurance_coverage_pct=100.0,
+            legacy_compatible_count=0,
+            legacy_compatible_coverage_pct=0.0,
+            quality_breakdown={"LIVE_EXCHANGE_BALANCES": 1},
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,
@@ -3160,6 +3182,9 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             resolved_count=closed_stats["resolved_trades"],
             closed_count=closed_stats["trades"],
             source_breakdown=closed_stats["outcome_source_counts"],
+            high_assurance_count=closed_stats["high_assurance_count"],
+            legacy_compatible_count=closed_stats["legacy_compatible_count"],
+            quality_breakdown=closed_stats["quality_breakdown"],
             external_adjustments=None,
         )
         total_usdc = float(
@@ -3180,6 +3205,16 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             realized_source_breakdown=dict(bridge.realized_source_breakdown),
             unrealized_pnl=float(bridge.unrealized_pnl),
             calculation_method=bridge.calculation_method,
+            resolved_outcome_count=bridge.resolved_outcome_count,
+            unresolved_outcome_count=bridge.unresolved_outcome_count,
+            resolved_coverage_pct=float(bridge.resolved_coverage_pct),
+            high_assurance_count=bridge.high_assurance_count,
+            high_assurance_coverage_pct=float(bridge.high_assurance_coverage_pct),
+            legacy_compatible_count=bridge.legacy_compatible_count,
+            legacy_compatible_coverage_pct=float(bridge.legacy_compatible_coverage_pct),
+            quality_breakdown=dict(bridge.quality_breakdown),
+            normalization_version=closed_stats["normalization_version"],
+            aggregate_normalization_status=closed_stats["aggregate_normalization_status"],
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,
@@ -3220,6 +3255,13 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
             fees=float(stats["fees"] or 0),
             coverage_ratio=float(stats["coverage_ratio"]),
             outcome_source_counts=stats["outcome_source_counts"],
+            quality_breakdown=stats["quality_breakdown"],
+            normalization_version=stats["normalization_version"],
+            aggregate_normalization_status=stats["aggregate_normalization_status"],
+            calculation_version=(
+                "CLOSED_OUTCOME_PAPER_V2" if TRADING_MODE == "PAPER"
+                else "CLOSED_OUTCOME_LIVE_V1"
+            ),
             updated_at=window_end,
         )
     except Exception as e:
@@ -4339,6 +4381,21 @@ def ui_recent_closed(
                 "outcome_status": outcome.get("outcome_status", "UNRESOLVED"),
                 "outcome_source": outcome.get("outcome_source", "UNRESOLVED"),
                 "evidence_complete": bool(outcome.get("evidence_complete", False)),
+                "quality_class": outcome.get("quality_class", "UNRESOLVED"),
+                "normalization_status": outcome.get(
+                    "normalization_status", "SOURCE_NOT_COMPARABLE"
+                ),
+                "normalization_delta": _safe_float(
+                    outcome.get("normalization_delta")
+                ),
+                "normalization_version": outcome.get("normalization_version"),
+                "calculation_version": outcome.get("calculation_version"),
+                "stored_scale": outcome.get("stored_scale"),
+                "fill_scale": outcome.get("fill_scale"),
+                "legacy_stored_provenance": outcome.get(
+                    "legacy_stored_provenance"
+                ),
+                "legacy_fee_model": outcome.get("legacy_fee_model"),
             })
 
         return jsonable_encoder({

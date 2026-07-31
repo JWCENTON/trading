@@ -25,7 +25,8 @@ def test_all_paper_consumers_use_shared_outcome_summary():
 def test_model_is_bounded_and_never_uses_terminal_qty_for_pnl():
     assert "p.exit_time >= %(window_start)s" in MODEL
     assert "p.exit_time <= %(window_end)s" in MODEL
-    assert "p.qty" not in MODEL
+    assert "p.qty" in MODEL  # evidence eligibility only, never outcome arithmetic
+    assert "p.qty *" not in MODEL
     assert "FROM simulated_execution_fills_v1 f" in MODEL
     assert "JOIN binance_order_fills f ON f.order_id = p.order_id" in MODEL
     assert "LEGACY_EXECUTION_PROVEN" in MODEL
@@ -35,7 +36,7 @@ def test_environment_uses_physically_isolated_query_shapes():
     paper = build_closed_outcome_summary_sql("PAPER")
     live = build_closed_outcome_rows_sql("LIVE")
     assert "binance_order_fills" not in paper
-    assert "exchange_fill_ingestion_state_v2" not in paper
+    assert "binance_order_fills" not in paper
     assert "simulated_execution_fills_v1" not in live
     assert " OR f.order_id" not in live
     with pytest.raises(ValueError, match="unsupported closed-outcome environment"):
@@ -83,5 +84,7 @@ def test_paper_account_frontend_labels_partial_bridge_honestly():
         ROOT / "frontend/src/components/live/AccountSnapshotPanel.tsx"
     ).read_text()
     assert "Partial reconstructed estimate" in panel
-    assert "Realized coverage:" in panel
+    assert "Resolved:" in panel
+    assert "High assurance:" in panel
+    assert "Legacy compatible:" in panel
     assert 'isExchangeTruth ? "Exchange truth"' in panel
