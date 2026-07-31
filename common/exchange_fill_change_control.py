@@ -20,6 +20,18 @@ class FillMutationDecision(str, Enum):
     EXISTING_PROJECTED_EVIDENCE = "EXISTING_PROJECTED_EVIDENCE"
     ADOPTION_GENERATION_MISMATCH = "ADOPTION_GENERATION_MISMATCH"
     ADOPTION_NOT_ACTIVE = "ADOPTION_NOT_ACTIVE"
+    OBSERVED_NOT_APPLIED = "OBSERVED_NOT_APPLIED"
+
+
+class FillApplicationClassification(str, Enum):
+    OBSERVED_NOT_APPLIED = "OBSERVED_NOT_APPLIED"
+    TRUE_DUPLICATE_APPLIED = "TRUE_DUPLICATE_APPLIED"
+    CORRECTION_PENDING = "CORRECTION_PENDING"
+    AMBIGUOUS = "AMBIGUOUS"
+    EXTERNAL_OR_MANUAL_UNLINKED = "EXTERNAL_OR_MANUAL_UNLINKED"
+    BLOCKED_MISSING_CONTEXT = "BLOCKED_MISSING_CONTEXT"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    REJECTED = "REJECTED"
 
 
 class InventoryRowGeneration(str, Enum):
@@ -39,6 +51,9 @@ class RegisteredFillChange:
     row_generation: InventoryRowGeneration | None = None
     adoption_id: int | None = None
     contract_generation: int | None = None
+    application_status: FillApplicationClassification = (
+        FillApplicationClassification.OBSERVED_NOT_APPLIED
+    )
 
     @property
     def mutation_decision(self) -> FillMutationDecision:
@@ -65,6 +80,14 @@ class RegisteredFillChange:
 
     @property
     def permits_mutation(self) -> bool:
+        if self.application_status in {
+            FillApplicationClassification.AMBIGUOUS,
+            FillApplicationClassification.EXTERNAL_OR_MANUAL_UNLINKED,
+            FillApplicationClassification.BLOCKED_MISSING_CONTEXT,
+            FillApplicationClassification.IDEMPOTENCY_CONFLICT,
+            FillApplicationClassification.REJECTED,
+        }:
+            return False
         evidence_accepted = self.decision in {
             FillMutationDecision.NEW_AUTHORITATIVE_EVIDENCE,
             FillMutationDecision.AUTHORITATIVE_CORRECTION,
@@ -73,6 +96,125 @@ class RegisteredFillChange:
             InventoryRowGeneration.FORWARD_C2_2,
             InventoryRowGeneration.EXISTING_PROJECTED_C2_2,
         }
+
+
+def classify_fill_application_state(
+    *,
+    source_fingerprint: str,
+    applied_fingerprint: str | None,
+    applied_at: Any,
+    local_fill_id: int | None,
+    resolved_adoption_id: int | None,
+    resolved_generation: int | None,
+    applied_adoption_id: int | None,
+    applied_generation: int | None,
+    local_fill_matches: bool,
+    current_status: str | None = None,
+    attribution_status: str | None = None,
+) -> FillApplicationClassification:
+    """Classify replay separately from semantic source equality.
+
+    A matching source fingerprint is not application proof.  The legacy
+    mutable ingestion row may claim a true duplicate only when it points to a
+    canonical local fill, carries a matching applied fingerprint/timestamp,
+    and remains in the same adopted generation.  Pending corrections and
+    ambiguous evidence are never collapsed into a duplicate on replay.
+    """
+    sticky = {
+        item.value: item
+        for item in (
+            FillApplicationClassification.CORRECTION_PENDING,
+            FillApplicationClassification.AMBIGUOUS,
+            FillApplicationClassification.EXTERNAL_OR_MANUAL_UNLINKED,
+            FillApplicationClassification.BLOCKED_MISSING_CONTEXT,
+            FillApplicationClassification.IDEMPOTENCY_CONFLICT,
+            FillApplicationClassification.REJECTED,
+        )
+    }
+    if current_status in sticky:
+        return sticky[current_status]
+    attribution_classification = _application_classification_for_attribution(
+        attribution_status
+    )
+    if attribution_classification is not None:
+        return attribution_classification
+    complete = all(
+        value is not None
+        for value in (
+            local_fill_id,
+            applied_fingerprint,
+            applied_at,
+            resolved_adoption_id,
+            resolved_generation,
+            applied_adoption_id,
+            applied_generation,
+        )
+    )
+    if (
+        complete
+        and local_fill_matches
+        and str(applied_fingerprint) == str(source_fingerprint)
+        and int(applied_adoption_id) == int(resolved_adoption_id)
+        and int(applied_generation) == int(resolved_generation)
+    ):
+        return FillApplicationClassification.TRUE_DUPLICATE_APPLIED
+    return FillApplicationClassification.OBSERVED_NOT_APPLIED
+
+
+def _application_classification_for_attribution(
+    attribution_status: str | None,
+) -> FillApplicationClassification | None:
+    return {
+        "EXTERNAL_OR_MANUAL_UNLINKED": (
+            FillApplicationClassification.EXTERNAL_OR_MANUAL_UNLINKED
+        ),
+        "AMBIGUOUS": FillApplicationClassification.AMBIGUOUS,
+        "CONFLICTED": FillApplicationClassification.IDEMPOTENCY_CONFLICT,
+        "UNKNOWN": FillApplicationClassification.OBSERVED_NOT_APPLIED,
+    }.get(str(attribution_status or "").upper())
+
+
+def _local_fill_application_proof_matches(
+    cur,
+    payload: Mapping[str, Any],
+    *,
+    account_identity_key: str,
+    local_fill_id: int | None,
+) -> bool:
+    if local_fill_id is None:
+        return False
+    cur.execute(
+        """
+        SELECT id,order_id,symbol,side,executed_qty,avg_price,
+               commission_amount,commission_asset,
+               (extract(epoch FROM event_time)*1000)::bigint
+        FROM binance_order_fills
+        WHERE source=%s AND trade_id=%s AND id=%s
+        """,
+        (payload["exchange"], payload["trade_id"], local_fill_id),
+    )
+    local = cur.fetchone()
+    if local is None or int(local[0]) != int(local_fill_id):
+        return False
+    local_payload = authoritative_fill_payload(
+        {
+            "source": payload["exchange"],
+            "symbol": local[2],
+            "trade_id": payload["trade_id"],
+            "order_id": local[1],
+            "side": local[3],
+            "executed_qty": local[4],
+            "avg_price": local[5],
+            "commission_amount": local[6],
+            "commission_asset": local[7],
+            "event_time_ms": local[8],
+        },
+        account_identity_key=account_identity_key,
+    )
+    return (
+        authoritative_fill_fingerprint(local_payload)
+        == authoritative_fill_fingerprint(payload)
+    )
 
 
 def classify_inventory_row_generation(
@@ -177,6 +319,10 @@ def is_existing_projected_c2_2_compatible(
 def authoritative_fill_payload(
     row: Mapping[str, Any], *, account_identity_key: str
 ) -> dict[str, Any]:
+    def rendered(field: str) -> str:
+        value = row.get(field)
+        return "" if value is None else str(value)
+
     return {
         "exchange": str(row.get("source") or "").lower(),
         "account_identity": str(account_identity_key),
@@ -184,9 +330,9 @@ def authoritative_fill_payload(
         "trade_id": str(row.get("trade_id") or ""),
         "order_id": str(row.get("order_id") or ""),
         "side": str(row.get("side") or "").upper(),
-        "executed_qty": str(row.get("executed_qty") or ""),
-        "fill_price": str(row.get("avg_price") or ""),
-        "fee_quantity": str(row.get("commission_amount") or ""),
+        "executed_qty": rendered("executed_qty"),
+        "fill_price": rendered("avg_price"),
+        "fee_quantity": rendered("commission_amount"),
         "fee_currency": str(row.get("commission_asset") or "").upper(),
         "event_time_ms": int(row.get("event_time_ms") or 0),
     }
@@ -197,6 +343,24 @@ def authoritative_fill_fingerprint(payload: Mapping[str, Any]) -> str:
         dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _legacy_zero_fee_payload_equivalent(
+    previous_payload: Mapping[str, Any] | None,
+    current_payload: Mapping[str, Any],
+) -> bool:
+    if not isinstance(previous_payload, Mapping):
+        return False
+    normalized = dict(current_payload)
+    if previous_payload.get("fee_quantity") != "":
+        return False
+    try:
+        if Decimal(str(current_payload.get("fee_quantity"))) != 0:
+            return False
+    except Exception:
+        return False
+    normalized["fee_quantity"] = ""
+    return dict(previous_payload) == normalized
 
 
 def classify_authoritative_change(
@@ -283,6 +447,13 @@ def register_fill_change(
     account_identity_key: str,
 ) -> RegisteredFillChange:
     """Classify a source fill before it is allowed to alter authoritative state."""
+    lei1c_attribution_status = row.get("_lei1c_attribution_status")
+    lei1c_application_classification = (
+        _application_classification_for_attribution(
+            str(lei1c_attribution_status)
+            if lei1c_attribution_status is not None else None
+        )
+    )
     payload = authoritative_fill_payload(
         row, account_identity_key=account_identity_key
     )
@@ -304,7 +475,8 @@ def register_fill_change(
     cur.execute(
         """
         SELECT ingestion_id,source_fingerprint,authoritative_payload,
-               correction_revision,adoption_id,contract_generation
+               correction_revision,adoption_id,contract_generation,
+               applied_fingerprint,applied_at,local_fill_id,application_status
         FROM exchange_fill_ingestion_state_v2
         WHERE source=%s AND account_identity_key=%s
           AND symbol=%s AND trade_id=%s
@@ -316,7 +488,7 @@ def register_fill_change(
     if existing is None:
         cur.execute(
             """
-            SELECT order_id,symbol,side,executed_qty,avg_price,
+            SELECT id,order_id,symbol,side,executed_qty,avg_price,
                    commission_amount,commission_asset,
                    (extract(epoch FROM event_time)*1000)::bigint
             FROM binance_order_fills
@@ -327,8 +499,8 @@ def register_fill_change(
         previously_ingested = cur.fetchone()
         if previously_ingested is not None:
             (
-                old_order_id, old_symbol, old_side, old_qty, old_price,
-                old_fee, old_fee_asset, old_event_time_ms,
+                local_fill_id, old_order_id, old_symbol, old_side, old_qty,
+                old_price, old_fee, old_fee_asset, old_event_time_ms,
             ) = previously_ingested
             old_payload = authoritative_fill_payload(
                 {
@@ -349,12 +521,14 @@ def register_fill_change(
             decision = classify_authoritative_change(old_payload, payload)
             same = decision is FillMutationDecision.NO_CHANGE
             status = {
-                FillMutationDecision.NO_CHANGE: "DUPLICATE",
+                FillMutationDecision.NO_CHANGE: "OBSERVED_NOT_APPLIED",
                 FillMutationDecision.AUTHORITATIVE_CORRECTION: (
                     "CORRECTION_PENDING"
                 ),
                 FillMutationDecision.AMBIGUOUS_CORRECTION: "AMBIGUOUS",
             }[decision]
+            if lei1c_application_classification is not None:
+                status = lei1c_application_classification.value
             preserve_existing = (
                 decision is FillMutationDecision.AMBIGUOUS_CORRECTION
             )
@@ -366,11 +540,11 @@ def register_fill_change(
                 """
                 INSERT INTO exchange_fill_ingestion_state_v2(
                   source,account_identity_key,symbol,trade_id,order_id,side,
-                  source_fingerprint,application_status,
+                  source_fingerprint,application_status,local_fill_id,
                   authoritative_payload,last_decision,correction_revision
                 ) VALUES (
                   %s,%s,%s,%s,%s,%s,%s,
-                  %s,%s::jsonb,%s,CASE WHEN %s THEN 0 ELSE 1 END
+                  %s,%s,%s::jsonb,%s,CASE WHEN %s THEN 0 ELSE 1 END
                 )
                 RETURNING ingestion_id
                 """,
@@ -380,23 +554,38 @@ def register_fill_change(
                     payload["side"],
                     stored_fingerprint,
                     status,
+                    int(local_fill_id),
                     json.dumps(stored_payload, sort_keys=True),
-                    decision.value,
+                    (
+                        FillMutationDecision.OBSERVED_NOT_APPLIED.value
+                        if same else decision.value
+                    ),
                     same,
                 ),
             )
+            returned_decision = (
+                FillMutationDecision.OBSERVED_NOT_APPLIED
+                if same else decision
+            )
             return RegisteredFillChange(
-                int(cur.fetchone()[0]), decision, fingerprint,
+                int(cur.fetchone()[0]), returned_decision, fingerprint,
                 0 if same else 1,
                 row_generation, adoption_id, contract_generation,
+                FillApplicationClassification(status),
             )
+        initial_application_status = (
+            lei1c_application_classification
+            or FillApplicationClassification.OBSERVED_NOT_APPLIED
+        )
         cur.execute(
             """
             INSERT INTO exchange_fill_ingestion_state_v2(
               source,account_identity_key,symbol,trade_id,order_id,side,
               source_fingerprint,application_status,authoritative_payload,
               last_decision
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,'NEW',%s::jsonb,%s)
+            ) VALUES (
+              %s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s
+            )
             RETURNING ingestion_id
             """,
             (
@@ -404,6 +593,7 @@ def register_fill_change(
                 payload["order_id"],
                 payload["side"],
                 fingerprint,
+                initial_application_status.value,
                 json.dumps(payload, sort_keys=True),
                 FillMutationDecision.NEW_AUTHORITATIVE_EVIDENCE.value,
             ),
@@ -416,6 +606,7 @@ def register_fill_change(
             row_generation,
             adoption_id,
             contract_generation,
+            initial_application_status,
         )
 
     (
@@ -425,25 +616,82 @@ def register_fill_change(
         revision,
         applied_adoption_id,
         applied_generation,
+        applied_fingerprint,
+        applied_at,
+        local_fill_id,
+        current_application_status,
     ) = existing
-    if str(previous_fingerprint) == fingerprint:
+    legacy_zero_equivalent = _legacy_zero_fee_payload_equivalent(
+        previous_payload, payload
+    )
+    if str(previous_fingerprint) == fingerprint or legacy_zero_equivalent:
+        classification_fingerprint = (
+            str(previous_fingerprint)
+            if legacy_zero_equivalent else fingerprint
+        )
+        local_fill_matches = _local_fill_application_proof_matches(
+            cur,
+            payload,
+            account_identity_key=account_identity_key,
+            local_fill_id=(
+                int(local_fill_id) if local_fill_id is not None else None
+            ),
+        )
+        application_status = classify_fill_application_state(
+            source_fingerprint=classification_fingerprint,
+            applied_fingerprint=(
+                str(applied_fingerprint)
+                if applied_fingerprint is not None else None
+            ),
+            applied_at=applied_at,
+            local_fill_id=(
+                int(local_fill_id) if local_fill_id is not None else None
+            ),
+            resolved_adoption_id=adoption_id,
+            resolved_generation=contract_generation,
+            applied_adoption_id=(
+                int(applied_adoption_id)
+                if applied_adoption_id is not None else None
+            ),
+            applied_generation=(
+                int(applied_generation)
+                if applied_generation is not None else None
+            ),
+            local_fill_matches=local_fill_matches,
+            current_status=str(current_application_status),
+            attribution_status=(
+                str(lei1c_attribution_status)
+                if lei1c_attribution_status is not None else None
+            ),
+        )
+        replay_decision = (
+            FillMutationDecision.NO_CHANGE
+            if application_status
+            is not FillApplicationClassification.OBSERVED_NOT_APPLIED
+            else FillMutationDecision.OBSERVED_NOT_APPLIED
+        )
         cur.execute(
             """
             UPDATE exchange_fill_ingestion_state_v2
-            SET last_seen_at=clock_timestamp(),application_status='DUPLICATE',
+            SET last_seen_at=clock_timestamp(),application_status=%s,
                 last_decision=%s
             WHERE ingestion_id=%s
             """,
-            (FillMutationDecision.NO_CHANGE.value, int(ingestion_id)),
+            (
+                application_status.value,
+                replay_decision.value,
+                int(ingestion_id),
+            ),
         )
         return RegisteredFillChange(
-            int(ingestion_id), FillMutationDecision.NO_CHANGE,
-            fingerprint, int(revision), row_generation,
+            int(ingestion_id), replay_decision,
+            classification_fingerprint, int(revision), row_generation,
             (
                 int(applied_adoption_id)
                 if applied_adoption_id is not None else None
             ),
             int(applied_generation) if applied_generation is not None else None,
+            application_status,
         )
 
     next_revision = int(revision) + 1
@@ -464,6 +712,7 @@ def register_fill_change(
         return RegisteredFillChange(
             int(ingestion_id), decision, fingerprint, next_revision,
             row_generation, adoption_id, contract_generation,
+            FillApplicationClassification.AMBIGUOUS,
         )
     else:
         status = "CORRECTION_PENDING"
@@ -484,6 +733,7 @@ def register_fill_change(
     return RegisteredFillChange(
         int(ingestion_id), decision, fingerprint, next_revision,
         row_generation, adoption_id, contract_generation,
+        FillApplicationClassification.CORRECTION_PENDING,
     )
 
 
@@ -497,20 +747,42 @@ def mark_fill_change_applied(cur, change: RegisteredFillChange) -> None:
     status = (
         "CORRECTION_APPLIED"
         if change.decision is FillMutationDecision.AUTHORITATIVE_CORRECTION
-        else "NEW"
+        else "APPLIED"
     )
     cur.execute(
         """
-        UPDATE exchange_fill_ingestion_state_v2
+        UPDATE exchange_fill_ingestion_state_v2 AS state
         SET applied_fingerprint=%s,applied_at=clock_timestamp(),
             application_status=%s,
-            adoption_id=COALESCE(adoption_id,%s),
-            contract_generation=COALESCE(contract_generation,%s)
-        WHERE ingestion_id=%s
+            adoption_id=COALESCE(state.adoption_id,%s),
+            contract_generation=COALESCE(state.contract_generation,%s),
+            local_fill_id=COALESCE(state.local_fill_id,local_fill.id)
+        FROM binance_order_fills AS local_fill
+        WHERE state.ingestion_id=%s
+          AND local_fill.source=state.source
+          AND local_fill.trade_id::text=state.trade_id
+          AND local_fill.order_id=state.order_id
+          AND local_fill.symbol=state.symbol
+          AND local_fill.side=state.side
+          AND local_fill.executed_qty IS NOT DISTINCT FROM
+              NULLIF(state.authoritative_payload->>'executed_qty','')::numeric
+          AND local_fill.avg_price IS NOT DISTINCT FROM
+              NULLIF(state.authoritative_payload->>'fill_price','')::numeric
+          AND local_fill.commission_amount IS NOT DISTINCT FROM
+              NULLIF(state.authoritative_payload->>'fee_quantity','')::numeric
+          AND COALESCE(local_fill.commission_asset,'')=
+              COALESCE(state.authoritative_payload->>'fee_currency','')
+          AND (extract(epoch FROM local_fill.event_time)*1000)::bigint=
+              (state.authoritative_payload->>'event_time_ms')::bigint
           AND (
-            (adoption_id IS NULL AND contract_generation IS NULL)
+            state.local_fill_id IS NULL
+            OR state.local_fill_id=local_fill.id
+          )
+          AND (
+            (state.adoption_id IS NULL
+             AND state.contract_generation IS NULL)
             OR
-            (adoption_id=%s AND contract_generation=%s)
+            (state.adoption_id=%s AND state.contract_generation=%s)
           )
         """,
         (

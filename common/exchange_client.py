@@ -8,6 +8,7 @@ import hmac
 import hashlib
 import base64
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 from urllib.error import HTTPError
@@ -57,6 +58,21 @@ def _okx_client_order_id(client_order_id: str | None) -> str | None:
         return None
     clean = "".join(ch for ch in str(client_order_id) if ch.isalnum())
     return clean[:32] if clean else None
+
+
+def _exact_nonnegative_decimal(value: object, *, field: str) -> str:
+    """Render an exchange decimal without a binary-float round trip."""
+    try:
+        number = Decimal(str(value if value not in (None, "") else "0"))
+    except (InvalidOperation, ValueError) as exc:
+        raise ExchangeAPIException(f"OKX {field} is not a decimal") from exc
+    if not number.is_finite():
+        raise ExchangeAPIException(f"OKX {field} must be finite")
+    number = abs(number)
+    rendered = format(number, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
 
 
 
@@ -923,10 +939,13 @@ class OkxMarketDataAdapter:
                 "symbol": symbol,
                 "id": r.get("tradeId"),
                 "orderId": r.get("ordId"),
+                "clientOrderId": r.get("clOrdId") or None,
                 "price": fill_px,
                 "qty": fill_sz,
                 "quoteQty": None,
-                "commission": str(abs(float(fee or 0.0))),
+                "commission": _exact_nonnegative_decimal(
+                    fee, field="fill fee"
+                ),
                 "commissionAsset": fee_ccy,
                 "time": int(ts) if ts else None,
                 "isBuyer": str(r.get("side", "")).lower() == "buy",

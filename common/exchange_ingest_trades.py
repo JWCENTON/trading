@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from common.exchange_client import get_market_data_client
 from typing import Iterable, Dict, Any, Optional
@@ -12,6 +13,13 @@ from psycopg2.extras import execute_batch
 
 from common.contract_adoption import require_runtime_git_revision
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.entry_fill_attribution import (
+    EntryFillAttributionMode,
+    EntryFillAttributionRepository,
+    EntryFillObservation,
+    EntryFillProcessingOutcome,
+    process_entry_fill_attribution,
+)
 from common.exchange_fill_change_control import (
     FillMutationDecision,
     attribute_fill_change_position,
@@ -20,6 +28,12 @@ from common.exchange_fill_change_control import (
 )
 from common.exchange_identity import normalize_exchange_source
 from common.flags import trading_mode
+
+
+LEI1C_MIGRATION_ID = "20260731_live_entry_fill_attribution_v1.sql"
+LEI1C_LEDGER_CHECKSUM = (
+    "ad72d70d21d440de1d65c3499a1de1e95b6a27af0721c4c3c9c71f150168541d"
+)
 
 
 class FillIngestResult(tuple):
@@ -579,12 +593,28 @@ def reconcile_okx_exit_fills(
 
 def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str = "binance") -> Dict[str, Any]:
     # myTrades: id, orderId, price, qty, quoteQty, commission, commissionAsset, time, isBuyer, isMaker
+    trade_id = t.get("id")
+    order_id = t.get("orderId")
+    if trade_id is None or not str(trade_id).strip():
+        raise ValueError("exchange trade id is required")
+    if order_id is None or not str(order_id).strip():
+        raise ValueError("exchange order id is required")
     side = "BUY" if t.get("isBuyer") else "SELL"
     role = "MAKER" if t.get("isMaker") else "TAKER"
+    raw = t.get("raw") if isinstance(t.get("raw"), dict) else {}
+    client_order_id = (
+        t.get("clientOrderId")
+        or t.get("client_order_id")
+        or raw.get("clOrdId")
+        or None
+    )
     return {
         "source": normalize_exchange_source(source),
-        "trade_id": int(t["id"]),
-        "order_id": str(t["orderId"]),
+        "trade_id": str(trade_id),
+        "order_id": str(order_id),
+        "client_order_id": (
+            str(client_order_id) if client_order_id is not None else None
+        ),
         "symbol": symbol,
         "side": side,
         "role": role,
@@ -602,6 +632,248 @@ def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str
         "account_identity_status": "MISSING",
         "account_identity_failure_code": "ACCOUNT_IDENTITY_UNAVAILABLE",
     }
+
+
+def _record_lei1c_observations(
+    conn,
+    *,
+    dsn: str,
+    rows: Iterable[Dict[str, Any]],
+    forward_boundary_ms: int | None = None,
+) -> None:
+    """Dormant-by-default forward producer for immutable LEI1C evidence."""
+    mode = EntryFillAttributionMode.from_env()
+    if mode is EntryFillAttributionMode.OFF:
+        return
+    try:
+        environment = str(os.getenv("ENVIRONMENT") or "").strip().lower()
+        deployment_id = str(
+            os.getenv("DEPLOYMENT_ID")
+            or os.getenv("WALTRADE_DEPLOYMENT_ID")
+            or ""
+        ).strip().lower()
+        git_revision = require_runtime_git_revision()
+        # Keep optional SHADOW schema/read failures off the legacy ingest
+        # transaction.  A PostgreSQL error on ``conn`` would otherwise leave
+        # that transaction aborted even after a Python-level catch.
+        with psycopg2.connect(dsn) as attribution_conn:
+            with attribution_conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT adoption.adoption_id,adoption.generation,
+                           (
+                             SELECT min(ledger.applied_at)
+                             FROM schema_migration_ledger_v1 ledger
+                             WHERE ledger.migration_id=%s
+                               AND ledger.checksum_sha256=%s
+                               AND ledger.status='APPLIED'
+                               AND ledger.success=true
+                           ) AS contract_activated_at
+                    FROM runtime_contract_adoption_v2 adoption
+                    WHERE adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+                      AND adoption.status='ACTIVE'
+                      AND adoption.environment=%s
+                      AND adoption.deployment_id=%s
+                      AND adoption.git_revision=%s
+                    ORDER BY adoption.adoption_id
+                    """,
+                    (
+                        LEI1C_MIGRATION_ID,
+                        LEI1C_LEDGER_CHECKSUM,
+                        environment,
+                        deployment_id,
+                        git_revision,
+                    ),
+                )
+                adoptions = list(cur.fetchall())
+    except Exception:
+        if mode is EntryFillAttributionMode.ENFORCE:
+            raise
+        logging.exception(
+            "ENTRY_FILL_ATTRIBUTION|mode=%s error=SETUP_FAILED",
+            mode.value,
+        )
+        return
+    if len(adoptions) != 1:
+        message = "LEI1C_ACTIVE_ADOPTION_NOT_UNIQUE"
+        if mode is EntryFillAttributionMode.ENFORCE:
+            raise RuntimeError(message)
+        logging.error("ENTRY_FILL_ATTRIBUTION|mode=%s error=%s", mode.value, message)
+        return
+    adoption_id, generation, contract_activated_at = adoptions[0]
+    if (
+        not isinstance(contract_activated_at, datetime)
+        or contract_activated_at.tzinfo is None
+        or contract_activated_at.utcoffset() is None
+    ):
+        message = "LEI1C_ACTIVATION_BOUNDARY_MISSING"
+        if mode is EntryFillAttributionMode.ENFORCE:
+            raise RuntimeError(message)
+        logging.error("ENTRY_FILL_ATTRIBUTION|mode=%s error=%s", mode.value, message)
+        return
+    activated_utc = contract_activated_at.astimezone(timezone.utc)
+    since_epoch = activated_utc - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    contract_boundary_ms = (
+        since_epoch.days * 86_400_000
+        + since_epoch.seconds * 1_000
+        + (since_epoch.microseconds + 999) // 1_000
+    )
+    effective_boundary_ms = max(
+        contract_boundary_ms,
+        int(forward_boundary_ms)
+        if forward_boundary_ms is not None else contract_boundary_ms,
+    )
+    try:
+        repository = EntryFillAttributionRepository(
+            lambda: psycopg2.connect(dsn)
+        )
+    except Exception:
+        if mode is EntryFillAttributionMode.ENFORCE:
+            raise
+        logging.exception(
+            "ENTRY_FILL_ATTRIBUTION|mode=%s error=REPOSITORY_INIT_FAILED",
+            mode.value,
+        )
+        return
+    for row in rows:
+        try:
+            raw = row.get("raw")
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (TypeError, ValueError):
+                    raw = {"unparsed": raw}
+            exchange_source = str(row.get("source") or "").lower()
+            exchange_trade_id = row.get("trade_id")
+            event_time_ms = int(row.get("event_time_ms"))
+            existing_evidence = repository.load_evidence(
+                (
+                    environment,
+                    deployment_id,
+                    exchange_source,
+                    str(exchange_trade_id),
+                )
+            )
+            if (
+                event_time_ms < effective_boundary_ms
+                and existing_evidence is None
+            ):
+                logging.info(
+                    "ENTRY_FILL_ATTRIBUTION|mode=%s outcome=PRE_BOUNDARY_SKIPPED "
+                    "trade_id=%s boundary_ms=%s",
+                    mode.value,
+                    exchange_trade_id,
+                    effective_boundary_ms,
+                )
+                continue
+            observed_at = datetime.now(timezone.utc)
+
+            def build_observation(
+                *,
+                context_environment: str,
+                context_deployment_id: str,
+                context_adoption_id: int,
+                context_generation: int,
+                context_git_revision: str,
+            ) -> EntryFillObservation:
+                return EntryFillObservation.build(
+                    environment=context_environment,
+                    deployment_id=context_deployment_id,
+                    adoption_id=context_adoption_id,
+                    generation=context_generation,
+                    git_revision=context_git_revision,
+                    exchange_source=exchange_source,
+                    exchange_trade_id=exchange_trade_id,
+                    exchange_order_id=row.get("order_id"),
+                    client_order_id=row.get("client_order_id"),
+                    symbol=str(row.get("symbol") or ""),
+                    side=str(row.get("side") or ""),
+                    executed_qty=row.get("executed_qty"),
+                    price=row.get("avg_price"),
+                    notional=row.get("quote_notional_usdc"),
+                    fee=(
+                        row.get("commission_amount")
+                        if row.get("commission_amount") is not None else "0"
+                    ),
+                    fee_asset=row.get("commission_asset"),
+                    executed_at=(
+                        datetime(1970, 1, 1, tzinfo=timezone.utc)
+                        + timedelta(microseconds=event_time_ms * 1_000)
+                    ),
+                    observed_at=observed_at,
+                    producer_identity="exchange-fill-ingest-v1",
+                    source_payload=(raw if isinstance(raw, dict) else {}),
+                )
+
+            if existing_evidence is not None:
+                context = existing_evidence.observation
+                observation = build_observation(
+                    context_environment=context.environment.value,
+                    context_deployment_id=context.deployment_id.value,
+                    context_adoption_id=context.adoption_id,
+                    context_generation=context.generation,
+                    context_git_revision=context.git_revision,
+                )
+            else:
+                preliminary = build_observation(
+                    context_environment=environment,
+                    context_deployment_id=deployment_id,
+                    context_adoption_id=int(adoption_id),
+                    context_generation=int(generation),
+                    context_git_revision=git_revision,
+                )
+                context = repository.resolve_observation_context(preliminary)
+                observation = build_observation(
+                    context_environment=context.environment.value,
+                    context_deployment_id=context.deployment_id.value,
+                    context_adoption_id=context.adoption_id,
+                    context_generation=context.generation,
+                    context_git_revision=context.git_revision,
+                )
+            result = process_entry_fill_attribution(
+                mode=mode,
+                observation=observation,
+                repository=repository,
+            )
+            if (
+                mode is EntryFillAttributionMode.ENFORCE
+                and result.attribution_status is not None
+            ):
+                row["_lei1c_attribution_status"] = (
+                    result.attribution_status.value
+                )
+            logging.info(
+                "ENTRY_FILL_ATTRIBUTION|mode=%s outcome=%s trade_id=%s "
+                "attribution=%s application=%s",
+                mode.value,
+                result.outcome.value,
+                observation.exchange_trade_id,
+                (
+                    result.attribution_status.value
+                    if result.attribution_status else None
+                ),
+                (
+                    result.application_status.value
+                    if result.application_status else None
+                ),
+            )
+            if mode is EntryFillAttributionMode.ENFORCE and result.outcome in {
+                EntryFillProcessingOutcome.REPOSITORY_ERROR,
+                EntryFillProcessingOutcome.IDEMPOTENCY_CONFLICT,
+                EntryFillProcessingOutcome.AMBIGUOUS,
+                EntryFillProcessingOutcome.CORRECTION_PENDING,
+            }:
+                raise RuntimeError(
+                    result.error_code or f"LEI1C_{result.outcome.value}"
+                )
+        except Exception:
+            if mode is EntryFillAttributionMode.ENFORCE:
+                raise
+            logging.exception(
+                "ENTRY_FILL_ATTRIBUTION|mode=%s error=ROW_FAILED trade_id=%s",
+                mode.value,
+                row.get("trade_id"),
+            )
 
 
 def _persist_okx_identity_snapshot(conn, client):
@@ -799,6 +1071,12 @@ def ingest_my_trades(
                         or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
                     ),
                 })
+            _record_lei1c_observations(
+                conn,
+                dsn=dsn,
+                rows=rows,
+                forward_boundary_ms=fetch_start,
+            )
             total_fetched += len(rows)
 
             accepted_rows = []

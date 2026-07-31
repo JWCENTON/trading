@@ -1,0 +1,217 @@
+{
+  "contract_version": "LEI1C_ENTRY_FILL_ATTRIBUTION_V1",
+  "migration_id": "20260731_live_entry_fill_attribution_v1.sql",
+  "migration_sha256": "d9aaec6081c8147c52615fd7e660671b62ddef256f925e28e13d87c2041e5a8a",
+  "rollback_id": "20260731_live_entry_fill_attribution_v1_rollback.sql",
+  "rollback_sha256": "a42449aabe52132d632fae9f84f81d50e8c5446908041be0797a973cf7c622a9",
+  "ledger_checksum_algorithm": "sha256(canonical-json:ledger_contract)",
+  "ledger_checksum_sha256": "ad72d70d21d440de1d65c3499a1de1e95b6a27af0721c4c3c9c71f150168541d",
+  "ledger_contract": {
+    "activation_boundary": "first-successful-migration-ledger-applied-at-ceiling-millisecond",
+    "application_proof_fields": [
+      "local_fill_id",
+      "application_target_identity",
+      "applied_fingerprint",
+      "applied_at"
+    ],
+    "application_statuses": [
+      "OBSERVED_NOT_APPLIED",
+      "APPLIED",
+      "TRUE_DUPLICATE_APPLIED",
+      "IDEMPOTENCY_CONFLICT",
+      "EXTERNAL_OR_MANUAL_UNLINKED",
+      "AMBIGUOUS",
+      "CORRECTION_PENDING"
+    ],
+    "application_lineage_history": "monotonic-non-null-client-intent-submission-ack-strategy-interval-purpose-position",
+    "application_serialization": "repository-evidence-lock-statement-plus-trigger-evidence-for-update",
+    "application_lineage_fields": [
+      "client_order_id",
+      "intent_id",
+      "submission_attempt_id",
+      "ack_id",
+      "strategy",
+      "interval",
+      "order_purpose",
+      "linked_position_id"
+    ],
+    "attribution_statuses": [
+      "BOT_OWNED_ATTRIBUTED",
+      "BOT_OWNED_MISSING_POSITION",
+      "BOT_OWNED_MISSING_LINEAGE",
+      "LEGACY_BOT_OWNED",
+      "EXTERNAL_OR_MANUAL_UNLINKED",
+      "AMBIGUOUS",
+      "CONFLICTED",
+      "UNKNOWN"
+    ],
+    "contract_version": "LEI1C_ENTRY_FILL_ATTRIBUTION_V1",
+    "conflict_decision_policy": "one-deterministic-row-per-distinct-payload",
+    "existing_application_proof_source": "exact-binance-order-fill-plus-authoritative-payload-bound-applied-exchange-fill-ingestion-state-v2",
+    "existing_application_proof_revalidation": "exact-local-fill-and-mutable-ingestion-application-state-on-every-trusted-replay",
+    "existing_application_proof_state_fields": [
+      "source",
+      "symbol",
+      "trade_id",
+      "order_id",
+      "local_fill_id",
+      "adoption_id",
+      "contract_generation",
+      "source_fingerprint",
+      "applied_fingerprint",
+      "applied_at",
+      "application_status",
+      "authoritative_payload"
+    ],
+    "data_policy": {
+      "append_only": true,
+      "backfill": false,
+      "position_projection": false,
+      "runtime_writer_activation": false
+    },
+    "hard_state_precedence": [
+      "IDEMPOTENCY_CONFLICT",
+      "CORRECTION_PENDING",
+      "AMBIGUOUS"
+    ],
+    "hard_state_lookup_index": "fill_evidence_id,application_status,decided_at DESC",
+    "hard_decision_lineage_policy": "canonical-identifiers-preserved-observed-lineage-in-decision-payload",
+    "migration_id": "20260731_live_entry_fill_attribution_v1.sql",
+    "late_ack_reattribution": "append-only-application-decision",
+    "late_fill_generation_attribution": "exact-ack-or-partial-lei1b-historical-previously-active-adoption",
+    "linked_position_role": "lineage-evidence-not-application-proof",
+    "linked_position_validation": "one-distinct-position-from-null-tolerant-identity-consistent-exact-order-or-wire-client-order-id",
+    "runtime_dependencies": [
+      "schema_migration_ledger_v1",
+      "runtime_contract_adoption_v2",
+      "live_entry_intents_v1",
+      "live_entry_submissions_v1",
+      "live_entry_order_acks_v1",
+      "exchange_fill_ingestion_state_v2",
+      "binance_orders",
+      "binance_order_fills",
+      "positions"
+    ],
+    "runtime_scope": "LIVE_ONLY",
+    "runtime_scope_guard": "reject-paper-database-or-paper-only-active-adoption",
+    "rollback_locking": "access-exclusive-before-emptiness-snapshot",
+    "natural_identity": [
+      "environment",
+      "deployment_id",
+      "exchange_source",
+      "exchange_trade_id"
+    ],
+    "source_fingerprint_fields": [
+      "environment",
+      "deployment_id",
+      "exchange_source",
+      "exchange_trade_id",
+      "exchange_order_id",
+      "wire_client_order_id",
+      "symbol",
+      "side",
+      "executed_qty",
+      "price",
+      "notional",
+      "fee",
+      "fee_asset",
+      "executed_at"
+    ],
+    "tables": [
+      "live_entry_fill_evidence_v1",
+      "live_entry_fill_applications_v1"
+    ]
+  },
+  "prerequisites": [
+    "schema_migration_ledger_v1",
+    "runtime_contract_adoption_v2",
+    "live_entry_intents_v1",
+    "live_entry_submissions_v1",
+    "live_entry_order_acks_v1",
+    "exchange_fill_ingestion_state_v2",
+    "binance_orders",
+    "binance_order_fills",
+    "positions"
+  ],
+  "tables": [
+    "live_entry_fill_evidence_v1",
+    "live_entry_fill_applications_v1"
+  ],
+  "functions": [
+    "live_entry_fill_position_link_matches_v1(TEXT,TEXT,TEXT,TEXT,BIGINT)",
+    "validate_live_entry_fill_evidence_v1()",
+    "validate_live_entry_fill_application_v1()",
+    "prevent_live_entry_fill_history_mutation_v1()"
+  ],
+  "triggers": [
+    "live_entry_fill_validate_attribution_v1",
+    "live_entry_fill_immutable_v1",
+    "live_entry_fill_application_validate_v1",
+    "live_entry_fill_application_immutable_v1"
+  ],
+  "indexes": [
+    "live_entry_fill_evidence_v1_pkey",
+    "ux_live_entry_fill_source_identity_v1",
+    "ix_live_entry_fill_exchange_order_v1",
+    "ix_live_entry_fill_client_order_v1",
+    "ix_live_entry_fill_wire_client_order_v1",
+    "ix_live_entry_fill_intent_v1",
+    "ix_live_entry_fill_submission_v1",
+    "ix_live_entry_fill_ack_v1",
+    "ix_live_entry_fill_position_v1",
+    "ix_live_entry_fill_adoption_generation_v1",
+    "live_entry_fill_applications_v1_pkey",
+    "ux_live_entry_fill_application_decision_v1",
+    "ix_live_entry_fill_application_status_v1",
+    "ix_live_entry_fill_application_history_v1",
+    "ix_live_entry_fill_application_intent_v1",
+    "ix_live_entry_fill_application_client_order_v1",
+    "ix_live_entry_fill_application_local_fill_v1",
+    "ix_live_entry_fill_application_adoption_v1"
+  ],
+  "natural_identity": [
+    "environment",
+    "deployment_id",
+    "exchange_source",
+    "exchange_trade_id"
+  ],
+  "source_fingerprint_fields": [
+    "environment",
+    "deployment_id",
+    "exchange_source",
+    "exchange_trade_id",
+    "exchange_order_id",
+    "wire_client_order_id",
+    "symbol",
+    "side",
+    "executed_qty",
+    "price",
+    "notional",
+    "fee",
+    "fee_asset",
+    "executed_at"
+  ],
+  "attribution_policy": {
+    "evidence": "immutable-observation-time-attribution",
+    "late_ack": "append-only-application-decision",
+    "late_fill_generation": "exact-ack-or-partial-lei1b-historical-previously-active-adoption",
+    "application_lineage_history": "monotonic-non-null-client-intent-submission-ack-strategy-interval-purpose-position",
+    "application_lineage_storage": "typed-client-intent-submission-ack-strategy-interval-purpose-position",
+    "hard_decision_lineage": "canonical-identifiers-preserved-observed-lineage-in-payload",
+    "linked_position": "typed-lineage-evidence-with-one-distinct-null-tolerant-identity-consistent-order-or-wire-cid-link"
+  },
+  "runtime_scope": {
+    "current_readiness": "LIVE_ONLY",
+    "paper_mode": "OFF",
+    "paper_schema_apply": false,
+    "schema_apply_guard": "reject-paper-database-or-paper-only-active-adoption",
+    "paper_shadow_prerequisite": "simulated-fill-and-lineage-adapter"
+  },
+  "data_policy": {
+    "backfill": false,
+    "runtime_writer_activation": false,
+    "append_only": true,
+    "position_projection": false,
+    "rollback_blocked_after_evidence": true
+  }
+}
