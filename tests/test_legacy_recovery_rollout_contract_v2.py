@@ -85,6 +85,7 @@ def test_cli_has_only_explicit_read_only_operations():
     subcommands = parser()._subparsers._group_actions[0].choices
     assert set(subcommands) == {
         "check-schema", "plan-position", "plan-fill", "classify-external",
+        "audit-open-cohort", "audit-unresolved-closed",
     }
     assert "apply" not in subcommands
 

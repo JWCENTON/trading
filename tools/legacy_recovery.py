@@ -20,9 +20,11 @@ from common.legacy_recovery import (
     LegacyPositionRecomputationService,
     LegacyRecoveryPlanner,
     UnappliedFillRecoveryService,
+    semantic_repair_fingerprint,
 )
 from common.legacy_recovery_repository import (
     EvidenceStatus,
+    ExternalEvidenceFileAdapter,
     ExternalExecutionEvidenceRepository,
     LegacyPositionEvidenceRepository,
     UnappliedFillEvidenceRepository,
@@ -71,7 +73,38 @@ def parser() -> argparse.ArgumentParser:
     external.add_argument("--source", required=True)
     external.add_argument("--trade-id", required=True)
     external.add_argument("--order-id", required=True)
+    external.add_argument(
+        "--evidence-json",
+        help="Operator-provided immutable JSON evidence (read-only)",
+    )
+    open_cohort = sub.add_parser("audit-open-cohort")
+    open_cohort.add_argument("--limit", type=int, default=100)
+    closed_cohort = sub.add_parser("audit-unresolved-closed")
+    closed_cohort.add_argument("--limit", type=int, default=100)
     return result
+
+
+def _normalize_global_options(argv):
+    """Allow documented global identity options before or after a subcommand."""
+    if argv is None:
+        return None
+    values = list(argv)
+    global_names = {
+        "--database-url-env", "--environment", "--expected-database",
+        "--output-json",
+    }
+    globals_: list[str] = []
+    remainder: list[str] = []
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if item in global_names and index + 1 < len(values):
+            globals_.extend(values[index:index + 2])
+            index += 2
+        else:
+            remainder.append(item)
+            index += 1
+    return globals_ + remainder
 
 
 def _connection_factory(args):
@@ -224,6 +257,8 @@ def _fill(connection, args, environment_identity, schema):
     state = envelope.current_state or {}
     ingestion = state["ingestion"]
     fills = state["local_fills"]
+    orders = state.get("orders") or []
+    lineage_order = orders[0] if len(orders) == 1 else {}
     proof = None
     if fills or ingestion.get("applied_fingerprint") is not None:
         local_id = f"fill:{fills[0]['id']}" if len(fills) == 1 else None
@@ -236,6 +271,11 @@ def _fill(connection, args, environment_identity, schema):
     decision = UnappliedFillRecoveryService().classify(candidate, proof)
     plan = LegacyRecoveryPlanner().fill_plan(
         decision, candidate.semantic_fingerprint,
+    )
+    missing_position = (
+        candidate.ownership.value == "BOT_OWNED"
+        and candidate.position_id is None
+        and not fills
     )
     return {
         "schema_status": schema["status"],
@@ -250,6 +290,11 @@ def _fill(connection, args, environment_identity, schema):
         "source": candidate.source, "trade_id": candidate.trade_id,
         "exchange_order_id": candidate.exchange_order_id,
         "client_order_id": candidate.client_order_id,
+        "strategy": lineage_order.get("strategy"),
+        "interval": lineage_order.get("interval"),
+        "order_purpose": lineage_order.get("order_purpose"),
+        "local_order_row_id": lineage_order.get("id"),
+        "local_order_created_at": lineage_order.get("created_at"),
         "bot_ownership_status": candidate.ownership.value,
         "local_fill_status": "PRESENT" if fills else "ABSENT",
         "ingestion_application_status": decision.status.value,
@@ -257,7 +302,18 @@ def _fill(connection, args, environment_identity, schema):
             "PRESENT" if ingestion.get("applied_fingerprint") else "ABSENT"
         ),
         "candidate_position_linkage": candidate.position_id,
-        "classification": decision.status.value,
+        "linkage_classification": (
+            "BOT_OWNED_LINKABLE" if missing_position
+            else candidate.ownership.value
+        ),
+        "incident_model": (
+            "MISSING_POSITION_AFTER_FILLED_ENTRY"
+            if missing_position else None
+        ),
+        "classification": (
+            "MISSING_POSITION_AFTER_FILLED_ENTRY"
+            if missing_position else decision.status.value
+        ),
         "eligible_actions": plan.eligible_actions,
         "blocked_actions": plan.blocked_actions,
         "blocking_reasons": decision.blocking_reasons,
@@ -269,10 +325,16 @@ def _fill(connection, args, environment_identity, schema):
 def _external(connection, args, environment_identity, schema):
     if schema["status"] != SchemaContractStatus.PRESENT_VALID.value:
         raise RuntimeError("SCHEMA_NOT_READY")
-    envelope = ExternalExecutionEvidenceRepository().read(
-        connection, source=args.source,
-        trade_id=args.trade_id, order_id=args.order_id,
-    )
+    if args.evidence_json:
+        envelope = ExternalEvidenceFileAdapter().read(
+            args.evidence_json, source=args.source,
+            trade_id=args.trade_id, order_id=args.order_id,
+        )
+    else:
+        envelope = ExternalExecutionEvidenceRepository().read(
+            connection, source=args.source,
+            trade_id=args.trade_id, order_id=args.order_id,
+        )
     if envelope.evidence_status is not EvidenceStatus.COMPLETE:
         raise RuntimeError(
             f"EXTERNAL_EVIDENCE_{envelope.evidence_status.value}"
@@ -284,7 +346,10 @@ def _external(connection, args, environment_identity, schema):
         "incident_type": "EXTERNAL_EXECUTION",
         "incident_identity": f"{args.source}:{args.trade_id}:{args.order_id}",
         "planner_version": PLANNER_VERSION,
-        "semantic_fingerprint": payload.get("semantic_fingerprint"),
+        "semantic_fingerprint": (
+            payload.get("source_fingerprint")
+            or payload.get("semantic_fingerprint")
+        ),
         "source": args.source, "trade_id": args.trade_id,
         "exchange_order_id": args.order_id,
         "client_order_id": payload.get("client_order_id"),
@@ -304,8 +369,181 @@ def _external(connection, args, environment_identity, schema):
     }
 
 
+def _raw_inventory(state):
+    fills = (state or {}).get("fills") or []
+    entries = [row for row in fills if str(row.get("side")).upper() == "BUY"]
+    exits = [row for row in fills if str(row.get("side")).upper() == "SELL"]
+    gross_entry = sum(
+        (Decimal(str(row.get("executed_qty") or 0)) for row in entries),
+        Decimal("0"),
+    )
+    entry_base_fee = sum(
+        (
+            Decimal(str(row.get("commission_amount") or 0))
+            for row in entries
+            if str(row.get("commission_asset") or "").upper()
+            and str(row.get("commission_asset") or "").upper()
+            == str(row.get("symbol") or "")[:-4].upper()
+        ),
+        Decimal("0"),
+    )
+    gross_exit = sum(
+        (Decimal(str(row.get("executed_qty") or 0)) for row in exits),
+        Decimal("0"),
+    )
+    exit_base_fee = sum(
+        (
+            Decimal(str(row.get("commission_amount") or 0))
+            for row in exits
+            if str(row.get("commission_asset") or "").upper()
+            == str(row.get("symbol") or "")[:-4].upper()
+        ),
+        Decimal("0"),
+    )
+    net_entry = gross_entry - entry_base_fee
+    return gross_entry, net_entry, gross_exit, net_entry - gross_exit - exit_base_fee
+
+
+def _cohort_item(connection, position_id: int, *, closed: bool):
+    envelope = LegacyPositionEvidenceRepository().read(
+        connection, position_id=position_id,
+    )
+    state = envelope.current_state or {}
+    position = state.get("position") or {}
+    gross_entry, net_entry, gross_exit, raw_remaining = _raw_inventory(state)
+    result = (
+        LegacyPositionRecomputationService().recompute(envelope.evidence)
+        if envelope.evidence is not None else None
+    )
+    normalized = result.normalized_remaining_qty if result else raw_remaining
+    ft = state.get("financial_truth") or []
+    ft_status = ft[0].get("financial_truth_status") if ft else "ABSENT"
+    reasons = list(envelope.missing_evidence + envelope.conflicting_evidence)
+    if closed:
+        if envelope.conflicting_evidence:
+            planner_status = "INVENTORY_CONFLICT"
+        elif envelope.evidence is not None and result.financial_truth_eligibility:
+            planner_status = "READY_FOR_FINANCIAL_TRUTH"
+        elif "FEE_EVIDENCE" in reasons:
+            planner_status = "MISSING_FEE"
+        elif any(reason.endswith("FILLS") for reason in reasons):
+            planner_status = "MISSING_FILL"
+        elif "ACCOUNT_PROVENANCE" in reasons:
+            planner_status = "MISSING_PROVENANCE"
+        else:
+            planner_status = "UNRESOLVED"
+    else:
+        if envelope.conflicting_evidence:
+            planner_status = "CONFLICT"
+        elif result and result.normalized_remaining_qty == 0:
+            planner_status = (
+                "DUST_WITHIN_PRECISION"
+                if result.raw_remaining_qty != 0 else "PHANTOM_OPEN"
+            )
+        elif result and result.normalized_remaining_qty > 0:
+            planner_status = "REAL_OPEN_POSITION"
+        elif gross_exit > 0 and raw_remaining > 0:
+            planner_status = "PARTIALLY_EXITED"
+        elif "EXIT_FILLS" in reasons:
+            planner_status = "MISSING_EXIT_EVIDENCE"
+        else:
+            planner_status = "CONFLICT"
+    semantic = semantic_repair_fingerprint({
+        "position_id": position_id,
+        "status": position.get("status"),
+        "gross_entry_qty": gross_entry,
+        "net_entry_inventory": net_entry,
+        "gross_exit_qty": gross_exit,
+        "raw_remaining_qty": raw_remaining,
+        "financial_truth_status": ft_status,
+        "blocking_reasons": sorted(reasons),
+    })
+    return {
+        "position_id": position_id,
+        "symbol": position.get("symbol"),
+        "interval": position.get("interval"),
+        "strategy": position.get("strategy"),
+        "lifecycle_status": position.get("status"),
+        "financial_truth_status": ft_status,
+        "gross_entry_qty": gross_entry,
+        "net_entry_inventory": net_entry,
+        "gross_exit_qty": gross_exit,
+        "raw_remaining_qty": raw_remaining,
+        "normalized_remaining_qty": normalized,
+        "fee_completeness": "INCOMPLETE" if "FEE_EVIDENCE" in reasons else "COMPLETE",
+        "provenance_completeness": (
+            "INCOMPLETE" if "ACCOUNT_PROVENANCE" in reasons else "COMPLETE"
+        ),
+        "planner_status": planner_status,
+        "blocking_reasons": reasons,
+        "recommended_next_action": (
+            "REVIEW_FOR_REPAIR" if reasons else "PLAN_ONLY"
+        ),
+        "semantic_fingerprint": semantic,
+    }
+
+
+def _cohort(connection, args, environment_identity, schema, *, closed: bool):
+    if schema["status"] != SchemaContractStatus.PRESENT_VALID.value:
+        raise RuntimeError("SCHEMA_NOT_READY")
+    if not 1 <= args.limit <= 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    with connection.cursor() as cur:
+        if closed:
+            cur.execute(
+                """
+                SELECT p.id
+                FROM positions p
+                LEFT JOIN canonical_financial_truth_v1 ft ON ft.position_id=p.id
+                WHERE p.status='CLOSED'
+                  AND COALESCE(ft.financial_truth_status,'ABSENT') <> 'COMPLETE'
+                ORDER BY p.exit_time DESC NULLS LAST,p.id DESC
+                LIMIT %s
+                """,
+                (args.limit,),
+            )
+        else:
+            cur.execute(
+                "SELECT id FROM positions WHERE status='OPEN' "
+                "ORDER BY entry_time,id LIMIT %s",
+                (args.limit,),
+            )
+        ids = [int(row[0]) for row in cur.fetchall()]
+    items = [
+        _cohort_item(connection, position_id, closed=closed)
+        for position_id in ids
+    ]
+    statuses = [item["planner_status"] for item in items]
+    summary = {
+        "total": len(items),
+        "ready": sum(status == "READY_FOR_FINANCIAL_TRUTH" for status in statuses),
+        "incomplete": sum(status.startswith("MISSING_") or status == "UNRESOLVED" for status in statuses),
+        "conflict": sum("CONFLICT" in status for status in statuses),
+        "phantom_open": statuses.count("PHANTOM_OPEN"),
+        "real_open": statuses.count("REAL_OPEN_POSITION"),
+        "dust": statuses.count("DUST_WITHIN_PRECISION"),
+        "missing_financial_truth": sum(
+            item["financial_truth_status"] != "COMPLETE" for item in items
+        ),
+        "missing_fills": statuses.count("MISSING_FILL"),
+        "missing_provenance": statuses.count("MISSING_PROVENANCE"),
+    }
+    return {
+        "schema_status": schema["status"],
+        "environment_identity": environment_identity,
+        "command": (
+            "audit-unresolved-closed" if closed else "audit-open-cohort"
+        ),
+        "limit": args.limit,
+        "items": items,
+        "summary": summary,
+    }
+
+
 def main(argv=None) -> int:
-    args = parser().parse_args(argv)
+    args = parser().parse_args(
+        _normalize_global_options(sys.argv[1:] if argv is None else argv)
+    )
     try:
         factory = _connection_factory(args)
         with read_only_db_conn(factory) as connection:
@@ -321,6 +559,14 @@ def main(argv=None) -> int:
                 result = _position(connection, args, identity, schema)
             elif args.command == "plan-fill":
                 result = _fill(connection, args, identity, schema)
+            elif args.command == "audit-open-cohort":
+                result = _cohort(
+                    connection, args, identity, schema, closed=False,
+                )
+            elif args.command == "audit-unresolved-closed":
+                result = _cohort(
+                    connection, args, identity, schema, closed=True,
+                )
             else:
                 result = _external(connection, args, identity, schema)
         rendered = json.dumps(

@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
+import hashlib
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
 from common.legacy_recovery import (
@@ -112,12 +115,6 @@ class LegacyPositionEvidenceRepository:
                 (int(position_id),),
             )
             financial_truth = _rows(cur)
-            cur.execute(
-                "SELECT * FROM strategy_events WHERE symbol=%s "
-                "ORDER BY created_at,id",
-                (position_symbol,),
-            )
-            strategy_events = _rows(cur)
             cur.execute(
                 "SELECT * FROM legacy_repair_audit_v1 "
                 "WHERE incident_type='LEGACY_POSITION' AND incident_identity=%s "
@@ -228,7 +225,10 @@ class LegacyPositionEvidenceRepository:
             "position": position, "orders": orders, "fills": fills,
             "ingestion": ingestion, "lifecycle": lifecycle,
             "financial_truth": financial_truth, "audit": audit,
-            "strategy_events": strategy_events,
+            # Strategy telemetry is deliberately excluded. Economic evidence is
+            # linked by position/order IDs above; a symbol-wide telemetry scan
+            # is neither authoritative nor bounded.
+            "strategy_events": [],
         }
         return EvidenceEnvelope(
             status, tuple(dict.fromkeys(missing)),
@@ -336,6 +336,58 @@ class ExternalExecutionEvidenceRepository:
             (), tuple(conflicts),
             {"provenance_id": row["provenance_id"]}, payload,
             {"provenance": row},
+        )
+
+
+class ExternalEvidenceFileAdapter:
+    """Validate operator-supplied immutable exchange evidence without DB writes."""
+
+    REQUIRED_FIELDS = (
+        "source", "exchange_order_id", "trade_id", "symbol", "side", "qty",
+        "price", "fee", "fee_asset", "timestamp", "client_order_id",
+        "account_identity",
+    )
+
+    def read(
+        self, path: str | Path, *, source: str, trade_id: str, order_id: str
+    ) -> EvidenceEnvelope:
+        raw = Path(path).read_bytes()
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("INVALID_EXTERNAL_EVIDENCE_JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("EXTERNAL_EVIDENCE_MUST_BE_OBJECT")
+        missing = tuple(
+            f"EXTERNAL_EVIDENCE_FIELD:{field}"
+            for field in self.REQUIRED_FIELDS
+            if field not in payload or payload[field] is None
+        )
+        if missing:
+            return EvidenceEnvelope(EvidenceStatus.INCOMPLETE, missing, (), {})
+        conflicts = []
+        identities = (
+            ("source", str(payload["source"]).lower(), str(source).lower()),
+            ("trade_id", str(payload["trade_id"]), str(trade_id)),
+            ("exchange_order_id", str(payload["exchange_order_id"]), str(order_id)),
+        )
+        conflicts.extend(
+            f"EXTERNAL_EVIDENCE_IDENTITY:{name}"
+            for name, actual, expected in identities if actual != expected
+        )
+        if str(payload["side"]).upper() not in {"BUY", "SELL"}:
+            conflicts.append("EXTERNAL_EVIDENCE_SIDE")
+        canonical = dict(payload)
+        supplied_fingerprint = canonical.pop("source_fingerprint", None)
+        fingerprint = semantic_repair_fingerprint(canonical)
+        if supplied_fingerprint not in (None, fingerprint):
+            conflicts.append("EXTERNAL_EVIDENCE_FINGERPRINT")
+        canonical["source_fingerprint"] = fingerprint
+        status = EvidenceStatus.CONFLICT if conflicts else EvidenceStatus.COMPLETE
+        return EvidenceEnvelope(
+            status, (), tuple(conflicts),
+            {"adapter": "OPERATOR_IMMUTABLE_JSON", "path": str(path)},
+            canonical, {"raw_sha256": hashlib.sha256(raw).hexdigest()},
         )
 
 

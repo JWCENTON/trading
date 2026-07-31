@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +22,7 @@ from common.legacy_recovery_schema import (
     SCHEMA_VERSION,
     SchemaContractStatus,
 )
-from tools.legacy_recovery import _position, main as cli_main
+from tools.legacy_recovery import _fill, _position, main as cli_main
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,11 +53,14 @@ def contract_db(disposable_postgres_v16):
             DROP SCHEMA public CASCADE; CREATE SCHEMA public;
             CREATE TABLE positions(
               id BIGINT PRIMARY KEY,symbol TEXT,strategy TEXT,"interval" TEXT,
-              status TEXT,qty NUMERIC,entry_order_id TEXT,exit_order_id TEXT
+              status TEXT,qty NUMERIC,entry_order_id TEXT,exit_order_id TEXT,
+              entry_time TIMESTAMPTZ DEFAULT now(),exit_time TIMESTAMPTZ
             );
             CREATE TABLE binance_orders(
               id BIGSERIAL PRIMARY KEY,order_id TEXT,symbol TEXT,side TEXT,
-              client_order_id TEXT,position_id BIGINT,reconciled_position_id BIGINT
+              client_order_id TEXT,position_id BIGINT,reconciled_position_id BIGINT,
+              strategy TEXT,"interval" TEXT,order_purpose TEXT,
+              created_at TIMESTAMPTZ DEFAULT now()
             );
             CREATE TABLE binance_order_fills(
               id BIGSERIAL PRIMARY KEY,source TEXT,trade_id TEXT,order_id TEXT,
@@ -213,7 +217,9 @@ def test_gate_d_rollback_after_history_fails_closed(contract_db):
 def _seed_complete_position(conn):
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO positions VALUES "
+            "INSERT INTO positions("
+            "id,symbol,strategy,\"interval\",status,qty,entry_order_id,exit_order_id"
+            ") VALUES "
             "(3080,'BNBUSDC','TREND','5m','OPEN',0.000123,'entry','exit')"
         )
         cur.execute(
@@ -283,6 +289,24 @@ def test_gate_e_position_reader_is_complete_and_decimal_safe(contract_db):
     assert plan["provenance_completeness"] == "COMPLETE"
 
 
+def test_gate_e2_large_unrelated_strategy_history_is_not_read(contract_db):
+    _apply(contract_db, FORWARD)
+    _seed_complete_position(contract_db)
+    with contract_db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO strategy_events(symbol) "
+            "SELECT 'BNBUSDC' FROM generate_series(1,100000)"
+        )
+    contract_db.commit()
+    started = time.monotonic()
+    envelope = LegacyPositionEvidenceRepository().read(
+        contract_db, position_id=3080,
+    )
+    elapsed = time.monotonic() - started
+    assert envelope.current_state["strategy_events"] == []
+    assert elapsed < 2
+
+
 def test_gate_f_unapplied_reader_and_gate_g_external(contract_db):
     _apply(contract_db, FORWARD)
     with contract_db.cursor() as cur:
@@ -321,6 +345,38 @@ def test_gate_f_unapplied_reader_and_gate_g_external(contract_db):
     assert external.evidence_status is EvidenceStatus.COMPLETE
     assert external.evidence["client_order_id"] is None
     assert external.evidence["position_id"] is None
+
+
+def test_gate_g2_bot_fill_without_position_has_explicit_incident_model(contract_db):
+    _apply(contract_db, FORWARD)
+    with contract_db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO binance_orders("
+            "order_id,symbol,side,client_order_id,strategy,\"interval\","
+            "order_purpose) VALUES "
+            "('missing-position','BNBUSDC','BUY','bot-entry','TREND','1m','ENTRY')"
+        )
+        cur.execute(
+            "INSERT INTO exchange_fill_ingestion_state_v2("
+            "source,account_identity_key,symbol,trade_id,order_id,side,"
+            "source_fingerprint,application_status,authoritative_payload,"
+            "last_decision) VALUES "
+            "('okx','acct','BNBUSDC','trade-missing','missing-position','BUY',"
+            "%s,'OBSERVED_NOT_APPLIED','{}','NEW')",
+            ("f" * 64,),
+        )
+    contract_db.commit()
+    result = _fill(
+        contract_db,
+        SimpleNamespace(
+            source="okx", trade_id="trade-missing",
+            order_id="missing-position",
+        ),
+        {"environment": "LIVE", "database": "fixture"},
+        {"status": "PRESENT_VALID"},
+    )
+    assert result["incident_model"] == "MISSING_POSITION_AFTER_FILLED_ENTRY"
+    assert result["linkage_classification"] == "BOT_OWNED_LINKABLE"
 
 
 def test_gate_h_read_only_transaction_rejects_writer(contract_db):
