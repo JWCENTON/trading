@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from time import monotonic
 
 from common.closed_outcome_read_model import (
-    CLOSED_OUTCOME_ROWS_SQL,
+    build_closed_outcome_rows_sql,
     fetch_closed_outcome_summary,
 )
 
@@ -239,7 +240,7 @@ def test_canonical_contract_and_boundaries(disposable_postgres_v16):
             positions_before = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM simulated_execution_fills_v1")
             fills_before = cur.fetchone()[0]
-            cur.execute(CLOSED_OUTCOME_ROWS_SQL, params)
+            cur.execute(build_closed_outcome_rows_sql("PAPER"), params)
             rows = {row[0]: row for row in cur.fetchall()}
 
             assert set(rows) == set(range(1, 11)) | {14}
@@ -264,7 +265,7 @@ def test_canonical_contract_and_boundaries(disposable_postgres_v16):
             assert all(row[7] is (row[6] != "UNRESOLVED") for row in rows.values())
 
             summary = fetch_closed_outcome_summary(
-                cur, window_start=START, window_end=END
+                cur, environment="PAPER", window_start=START, window_end=END
             )
             assert summary["trades"] == 11
             assert summary["resolved_trades"] == 7
@@ -297,7 +298,7 @@ def test_multiple_fills_do_not_duplicate_position(disposable_postgres_v16):
             _fill(cur, 20, "EXIT", "6", fee="0.05", index=3)
             conn.commit()
             summary = fetch_closed_outcome_summary(
-                cur, window_start=START, window_end=END
+                cur, environment="PAPER", window_start=START, window_end=END
             )
         assert summary["trades"] == 1
         assert summary["wins"] == 1
@@ -335,7 +336,7 @@ def test_live_legacy_execution_proven_golden_cohort(disposable_postgres_v16):
                 "UPDATE positions SET exit_order_id='legacy-3090-exit' WHERE id=3090"
             )
             conn.commit()
-            cur.execute(CLOSED_OUTCOME_ROWS_SQL, {
+            cur.execute(build_closed_outcome_rows_sql("LIVE"), {
                 "window_start": START, "window_end": END,
             })
             rows = {row[0]: row for row in cur.fetchall()}
@@ -367,7 +368,7 @@ def test_vps_paper_37_qty_zero_stored_outcomes(disposable_postgres_v16):
                 )
             conn.commit()
             summary = fetch_closed_outcome_summary(
-                cur, window_start=START, window_end=END,
+                cur, environment="PAPER", window_start=START, window_end=END,
             )
         assert summary["trades"] == 37
         assert summary["resolved_trades"] == 37
@@ -378,5 +379,57 @@ def test_vps_paper_37_qty_zero_stored_outcomes(disposable_postgres_v16):
         assert summary["fees"] == Decimal("0.59250238")
         assert summary["net_pnl"] == Decimal("0.73379024")
         assert summary["win_rate"].quantize(Decimal("0.0000000001")) == Decimal("75.6756756757")
+    finally:
+        conn.close()
+
+
+def test_environment_isolation_and_paper_complexity_gate(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16, "environment_isolation")
+    try:
+        with conn.cursor() as cur:
+            _position(cur, 5000)
+            _fill(cur, 5000, "ENTRY", "10")
+            _fill(cur, 5000, "EXIT", "12", index=1)
+            _legacy_fill(cur, 5000, "ENTRY", "1", "10", "0.10")
+            _legacy_fill(cur, 5000, "EXIT", "1", "9", "0.10")
+            cur.execute(
+                """
+                INSERT INTO positions(id,status,side,qty,exit_time)
+                SELECT 10000 + n, 'CLOSED', 'LONG', 0, %s
+                FROM generate_series(1, 10000) n
+                """,
+                (START,),
+            )
+            cur.execute(
+                """
+                INSERT INTO binance_order_fills(
+                  source,trade_id,order_id,symbol,side,executed_qty,
+                  quote_notional_usdc,commission_amount,commission_asset,commission_usdc
+                )
+                SELECT 'okx', 'noise-' || n, 'unrelated-' || n,
+                  'BTCUSDC', 'BUY', 1, 10, 0.1, 'USDC', 0.1
+                FROM generate_series(1, 20000) n
+                """
+            )
+            conn.commit()
+
+            params = {"window_start": START, "window_end": END}
+            started = monotonic()
+            cur.execute(build_closed_outcome_rows_sql("PAPER"), params)
+            paper_rows = {row[0]: row for row in cur.fetchall()}
+            assert monotonic() - started < 2
+            cur.execute(build_closed_outcome_rows_sql("LIVE"), params)
+            live_rows = {row[0]: row for row in cur.fetchall()}
+
+            assert paper_rows[5000][2] == "PAPER_SIMULATED_FILLS"
+            assert paper_rows[5000][6] == "WIN"
+            assert live_rows[5000][2] == "LEGACY_EXECUTION_PROVEN"
+            assert live_rows[5000][6] == "LOSS"
+
+            cur.execute(
+                "EXPLAIN (FORMAT JSON) " + build_closed_outcome_rows_sql("PAPER"),
+                params,
+            )
+            assert "binance_order_fills" not in str(cur.fetchone()[0])
     finally:
         conn.close()

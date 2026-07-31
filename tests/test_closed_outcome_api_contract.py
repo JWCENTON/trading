@@ -1,5 +1,12 @@
 from pathlib import Path
 
+import pytest
+
+from common.closed_outcome_read_model import (
+    build_closed_outcome_rows_sql,
+    build_closed_outcome_summary_sql,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 API = (ROOT / "api/main.py").read_text()
@@ -20,8 +27,25 @@ def test_model_is_bounded_and_never_uses_terminal_qty_for_pnl():
     assert "p.exit_time <= %(window_end)s" in MODEL
     assert "p.qty" not in MODEL
     assert "FROM simulated_execution_fills_v1 f" in MODEL
-    assert "FROM bounded_positions p\n  JOIN binance_order_fills f" in MODEL
+    assert "JOIN binance_order_fills f ON f.order_id = p.order_id" in MODEL
     assert "LEGACY_EXECUTION_PROVEN" in MODEL
+
+
+def test_environment_uses_physically_isolated_query_shapes():
+    paper = build_closed_outcome_summary_sql("PAPER")
+    live = build_closed_outcome_rows_sql("LIVE")
+    assert "binance_order_fills" not in paper
+    assert "exchange_fill_ingestion_state_v2" not in paper
+    assert "simulated_execution_fills_v1" not in live
+    assert " OR f.order_id" not in live
+    with pytest.raises(ValueError, match="unsupported closed-outcome environment"):
+        build_closed_outcome_summary_sql("UNKNOWN")
+
+
+def test_recent_rows_can_be_bounded_to_the_preselected_position_cohort():
+    sql = build_closed_outcome_rows_sql("PAPER", bounded_position_ids=True)
+    assert "p.id = ANY(%(position_ids)s)" in sql
+    assert "ORDER BY position_id" in sql
 
 
 def test_unresolved_and_flat_are_distinct():

@@ -14,7 +14,7 @@ OUTCOME_SOURCE_PRECEDENCE = (
 )
 
 
-CLOSED_OUTCOME_CTE = """
+LIVE_CLOSED_OUTCOME_CTE = """
 WITH bounded_positions AS MATERIALIZED (
   SELECT p.*
   FROM positions p
@@ -29,9 +29,19 @@ bounded_financial_truth AS MATERIALIZED (
   JOIN bounded_positions p ON p.id = ft.position_id
   WHERE ft.financial_truth_status = 'COMPLETE'
 ),
+bounded_legacy_order_identities AS MATERIALIZED (
+  SELECT p.id AS position_id, p.symbol, p.side, p.entry_order_id AS order_id,
+         'ENTRY'::text AS purpose
+  FROM bounded_positions p
+  WHERE p.entry_order_id IS NOT NULL
+  UNION ALL
+  SELECT p.id, p.symbol, p.side, p.exit_order_id, 'EXIT'::text
+  FROM bounded_positions p
+  WHERE p.exit_order_id IS NOT NULL
+),
 bounded_legacy_fills AS MATERIALIZED (
   SELECT
-    p.id AS position_id,
+    p.position_id,
     f.source,
     f.trade_id,
     f.order_id,
@@ -42,15 +52,9 @@ bounded_legacy_fills AS MATERIALIZED (
     f.commission_amount,
     f.commission_asset,
     f.commission_usdc,
-    CASE
-      WHEN f.order_id = p.entry_order_id THEN 'ENTRY'
-      WHEN f.order_id = p.exit_order_id THEN 'EXIT'
-    END AS purpose
-  FROM bounded_positions p
-  JOIN binance_order_fills f
-    ON f.order_id = p.entry_order_id OR f.order_id = p.exit_order_id
-  WHERE p.entry_order_id IS NOT NULL
-    AND p.exit_order_id IS NOT NULL
+    p.purpose
+  FROM bounded_legacy_order_identities p
+  JOIN binance_order_fills f ON f.order_id = p.order_id
 ),
 bounded_legacy_execution AS MATERIALIZED (
   SELECT
@@ -153,25 +157,6 @@ bounded_legacy_outcomes AS MATERIALIZED (
   FROM bounded_positions p
   JOIN legacy_calculated l ON l.position_id = p.id
 ),
-bounded_simulated_fills AS MATERIALIZED (
-  SELECT
-    f.position_id,
-    COUNT(*) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_fill_count,
-    COUNT(*) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_fill_count,
-    SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_qty,
-    SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_qty,
-    SUM(f.fill_notional) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_notional,
-    SUM(f.fill_notional) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_notional,
-    SUM(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc))
-      AS total_fees,
-    BOOL_AND(
-      COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc) IS NOT NULL
-    ) AS fees_complete
-  FROM simulated_execution_fills_v1 f
-  JOIN bounded_positions p ON p.id = f.position_id
-  WHERE f.order_purpose IN ('ENTRY', 'EXIT')
-  GROUP BY f.position_id
-),
 evidence AS (
   SELECT
     p.id AS position_id,
@@ -192,14 +177,6 @@ evidence AS (
     legacy.gross_pnl - legacy.fees AS legacy_net,
     legacy.evidence_complete AS legacy_complete,
     legacy.blocking_reasons AS legacy_blocking_reasons,
-    fills.entry_fill_count,
-    fills.exit_fill_count,
-    fills.entry_qty,
-    fills.exit_qty,
-    fills.entry_notional,
-    fills.exit_notional,
-    fills.total_fees,
-    fills.fees_complete,
     (
       ft.position_id IS NOT NULL
       AND ft.authoritative_gross_pnl IS NOT NULL
@@ -222,22 +199,10 @@ evidence AS (
         AND p.fees_usdc = 0
         AND p.net_pnl_usdc = 0
       )
-    ) AS stored_proven,
-    (
-      COALESCE(fills.entry_fill_count, 0) > 0
-      AND COALESCE(fills.exit_fill_count, 0) > 0
-      AND fills.entry_qty IS NOT NULL
-      AND fills.exit_qty IS NOT NULL
-      AND fills.entry_qty = fills.exit_qty
-      AND fills.entry_notional IS NOT NULL
-      AND fills.exit_notional IS NOT NULL
-      AND fills.fees_complete IS TRUE
-      AND fills.total_fees IS NOT NULL
-    ) AS fills_complete
+    ) AS stored_proven
   FROM bounded_positions p
   LEFT JOIN bounded_financial_truth ft ON ft.position_id = p.id
   LEFT JOIN bounded_legacy_outcomes legacy ON legacy.position_id = p.id
-  LEFT JOIN bounded_simulated_fills fills ON fills.position_id = p.id
 ),
 closed_outcomes AS (
   SELECT
@@ -246,45 +211,36 @@ closed_outcomes AS (
       WHEN financial_truth_complete THEN 'RESOLVED'
       WHEN legacy_complete THEN 'RESOLVED'
       WHEN stored_proven THEN 'RESOLVED'
-      WHEN fills_complete THEN 'RESOLVED'
       ELSE 'UNRESOLVED'
     END AS outcome_status,
     CASE
       WHEN financial_truth_complete THEN 'FINANCIAL_TRUTH'
       WHEN legacy_complete THEN 'LEGACY_EXECUTION_PROVEN'
       WHEN stored_proven THEN 'STORED_PROVEN'
-      WHEN fills_complete THEN 'PAPER_SIMULATED_FILLS'
       ELSE 'UNRESOLVED'
     END AS outcome_source,
     CASE
       WHEN financial_truth_complete THEN ft_gross
       WHEN legacy_complete THEN legacy_gross
       WHEN stored_proven THEN stored_gross
-      WHEN fills_complete AND UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-        THEN entry_notional - exit_notional
-      WHEN fills_complete THEN exit_notional - entry_notional
       ELSE NULL
     END::numeric AS gross_pnl_usdc,
     CASE
       WHEN financial_truth_complete THEN ft_fees
       WHEN legacy_complete THEN legacy_fees
       WHEN stored_proven THEN stored_fees
-      WHEN fills_complete THEN total_fees
       ELSE NULL
     END::numeric AS fees_usdc,
     CASE
       WHEN financial_truth_complete THEN ft_net
       WHEN legacy_complete THEN legacy_net
       WHEN stored_proven THEN stored_net
-      WHEN fills_complete AND UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
-        THEN entry_notional - exit_notional - total_fees
-      WHEN fills_complete THEN exit_notional - entry_notional - total_fees
       ELSE NULL
     END::numeric AS net_pnl_usdc,
-    (financial_truth_complete OR legacy_complete OR stored_proven OR fills_complete)
+    (financial_truth_complete OR legacy_complete OR stored_proven)
       AS evidence_complete,
     CASE
-      WHEN financial_truth_complete OR legacy_complete OR stored_proven OR fills_complete
+      WHEN financial_truth_complete OR legacy_complete OR stored_proven
         THEN 'COMPLETE'
       ELSE 'INCOMPLETE'
     END AS evidence_status,
@@ -308,24 +264,113 @@ classified_outcomes AS (
 """
 
 
-CLOSED_OUTCOME_ROWS_SQL = CLOSED_OUTCOME_CTE + """
+PAPER_CLOSED_OUTCOME_CTE = """
+WITH bounded_positions AS MATERIALIZED (
+  SELECT p.* FROM positions p
+  WHERE p.status = 'CLOSED' AND p.exit_time IS NOT NULL
+    AND p.exit_time >= %(window_start)s AND p.exit_time <= %(window_end)s
+),
+bounded_financial_truth AS MATERIALIZED (
+  SELECT ft.* FROM canonical_financial_truth_v1 ft
+  JOIN bounded_positions p ON p.id = ft.position_id
+  WHERE ft.financial_truth_status = 'COMPLETE'
+),
+bounded_simulated_fills AS MATERIALIZED (
+  SELECT f.position_id,
+    COUNT(*) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_fill_count,
+    COUNT(*) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_fill_count,
+    SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_qty,
+    SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_qty,
+    SUM(f.fill_notional) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_notional,
+    SUM(f.fill_notional) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_notional,
+    SUM(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc)) AS total_fees,
+    BOOL_AND(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc) IS NOT NULL)
+      AS fees_complete
+  FROM simulated_execution_fills_v1 f
+  JOIN bounded_positions p ON p.id = f.position_id
+  WHERE f.order_purpose IN ('ENTRY', 'EXIT')
+  GROUP BY f.position_id
+),
+evidence AS (
+  SELECT p.id AS position_id, p.side,
+    p.gross_pnl_usdc AS stored_gross, p.fees_usdc AS stored_fees,
+    p.net_pnl_usdc AS stored_net,
+    ft.authoritative_gross_pnl AS ft_gross,
+    COALESCE(ft.authoritative_fees_usdc,
+      ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) AS ft_fees,
+    ft.authoritative_net_pnl AS ft_net,
+    fills.entry_notional, fills.exit_notional, fills.total_fees,
+    (ft.position_id IS NOT NULL AND ft.authoritative_gross_pnl IS NOT NULL
+      AND ft.authoritative_net_pnl IS NOT NULL
+      AND COALESCE(ft.authoritative_fees_usdc,
+        ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) IS NOT NULL
+    ) AS financial_truth_complete,
+    (p.gross_pnl_usdc IS NOT NULL AND p.fees_usdc IS NOT NULL
+      AND p.net_pnl_usdc IS NOT NULL
+      AND p.inventory_evidence_status = 'COMPLETE'
+      AND p.inventory_contract_generation IS NOT NULL
+      AND p.exit_context_json->>'outcome_provenance' = 'CLOSED_OUTCOME_V1'
+      AND abs(p.net_pnl_usdc - (p.gross_pnl_usdc - p.fees_usdc)) <= 0.00000001
+      AND NOT (p.gross_pnl_usdc = 0 AND p.fees_usdc = 0 AND p.net_pnl_usdc = 0)
+    ) AS stored_proven,
+    (COALESCE(fills.entry_fill_count, 0) > 0
+      AND COALESCE(fills.exit_fill_count, 0) > 0
+      AND fills.entry_qty IS NOT NULL AND fills.exit_qty IS NOT NULL
+      AND fills.entry_qty = fills.exit_qty
+      AND fills.entry_notional IS NOT NULL AND fills.exit_notional IS NOT NULL
+      AND fills.fees_complete IS TRUE AND fills.total_fees IS NOT NULL
+    ) AS fills_complete
+  FROM bounded_positions p
+  LEFT JOIN bounded_financial_truth ft ON ft.position_id = p.id
+  LEFT JOIN bounded_simulated_fills fills ON fills.position_id = p.id
+),
+closed_outcomes AS (
+  SELECT position_id,
+    CASE WHEN financial_truth_complete OR stored_proven OR fills_complete
+      THEN 'RESOLVED' ELSE 'UNRESOLVED' END AS outcome_status,
+    CASE WHEN financial_truth_complete THEN 'FINANCIAL_TRUTH'
+      WHEN stored_proven THEN 'STORED_PROVEN'
+      WHEN fills_complete THEN 'PAPER_SIMULATED_FILLS'
+      ELSE 'UNRESOLVED' END AS outcome_source,
+    CASE WHEN financial_truth_complete THEN ft_gross
+      WHEN stored_proven THEN stored_gross
+      WHEN fills_complete AND UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+        THEN entry_notional - exit_notional
+      WHEN fills_complete THEN exit_notional - entry_notional END::numeric AS gross_pnl_usdc,
+    CASE WHEN financial_truth_complete THEN ft_fees
+      WHEN stored_proven THEN stored_fees
+      WHEN fills_complete THEN total_fees END::numeric AS fees_usdc,
+    CASE WHEN financial_truth_complete THEN ft_net
+      WHEN stored_proven THEN stored_net
+      WHEN fills_complete AND UPPER(COALESCE(side, 'LONG')) IN ('SELL', 'SHORT')
+        THEN entry_notional - exit_notional - total_fees
+      WHEN fills_complete THEN exit_notional - entry_notional - total_fees
+      END::numeric AS net_pnl_usdc,
+    (financial_truth_complete OR stored_proven OR fills_complete) AS evidence_complete,
+    CASE WHEN financial_truth_complete OR stored_proven OR fills_complete
+      THEN 'COMPLETE' ELSE 'INCOMPLETE' END AS evidence_status,
+    ARRAY[]::text[] AS blocking_reasons
+  FROM evidence
+),
+classified_outcomes AS (
+  SELECT *, CASE WHEN NOT evidence_complete THEN 'UNRESOLVED'
+    WHEN net_pnl_usdc > 0 THEN 'WIN' WHEN net_pnl_usdc < 0 THEN 'LOSS'
+    ELSE 'FLAT' END AS result_class
+  FROM closed_outcomes
+)
+"""
+
+
+ROWS_SQL_SUFFIX = """
 SELECT
-  position_id,
-  outcome_status,
-  outcome_source,
-  gross_pnl_usdc,
-  fees_usdc,
-  net_pnl_usdc,
-  result_class,
-  evidence_complete,
-  evidence_status,
-  blocking_reasons
+  position_id, outcome_status, outcome_source, gross_pnl_usdc, fees_usdc,
+  net_pnl_usdc, result_class, evidence_complete, evidence_status, blocking_reasons
 FROM classified_outcomes
 ORDER BY position_id
 """
 
 
-CLOSED_OUTCOME_SUMMARY_SQL = CLOSED_OUTCOME_CTE + """
+SUMMARY_SQL_SUFFIX = """
 SELECT
   COUNT(*)::int AS trades,
   COUNT(*) FILTER (WHERE evidence_complete)::int AS resolved_trades,
@@ -338,27 +383,49 @@ SELECT
   SUM(fees_usdc) FILTER (WHERE evidence_complete) AS fees,
   MAX(net_pnl_usdc) FILTER (WHERE evidence_complete) AS best_trade,
   MIN(net_pnl_usdc) FILTER (WHERE evidence_complete) AS worst_trade,
-  COALESCE(
-    jsonb_object_agg(outcome_source, source_count)
-      FILTER (WHERE outcome_source IS NOT NULL),
-    '{}'::jsonb
-  ) AS outcome_source_counts
+  COALESCE(jsonb_object_agg(outcome_source, source_count)
+    FILTER (WHERE outcome_source IS NOT NULL), '{}'::jsonb) AS outcome_source_counts
 FROM (
-  SELECT
-    c.*,
-    COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count
+  SELECT c.*, COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count
   FROM classified_outcomes c
 ) outcomes
 """
 
 
+def _closed_outcome_cte(environment: str) -> str:
+    normalized = str(environment).strip().upper()
+    if normalized == "LIVE":
+        return LIVE_CLOSED_OUTCOME_CTE
+    if normalized == "PAPER":
+        return PAPER_CLOSED_OUTCOME_CTE
+    raise ValueError(f"unsupported closed-outcome environment: {environment!r}")
+
+
+def build_closed_outcome_rows_sql(
+    environment: str, *, bounded_position_ids: bool = False
+) -> str:
+    cte = _closed_outcome_cte(environment)
+    if bounded_position_ids:
+        cte = cte.replace(
+            "AND p.exit_time <= %(window_end)s",
+            "AND p.exit_time <= %(window_end)s\n"
+            "    AND p.id = ANY(%(position_ids)s)",
+            1,
+        )
+    return cte + ROWS_SQL_SUFFIX
+
+
+def build_closed_outcome_summary_sql(environment: str) -> str:
+    return _closed_outcome_cte(environment) + SUMMARY_SQL_SUFFIX
+
+
 def fetch_closed_outcome_summary(
-    cur: Any, *, window_start: datetime, window_end: datetime
+    cur: Any, *, environment: str, window_start: datetime, window_end: datetime
 ) -> dict[str, Any]:
     if window_start > window_end:
         raise ValueError("window_start must not be after window_end")
     cur.execute(
-        CLOSED_OUTCOME_SUMMARY_SQL,
+        build_closed_outcome_summary_sql(environment),
         {"window_start": window_start, "window_end": window_end},
     )
     row = cur.fetchone()
@@ -392,13 +459,20 @@ def fetch_closed_outcome_summary(
 
 
 def fetch_closed_outcomes(
-    cur: Any, *, window_start: datetime, window_end: datetime
+    cur: Any, *, environment: str, window_start: datetime, window_end: datetime,
+    position_ids: list[int] | None = None,
 ) -> dict[int, dict[str, Any]]:
     if window_start > window_end:
         raise ValueError("window_start must not be after window_end")
     cur.execute(
-        CLOSED_OUTCOME_ROWS_SQL,
-        {"window_start": window_start, "window_end": window_end},
+        build_closed_outcome_rows_sql(
+            environment, bounded_position_ids=position_ids is not None
+        ),
+        {
+            "window_start": window_start,
+            "window_end": window_end,
+            "position_ids": position_ids,
+        },
     )
     return {
         int(row[0]): {

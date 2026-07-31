@@ -3123,6 +3123,7 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             account_window_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
             closed_stats = fetch_closed_outcome_summary(
                 cur,
+                environment=TRADING_MODE,
                 window_start=account_window_start,
                 window_end=account_window_end,
             )
@@ -3196,7 +3197,8 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
         window_start = window_end - timedelta(hours=24)
         with db_cursor() as (_conn, cur):
             stats = fetch_closed_outcome_summary(
-                cur, window_start=window_start, window_end=window_end
+                cur, environment=TRADING_MODE,
+                window_start=window_start, window_end=window_end
             )
 
         return UITrading24hSummary(
@@ -4300,8 +4302,10 @@ def ui_recent_closed(
             if rows:
                 outcome_by_position = fetch_closed_outcomes(
                     cur,
+                    environment=TRADING_MODE,
                     window_start=min(row[1] for row in rows),
                     window_end=max(row[1] for row in rows),
+                    position_ids=[int(row[0]) for row in rows],
                 )
 
         items = []
@@ -5972,7 +5976,8 @@ def fetch_realized_pnl_stats(cur, start_dt, end_dt):
     """
     if TRADING_MODE == "PAPER":
         stats = fetch_closed_outcome_summary(
-            cur, window_start=start_dt, window_end=end_dt
+            cur, environment=TRADING_MODE,
+            window_start=start_dt, window_end=end_dt
         )
         resolved = stats["resolved_trades"]
         return {
