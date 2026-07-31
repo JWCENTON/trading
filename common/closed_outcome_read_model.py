@@ -268,7 +268,15 @@ closed_outcomes AS (
     CASE WHEN stored_net IS NOT NULL THEN scale(stored_net) END AS stored_scale,
     NULL::integer AS fill_scale,
     NULL::text AS legacy_stored_provenance,
-    NULL::text AS legacy_fee_model
+    NULL::text AS legacy_fee_model,
+    NULL::numeric AS gross_delta,
+    NULL::numeric AS fee_delta,
+    NULL::numeric AS net_delta,
+    NULL::numeric AS gross_rounding_bound,
+    NULL::numeric AS fee_rounding_bound,
+    NULL::numeric AS net_serialization_bound,
+    NULL::numeric AS maximum_explainable_net_delta,
+    NULL::numeric AS reconstructed_net_delta
   FROM evidence
 ),
 classified_outcomes AS (
@@ -402,6 +410,25 @@ resolved_evidence AS (
         THEN stored_net END::numeric AS resolved_net
   FROM evidence
 ),
+normalization_evidence AS (
+  SELECT *,
+    CASE WHEN stored_gross IS NOT NULL AND resolved_gross IS NOT NULL
+      THEN stored_gross - resolved_gross END AS gross_delta,
+    CASE WHEN stored_fees IS NOT NULL AND resolved_fees IS NOT NULL
+      THEN stored_fees - resolved_fees END AS fee_delta,
+    CASE WHEN stored_net IS NOT NULL AND resolved_net IS NOT NULL
+      THEN stored_net - resolved_net END AS net_delta,
+    CASE WHEN stored_gross IS NOT NULL
+      THEN 0.5 * power(10::numeric, -scale(stored_gross)) END
+      AS gross_rounding_bound,
+    CASE WHEN stored_fees IS NOT NULL
+      THEN 0.5 * power(10::numeric, -scale(stored_fees)) END
+      AS fee_rounding_bound,
+    CASE WHEN stored_net IS NOT NULL
+      THEN 0.5 * power(10::numeric, -scale(stored_net)) END
+      AS net_serialization_bound
+  FROM resolved_evidence
+),
 closed_outcomes AS (
   SELECT position_id,
     CASE WHEN selected_source <> 'UNRESOLVED' THEN 'RESOLVED'
@@ -427,19 +454,31 @@ closed_outcomes AS (
       WHEN legacy_stored_structurally_valid AND COALESCE(fill_count, 0) = 0
         THEN 'VERIFIED_LEGACY_STORED'
       WHEN legacy_stored_structurally_valid AND fills_complete
-        AND stored_net IS NOT NULL AND resolved_net IS NOT NULL
-        AND abs(resolved_net - stored_net) <=
-          0.5 * power(10::numeric, -LEAST(scale(stored_net), 18))
+        AND stored_gross - stored_fees = stored_net
+        AND resolved_gross - resolved_fees = resolved_net
+        AND abs(gross_delta) <= gross_rounding_bound
+        AND abs(fee_delta) <= fee_rounding_bound
+        AND abs(net_delta - (gross_delta - fee_delta)) <= net_serialization_bound
         THEN 'VERIFIED_LEGACY_STORED'
       WHEN stored_net IS NOT NULL AND (COALESCE(fill_count, 0) > 0 OR
         NOT legacy_stored_structurally_valid) THEN 'LEGACY_STORED_CONFLICT'
       ELSE 'LEGACY_STORED_INCOMPLETE'
     END AS legacy_stored_status,
     CASE
-      WHEN stored_net IS NULL OR resolved_net IS NULL THEN 'SOURCE_NOT_COMPARABLE'
-      WHEN stored_net = resolved_net THEN 'EXACT_MATCH'
-      WHEN abs(resolved_net - stored_net) <=
-        0.5 * power(10::numeric, -LEAST(scale(stored_net), 18)) THEN 'ROUNDING_ONLY'
+      WHEN stored_gross IS NULL OR stored_fees IS NULL OR stored_net IS NULL
+        OR resolved_gross IS NULL OR resolved_fees IS NULL OR resolved_net IS NULL
+        THEN 'SOURCE_NOT_COMPARABLE'
+      WHEN stored_gross - stored_fees <> stored_net
+        OR resolved_gross - resolved_fees <> resolved_net
+        OR abs(gross_delta) > gross_rounding_bound
+        OR abs(fee_delta) > fee_rounding_bound
+        OR abs(net_delta - (gross_delta - fee_delta)) > net_serialization_bound
+        THEN 'MATERIAL_CONFLICT'
+      WHEN gross_delta = 0 AND fee_delta = 0 AND net_delta = 0 THEN 'EXACT_MATCH'
+      WHEN abs(net_delta) <= net_serialization_bound THEN 'ROUNDING_ONLY'
+      WHEN abs(net_delta) <=
+        gross_rounding_bound + fee_rounding_bound + net_serialization_bound
+        THEN 'COMPONENT_ROUNDING_ACCUMULATION'
       ELSE 'MATERIAL_CONFLICT'
     END AS normalization_status,
     stored_net AS normalization_stored_value,
@@ -452,8 +491,17 @@ closed_outcomes AS (
     fill_scale,
     exit_context_json->>'outcome_provenance' AS legacy_stored_provenance,
     COALESCE(exit_context_json->>'fee_model',
-      exit_context_json->>'fee_model_version') AS legacy_fee_model
-  FROM resolved_evidence
+      exit_context_json->>'fee_model_version') AS legacy_fee_model,
+    gross_delta,
+    fee_delta,
+    net_delta,
+    gross_rounding_bound,
+    fee_rounding_bound,
+    net_serialization_bound,
+    gross_rounding_bound + fee_rounding_bound + net_serialization_bound
+      AS maximum_explainable_net_delta,
+    gross_delta - fee_delta AS reconstructed_net_delta
+  FROM normalization_evidence
 ),
 classified_outcomes AS (
   SELECT *, CASE WHEN NOT evidence_complete THEN 'UNRESOLVED'
@@ -471,7 +519,9 @@ SELECT
   quality_class, legacy_stored_status, normalization_status,
   normalization_stored_value, normalization_resolved_value, normalization_delta,
   normalization_version, calculation_version, stored_scale, fill_scale,
-  legacy_stored_provenance, legacy_fee_model
+  legacy_stored_provenance, legacy_fee_model, gross_delta, fee_delta, net_delta,
+  gross_rounding_bound, fee_rounding_bound, net_serialization_bound,
+  maximum_explainable_net_delta, reconstructed_net_delta
 FROM classified_outcomes
 ORDER BY position_id
 """
@@ -505,13 +555,24 @@ SELECT
     AS normalization_delta,
   CASE
     WHEN BOOL_OR(normalization_status = 'MATERIAL_CONFLICT') THEN 'MATERIAL_CONFLICT'
+    WHEN BOOL_OR(normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION')
+      THEN 'NON_MATERIAL_NORMALIZATION'
     WHEN BOOL_OR(normalization_status = 'ROUNDING_ONLY') THEN 'ROUNDING_ONLY'
     WHEN BOOL_OR(normalization_status = 'EXACT_MATCH') THEN 'EXACT_MATCH'
     ELSE 'SOURCE_NOT_COMPARABLE'
-  END AS aggregate_normalization_status
+  END AS aggregate_normalization_status,
+  COUNT(*) FILTER (
+    WHERE normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION')::int
+    AS component_rounding_accumulation_count,
+  COUNT(*) FILTER (WHERE normalization_status = 'MATERIAL_CONFLICT')::int
+    AS material_conflict_count,
+  COALESCE(jsonb_object_agg(normalization_status, normalization_count)
+    FILTER (WHERE normalization_status IS NOT NULL), '{}'::jsonb)
+    AS normalization_status_counts
 FROM (
   SELECT c.*, COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count,
-    COUNT(*) OVER (PARTITION BY quality_class)::int AS quality_count
+    COUNT(*) OVER (PARTITION BY quality_class)::int AS quality_count,
+    COUNT(*) OVER (PARTITION BY normalization_status)::int AS normalization_count
   FROM classified_outcomes c
 ) outcomes
 """
@@ -587,6 +648,9 @@ def fetch_closed_outcome_summary(
         "resolved_net_comparable": row[16],
         "normalization_delta": row[17],
         "aggregate_normalization_status": row[18],
+        "component_rounding_accumulation_count": int(row[19] or 0),
+        "material_conflict_count": int(row[20] or 0),
+        "normalization_status_counts": dict(row[21] or {}),
         "normalization_version": (
             PAPER_OUTCOME_NORMALIZATION_VERSION
             if str(environment).strip().upper() == "PAPER" else None
@@ -634,6 +698,14 @@ def fetch_closed_outcomes(
             "fill_scale": row[19],
             "legacy_stored_provenance": row[20],
             "legacy_fee_model": row[21],
+            "gross_delta": row[22],
+            "fee_delta": row[23],
+            "net_delta": row[24],
+            "gross_rounding_bound": row[25],
+            "fee_rounding_bound": row[26],
+            "net_serialization_bound": row[27],
+            "maximum_explainable_net_delta": row[28],
+            "reconstructed_net_delta": row[29],
         }
         for row in cur.fetchall()
     }

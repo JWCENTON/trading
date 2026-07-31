@@ -431,7 +431,7 @@ export interface UiRecentClosedPosition {
   outcome_source: "STORED_PROVEN" | "VERIFIED_LEGACY_STORED" | "LEGACY_EXECUTION_PROVEN" | "PAPER_SIMULATED_FILLS" | "FINANCIAL_TRUTH" | "UNRESOLVED";
   evidence_complete: boolean;
   quality_class: "HIGH_ASSURANCE" | "LEGACY_COMPATIBLE" | "LIVE_ONLY" | "UNRESOLVED";
-  normalization_status: "EXACT_MATCH" | "ROUNDING_ONLY" | "MATERIAL_CONFLICT" | "SOURCE_NOT_COMPARABLE";
+  normalization_status: "EXACT_MATCH" | "ROUNDING_ONLY" | "COMPONENT_ROUNDING_ACCUMULATION" | "MATERIAL_CONFLICT" | "SOURCE_NOT_COMPARABLE";
   normalization_delta: number | null;
   normalization_version: string | null;
   calculation_version: string;
@@ -439,6 +439,14 @@ export interface UiRecentClosedPosition {
   fill_scale: number | null;
   legacy_stored_provenance: string | null;
   legacy_fee_model: string | null;
+  gross_delta: number | null;
+  fee_delta: number | null;
+  net_delta: number | null;
+  gross_rounding_bound: number | null;
+  fee_rounding_bound: number | null;
+  net_serialization_bound: number | null;
+  maximum_explainable_net_delta: number | null;
+  reconstructed_net_delta: number | null;
 }
 
 export interface UiRecentClosedResponse {
@@ -566,6 +574,8 @@ export interface UiAccountSummary {
   quality_breakdown: Record<string, number>;
   normalization_version?: string | null;
   aggregate_normalization_status?: string | null;
+  component_rounding_accumulation_count: number;
+  material_conflict_count: number;
   quote_asset: string;
   assets: Record<string, number>;
   asset_values_usdc: Record<string, number>;
@@ -595,6 +605,9 @@ export interface UiTrading24hSummary {
   normalization_version: string | null;
   aggregate_normalization_status: string | null;
   calculation_version: string;
+  component_rounding_accumulation_count: number;
+  material_conflict_count: number;
+  normalization_status_counts: Record<string, number>;
   updated_at: string;
 }
 

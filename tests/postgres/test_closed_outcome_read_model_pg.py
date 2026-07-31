@@ -102,6 +102,7 @@ def _position(cur, position_id, **values):
         "evidence": None,
         "generation": None,
         "provenance": None,
+        "exit_context": None,
     }
     defaults.update(values)
     cur.execute(
@@ -126,7 +127,7 @@ def _position(cur, position_id, **values):
             defaults["net"],
             defaults["evidence"],
             defaults["generation"],
-            (
+            defaults["exit_context"] or (
                 '{"outcome_provenance":"CLOSED_OUTCOME_V1"}'
                 if defaults["provenance"] == "CLOSED_OUTCOME_V1"
                 else None
@@ -447,29 +448,90 @@ def test_environment_isolation_and_paper_complexity_gate(disposable_postgres_v16
         conn.close()
 
 
-def _paper_fixture_with_rounding_deltas(cur, stored_nets, deltas, start_id):
-    for offset, (stored_net, delta) in enumerate(zip(stored_nets, deltas)):
-        position_id = start_id + offset
-        resolved_net = stored_net + delta
-        fee = Decimal("0.01")
+def _paper_fixture_with_components(
+    cur, position_ids, stored_nets, resolved_nets, stored_fees, resolved_fees,
+    *, exit_context=None,
+):
+    for position_id, stored_net, resolved_net, stored_fee, resolved_fee in zip(
+        position_ids, stored_nets, resolved_nets, stored_fees, resolved_fees,
+    ):
         _position(
-            cur, position_id, gross=str(stored_net + fee), fees=str(fee),
-            net=str(stored_net), provenance="CLOSED_OUTCOME_V1",
+            cur, position_id, gross=str(stored_net + stored_fee),
+            fees=str(stored_fee), net=str(stored_net),
+            provenance="CLOSED_OUTCOME_V1", exit_context=exit_context,
         )
-        _fill(cur, position_id, "ENTRY", "20", fee="0.005")
+        half_fee = resolved_fee / Decimal("2")
+        _fill(cur, position_id, "ENTRY", "20", fee=str(half_fee))
         _fill(
-            cur, position_id, "EXIT", str(Decimal("20") + resolved_net + fee),
-            fee="0.005", index=1,
+            cur, position_id, "EXIT",
+            str(Decimal("20") + resolved_net + resolved_fee),
+            fee=str(half_fee), index=1,
         )
+
+
+def test_vps_21_component_rounding_shapes_are_non_material(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16, "vps_21_component_rounding")
+    position_ids = [
+        6286, 6292, 6300, 6304, 6307, 6329, 6330, 6331, 6346, 6354,
+        6366, 6370, 6376, 6377, 6380, 6400, 6435, 6439, 6443, 6446, 6449,
+    ]
+    try:
+        with conn.cursor() as cur:
+            _paper_fixture_with_components(
+                cur,
+                position_ids,
+                [Decimal("0.90000000")] * 21,
+                [Decimal("0.899999992")] * 21,
+                [Decimal("0.10000000")] * 21,
+                [Decimal("0.100000004")] * 21,
+                exit_context=(
+                    '{"outcome_provenance":"UNKNOWN",'
+                    '"fee_model":"UNKNOWN",'
+                    '"rounding_policy_hypothesis":"LIKELY_PER_FILL_ROUNDING"}'
+                ),
+            )
+            conn.commit()
+            rows = fetch_closed_outcomes(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+            summary = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+        assert set(rows) == set(position_ids)
+        assert all(row["outcome_source"] == "PAPER_SIMULATED_FILLS" for row in rows.values())
+        assert all(row["evidence_complete"] for row in rows.values())
+        assert all(row["normalization_status"] == "COMPONENT_ROUNDING_ACCUMULATION" for row in rows.values())
+        assert all(row["gross_delta"] == Decimal("0.000000004") for row in rows.values())
+        assert all(row["fee_delta"] == Decimal("-0.000000004") for row in rows.values())
+        assert all(row["net_delta"] == Decimal("0.000000008") for row in rows.values())
+        assert all(row["reconstructed_net_delta"] == row["net_delta"] for row in rows.values())
+        assert all(row["legacy_stored_provenance"] == "UNKNOWN" for row in rows.values())
+        assert all(row["legacy_fee_model"] == "UNKNOWN" for row in rows.values())
+        assert summary["component_rounding_accumulation_count"] == 21
+        assert summary["material_conflict_count"] == 0
+        assert summary["aggregate_normalization_status"] == "NON_MATERIAL_NORMALIZATION"
+    finally:
+        conn.close()
 
 
 def test_vps_37_production_shape_prefers_fill_precision(disposable_postgres_v16):
     conn = _database(disposable_postgres_v16, "vps_37_production")
-    stored_nets = [Decimal("0.04")] * 28 + [Decimal("-0.04")] * 8 + [Decimal("-0.06620976")]
-    deltas = [Decimal("-0.0000000004")] * 36 + [Decimal("0.0000000000952")]
+    stored_nets = [Decimal("0.04000000")] * 28 + [Decimal("-0.04000000")] * 8 + [Decimal("-0.06620976")]
+    deltas = [Decimal("-0.000000008")] * 3 + [Decimal("0")]
+    deltas += [Decimal("0.000000000293793939")] * 32
+    deltas += [Decimal("0.000000000293793952")]
+    resolved_nets = [stored + delta for stored, delta in zip(stored_nets, deltas)]
+    stored_fees = [Decimal("0.01601358")] * 37
+    resolved_fees = [Decimal("0.016013584")] * 3 + [Decimal("0.01601358")]
+    regular_fee = Decimal("0.016013577403175")
+    resolved_fees += [regular_fee] * 32
+    resolved_fees += [Decimal("0.5925023863048") - sum(resolved_fees)]
     try:
         with conn.cursor() as cur:
-            _paper_fixture_with_rounding_deltas(cur, stored_nets, deltas, 50000)
+            _paper_fixture_with_components(
+                cur, range(50000, 50037), stored_nets, resolved_nets,
+                stored_fees, resolved_fees,
+            )
             conn.commit()
             rows = fetch_closed_outcomes(
                 cur, environment="PAPER", window_start=START, window_end=END,
@@ -479,11 +541,19 @@ def test_vps_37_production_shape_prefers_fill_precision(disposable_postgres_v16)
             )
         assert sum(stored_nets) == Decimal("0.7337902400000")
         assert summary["net_pnl"] == Decimal("0.7337902256952")
+        assert summary["gross_pnl"] == Decimal("1.326292612")
+        assert summary["fees"] == Decimal("0.5925023863048")
         assert summary["normalization_delta"] == Decimal("-0.0000000143048")
-        assert summary["aggregate_normalization_status"] == "ROUNDING_ONLY"
+        assert summary["aggregate_normalization_status"] == "NON_MATERIAL_NORMALIZATION"
+        assert summary["normalization_status_counts"] == {
+            "COMPONENT_ROUNDING_ACCUMULATION": 3,
+            "EXACT_MATCH": 1,
+            "ROUNDING_ONLY": 33,
+        }
+        assert summary["material_conflict_count"] == 0
         assert summary["outcome_source_counts"] == {"PAPER_SIMULATED_FILLS": 37}
         assert (summary["wins"], summary["losses"], summary["flats"]) == (28, 9, 0)
-        assert all(row["normalization_status"] == "ROUNDING_ONLY" for row in rows.values())
+        assert all(row["normalization_status"] != "MATERIAL_CONFLICT" for row in rows.values())
         assert all(row["calculation_version"] == "CLOSED_OUTCOME_PAPER_V2" for row in rows.values())
         assert all(row["stored_scale"] is not None for row in rows.values())
         assert all(row["fill_scale"] is not None for row in rows.values())
@@ -496,18 +566,30 @@ def test_vps_37_production_shape_prefers_fill_precision(disposable_postgres_v16)
 
 def test_vps_current_33_production_shape(disposable_postgres_v16):
     conn = _database(disposable_postgres_v16, "vps_33_current")
-    stored_nets = [Decimal("0.01")] * 23 + [Decimal("-0.02")] * 9 + [Decimal("-0.06722983")]
-    deltas = [Decimal("-0.0000000006")] * 32 + [Decimal("-0.00000000125743894532204")]
+    stored_nets = [Decimal("0.01000000")] * 23 + [Decimal("-0.02000000")] * 9 + [Decimal("-0.06722983")]
+    deltas = [Decimal("-0.000000008")] * 5 + [Decimal("0")]
+    regular_delta = Decimal("0.000000000723798557580")
+    deltas += [regular_delta] * 26
+    deltas += [Decimal("-0.00000002045743894532204") - sum(deltas)]
+    resolved_nets = [stored + delta for stored, delta in zip(stored_nets, deltas)]
+    stored_fees = [Decimal("0.01000000")] * 33
+    resolved_fees = [Decimal("0.010000004")] * 5 + [Decimal("0.01000000")]
+    resolved_fees += [Decimal("0.009999998")] * 27
     try:
         with conn.cursor() as cur:
-            _paper_fixture_with_rounding_deltas(cur, stored_nets, deltas, 51000)
+            _paper_fixture_with_components(
+                cur, range(51000, 51033), stored_nets, resolved_nets,
+                stored_fees, resolved_fees,
+            )
             conn.commit()
             summary = fetch_closed_outcome_summary(
                 cur, environment="PAPER", window_start=START, window_end=END,
             )
         assert sum(stored_nets) == Decimal("-0.01722983")
         assert summary["net_pnl"] == Decimal("-0.01722985045743894532204")
-        assert summary["aggregate_normalization_status"] == "ROUNDING_ONLY"
+        assert summary["aggregate_normalization_status"] == "NON_MATERIAL_NORMALIZATION"
+        assert summary["component_rounding_accumulation_count"] == 5
+        assert summary["material_conflict_count"] == 0
         assert (summary["wins"], summary["losses"], summary["flats"]) == (23, 10, 0)
     finally:
         conn.close()
@@ -532,6 +614,7 @@ def test_simulated_material_conflict_wins_with_diagnostic(disposable_postgres_v1
         assert rows[52000][11] == "LEGACY_STORED_CONFLICT"
         assert rows[52001][2] == "UNRESOLVED"
         assert "SIMULATED_EVIDENCE_INCOMPLETE" in rows[52001][9]
+        assert rows[52001][12] == "SOURCE_NOT_COMPARABLE"
     finally:
         conn.close()
 
@@ -565,6 +648,8 @@ def test_vps_mixed_quality_all_history_coverage(disposable_postgres_v16):
         assert summary["unresolved_trades"] == 3
         assert summary["high_assurance_count"] == 165
         assert summary["legacy_compatible_count"] == 6271
+        assert summary["component_rounding_accumulation_count"] == 0
+        assert summary["material_conflict_count"] == 0
         assert summary["outcome_source_counts"] == {
             "PAPER_SIMULATED_FILLS": 165,
             "UNRESOLVED": 3,

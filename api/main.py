@@ -386,6 +386,8 @@ class UIAccountSummary(BaseModel):
     quality_breakdown: Dict[str, int]
     normalization_version: Optional[str] = None
     aggregate_normalization_status: Optional[str] = None
+    component_rounding_accumulation_count: int = 0
+    material_conflict_count: int = 0
     quote_asset: str
     assets: Dict[str, float]
     asset_values_usdc: Dict[str, float]
@@ -414,6 +416,9 @@ class UITrading24hSummary(BaseModel):
     quality_breakdown: Dict[str, int]
     normalization_version: Optional[str] = None
     aggregate_normalization_status: Optional[str] = None
+    component_rounding_accumulation_count: int = 0
+    material_conflict_count: int = 0
+    normalization_status_counts: Dict[str, int]
     calculation_version: str
     updated_at: datetime
 
@@ -3215,6 +3220,10 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             quality_breakdown=dict(bridge.quality_breakdown),
             normalization_version=closed_stats["normalization_version"],
             aggregate_normalization_status=closed_stats["aggregate_normalization_status"],
+            component_rounding_accumulation_count=closed_stats[
+                "component_rounding_accumulation_count"
+            ],
+            material_conflict_count=closed_stats["material_conflict_count"],
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,
@@ -3262,6 +3271,11 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
                 "CLOSED_OUTCOME_PAPER_V2" if TRADING_MODE == "PAPER"
                 else "CLOSED_OUTCOME_LIVE_V1"
             ),
+            component_rounding_accumulation_count=stats[
+                "component_rounding_accumulation_count"
+            ],
+            material_conflict_count=stats["material_conflict_count"],
+            normalization_status_counts=stats["normalization_status_counts"],
             updated_at=window_end,
         )
     except Exception as e:
@@ -4396,6 +4410,24 @@ def ui_recent_closed(
                     "legacy_stored_provenance"
                 ),
                 "legacy_fee_model": outcome.get("legacy_fee_model"),
+                "gross_delta": _safe_float(outcome.get("gross_delta")),
+                "fee_delta": _safe_float(outcome.get("fee_delta")),
+                "net_delta": _safe_float(outcome.get("net_delta")),
+                "gross_rounding_bound": _safe_float(
+                    outcome.get("gross_rounding_bound")
+                ),
+                "fee_rounding_bound": _safe_float(
+                    outcome.get("fee_rounding_bound")
+                ),
+                "net_serialization_bound": _safe_float(
+                    outcome.get("net_serialization_bound")
+                ),
+                "maximum_explainable_net_delta": _safe_float(
+                    outcome.get("maximum_explainable_net_delta")
+                ),
+                "reconstructed_net_delta": _safe_float(
+                    outcome.get("reconstructed_net_delta")
+                ),
             })
 
         return jsonable_encoder({

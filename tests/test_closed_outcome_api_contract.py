@@ -88,3 +88,15 @@ def test_paper_account_frontend_labels_partial_bridge_honestly():
     assert "High assurance:" in panel
     assert "Legacy compatible:" in panel
     assert 'isExchangeTruth ? "Exchange truth"' in panel
+
+
+def test_component_rounding_diagnostics_are_exposed_without_changing_source():
+    api = (ROOT / "api/main.py").read_text()
+    assert '"gross_rounding_bound"' in api
+    assert '"fee_rounding_bound"' in api
+    assert '"maximum_explainable_net_delta"' in api
+    assert "component_rounding_accumulation_count" in api
+    assert "material_conflict_count" in api
+    paper = build_closed_outcome_summary_sql("PAPER")
+    assert "COMPONENT_ROUNDING_ACCUMULATION" in paper
+    assert "PAPER_SIMULATED_FILLS" in paper
