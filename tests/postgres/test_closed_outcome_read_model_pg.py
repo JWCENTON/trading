@@ -36,7 +36,9 @@ def _database(disposable_postgres_v16, purpose):
               fees_usdc NUMERIC,
               net_pnl_usdc NUMERIC,
               inventory_evidence_status TEXT,
+              remaining_inventory_qty NUMERIC,
               inventory_contract_generation BIGINT,
+              entry_context_json JSONB,
               exit_context_json JSONB
               ,entry_order_id TEXT
               ,exit_order_id TEXT
@@ -78,8 +80,15 @@ def _database(disposable_postgres_v16, purpose):
               fill_qty NUMERIC NOT NULL,
               fill_price NUMERIC NOT NULL,
               fill_notional NUMERIC NOT NULL,
+              fee_qty NUMERIC,
+              fee_asset TEXT,
               authoritative_fee_usdc NUMERIC,
-              estimated_fee_usdc NUMERIC
+              estimated_fee_usdc NUMERIC,
+              source_authority TEXT,
+              environment TEXT,
+              deployment_id TEXT,
+              simulation_model_version TEXT,
+              source_fingerprint TEXT
             );
             CREATE INDEX ix_sim_fills_position
               ON simulated_execution_fills_v1(position_id, order_purpose);
@@ -94,6 +103,16 @@ def _database(disposable_postgres_v16, purpose):
             CREATE TABLE exchange_fill_ingestion_state_v2 (
               order_id TEXT, application_status TEXT
             );
+            CREATE TABLE position_lifecycle_events_c2_2 (
+              event_id BIGSERIAL PRIMARY KEY,
+              position_id BIGINT NOT NULL,
+              order_id TEXT NOT NULL,
+              mutation_kind TEXT NOT NULL,
+              mutation_high_water NUMERIC NOT NULL,
+              payload JSONB NOT NULL DEFAULT '{}'::jsonb
+            );
+            CREATE INDEX ix_lifecycle_position
+              ON position_lifecycle_events_c2_2(position_id, mutation_kind);
             """
         )
     conn.commit()
@@ -113,9 +132,13 @@ def _position(cur, position_id, **values):
         "fees": None,
         "net": None,
         "evidence": None,
+        "remaining": None,
         "generation": None,
         "provenance": None,
+        "entry_context": None,
         "exit_context": None,
+        "entry_order_id": None,
+        "exit_order_id": None,
     }
     defaults.update(values)
     cur.execute(
@@ -123,8 +146,11 @@ def _position(cur, position_id, **values):
         INSERT INTO positions(
           id,strategy,status,side,qty,entry_price,exit_price,exit_time,gross_pnl_usdc,
           fees_usdc,net_pnl_usdc,inventory_evidence_status,
-          inventory_contract_generation,exit_context_json
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          remaining_inventory_qty,inventory_contract_generation,
+          entry_context_json,exit_context_json,entry_order_id,exit_order_id
+        ) VALUES (
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+        )
         """,
         (
             position_id,
@@ -139,39 +165,123 @@ def _position(cur, position_id, **values):
             defaults["fees"],
             defaults["net"],
             defaults["evidence"],
+            defaults["remaining"],
             defaults["generation"],
+            defaults["entry_context"],
             defaults["exit_context"] or (
                 '{"outcome_provenance":"CLOSED_OUTCOME_V1"}'
                 if defaults["provenance"] == "CLOSED_OUTCOME_V1"
                 else None
             ),
+            defaults["entry_order_id"],
+            defaults["exit_order_id"],
         ),
     )
 
 
 def _fill(
-    cur, position_id, purpose, notional, fee="0.10", index=0, qty="1", side=None,
+    cur, position_id, purpose, notional, fee="0.10", index=0, qty="1",
+    side=None, *, price=None, fill_id=None, simulated_order_id=None,
+    symbol="BTCUSDC", source_fingerprint=None,
+    source_authority="SIMULATED_EXECUTION", environment="paper",
+    deployment_id="local-paper",
+    simulation_model_version="PAPER_SIMULATOR_FINANCIAL_MODEL_V1",
 ):
     cur.execute(
         """
         INSERT INTO simulated_execution_fills_v1(
-          simulated_order_id,position_id,fill_index,order_purpose,side,symbol,
-          fill_qty,fill_price,fill_notional,authoritative_fee_usdc,
-          estimated_fee_usdc
-        ) VALUES (%s,%s,%s,%s,%s,'BTCUSDC',%s,%s,%s,%s,NULL)
+          id,simulated_order_id,position_id,fill_index,order_purpose,side,symbol,
+          fill_qty,fill_price,fill_notional,fee_qty,fee_asset,
+          authoritative_fee_usdc,estimated_fee_usdc,source_authority,
+          environment,deployment_id,simulation_model_version,source_fingerprint
+        ) VALUES (
+          COALESCE(%s,nextval(pg_get_serial_sequence(
+            'simulated_execution_fills_v1','id'
+          ))),
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'USDC',%s,NULL,%s,%s,%s,%s,%s
+        )
         """,
         (
-            position_id * 10 + index,
+            fill_id,
+            simulated_order_id or (position_id * 10 + index),
             position_id,
             index,
             purpose,
             side or ("BUY" if purpose == "ENTRY" else "SELL"),
+            symbol,
             qty,
-            notional,
+            (
+                price if price is not None
+                else Decimal(str(notional)) / Decimal(str(qty))
+            ),
             notional,
             fee,
+            fee,
+            source_authority,
+            environment,
+            deployment_id,
+            simulation_model_version,
+            source_fingerprint or f"fill-{position_id}-{purpose}-{index}",
         ),
     )
+
+
+def _terminal_close(cur, position_id, order_id, *, kind="POSITION_CLOSED"):
+    cur.execute(
+        """
+        INSERT INTO position_lifecycle_events_c2_2(
+          position_id,order_id,mutation_kind,mutation_high_water,payload
+        ) VALUES (%s,%s,%s,0,'{}'::jsonb)
+        """,
+        (position_id, str(order_id), kind),
+    )
+
+
+def _vps_6456(cur):
+    _position(
+        cur,
+        6456,
+        qty="0",
+        entry_price="62676.7",
+        exit_price="62625.4",
+        gross="0.00000000",
+        fees="0.00000000",
+        net="0.00000000",
+        evidence="COMPLETE",
+        remaining="0",
+        entry_context=None,
+        exit_context=None,
+        entry_order_id="25688",
+        exit_order_id="25786",
+    )
+    _fill(
+        cur,
+        6456,
+        "ENTRY",
+        "19.999508203",
+        fee="0.0079998032812",
+        qty="0.00031909",
+        price="62676.7",
+        fill_id=361,
+        simulated_order_id=25688,
+        deployment_id="vps-paper",
+        source_fingerprint="vps-6456-entry-fill-361",
+    )
+    _fill(
+        cur,
+        6456,
+        "EXIT",
+        "19.983138886",
+        fee="0.0079932555544",
+        index=1,
+        qty="0.00031909",
+        price="62625.4",
+        fill_id=363,
+        simulated_order_id=25786,
+        deployment_id="vps-paper",
+        source_fingerprint="vps-6456-exit-fill-363",
+    )
+    _terminal_close(cur, 6456, 25786)
 
 
 def _financial_truth(
@@ -655,6 +765,232 @@ def test_simulated_material_conflict_wins_with_diagnostic(disposable_postgres_v1
         assert rows[52001][2] == "UNRESOLVED"
         assert "SIMULATED_EVIDENCE_INCOMPLETE" in rows[52001][9]
         assert rows[52001][12] == "SOURCE_NOT_COMPARABLE"
+    finally:
+        conn.close()
+
+
+def test_vps_6456_zero_placeholder_is_superseded_by_complete_simulated_fills(
+    disposable_postgres_v16,
+):
+    conn = _database(disposable_postgres_v16, "vps_6456_supersession")
+    try:
+        with conn.cursor() as cur:
+            _vps_6456(cur)
+            conn.commit()
+            rows = fetch_closed_outcomes(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+            summary = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+
+        row = rows[6456]
+        assert row["outcome_source"] == "PAPER_SIMULATED_FILLS"
+        assert row["selected_source_confidence"] == "HIGH_ASSURANCE"
+        assert row["normalization_status"] == "MATERIAL_CONFLICT"
+        assert row["rollout_impact"] == "NON_BLOCKING_SOURCE_SUPERSEDED"
+        assert row["source_superseded_reason"] == (
+            "HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_"
+            "UNTRUSTED_STORED_ZERO_PLACEHOLDER"
+        )
+        assert row["gross_pnl_usdc"] == Decimal("-0.016369317")
+        assert row["fees_usdc"] == Decimal("0.0159930588356")
+        assert row["net_pnl_usdc"] == Decimal("-0.0323623758356")
+        assert row["result_class"] == "LOSS"
+
+        assert summary["trades"] == summary["resolved_trades"] == 1
+        assert summary["coverage_ratio"] == Decimal("1")
+        assert summary["outcome_source_counts"] == {
+            "PAPER_SIMULATED_FILLS": 1,
+        }
+        assert summary["normalization_status_counts"] == {
+            "MATERIAL_CONFLICT": 1,
+        }
+        assert summary["blocking_conflict_count"] == 0
+        assert summary["superseded_conflict_count"] == 1
+        assert summary["not_evaluable_count"] == 0
+        assert summary["rollout_gate_status"] == "PASS"
+        assert summary["rollout_impact_counts"] == {
+            "NON_BLOCKING_SOURCE_SUPERSEDED": 1,
+        }
+    finally:
+        conn.close()
+
+
+def test_simulated_zero_supersession_negative_authority_matrix(
+    disposable_postgres_v16,
+):
+    conn = _database(disposable_postgres_v16, "zero_supersession_negative")
+    trusted_context = (
+        '{"outcome_provenance":"FINANCIAL_TRUTH",'
+        '"calculation_version":"TRUSTED_V1",'
+        '"source_fingerprint":"trusted-stored-evidence"}'
+    )
+    try:
+        with conn.cursor() as cur:
+            for position_id, stored, context in (
+                (54000, ("0", "0", "0"), trusted_context),
+                (54003, ("1", "0.1", "0.9"), trusted_context),
+                (54004, ("1", "0.1", "0.9"), None),
+            ):
+                _position(
+                    cur, position_id, gross=stored[0], fees=stored[1],
+                    net=stored[2], evidence="COMPLETE", remaining="0",
+                    exit_context=context,
+                    entry_order_id=str(position_id * 10),
+                    exit_order_id=str(position_id * 10 + 1),
+                )
+                _fill(cur, position_id, "ENTRY", "10", fee="0.1")
+                _fill(
+                    cur, position_id, "EXIT", "12", fee="0.1", index=1,
+                )
+                _terminal_close(cur, position_id, position_id * 10 + 1)
+
+            _position(
+                cur, 54001, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540010", exit_order_id="540011",
+            )
+            _fill(cur, 54001, "ENTRY", "10", fee="0.1")
+            _terminal_close(cur, 54001, 540011)
+
+            _position(
+                cur, 54002, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540020", exit_order_id="540021",
+            )
+            _fill(cur, 54002, "ENTRY", "10", fee="0.1")
+            _fill(cur, 54002, "EXIT", "12", fee="0.1", index=1)
+            _terminal_close(cur, 54002, "540021")
+            cur.execute(
+                "INSERT INTO exchange_fill_ingestion_state_v2 VALUES "
+                "('540020','CORRECTION_PENDING')"
+            )
+
+            for position_id, evidence, remaining, add_lifecycle in (
+                (54005, "COMPLETE", "0", False),
+                (54006, "COMPLETE", "0.0001", True),
+                (54007, "INCOMPLETE", "0", True),
+            ):
+                _position(
+                    cur, position_id, gross="0", fees="0", net="0",
+                    evidence=evidence, remaining=remaining,
+                    entry_order_id=str(position_id * 10),
+                    exit_order_id=str(position_id * 10 + 1),
+                )
+                _fill(cur, position_id, "ENTRY", "10", fee="0.1")
+                _fill(
+                    cur, position_id, "EXIT", "12", fee="0.1", index=1,
+                )
+                if add_lifecycle:
+                    _terminal_close(cur, position_id, position_id * 10 + 1)
+
+            _position(
+                cur, 54008, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540080", exit_order_id="540081",
+            )
+            _fill(
+                cur, 54008, "ENTRY", "10", fee="0.1",
+                source_fingerprint="duplicate-source-fingerprint",
+            )
+            _fill(
+                cur, 54008, "EXIT", "12", fee="0.1", index=1,
+                source_fingerprint="duplicate-source-fingerprint",
+            )
+            _terminal_close(cur, 54008, 540081)
+
+            _position(
+                cur, 54009, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540090", exit_order_id="540091",
+            )
+            _fill(cur, 54009, "ENTRY", "10", fee="0.1")
+            _fill(
+                cur, 54009, "EXIT", "12", fee="0.1", index=1,
+                symbol="ETHUSDC",
+            )
+            _terminal_close(cur, 54009, 540091)
+
+            _position(
+                cur, 54010, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540100", exit_order_id="540101",
+            )
+            _fill(cur, 54010, "ENTRY", "10", fee=None)
+            _fill(cur, 54010, "EXIT", "12", fee="0.1", index=1)
+            _terminal_close(cur, 54010, 540101)
+
+            _position(
+                cur, 54011, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540110", exit_order_id="540111",
+            )
+            _fill(cur, 54011, "ENTRY", "10", fee="0.1", qty="2")
+            _fill(cur, 54011, "EXIT", "12", fee="0.1", index=1, qty="1")
+            _terminal_close(cur, 54011, 540111)
+
+            _position(
+                cur, 54012, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_context=trusted_context,
+                exit_context='{"outcome_provenance":"UNKNOWN"}',
+                entry_order_id="540120", exit_order_id="540121",
+            )
+            _fill(cur, 54012, "ENTRY", "10", fee="0.1")
+            _fill(cur, 54012, "EXIT", "12", fee="0.1", index=1)
+            _terminal_close(cur, 54012, 540121)
+
+            _position(
+                cur, 54013, gross="0", fees="0", net="0",
+                evidence="COMPLETE", remaining="0",
+                entry_order_id="540130", exit_order_id="540131",
+            )
+            _fill(cur, 54013, "ENTRY", "10", fee="0.1")
+            _fill(cur, 54013, "EXIT", "12", fee="0.1", index=1)
+            _terminal_close(cur, 54013, 540131)
+            cur.execute(
+                "INSERT INTO exchange_fill_ingestion_state_v2 VALUES "
+                "('540130','IDEMPOTENCY_CONFLICT')"
+            )
+
+            conn.commit()
+            rows = fetch_closed_outcomes(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+
+        assert rows[54000]["rollout_impact"] == (
+            "BLOCKING_AUTHORITATIVE_CONFLICT"
+        )
+        assert rows[54001]["rollout_impact"] == "NOT_EVALUABLE"
+        assert rows[54002]["rollout_impact"] == (
+            "BLOCKING_EVIDENCE_INCONSISTENT"
+        )
+        assert rows[54003]["rollout_impact"] == (
+            "BLOCKING_AUTHORITATIVE_CONFLICT"
+        )
+        assert rows[54004]["rollout_impact"] == (
+            "BLOCKING_AUTHORITATIVE_CONFLICT"
+        )
+        assert rows[54012]["rollout_impact"] == (
+            "BLOCKING_AUTHORITATIVE_CONFLICT"
+        )
+        assert rows[54013]["rollout_impact"] == (
+            "BLOCKING_EVIDENCE_INCONSISTENT"
+        )
+        for position_id in (54005, 54006, 54007, 54010, 54011):
+            assert rows[position_id]["rollout_impact"] in {
+                "BLOCKING_AUTHORITATIVE_CONFLICT",
+                "BLOCKING_EVIDENCE_INCONSISTENT",
+                "NOT_EVALUABLE",
+            }
+        for position_id in (54008, 54009):
+            assert rows[position_id]["rollout_impact"] == (
+                "BLOCKING_EVIDENCE_INCONSISTENT"
+            )
+        assert all(
+            row["source_superseded_reason"] is None for row in rows.values()
+        )
     finally:
         conn.close()
 

@@ -137,6 +137,24 @@ def test_rollout_impact_and_source_confidence_contract_is_exposed():
     assert "NON_BLOCKING_SOURCE_SUPERSEDED" in paper
     assert "BLOCKING_AUTHORITATIVE_CONFLICT" in paper
     assert "BLOCKING_EVIDENCE_INCONSISTENT" in paper
+    assert (
+        "HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_"
+        "UNTRUSTED_STORED_ZERO_PLACEHOLDER"
+    ) in paper
+    for strict_evidence in (
+        "simulated_identity_complete",
+        "inventory_evidence_status = 'COMPLETE'",
+        "remaining_inventory_qty = 0",
+        "terminal_close_count = 1",
+        "no_pending_correction",
+        "source_authority_consistent",
+        "simulation_model_consistent",
+        "fee_evidence_consistent",
+        "fill_economics_consistent",
+        "order_identity_consistent",
+        "matching_terminal_close_count = 1",
+    ):
+        assert strict_evidence in paper
 
     live = build_closed_outcome_rows_sql("LIVE")
     assert "NON_BLOCKING_SOURCE_SUPERSEDED" not in live

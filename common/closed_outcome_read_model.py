@@ -304,7 +304,9 @@ classified_outcomes AS (
 PAPER_CLOSED_OUTCOME_CTE = """
 WITH bounded_positions AS MATERIALIZED (
   SELECT p.id, p.side, p.entry_price, p.exit_price, p.qty,
-    p.exit_context_json, p.gross_pnl_usdc, p.fees_usdc, p.net_pnl_usdc,
+    p.entry_context_json, p.exit_context_json,
+    p.gross_pnl_usdc, p.fees_usdc, p.net_pnl_usdc,
+    p.inventory_evidence_status, p.remaining_inventory_qty,
     p.symbol, p.entry_order_id, p.exit_order_id
   FROM positions p
   WHERE p.status = 'CLOSED' AND p.exit_time IS NOT NULL
@@ -351,6 +353,13 @@ bounded_ft_authority AS MATERIALIZED (
 bounded_simulated_fills AS MATERIALIZED (
   SELECT f.position_id,
     COUNT(*) AS fill_count,
+    COUNT(DISTINCT f.id) AS distinct_fill_id_count,
+    COUNT(f.source_fingerprint) - COUNT(DISTINCT f.source_fingerprint)
+      AS duplicate_fingerprint_count,
+    COUNT(*) FILTER (WHERE f.source_fingerprint IS NULL)
+      AS missing_fingerprint_count,
+    COUNT(*) - COUNT(DISTINCT (f.simulated_order_id, f.fill_index))
+      AS duplicate_order_fill_index_count,
     COUNT(*) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_fill_count,
     COUNT(*) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_fill_count,
     SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_qty,
@@ -360,6 +369,15 @@ bounded_simulated_fills AS MATERIALIZED (
     SUM(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc)) AS total_fees,
     BOOL_AND(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc) IS NOT NULL)
       AS fees_complete,
+    BOOL_AND(
+      f.fee_qty IS NOT NULL
+      AND upper(replace(COALESCE(f.fee_asset, ''), '-', '')) = 'USDC'
+      AND f.fee_qty = COALESCE(
+        f.authoritative_fee_usdc, f.estimated_fee_usdc
+      )
+    ) AS fee_evidence_consistent,
+    BOOL_AND(f.fill_qty * f.fill_price = f.fill_notional)
+      AS fill_economics_consistent,
     BOOL_AND(upper(replace(f.symbol, '-', '')) = upper(replace(p.symbol, '-', '')))
       AS symbols_consistent,
     BOOL_AND(
@@ -369,6 +387,42 @@ bounded_simulated_fills AS MATERIALIZED (
       (f.order_purpose = 'EXIT' AND upper(f.side) =
         CASE WHEN upper(coalesce(p.side, 'LONG')) IN ('SELL', 'SHORT') THEN 'BUY' ELSE 'SELL' END)
     ) AS sides_consistent,
+    BOOL_AND(
+      f.source_authority IS NOT NULL
+      AND f.source_authority = 'SIMULATED_EXECUTION'
+    )
+      AS source_authority_consistent,
+    BOOL_AND(
+      f.environment IS NOT NULL AND lower(f.environment) = 'paper'
+    ) AS environment_consistent,
+    BOOL_AND(
+      f.deployment_id IS NOT NULL
+      AND lower(f.deployment_id) IN ('local-paper', 'vps-paper')
+    )
+      AND COUNT(DISTINCT lower(f.deployment_id)) = 1
+      AS deployment_consistent,
+    BOOL_AND(
+      f.simulation_model_version IS NOT NULL
+      AND f.simulation_model_version = 'PAPER_SIMULATOR_FINANCIAL_MODEL_V1'
+    ) AS simulation_model_consistent,
+    BOOL_AND(
+      (f.order_purpose = 'ENTRY'
+        AND p.entry_order_id IS NOT NULL
+        AND f.simulated_order_id::text = p.entry_order_id)
+      OR
+      (f.order_purpose = 'EXIT'
+        AND p.exit_order_id IS NOT NULL
+        AND f.simulated_order_id::text = p.exit_order_id)
+    ) AS order_identity_consistent,
+    BOOL_OR(
+      (f.order_purpose = 'ENTRY'
+        AND p.entry_order_id IS NOT NULL
+        AND f.simulated_order_id::text <> p.entry_order_id)
+      OR
+      (f.order_purpose = 'EXIT'
+        AND p.exit_order_id IS NOT NULL
+        AND f.simulated_order_id::text <> p.exit_order_id)
+    ) AS order_identity_conflicted,
     GREATEST(COALESCE(MAX(scale(f.fill_qty)), 0),
       COALESCE(MAX(scale(f.fill_notional)), 0),
       COALESCE(MAX(scale(COALESCE(f.authoritative_fee_usdc, f.estimated_fee_usdc))), 0))
@@ -378,17 +432,36 @@ bounded_simulated_fills AS MATERIALIZED (
   WHERE f.order_purpose IN ('ENTRY', 'EXIT')
   GROUP BY f.position_id
 ),
+bounded_terminal_lifecycle AS MATERIALIZED (
+  SELECT event.position_id,
+    COUNT(*) FILTER (WHERE event.mutation_kind IN (
+      'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
+    )) AS terminal_close_count,
+    COUNT(*) FILTER (
+      WHERE event.mutation_kind IN (
+        'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
+      ) AND event.order_id = p.exit_order_id
+    ) AS matching_terminal_close_count
+  FROM position_lifecycle_events_c2_2 event
+  JOIN bounded_positions p ON p.id = event.position_id
+  GROUP BY event.position_id
+),
 bounded_correction_orders AS MATERIALIZED (
   SELECT DISTINCT i.order_id
   FROM exchange_fill_ingestion_state_v2 i
-  WHERE i.application_status IN ('CORRECTION_PENDING', 'AMBIGUOUS')
+  WHERE i.application_status IN (
+    'CORRECTION_PENDING', 'AMBIGUOUS', 'IDEMPOTENCY_CONFLICT'
+  )
 ),
 evidence AS (
   SELECT p.id AS position_id, p.side,
     p.entry_price, p.exit_price, p.qty,
     COALESCE(p.exit_context_json, ft.ft_exit_context_json) AS exit_context_json,
+    p.entry_context_json AS stored_entry_context_json,
+    p.exit_context_json AS stored_exit_context_json,
     p.gross_pnl_usdc AS stored_gross, p.fees_usdc AS stored_fees,
     p.net_pnl_usdc AS stored_net,
+    p.inventory_evidence_status, p.remaining_inventory_qty,
     ft.authoritative_gross_pnl AS ft_gross,
     COALESCE(ft.authoritative_fees_usdc,
       ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) AS ft_fees,
@@ -406,8 +479,49 @@ evidence AS (
     ft.failure_reason AS ft_failure_reason,
     ft.failure_code AS ft_failure_code,
     ft.failure_detail AS ft_failure_detail,
-    fills.fill_count, fills.entry_notional, fills.exit_notional, fills.total_fees,
-    fills.symbols_consistent, fills.sides_consistent, fills.fill_scale,
+    fills.fill_count, fills.entry_fill_count, fills.exit_fill_count,
+    fills.entry_qty, fills.exit_qty,
+    fills.entry_notional, fills.exit_notional, fills.total_fees,
+    fills.fees_complete, fills.fee_evidence_consistent,
+    fills.fill_economics_consistent,
+    fills.symbols_consistent, fills.sides_consistent,
+    fills.fill_scale,
+    COALESCE(lifecycle.terminal_close_count, 0) AS terminal_close_count,
+    COALESCE(lifecycle.matching_terminal_close_count, 0)
+      AS matching_terminal_close_count,
+    (
+      COALESCE(fills.fill_count, 0) > 0
+      AND fills.fill_count = fills.distinct_fill_id_count
+      AND COALESCE(fills.duplicate_fingerprint_count, 0) = 0
+      AND COALESCE(fills.missing_fingerprint_count, 0) = 0
+      AND COALESCE(fills.duplicate_order_fill_index_count, 0) = 0
+      AND fills.source_authority_consistent IS TRUE
+      AND fills.environment_consistent IS TRUE
+      AND fills.deployment_consistent IS TRUE
+      AND fills.simulation_model_consistent IS TRUE
+      AND fills.order_identity_consistent IS TRUE
+    ) AS simulated_identity_complete,
+    (
+      COALESCE(fills.fill_count, 0) > 0
+      AND (
+        fills.symbols_consistent IS FALSE
+        OR fills.sides_consistent IS FALSE
+        OR fills.fill_count <> fills.distinct_fill_id_count
+        OR COALESCE(fills.duplicate_fingerprint_count, 0) > 0
+        OR COALESCE(fills.duplicate_order_fill_index_count, 0) > 0
+        OR fills.source_authority_consistent IS FALSE
+        OR fills.environment_consistent IS FALSE
+        OR fills.deployment_consistent IS FALSE
+        OR fills.simulation_model_consistent IS FALSE
+        OR fills.order_identity_conflicted IS TRUE
+        OR fills.fee_evidence_consistent IS FALSE
+        OR fills.fill_economics_consistent IS FALSE
+      )
+    ) AS simulated_evidence_conflicted,
+    (
+      entry_correction.order_id IS NULL
+      AND exit_correction.order_id IS NULL
+    ) AS no_pending_correction,
     (ft.position_id IS NOT NULL AND ft.authoritative_gross_pnl IS NOT NULL
       AND ft.authoritative_net_pnl IS NOT NULL
       AND COALESCE(ft.authoritative_fees_usdc,
@@ -430,6 +544,35 @@ evidence AS (
         COALESCE(p.exit_context_json, ft.ft_exit_context_json)
           ->>'evidence_identity') IS NOT NULL
     ), FALSE)) AS stored_authoritative_trusted,
+    COALESCE((
+      (
+        p.exit_context_json->>'outcome_provenance' IN (
+          'FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1'
+        )
+        AND COALESCE(
+          p.exit_context_json->>'calculation_version',
+          p.exit_context_json->>'outcome_calculation_version'
+        ) IS NOT NULL
+        AND COALESCE(
+          p.exit_context_json->>'source_fingerprint',
+          p.exit_context_json->>'evidence_identity'
+        ) IS NOT NULL
+      )
+      OR
+      (
+        p.entry_context_json->>'outcome_provenance' IN (
+          'FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1'
+        )
+        AND COALESCE(
+          p.entry_context_json->>'calculation_version',
+          p.entry_context_json->>'outcome_calculation_version'
+        ) IS NOT NULL
+        AND COALESCE(
+          p.entry_context_json->>'source_fingerprint',
+          p.entry_context_json->>'evidence_identity'
+        ) IS NOT NULL
+      )
+    ), FALSE) AS stored_context_trusted,
     (p.gross_pnl_usdc IS NOT NULL AND p.fees_usdc IS NOT NULL
       AND p.net_pnl_usdc IS NOT NULL
       AND p.entry_price IS NOT NULL AND p.exit_price IS NOT NULL
@@ -452,6 +595,8 @@ evidence AS (
   FROM bounded_positions p
   LEFT JOIN bounded_ft_authority ft ON ft.position_id = p.id
   LEFT JOIN bounded_simulated_fills fills ON fills.position_id = p.id
+  LEFT JOIN bounded_terminal_lifecycle lifecycle
+    ON lifecycle.position_id = p.id
   LEFT JOIN bounded_correction_orders entry_correction
     ON entry_correction.order_id = p.entry_order_id
   LEFT JOIN bounded_correction_orders exit_correction
@@ -502,6 +647,62 @@ normalization_evidence AS (
       THEN 0.5 * power(10::numeric, -scale(stored_net)) END
       AS net_serialization_bound
   FROM resolved_evidence
+),
+supersession_evidence AS (
+  SELECT *,
+    (
+      selected_source = 'PAPER_SIMULATED_FILLS'
+      AND stored_gross = 0 AND stored_fees = 0 AND stored_net = 0
+      AND NOT stored_context_trusted
+      AND COALESCE(
+        stored_exit_context_json->>'outcome_provenance', ''
+      ) NOT IN ('FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1')
+      AND COALESCE(
+        stored_entry_context_json->>'outcome_provenance', ''
+      ) NOT IN ('FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1')
+      AND (
+        COALESCE(
+          stored_exit_context_json->>'calculation_version',
+          stored_exit_context_json->>'outcome_calculation_version'
+        ) IS NULL
+        OR COALESCE(
+          stored_exit_context_json->>'outcome_provenance', ''
+        ) NOT IN ('FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1')
+      )
+      AND (
+        COALESCE(
+          stored_entry_context_json->>'calculation_version',
+          stored_entry_context_json->>'outcome_calculation_version'
+        ) IS NULL
+        OR COALESCE(
+          stored_entry_context_json->>'outcome_provenance', ''
+        ) NOT IN ('FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1')
+      )
+      AND COALESCE(
+        stored_exit_context_json->>'source_fingerprint',
+        stored_exit_context_json->>'evidence_identity',
+        stored_entry_context_json->>'source_fingerprint',
+        stored_entry_context_json->>'evidence_identity'
+      ) IS NULL
+      AND fills_complete
+      AND COALESCE(entry_fill_count, 0) > 0
+      AND COALESCE(exit_fill_count, 0) > 0
+      AND entry_qty IS NOT NULL AND exit_qty IS NOT NULL
+      AND entry_qty = exit_qty
+      AND fees_complete IS TRUE
+      AND fee_evidence_consistent IS TRUE
+      AND fill_economics_consistent IS TRUE
+      AND symbols_consistent IS TRUE AND sides_consistent IS TRUE
+      AND simulated_identity_complete
+      AND no_pending_correction
+      AND inventory_evidence_status = 'COMPLETE'
+      AND remaining_inventory_qty = 0
+      AND terminal_close_count = 1
+      AND matching_terminal_close_count = 1
+      AND resolved_gross - resolved_fees = resolved_net
+      AND (resolved_gross <> 0 OR resolved_fees <> 0 OR resolved_net <> 0)
+    ) AS simulated_zero_placeholder_supersession
+  FROM normalization_evidence
 ),
 closed_outcomes AS (
   SELECT position_id,
@@ -596,13 +797,18 @@ closed_outcomes AS (
     stored_gross,
     stored_fees,
     stored_net,
-    exit_context_json
-  FROM normalization_evidence
+    exit_context_json,
+    simulated_zero_placeholder_supersession,
+    simulated_evidence_conflicted,
+    no_pending_correction
+  FROM supersession_evidence
 ),
 rollout_classified AS (
   SELECT *,
     CASE
       WHEN ft_status = 'COMPLETE' AND NOT financial_truth_authoritative_valid
+        THEN 'BLOCKING_EVIDENCE_INCONSISTENT'
+      WHEN simulated_evidence_conflicted OR NOT no_pending_correction
         THEN 'BLOCKING_EVIDENCE_INCONSISTENT'
       WHEN normalization_status = 'SOURCE_NOT_COMPARABLE'
         OR outcome_source = 'UNRESOLVED' THEN 'NOT_EVALUABLE'
@@ -627,6 +833,9 @@ rollout_classified AS (
         AND (ft_gross <> 0 OR ft_fees <> 0 OR ft_net <> 0)
         THEN 'NON_BLOCKING_SOURCE_SUPERSEDED'
       WHEN normalization_status = 'MATERIAL_CONFLICT'
+        AND simulated_zero_placeholder_supersession
+        THEN 'NON_BLOCKING_SOURCE_SUPERSEDED'
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
         AND selected_source_confidence IN ('AUTHORITATIVE', 'HIGH_ASSURANCE')
         THEN 'BLOCKING_AUTHORITATIVE_CONFLICT'
       WHEN normalization_status = 'MATERIAL_CONFLICT'
@@ -647,6 +856,9 @@ rollout_classified AS (
         AND COALESCE(ft_exit_qty, 0) > 0
         AND (ft_gross <> 0 OR ft_fees <> 0 OR ft_net <> 0)
         THEN 'AUTHORITATIVE_FT_SUPERSEDES_UNTRUSTED_STORED_ZERO_PLACEHOLDER'
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
+        AND simulated_zero_placeholder_supersession
+        THEN 'HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_UNTRUSTED_STORED_ZERO_PLACEHOLDER'
       ELSE NULL
     END AS source_superseded_reason
   FROM closed_outcomes
@@ -825,15 +1037,6 @@ def build_closed_outcome_rows_sql(
 
 def build_closed_outcome_summary_sql(environment: str) -> str:
     cte = _closed_outcome_cte(environment)
-    if str(environment).strip().upper() == "PAPER":
-        # Account aggregation only needs stored provenance when FT is selected.
-        # Avoid detoasting historical exit contexts for the entire account.
-        cte = cte.replace(
-            "p.exit_context_json, p.gross_pnl_usdc",
-            "NULL::jsonb AS exit_context_json, "
-            "p.gross_pnl_usdc",
-            1,
-        )
     return cte + SUMMARY_SQL_SUFFIX
 
 
