@@ -428,7 +428,7 @@ export interface UiRecentClosedPosition {
   exit_reason: string | null;
   win_loss: "WIN" | "LOSS" | "FLAT" | "UNRESOLVED";
   outcome_status: "RESOLVED" | "UNRESOLVED";
-  outcome_source: "STORED_PROVEN" | "SIMULATED_FILLS" | "FINANCIAL_TRUTH" | "UNRESOLVED";
+  outcome_source: "STORED_PROVEN" | "LEGACY_EXECUTION_PROVEN" | "PAPER_SIMULATED_FILLS" | "FINANCIAL_TRUTH" | "UNRESOLVED";
   evidence_complete: boolean;
 }
 
@@ -539,6 +539,14 @@ export interface UiHealthResponse {
 
 export interface UiAccountSummary {
   total_account_value_usdc: number;
+  account_value: number;
+  account_value_status: "CANONICAL" | "RECONSTRUCTED_COMPLETE" | "RECONSTRUCTED_PARTIAL" | "UNAVAILABLE";
+  realized_coverage_count: number;
+  closed_positions_count: number;
+  realized_coverage_pct: number;
+  realized_source_breakdown: Record<string, number>;
+  unrealized_pnl: number;
+  calculation_method: string;
   quote_asset: string;
   assets: Record<string, number>;
   asset_values_usdc: Record<string, number>;

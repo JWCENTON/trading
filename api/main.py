@@ -3,9 +3,11 @@ from common.closed_outcome_read_model import (
     fetch_closed_outcome_summary,
     fetch_closed_outcomes,
 )
+from common.paper_account_read_model import reconstruct_paper_account
 import os
 import math
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from typing import List, Optional, Dict
 
 import psycopg2
@@ -366,6 +368,14 @@ class AccountSummary(BaseModel):
 
 class UIAccountSummary(BaseModel):
     total_account_value_usdc: float
+    account_value: float
+    account_value_status: str
+    realized_coverage_count: int
+    closed_positions_count: int
+    realized_coverage_pct: float
+    realized_source_breakdown: Dict[str, int]
+    unrealized_pnl: float
+    calculation_method: str
     quote_asset: str
     assets: Dict[str, float]
     asset_values_usdc: Dict[str, float]
@@ -3092,6 +3102,14 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
 
         return UIAccountSummary(
             total_account_value_usdc=float(summary.total_usdt),
+            account_value=float(summary.total_usdt),
+            account_value_status="CANONICAL",
+            realized_coverage_count=0,
+            closed_positions_count=0,
+            realized_coverage_pct=100.0,
+            realized_source_breakdown={"LIVE_EXCHANGE_BALANCES": 1},
+            unrealized_pnl=0.0,
+            calculation_method="LIVE_EXCHANGE_BALANCES_MARKED_TO_USDC",
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,
@@ -3134,15 +3152,33 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             """)
             row = cur.fetchone()
 
-        realized_pnl = float(closed_stats["net_pnl"] or 0)
-        unrealized_pnl = float(row[0] or 0.0)
-        total_usdc = float(PAPER_START_USDT + realized_pnl + unrealized_pnl)
+        bridge = reconstruct_paper_account(
+            initial_equity=Decimal(str(PAPER_START_USDT)),
+            realized_net_pnl=closed_stats["net_pnl"],
+            unrealized_pnl=Decimal(str(row[0] or 0)),
+            resolved_count=closed_stats["resolved_trades"],
+            closed_count=closed_stats["trades"],
+            source_breakdown=closed_stats["outcome_source_counts"],
+            external_adjustments=None,
+        )
+        total_usdc = float(
+            bridge.account_value
+            if bridge.account_value is not None else Decimal("0")
+        )
 
         assets[QUOTE_ASSET] = total_usdc
         asset_values_usdc[QUOTE_ASSET] = total_usdc
 
         return UIAccountSummary(
             total_account_value_usdc=total_usdc,
+            account_value=total_usdc,
+            account_value_status=bridge.account_value_status,
+            realized_coverage_count=bridge.realized_coverage_count,
+            closed_positions_count=bridge.closed_positions_count,
+            realized_coverage_pct=float(bridge.realized_coverage_pct),
+            realized_source_breakdown=dict(bridge.realized_source_breakdown),
+            unrealized_pnl=float(bridge.unrealized_pnl),
+            calculation_method=bridge.calculation_method,
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,

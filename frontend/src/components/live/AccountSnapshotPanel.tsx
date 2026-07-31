@@ -18,18 +18,32 @@ function formatUsd(value: number | null | undefined) {
 export function AccountSnapshotPanel({ account }: AccountSnapshotPanelProps) {
   const quoteAsset = account?.quote_asset || "USDC";
   const assetOrder = [quoteAsset, "BTC", "ETH", "BNB", "SOL"];
+  const isExchangeTruth = account?.calculation_method === "LIVE_EXCHANGE_BALANCES_MARKED_TO_USDC";
+  const accountLabel = isExchangeTruth
+    ? "Total account value"
+    : account?.account_value_status === "RECONSTRUCTED_COMPLETE"
+      ? "Reconstructed account value"
+      : account?.account_value_status === "RECONSTRUCTED_PARTIAL"
+        ? "Partial reconstructed estimate"
+        : account?.account_value_status === "CANONICAL"
+          ? "Canonical account value"
+          : "Unavailable";
 
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>Account snapshot</h2>
-        <span className="panel-meta">Exchange truth</span>
+        <span className="panel-meta">{isExchangeTruth ? "Exchange truth" : accountLabel}</span>
       </div>
 
       <div className="account-total-card">
-        <span className="status-label">Total account value</span>
+        <span className="status-label">{accountLabel}</span>
         <strong className="account-total-value">{formatUsd(account?.total_account_value_usdc)}</strong>
-        <span className="status-meta">Tracked assets: {assetOrder.join(" / ")}</span>
+        <span className="status-meta">
+          {isExchangeTruth
+            ? `Tracked assets: ${assetOrder.join(" / ")}`
+            : `Realized coverage: ${account?.realized_coverage_count ?? 0}/${account?.closed_positions_count ?? 0} (${(account?.realized_coverage_pct ?? 0).toFixed(2)}%)`}
+        </span>
       </div>
 
       <div className="account-grid">

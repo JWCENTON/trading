@@ -20,6 +20,8 @@ def test_model_is_bounded_and_never_uses_terminal_qty_for_pnl():
     assert "p.exit_time <= %(window_end)s" in MODEL
     assert "p.qty" not in MODEL
     assert "FROM simulated_execution_fills_v1 f" in MODEL
+    assert "FROM bounded_positions p\n  JOIN binance_order_fills f" in MODEL
+    assert "LEGACY_EXECUTION_PROVEN" in MODEL
 
 
 def test_unresolved_and_flat_are_distinct():
@@ -43,3 +45,19 @@ def test_api_exposes_compatibility_and_coverage_fields():
         "outcome_source_counts",
     ):
         assert field in API
+    for field in (
+        "account_value_status", "realized_coverage_count",
+        "closed_positions_count", "realized_coverage_pct",
+        "realized_source_breakdown", "unrealized_pnl",
+        "calculation_method",
+    ):
+        assert field in API
+
+
+def test_paper_account_frontend_labels_partial_bridge_honestly():
+    panel = (
+        ROOT / "frontend/src/components/live/AccountSnapshotPanel.tsx"
+    ).read_text()
+    assert "Partial reconstructed estimate" in panel
+    assert "Realized coverage:" in panel
+    assert 'isExchangeTruth ? "Exchange truth"' in panel
