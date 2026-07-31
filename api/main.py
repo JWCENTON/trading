@@ -388,6 +388,14 @@ class UIAccountSummary(BaseModel):
     aggregate_normalization_status: Optional[str] = None
     component_rounding_accumulation_count: int = 0
     material_conflict_count: int = 0
+    blocking_conflict_count: int = 0
+    superseded_conflict_count: int = 0
+    component_rounding_count: int = 0
+    authoritative_conflict_count: int = 0
+    evidence_inconsistent_count: int = 0
+    not_evaluable_count: int = 0
+    rollout_gate_status: Optional[str] = None
+    rollout_impact_counts: Dict[str, int]
     quote_asset: str
     assets: Dict[str, float]
     asset_values_usdc: Dict[str, float]
@@ -419,6 +427,14 @@ class UITrading24hSummary(BaseModel):
     component_rounding_accumulation_count: int = 0
     material_conflict_count: int = 0
     normalization_status_counts: Dict[str, int]
+    blocking_conflict_count: int = 0
+    superseded_conflict_count: int = 0
+    component_rounding_count: int = 0
+    authoritative_conflict_count: int = 0
+    evidence_inconsistent_count: int = 0
+    not_evaluable_count: int = 0
+    rollout_gate_status: Optional[str] = None
+    rollout_impact_counts: Dict[str, int]
     calculation_version: str
     updated_at: datetime
 
@@ -3224,6 +3240,20 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
                 "component_rounding_accumulation_count"
             ],
             material_conflict_count=closed_stats["material_conflict_count"],
+            blocking_conflict_count=closed_stats["blocking_conflict_count"],
+            superseded_conflict_count=closed_stats["superseded_conflict_count"],
+            component_rounding_count=closed_stats[
+                "component_rounding_accumulation_count"
+            ],
+            authoritative_conflict_count=closed_stats[
+                "authoritative_conflict_count"
+            ],
+            evidence_inconsistent_count=closed_stats[
+                "evidence_inconsistent_count"
+            ],
+            not_evaluable_count=closed_stats["not_evaluable_count"],
+            rollout_gate_status=closed_stats["rollout_gate_status"],
+            rollout_impact_counts=closed_stats["rollout_impact_counts"],
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,
@@ -3276,6 +3306,16 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
             ],
             material_conflict_count=stats["material_conflict_count"],
             normalization_status_counts=stats["normalization_status_counts"],
+            blocking_conflict_count=stats["blocking_conflict_count"],
+            superseded_conflict_count=stats["superseded_conflict_count"],
+            component_rounding_count=stats[
+                "component_rounding_accumulation_count"
+            ],
+            authoritative_conflict_count=stats["authoritative_conflict_count"],
+            evidence_inconsistent_count=stats["evidence_inconsistent_count"],
+            not_evaluable_count=stats["not_evaluable_count"],
+            rollout_gate_status=stats["rollout_gate_status"],
+            rollout_impact_counts=stats["rollout_impact_counts"],
             updated_at=window_end,
         )
     except Exception as e:
@@ -4427,6 +4467,17 @@ def ui_recent_closed(
                 ),
                 "reconstructed_net_delta": _safe_float(
                     outcome.get("reconstructed_net_delta")
+                ),
+                "selected_source_confidence": outcome.get(
+                    "selected_source_confidence"
+                ),
+                "rollout_impact": outcome.get("rollout_impact"),
+                "comparison_source": outcome.get("comparison_source"),
+                "comparison_source_confidence": outcome.get(
+                    "comparison_source_confidence"
+                ),
+                "source_superseded_reason": outcome.get(
+                    "source_superseded_reason"
                 ),
             })
 

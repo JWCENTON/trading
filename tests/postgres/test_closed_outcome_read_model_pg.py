@@ -51,7 +51,20 @@ def _database(disposable_postgres_v16, purpose):
               authoritative_net_pnl NUMERIC,
               authoritative_fees_usdc NUMERIC,
               authoritative_entry_fees_usdc NUMERIC,
-              authoritative_exit_fees_usdc NUMERIC
+              authoritative_exit_fees_usdc NUMERIC,
+              entry_fill_count INTEGER,
+              exit_fill_count INTEGER,
+              executed_entry_qty NUMERIC,
+              executed_exit_qty NUMERIC,
+              remaining_inventory_qty NUMERIC,
+              remaining_qty NUMERIC,
+              source_fingerprint TEXT,
+              source_order_ids JSONB,
+              source_fill_ids JSONB,
+              calculation_version TEXT,
+              failure_reason TEXT,
+              failure_code TEXT,
+              failure_detail TEXT
             );
 
             CREATE TABLE simulated_execution_fills_v1 (
@@ -161,6 +174,29 @@ def _fill(
     )
 
 
+def _financial_truth(
+    cur, position_id, *, gross, fees, net, remaining="0", status="COMPLETE",
+):
+    cur.execute(
+        """
+        INSERT INTO canonical_financial_truth_v1(
+          position_id,financial_truth_status,authoritative_gross_pnl,
+          authoritative_net_pnl,authoritative_fees_usdc,
+          entry_fill_count,exit_fill_count,executed_entry_qty,executed_exit_qty,
+          remaining_inventory_qty,remaining_qty,source_fingerprint,
+          source_order_ids,source_fill_ids,calculation_version
+        ) VALUES (%s,%s,%s,%s,%s,1,1,1,1,%s,%s,%s,%s::jsonb,%s::jsonb,
+          'FINANCIAL_TRUTH_CALCULATION_V1')
+        """,
+        (
+            position_id, status, gross, net, fees, remaining, remaining,
+            f"fingerprint-{position_id}",
+            f'["entry-{position_id}","exit-{position_id}"]',
+            f'["fill-entry-{position_id}","fill-exit-{position_id}"]',
+        ),
+    )
+
+
 def _legacy_fill(
     cur, position_id, purpose, qty, notional, fee, *, symbol="BTCUSDC",
 ):
@@ -228,12 +264,7 @@ def test_canonical_contract_and_boundaries(disposable_postgres_v16):
             _fill(cur, 9, "ENTRY", "10")
             _fill(cur, 9, "EXIT", "11", index=1)
             _position(cur, 10)
-            cur.execute(
-                """
-                INSERT INTO canonical_financial_truth_v1 VALUES
-                  (10,'COMPLETE',3,2.5,0.5,NULL,NULL)
-                """
-            )
+            _financial_truth(cur, 10, gross="3", fees="0.5", net="2.5")
             _position(cur, 11, exit_time="2026-07-28 23:59:59+00")
             _fill(cur, 11, "ENTRY", "10")
             _fill(cur, 11, "EXIT", "20", index=1)
@@ -510,6 +541,10 @@ def test_vps_21_component_rounding_shapes_are_non_material(disposable_postgres_v
         assert summary["component_rounding_accumulation_count"] == 21
         assert summary["material_conflict_count"] == 0
         assert summary["aggregate_normalization_status"] == "NON_MATERIAL_NORMALIZATION"
+        assert all(row["selected_source_confidence"] == "HIGH_ASSURANCE" for row in rows.values())
+        assert all(row["rollout_impact"] == "NON_BLOCKING_COMPONENT_ROUNDING" for row in rows.values())
+        assert summary["blocking_conflict_count"] == 0
+        assert summary["rollout_gate_status"] == "PASS"
     finally:
         conn.close()
 
@@ -551,6 +586,8 @@ def test_vps_37_production_shape_prefers_fill_precision(disposable_postgres_v16)
             "ROUNDING_ONLY": 33,
         }
         assert summary["material_conflict_count"] == 0
+        assert summary["blocking_conflict_count"] == 0
+        assert summary["rollout_gate_status"] == "PASS"
         assert summary["outcome_source_counts"] == {"PAPER_SIMULATED_FILLS": 37}
         assert (summary["wins"], summary["losses"], summary["flats"]) == (28, 9, 0)
         assert all(row["normalization_status"] != "MATERIAL_CONFLICT" for row in rows.values())
@@ -590,6 +627,8 @@ def test_vps_current_33_production_shape(disposable_postgres_v16):
         assert summary["aggregate_normalization_status"] == "NON_MATERIAL_NORMALIZATION"
         assert summary["component_rounding_accumulation_count"] == 5
         assert summary["material_conflict_count"] == 0
+        assert summary["blocking_conflict_count"] == 0
+        assert summary["rollout_gate_status"] == "PASS"
         assert (summary["wins"], summary["losses"], summary["flats"]) == (23, 10, 0)
     finally:
         conn.close()
@@ -612,9 +651,94 @@ def test_simulated_material_conflict_wins_with_diagnostic(disposable_postgres_v1
         assert rows[52000][2] == "PAPER_SIMULATED_FILLS"
         assert rows[52000][12] == "MATERIAL_CONFLICT"
         assert rows[52000][11] == "LEGACY_STORED_CONFLICT"
+        assert rows[52000][31] == "BLOCKING_AUTHORITATIVE_CONFLICT"
         assert rows[52001][2] == "UNRESOLVED"
         assert "SIMULATED_EVIDENCE_INCOMPLETE" in rows[52001][9]
         assert rows[52001][12] == "SOURCE_NOT_COMPARABLE"
+    finally:
+        conn.close()
+
+
+def test_ft_rollout_impact_separates_superseded_and_blocking_conflicts(
+    disposable_postgres_v16,
+):
+    conn = _database(disposable_postgres_v16, "ft_rollout_impact")
+    golden_nets = [
+        Decimal("-0.00548696512"), Decimal("-0.007031578824"),
+        Decimal("0.0098272733136"), Decimal("-0.02408621660"),
+        Decimal("-0.12287960864"), Decimal("-0.1496637480680"),
+        Decimal("0.149969550352"), Decimal("0.15402325488"),
+        Decimal("0.08185227072"), Decimal("0.095667336348"),
+        Decimal("-0.095007485628"), Decimal("-0.0939109786728"),
+    ]
+    ids = [10355, 10356, 10357, 10358, 10372, 10374,
+           10376, 10377, 10391, 10392, 10418, 10420]
+    try:
+        with conn.cursor() as cur:
+            for position_id, net in zip(ids, golden_nets):
+                _position(
+                    cur, position_id, strategy="SUPERTREND",
+                    gross="0.00000000", fees="0.00000000", net="0.00000000",
+                )
+                _financial_truth(
+                    cur, position_id, gross=str(net + Decimal("0.01")),
+                    fees="0.01", net=str(net),
+                )
+                _fill(cur, position_id, "ENTRY", "20", fee="0.005")
+                _fill(
+                    cur, position_id, "EXIT", str(Decimal("20") + net + Decimal("0.01")),
+                    fee="0.005", index=1,
+                )
+
+            trusted_context = (
+                '{"outcome_provenance":"FINANCIAL_TRUTH",'
+                '"calculation_version":"TRUSTED_V1",'
+                '"source_fingerprint":"stored-frozen"}'
+            )
+            _position(
+                cur, 53000, gross="0", fees="0", net="0",
+                exit_context=trusted_context,
+            )
+            _financial_truth(cur, 53000, gross="0", fees="0", net="0")
+
+            _position(
+                cur, 53001, gross="0", fees="0", net="0",
+                exit_context=trusted_context,
+            )
+            _financial_truth(cur, 53001, gross="1", fees="0.1", net="0.9")
+
+            _position(cur, 53002, gross="0", fees="0", net="0")
+            _financial_truth(
+                cur, 53002, gross="1", fees="0.1", net="0.9", remaining="0.1",
+            )
+            conn.commit()
+            rows = fetch_closed_outcomes(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+            superseded_summary = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+            )
+
+        golden = [rows[position_id] for position_id in ids]
+        assert all(row["outcome_source"] == "FINANCIAL_TRUTH" for row in golden)
+        assert all(row["selected_source_confidence"] == "AUTHORITATIVE" for row in golden)
+        assert all(row["normalization_status"] == "MATERIAL_CONFLICT" for row in golden)
+        assert all(row["rollout_impact"] == "NON_BLOCKING_SOURCE_SUPERSEDED" for row in golden)
+        assert all(row["source_superseded_reason"] for row in golden)
+        assert (sum(row["result_class"] == "WIN" for row in golden),
+                sum(row["result_class"] == "LOSS" for row in golden)) == (5, 7)
+        assert sum(row["net_pnl_usdc"] for row in golden) == Decimal("-0.0067268959392")
+
+        assert rows[53000]["rollout_impact"] == "NON_BLOCKING_EXACT"
+        assert rows[53000]["source_superseded_reason"] is None
+        assert rows[53001]["comparison_source_confidence"] == "AUTHORITATIVE"
+        assert rows[53001]["rollout_impact"] == "BLOCKING_AUTHORITATIVE_CONFLICT"
+        assert rows[53002]["rollout_impact"] == "BLOCKING_EVIDENCE_INCONSISTENT"
+        assert superseded_summary["superseded_conflict_count"] == 12
+        assert superseded_summary["authoritative_conflict_count"] == 1
+        assert superseded_summary["evidence_inconsistent_count"] == 1
+        assert superseded_summary["blocking_conflict_count"] == 2
+        assert superseded_summary["rollout_gate_status"] == "BLOCKED"
     finally:
         conn.close()
 

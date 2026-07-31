@@ -276,7 +276,15 @@ closed_outcomes AS (
     NULL::numeric AS fee_rounding_bound,
     NULL::numeric AS net_serialization_bound,
     NULL::numeric AS maximum_explainable_net_delta,
-    NULL::numeric AS reconstructed_net_delta
+    NULL::numeric AS reconstructed_net_delta,
+    CASE WHEN financial_truth_complete THEN 'AUTHORITATIVE'
+      WHEN legacy_complete THEN 'HIGH_ASSURANCE'
+      WHEN stored_proven THEN 'LEGACY_COMPATIBLE'
+      ELSE 'UNRESOLVED' END AS selected_source_confidence,
+    'NOT_EVALUABLE'::text AS rollout_impact,
+    'NONE'::text AS comparison_source,
+    'UNRESOLVED'::text AS comparison_source_confidence,
+    NULL::text AS source_superseded_reason
   FROM evidence
 ),
 classified_outcomes AS (
@@ -295,7 +303,10 @@ classified_outcomes AS (
 
 PAPER_CLOSED_OUTCOME_CTE = """
 WITH bounded_positions AS MATERIALIZED (
-  SELECT p.* FROM positions p
+  SELECT p.id, p.side, p.entry_price, p.exit_price, p.qty,
+    p.exit_context_json, p.gross_pnl_usdc, p.fees_usdc, p.net_pnl_usdc,
+    p.symbol, p.entry_order_id, p.exit_order_id
+  FROM positions p
   WHERE p.status = 'CLOSED' AND p.exit_time IS NOT NULL
     AND p.exit_time >= %(window_start)s AND p.exit_time <= %(window_end)s
 ),
@@ -303,6 +314,39 @@ bounded_financial_truth AS MATERIALIZED (
   SELECT ft.* FROM canonical_financial_truth_v1 ft
   JOIN bounded_positions p ON p.id = ft.position_id
   WHERE ft.financial_truth_status = 'COMPLETE'
+),
+bounded_ft_authority AS MATERIALIZED (
+  SELECT ft.*, ft_position.exit_context_json AS ft_exit_context_json,
+    (ft.financial_truth_status = 'COMPLETE'
+      AND COALESCE(ft.entry_fill_count, 0) > 0
+      AND COALESCE(ft.exit_fill_count, 0) > 0
+      AND ft.executed_entry_qty IS NOT NULL
+      AND ft.executed_exit_qty IS NOT NULL
+      AND ft.executed_entry_qty = ft.executed_exit_qty
+      AND COALESCE(ft.remaining_inventory_qty, ft.remaining_qty, 0) = 0
+      AND ft.authoritative_gross_pnl IS NOT NULL
+      AND COALESCE(ft.authoritative_fees_usdc,
+        ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) IS NOT NULL
+      AND ft.authoritative_net_pnl IS NOT NULL
+      AND ft.authoritative_gross_pnl - COALESCE(ft.authoritative_fees_usdc,
+        ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc)
+        = ft.authoritative_net_pnl
+      AND ft.source_fingerprint IS NOT NULL
+      AND ft.source_order_ids IS NOT NULL
+      AND jsonb_array_length(ft.source_order_ids) >= 2
+      AND ft.source_fill_ids IS NOT NULL
+      AND jsonb_array_length(ft.source_fill_ids) =
+        COALESCE(ft.entry_fill_count, 0) + COALESCE(ft.exit_fill_count, 0)
+      AND (SELECT COUNT(DISTINCT value)
+        FROM jsonb_array_elements_text(ft.source_fill_ids)) =
+        jsonb_array_length(ft.source_fill_ids)
+      AND ft.calculation_version IS NOT NULL
+      AND ft.failure_reason IS NULL
+      AND ft.failure_code IS NULL
+      AND ft.failure_detail IS NULL
+    ) AS authoritative_evidence_valid
+  FROM bounded_financial_truth ft
+  JOIN positions ft_position ON ft_position.id = ft.position_id
 ),
 bounded_simulated_fills AS MATERIALIZED (
   SELECT f.position_id,
@@ -342,13 +386,26 @@ bounded_correction_orders AS MATERIALIZED (
 evidence AS (
   SELECT p.id AS position_id, p.side,
     p.entry_price, p.exit_price, p.qty,
-    p.exit_context_json,
+    COALESCE(p.exit_context_json, ft.ft_exit_context_json) AS exit_context_json,
     p.gross_pnl_usdc AS stored_gross, p.fees_usdc AS stored_fees,
     p.net_pnl_usdc AS stored_net,
     ft.authoritative_gross_pnl AS ft_gross,
     COALESCE(ft.authoritative_fees_usdc,
       ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) AS ft_fees,
     ft.authoritative_net_pnl AS ft_net,
+    ft.financial_truth_status AS ft_status,
+    ft.entry_fill_count AS ft_entry_fill_count,
+    ft.exit_fill_count AS ft_exit_fill_count,
+    ft.executed_entry_qty AS ft_entry_qty,
+    ft.executed_exit_qty AS ft_exit_qty,
+    COALESCE(ft.remaining_inventory_qty, ft.remaining_qty) AS ft_remaining_qty,
+    ft.source_fingerprint AS ft_source_fingerprint,
+    ft.source_order_ids AS ft_source_order_ids,
+    ft.source_fill_ids AS ft_source_fill_ids,
+    ft.calculation_version AS ft_calculation_version,
+    ft.failure_reason AS ft_failure_reason,
+    ft.failure_code AS ft_failure_code,
+    ft.failure_detail AS ft_failure_detail,
     fills.fill_count, fills.entry_notional, fills.exit_notional, fills.total_fees,
     fills.symbols_consistent, fills.sides_consistent, fills.fill_scale,
     (ft.position_id IS NOT NULL AND ft.authoritative_gross_pnl IS NOT NULL
@@ -356,6 +413,23 @@ evidence AS (
       AND COALESCE(ft.authoritative_fees_usdc,
         ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) IS NOT NULL
     ) AS financial_truth_complete,
+    (ft.authoritative_evidence_valid
+      AND entry_correction.order_id IS NULL
+      AND exit_correction.order_id IS NULL
+    ) AS financial_truth_authoritative_valid,
+    (ft.position_id IS NOT NULL AND COALESCE((COALESCE(
+      p.exit_context_json, ft.ft_exit_context_json)->>'outcome_provenance' IN (
+        'FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1'
+      )
+      AND COALESCE(COALESCE(p.exit_context_json, ft.ft_exit_context_json)
+          ->>'calculation_version',
+        COALESCE(p.exit_context_json, ft.ft_exit_context_json)
+          ->>'outcome_calculation_version') IS NOT NULL
+      AND COALESCE(COALESCE(p.exit_context_json, ft.ft_exit_context_json)
+          ->>'source_fingerprint',
+        COALESCE(p.exit_context_json, ft.ft_exit_context_json)
+          ->>'evidence_identity') IS NOT NULL
+    ), FALSE)) AS stored_authoritative_trusted,
     (p.gross_pnl_usdc IS NOT NULL AND p.fees_usdc IS NOT NULL
       AND p.net_pnl_usdc IS NOT NULL
       AND p.entry_price IS NOT NULL AND p.exit_price IS NOT NULL
@@ -376,7 +450,7 @@ evidence AS (
       AND exit_correction.order_id IS NULL
     ) AS fills_complete
   FROM bounded_positions p
-  LEFT JOIN bounded_financial_truth ft ON ft.position_id = p.id
+  LEFT JOIN bounded_ft_authority ft ON ft.position_id = p.id
   LEFT JOIN bounded_simulated_fills fills ON fills.position_id = p.id
   LEFT JOIN bounded_correction_orders entry_correction
     ON entry_correction.order_id = p.entry_order_id
@@ -500,14 +574,88 @@ closed_outcomes AS (
     net_serialization_bound,
     gross_rounding_bound + fee_rounding_bound + net_serialization_bound
       AS maximum_explainable_net_delta,
-    gross_delta - fee_delta AS reconstructed_net_delta
+    gross_delta - fee_delta AS reconstructed_net_delta,
+    CASE WHEN selected_source = 'FINANCIAL_TRUTH' THEN 'AUTHORITATIVE'
+      WHEN selected_source = 'PAPER_SIMULATED_FILLS' THEN 'HIGH_ASSURANCE'
+      WHEN selected_source = 'VERIFIED_LEGACY_STORED' THEN 'LEGACY_COMPATIBLE'
+      ELSE 'UNRESOLVED' END AS selected_source_confidence,
+    CASE WHEN stored_gross IS NOT NULL OR stored_fees IS NOT NULL
+      OR stored_net IS NOT NULL THEN 'HISTORICAL_STORED'
+      ELSE 'NONE' END AS comparison_source,
+    CASE WHEN stored_authoritative_trusted THEN 'AUTHORITATIVE'
+      WHEN legacy_stored_structurally_valid THEN 'LEGACY_COMPATIBLE'
+      ELSE 'UNRESOLVED' END AS comparison_source_confidence,
+    ft_status,
+    financial_truth_authoritative_valid,
+    stored_authoritative_trusted,
+    ft_entry_qty,
+    ft_exit_qty,
+    ft_gross,
+    ft_fees,
+    ft_net,
+    stored_gross,
+    stored_fees,
+    stored_net,
+    exit_context_json
   FROM normalization_evidence
+),
+rollout_classified AS (
+  SELECT *,
+    CASE
+      WHEN ft_status = 'COMPLETE' AND NOT financial_truth_authoritative_valid
+        THEN 'BLOCKING_EVIDENCE_INCONSISTENT'
+      WHEN normalization_status = 'SOURCE_NOT_COMPARABLE'
+        OR outcome_source = 'UNRESOLVED' THEN 'NOT_EVALUABLE'
+      WHEN normalization_status = 'EXACT_MATCH' THEN 'NON_BLOCKING_EXACT'
+      WHEN normalization_status = 'ROUNDING_ONLY' THEN 'NON_BLOCKING_ROUNDING'
+      WHEN normalization_status = 'COMPONENT_ROUNDING_ACCUMULATION'
+        THEN 'NON_BLOCKING_COMPONENT_ROUNDING'
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
+        AND outcome_source = 'FINANCIAL_TRUTH'
+        AND financial_truth_authoritative_valid
+        AND stored_gross = 0 AND stored_fees = 0 AND stored_net = 0
+        AND NOT stored_authoritative_trusted
+        AND COALESCE(exit_context_json->>'outcome_provenance', '') NOT IN (
+          'FINANCIAL_TRUTH', 'AUTHORITATIVE_OUTCOME_V1'
+        )
+        AND COALESCE(exit_context_json->>'calculation_version',
+          exit_context_json->>'outcome_calculation_version') IS NULL
+        AND COALESCE(exit_context_json->>'source_fingerprint',
+          exit_context_json->>'evidence_identity') IS NULL
+        AND COALESCE(ft_entry_qty, 0) > 0
+        AND COALESCE(ft_exit_qty, 0) > 0
+        AND (ft_gross <> 0 OR ft_fees <> 0 OR ft_net <> 0)
+        THEN 'NON_BLOCKING_SOURCE_SUPERSEDED'
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
+        AND selected_source_confidence IN ('AUTHORITATIVE', 'HIGH_ASSURANCE')
+        THEN 'BLOCKING_AUTHORITATIVE_CONFLICT'
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
+        THEN 'BLOCKING_EVIDENCE_INCONSISTENT'
+      ELSE 'NOT_EVALUABLE'
+    END AS rollout_impact,
+    CASE
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
+        AND outcome_source = 'FINANCIAL_TRUTH'
+        AND financial_truth_authoritative_valid
+        AND stored_gross = 0 AND stored_fees = 0 AND stored_net = 0
+        AND NOT stored_authoritative_trusted
+        AND COALESCE(exit_context_json->>'calculation_version',
+          exit_context_json->>'outcome_calculation_version') IS NULL
+        AND COALESCE(exit_context_json->>'source_fingerprint',
+          exit_context_json->>'evidence_identity') IS NULL
+        AND COALESCE(ft_entry_qty, 0) > 0
+        AND COALESCE(ft_exit_qty, 0) > 0
+        AND (ft_gross <> 0 OR ft_fees <> 0 OR ft_net <> 0)
+        THEN 'AUTHORITATIVE_FT_SUPERSEDES_UNTRUSTED_STORED_ZERO_PLACEHOLDER'
+      ELSE NULL
+    END AS source_superseded_reason
+  FROM closed_outcomes
 ),
 classified_outcomes AS (
   SELECT *, CASE WHEN NOT evidence_complete THEN 'UNRESOLVED'
     WHEN net_pnl_usdc > 0 THEN 'WIN' WHEN net_pnl_usdc < 0 THEN 'LOSS'
     ELSE 'FLAT' END AS result_class
-  FROM closed_outcomes
+  FROM rollout_classified
 )
 """
 
@@ -521,13 +669,22 @@ SELECT
   normalization_version, calculation_version, stored_scale, fill_scale,
   legacy_stored_provenance, legacy_fee_model, gross_delta, fee_delta, net_delta,
   gross_rounding_bound, fee_rounding_bound, net_serialization_bound,
-  maximum_explainable_net_delta, reconstructed_net_delta
+  maximum_explainable_net_delta, reconstructed_net_delta,
+  selected_source_confidence, rollout_impact, comparison_source,
+  comparison_source_confidence, source_superseded_reason
 FROM classified_outcomes
 ORDER BY position_id
 """
 
 
 SUMMARY_SQL_SUFFIX = """
+, summary_outcomes AS MATERIALIZED (
+  SELECT evidence_complete, result_class, net_pnl_usdc, gross_pnl_usdc,
+    fees_usdc, outcome_source, quality_class, normalization_stored_value,
+    normalization_resolved_value, normalization_delta, normalization_status,
+    rollout_impact
+  FROM classified_outcomes
+)
 SELECT
   COUNT(*)::int AS trades,
   COUNT(*) FILTER (WHERE evidence_complete)::int AS resolved_trades,
@@ -568,12 +725,38 @@ SELECT
     AS material_conflict_count,
   COALESCE(jsonb_object_agg(normalization_status, normalization_count)
     FILTER (WHERE normalization_status IS NOT NULL), '{}'::jsonb)
-    AS normalization_status_counts
+    AS normalization_status_counts,
+  COUNT(*) FILTER (WHERE rollout_impact IN (
+    'BLOCKING_AUTHORITATIVE_CONFLICT', 'BLOCKING_EVIDENCE_INCONSISTENT'))::int
+    AS blocking_conflict_count,
+  COUNT(*) FILTER (WHERE rollout_impact = 'NON_BLOCKING_SOURCE_SUPERSEDED')::int
+    AS superseded_conflict_count,
+  COUNT(*) FILTER (WHERE rollout_impact = 'BLOCKING_AUTHORITATIVE_CONFLICT')::int
+    AS authoritative_conflict_count,
+  COUNT(*) FILTER (WHERE rollout_impact = 'BLOCKING_EVIDENCE_INCONSISTENT')::int
+    AS evidence_inconsistent_count,
+  COUNT(*) FILTER (WHERE rollout_impact = 'NOT_EVALUABLE')::int
+    AS not_evaluable_count,
+  CASE
+    WHEN BOOL_OR(rollout_impact IN (
+      'BLOCKING_AUTHORITATIVE_CONFLICT', 'BLOCKING_EVIDENCE_INCONSISTENT'))
+      THEN 'BLOCKED'
+    WHEN BOOL_OR(rollout_impact = 'NOT_EVALUABLE') THEN 'INCOMPLETE'
+    ELSE 'PASS'
+  END AS rollout_gate_status,
+  COALESCE(jsonb_object_agg(rollout_impact, rollout_impact_count)
+    FILTER (WHERE rollout_impact IS NOT NULL), '{}'::jsonb)
+    AS rollout_impact_counts
 FROM (
-  SELECT c.*, COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count,
+  SELECT evidence_complete, result_class, net_pnl_usdc, gross_pnl_usdc,
+    fees_usdc, outcome_source, quality_class, normalization_stored_value,
+    normalization_resolved_value, normalization_delta, normalization_status,
+    rollout_impact,
+    COUNT(*) OVER (PARTITION BY outcome_source)::int AS source_count,
     COUNT(*) OVER (PARTITION BY quality_class)::int AS quality_count,
-    COUNT(*) OVER (PARTITION BY normalization_status)::int AS normalization_count
-  FROM classified_outcomes c
+    COUNT(*) OVER (PARTITION BY normalization_status)::int AS normalization_count,
+    COUNT(*) OVER (PARTITION BY rollout_impact)::int AS rollout_impact_count
+  FROM summary_outcomes c
 ) outcomes
 """
 
@@ -602,7 +785,17 @@ def build_closed_outcome_rows_sql(
 
 
 def build_closed_outcome_summary_sql(environment: str) -> str:
-    return _closed_outcome_cte(environment) + SUMMARY_SQL_SUFFIX
+    cte = _closed_outcome_cte(environment)
+    if str(environment).strip().upper() == "PAPER":
+        # Account aggregation only needs stored provenance when FT is selected.
+        # Avoid detoasting historical exit contexts for the entire account.
+        cte = cte.replace(
+            "p.exit_context_json, p.gross_pnl_usdc",
+            "NULL::jsonb AS exit_context_json, "
+            "p.gross_pnl_usdc",
+            1,
+        )
+    return cte + SUMMARY_SQL_SUFFIX
 
 
 def fetch_closed_outcome_summary(
@@ -610,6 +803,9 @@ def fetch_closed_outcome_summary(
 ) -> dict[str, Any]:
     if window_start > window_end:
         raise ValueError("window_start must not be after window_end")
+    # This expression-heavy bounded query is faster without PostgreSQL JIT's
+    # per-request compilation cost; LOCAL keeps the setting transaction-scoped.
+    cur.execute("SET LOCAL jit = off")
     cur.execute(
         build_closed_outcome_summary_sql(environment),
         {"window_start": window_start, "window_end": window_end},
@@ -651,6 +847,13 @@ def fetch_closed_outcome_summary(
         "component_rounding_accumulation_count": int(row[19] or 0),
         "material_conflict_count": int(row[20] or 0),
         "normalization_status_counts": dict(row[21] or {}),
+        "blocking_conflict_count": int(row[22] or 0),
+        "superseded_conflict_count": int(row[23] or 0),
+        "authoritative_conflict_count": int(row[24] or 0),
+        "evidence_inconsistent_count": int(row[25] or 0),
+        "not_evaluable_count": int(row[26] or 0),
+        "rollout_gate_status": row[27],
+        "rollout_impact_counts": dict(row[28] or {}),
         "normalization_version": (
             PAPER_OUTCOME_NORMALIZATION_VERSION
             if str(environment).strip().upper() == "PAPER" else None
@@ -664,6 +867,7 @@ def fetch_closed_outcomes(
 ) -> dict[int, dict[str, Any]]:
     if window_start > window_end:
         raise ValueError("window_start must not be after window_end")
+    cur.execute("SET LOCAL jit = off")
     cur.execute(
         build_closed_outcome_rows_sql(
             environment, bounded_position_ids=position_ids is not None
@@ -706,6 +910,11 @@ def fetch_closed_outcomes(
             "net_serialization_bound": row[27],
             "maximum_explainable_net_delta": row[28],
             "reconstructed_net_delta": row[29],
+            "selected_source_confidence": row[30],
+            "rollout_impact": row[31],
+            "comparison_source": row[32],
+            "comparison_source_confidence": row[33],
+            "source_superseded_reason": row[34],
         }
         for row in cur.fetchall()
     }

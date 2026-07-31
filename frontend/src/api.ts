@@ -447,6 +447,11 @@ export interface UiRecentClosedPosition {
   net_serialization_bound: number | null;
   maximum_explainable_net_delta: number | null;
   reconstructed_net_delta: number | null;
+  selected_source_confidence: "AUTHORITATIVE" | "HIGH_ASSURANCE" | "LEGACY_COMPATIBLE" | "UNRESOLVED";
+  rollout_impact: "NON_BLOCKING_EXACT" | "NON_BLOCKING_ROUNDING" | "NON_BLOCKING_COMPONENT_ROUNDING" | "NON_BLOCKING_SOURCE_SUPERSEDED" | "BLOCKING_AUTHORITATIVE_CONFLICT" | "BLOCKING_EVIDENCE_INCONSISTENT" | "NOT_EVALUABLE";
+  comparison_source: "HISTORICAL_STORED" | "NONE";
+  comparison_source_confidence: "AUTHORITATIVE" | "LEGACY_COMPATIBLE" | "UNRESOLVED";
+  source_superseded_reason: string | null;
 }
 
 export interface UiRecentClosedResponse {
@@ -576,6 +581,14 @@ export interface UiAccountSummary {
   aggregate_normalization_status?: string | null;
   component_rounding_accumulation_count: number;
   material_conflict_count: number;
+  blocking_conflict_count: number;
+  superseded_conflict_count: number;
+  component_rounding_count: number;
+  authoritative_conflict_count: number;
+  evidence_inconsistent_count: number;
+  not_evaluable_count: number;
+  rollout_gate_status: "PASS" | "BLOCKED" | "INCOMPLETE" | null;
+  rollout_impact_counts: Record<string, number>;
   quote_asset: string;
   assets: Record<string, number>;
   asset_values_usdc: Record<string, number>;
@@ -608,6 +621,14 @@ export interface UiTrading24hSummary {
   component_rounding_accumulation_count: number;
   material_conflict_count: number;
   normalization_status_counts: Record<string, number>;
+  blocking_conflict_count: number;
+  superseded_conflict_count: number;
+  component_rounding_count: number;
+  authoritative_conflict_count: number;
+  evidence_inconsistent_count: number;
+  not_evaluable_count: number;
+  rollout_gate_status: "PASS" | "BLOCKED" | "INCOMPLETE" | null;
+  rollout_impact_counts: Record<string, number>;
   updated_at: string;
 }
 

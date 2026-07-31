@@ -100,3 +100,30 @@ def test_component_rounding_diagnostics_are_exposed_without_changing_source():
     paper = build_closed_outcome_summary_sql("PAPER")
     assert "COMPONENT_ROUNDING_ACCUMULATION" in paper
     assert "PAPER_SIMULATED_FILLS" in paper
+
+
+def test_rollout_impact_and_source_confidence_contract_is_exposed():
+    for field in (
+        "selected_source_confidence",
+        "rollout_impact",
+        "comparison_source",
+        "comparison_source_confidence",
+        "source_superseded_reason",
+        "blocking_conflict_count",
+        "superseded_conflict_count",
+        "authoritative_conflict_count",
+        "evidence_inconsistent_count",
+        "not_evaluable_count",
+        "rollout_gate_status",
+        "rollout_impact_counts",
+    ):
+        assert field in API
+
+    paper = build_closed_outcome_summary_sql("PAPER")
+    assert "NON_BLOCKING_SOURCE_SUPERSEDED" in paper
+    assert "BLOCKING_AUTHORITATIVE_CONFLICT" in paper
+    assert "BLOCKING_EVIDENCE_INCONSISTENT" in paper
+
+    live = build_closed_outcome_rows_sql("LIVE")
+    assert "NON_BLOCKING_SOURCE_SUPERSEDED" not in live
+    assert "BLOCKING_AUTHORITATIVE_CONFLICT" not in live
