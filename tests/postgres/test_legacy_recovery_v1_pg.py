@@ -95,7 +95,11 @@ def recovery_db(disposable_postgres_v16):
             """
         )
         cur.execute(
-            (ROOT / "db/migrations/20260724_database_baseline_provenance_v1.sql").read_text()
+            (
+                ROOT
+                / "db/migrations/"
+                "20260801_schema_migration_ledger_v1_baseline.sql"
+            ).read_text()
         )
         cur.execute(
             (ROOT / "db/migrations/20260727_canonical_financial_truth_foundation_v1.sql").read_text()

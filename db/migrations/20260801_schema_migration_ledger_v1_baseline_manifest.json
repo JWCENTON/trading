@@ -1,0 +1,24 @@
+{
+  "contract_version": "SCHEMA_MIGRATION_LEDGER_V1_BASELINE",
+  "migration_id": "20260801_schema_migration_ledger_v1_baseline.sql",
+  "migration_sha256": "3caa5b86696d46bca60981bad1a470be221aebee0c209f8709e824d64946a8e0",
+  "runtime_scope": "COMMON",
+  "required_before": [
+    "20260730_legacy_position_fill_recovery_v1.sql"
+  ],
+  "objects": {
+    "tables": [
+      "public.schema_migration_ledger_v1"
+    ],
+    "indexes": [
+      "public.ix_schema_migration_ledger_v1_lookup"
+    ]
+  },
+  "data_policy": {
+    "self_registration": false,
+    "backfill": false,
+    "trading_data_changes": false,
+    "existing_ledger_rows_preserved": true
+  },
+  "compatibility_policy": "fail_closed_catalog_validation"
+}

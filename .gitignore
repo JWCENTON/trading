@@ -312,4 +312,5 @@ exit_trace_incremental_audit_*.txt
 *_backup*.sql
 *full_backup*.sql
 *_schema_*.sql
+!db/migrations/20260801_schema_migration_ledger_v1_baseline.sql
 db_live_data/

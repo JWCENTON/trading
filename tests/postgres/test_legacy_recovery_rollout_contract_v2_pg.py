@@ -34,7 +34,7 @@ ROLLBACK = (
     "20260730_legacy_position_fill_recovery_v1_rollback.sql"
 ).read_text()
 BASELINE = (
-    ROOT / "db/migrations/20260724_database_baseline_provenance_v1.sql"
+    ROOT / "db/migrations/20260801_schema_migration_ledger_v1_baseline.sql"
 ).read_text()
 
 
