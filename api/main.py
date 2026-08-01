@@ -4479,6 +4479,15 @@ def ui_recent_closed(
                 "source_superseded_reason": outcome.get(
                     "source_superseded_reason"
                 ),
+                "position_order_linkage_status": outcome.get(
+                    "position_order_linkage_status"
+                ),
+                "derived_entry_order_id": outcome.get(
+                    "derived_entry_order_id"
+                ),
+                "derived_exit_order_id": outcome.get(
+                    "derived_exit_order_id"
+                ),
             })
 
         return jsonable_encoder({

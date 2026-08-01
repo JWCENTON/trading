@@ -284,7 +284,10 @@ closed_outcomes AS (
     'NOT_EVALUABLE'::text AS rollout_impact,
     'NONE'::text AS comparison_source,
     'UNRESOLVED'::text AS comparison_source_confidence,
-    NULL::text AS source_superseded_reason
+    NULL::text AS source_superseded_reason,
+    NULL::text AS position_order_linkage_status,
+    NULL::bigint AS derived_entry_order_id,
+    NULL::bigint AS derived_exit_order_id
   FROM evidence
 ),
 classified_outcomes AS (
@@ -307,6 +310,7 @@ WITH bounded_positions AS MATERIALIZED (
     p.entry_context_json, p.exit_context_json,
     p.gross_pnl_usdc, p.fees_usdc, p.net_pnl_usdc,
     p.inventory_evidence_status, p.remaining_inventory_qty,
+    p.inventory_contract_adoption_id, p.inventory_contract_generation,
     p.symbol, p.entry_order_id, p.exit_order_id
   FROM positions p
   WHERE p.status = 'CLOSED' AND p.exit_time IS NOT NULL
@@ -362,6 +366,24 @@ bounded_simulated_fills AS MATERIALIZED (
       AS duplicate_order_fill_index_count,
     COUNT(*) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_fill_count,
     COUNT(*) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_fill_count,
+    COUNT(*) FILTER (
+      WHERE f.order_purpose = 'ENTRY' AND f.simulated_order_id IS NULL
+    ) AS entry_missing_order_id_count,
+    COUNT(*) FILTER (
+      WHERE f.order_purpose = 'EXIT' AND f.simulated_order_id IS NULL
+    ) AS exit_missing_order_id_count,
+    COUNT(DISTINCT f.simulated_order_id) FILTER (
+      WHERE f.order_purpose = 'ENTRY'
+    ) AS entry_order_candidate_count,
+    COUNT(DISTINCT f.simulated_order_id) FILTER (
+      WHERE f.order_purpose = 'EXIT'
+    ) AS exit_order_candidate_count,
+    MIN(f.simulated_order_id) FILTER (
+      WHERE f.order_purpose = 'ENTRY'
+    ) AS derived_entry_order_id,
+    MIN(f.simulated_order_id) FILTER (
+      WHERE f.order_purpose = 'EXIT'
+    ) AS derived_exit_order_id,
     SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_qty,
     SUM(f.fill_qty) FILTER (WHERE f.order_purpose = 'EXIT') AS exit_qty,
     SUM(f.fill_notional) FILTER (WHERE f.order_purpose = 'ENTRY') AS entry_notional,
@@ -401,10 +423,17 @@ bounded_simulated_fills AS MATERIALIZED (
     )
       AND COUNT(DISTINCT lower(f.deployment_id)) = 1
       AS deployment_consistent,
+    MIN(lower(f.deployment_id)) AS derived_deployment_id,
     BOOL_AND(
       f.simulation_model_version IS NOT NULL
       AND f.simulation_model_version = 'PAPER_SIMULATOR_FINANCIAL_MODEL_V1'
     ) AS simulation_model_consistent,
+    BOOL_AND(NOT EXISTS (
+      SELECT 1
+      FROM simulated_execution_fills_v1 other_fill
+      WHERE other_fill.simulated_order_id = f.simulated_order_id
+        AND other_fill.position_id <> f.position_id
+    )) AS order_position_assignment_consistent,
     BOOL_AND(
       (f.order_purpose = 'ENTRY'
         AND p.entry_order_id IS NOT NULL
@@ -437,11 +466,24 @@ bounded_terminal_lifecycle AS MATERIALIZED (
     COUNT(*) FILTER (WHERE event.mutation_kind IN (
       'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
     )) AS terminal_close_count,
+    COUNT(*) FILTER (WHERE event.mutation_kind = 'POSITION_CLOSED')
+      AS position_closed_count,
     COUNT(*) FILTER (
       WHERE event.mutation_kind IN (
         'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
       ) AND event.order_id = p.exit_order_id
-    ) AS matching_terminal_close_count
+    ) AS matching_explicit_terminal_close_count,
+    COUNT(DISTINCT event.order_id) FILTER (WHERE event.mutation_kind IN (
+      'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
+    )) AS terminal_order_candidate_count,
+    MIN(event.order_id) FILTER (WHERE event.mutation_kind IN (
+      'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
+    )) AS terminal_order_id,
+    BOOL_AND(
+      COALESCE(event.payload->>'execution_source', '') = 'PAPER_SIMULATED'
+    ) FILTER (WHERE event.mutation_kind IN (
+      'POSITION_CLOSED', 'POSITION_CLOSED_TERMINAL_DUST'
+    )) AS terminal_execution_source_consistent
   FROM position_lifecycle_events_c2_2 event
   JOIN bounded_positions p ON p.id = event.position_id
   GROUP BY event.position_id
@@ -452,6 +494,136 @@ bounded_correction_orders AS MATERIALIZED (
   WHERE i.application_status IN (
     'CORRECTION_PENDING', 'AMBIGUOUS', 'IDEMPOTENCY_CONFLICT'
   )
+),
+bounded_order_linkage AS MATERIALIZED (
+  -- Financial compatibility only: this is not forward LEI/C3 lineage proof.
+  SELECT fills.*,
+    COALESCE(lifecycle.terminal_close_count, 0) AS terminal_close_count,
+    COALESCE(lifecycle.position_closed_count, 0) AS position_closed_count,
+    COALESCE(lifecycle.terminal_order_candidate_count, 0)
+      AS terminal_order_candidate_count,
+    lifecycle.terminal_order_id,
+    (
+      entry_correction.order_id IS NULL
+      AND exit_correction.order_id IS NULL
+    ) AS no_pending_correction,
+    CASE
+      WHEN COALESCE(fills.entry_order_candidate_count, 0) > 1
+        OR COALESCE(fills.exit_order_candidate_count, 0) > 1
+        THEN 'AMBIGUOUS_ORDER_LINKAGE'
+      WHEN (p.entry_order_id IS NULL) <> (p.exit_order_id IS NULL) THEN
+        CASE
+          WHEN (
+            p.entry_order_id IS NOT NULL
+            AND fills.entry_order_candidate_count = 1
+            AND p.entry_order_id <> fills.derived_entry_order_id::text
+          ) OR (
+            p.exit_order_id IS NOT NULL
+            AND fills.exit_order_candidate_count = 1
+            AND p.exit_order_id <> fills.derived_exit_order_id::text
+          ) OR (
+            lifecycle.terminal_close_count > 0
+            AND lifecycle.terminal_order_id IS DISTINCT FROM
+              fills.derived_exit_order_id::text
+          ) THEN 'CONFLICTING_ORDER_LINKAGE'
+          ELSE 'MISSING_ORDER_LINKAGE'
+        END
+      WHEN p.entry_order_id IS NOT NULL AND p.exit_order_id IS NOT NULL THEN
+        CASE
+          WHEN fills.entry_order_candidate_count = 1
+            AND fills.exit_order_candidate_count = 1
+            AND p.entry_order_id = fills.derived_entry_order_id::text
+            AND p.exit_order_id = fills.derived_exit_order_id::text
+            AND lifecycle.terminal_close_count = 1
+            AND lifecycle.terminal_order_candidate_count = 1
+            AND lifecycle.terminal_order_id = p.exit_order_id
+            THEN 'EXPLICIT_POSITION_ORDER_LINKAGE'
+          WHEN (
+            fills.entry_order_candidate_count = 1
+            AND p.entry_order_id <> fills.derived_entry_order_id::text
+          ) OR (
+            fills.exit_order_candidate_count = 1
+            AND p.exit_order_id <> fills.derived_exit_order_id::text
+          ) OR (
+            lifecycle.terminal_close_count > 0
+            AND (
+              lifecycle.terminal_close_count <> 1
+              OR lifecycle.terminal_order_candidate_count <> 1
+              OR lifecycle.terminal_order_id <> p.exit_order_id
+            )
+          ) THEN 'CONFLICTING_ORDER_LINKAGE'
+          ELSE 'MISSING_ORDER_LINKAGE'
+        END
+      WHEN fills.entry_order_candidate_count = 1
+        AND fills.exit_order_candidate_count = 1
+        AND COALESCE(fills.entry_missing_order_id_count, 0) = 0
+        AND COALESCE(fills.exit_missing_order_id_count, 0) = 0
+        AND lifecycle.terminal_close_count = 1
+        AND lifecycle.position_closed_count = 1
+        AND lifecycle.terminal_order_candidate_count = 1
+        AND lifecycle.terminal_order_id = fills.derived_exit_order_id::text
+        AND lifecycle.terminal_execution_source_consistent IS TRUE
+        AND p.inventory_evidence_status = 'COMPLETE'
+        AND p.remaining_inventory_qty = 0
+        AND p.inventory_contract_adoption_id IS NOT NULL
+        AND p.inventory_contract_generation IS NOT NULL
+        AND adoption.adoption_id = p.inventory_contract_adoption_id
+        AND adoption.generation = p.inventory_contract_generation
+        AND lower(adoption.environment) = 'paper'
+        AND lower(adoption.deployment_id) = fills.derived_deployment_id
+        AND fills.fill_count = fills.distinct_fill_id_count
+        AND COALESCE(fills.duplicate_fingerprint_count, 0) = 0
+        AND COALESCE(fills.missing_fingerprint_count, 0) = 0
+        AND COALESCE(fills.duplicate_order_fill_index_count, 0) = 0
+        AND fills.symbols_consistent IS TRUE
+        AND fills.sides_consistent IS TRUE
+        AND fills.source_authority_consistent IS TRUE
+        AND fills.environment_consistent IS TRUE
+        AND fills.deployment_consistent IS TRUE
+        AND fills.simulation_model_consistent IS TRUE
+        AND fills.order_position_assignment_consistent IS TRUE
+        AND entry_correction.order_id IS NULL
+        AND exit_correction.order_id IS NULL
+        THEN 'DERIVED_UNIQUE_FILL_LIFECYCLE_LINKAGE'
+      WHEN fills.entry_order_candidate_count = 1
+        AND fills.exit_order_candidate_count = 1
+        AND (
+          (lifecycle.terminal_close_count > 0 AND (
+            lifecycle.terminal_close_count <> 1
+            OR lifecycle.terminal_order_candidate_count <> 1
+            OR lifecycle.terminal_order_id IS DISTINCT FROM
+              fills.derived_exit_order_id::text
+          ))
+          OR fills.fill_count <> fills.distinct_fill_id_count
+          OR COALESCE(fills.duplicate_fingerprint_count, 0) > 0
+          OR COALESCE(fills.duplicate_order_fill_index_count, 0) > 0
+          OR fills.symbols_consistent IS FALSE
+          OR fills.sides_consistent IS FALSE
+          OR fills.source_authority_consistent IS FALSE
+          OR fills.environment_consistent IS FALSE
+          OR fills.deployment_consistent IS FALSE
+          OR fills.simulation_model_consistent IS FALSE
+          OR fills.order_position_assignment_consistent IS FALSE
+          OR entry_correction.order_id IS NOT NULL
+          OR exit_correction.order_id IS NOT NULL
+        ) THEN 'CONFLICTING_ORDER_LINKAGE'
+      ELSE 'MISSING_ORDER_LINKAGE'
+    END AS position_order_linkage_status
+  FROM bounded_simulated_fills fills
+  JOIN bounded_positions p ON p.id = fills.position_id
+  LEFT JOIN bounded_terminal_lifecycle lifecycle
+    ON lifecycle.position_id = p.id
+  LEFT JOIN runtime_contract_adoption_v2 adoption
+    ON adoption.adoption_id = p.inventory_contract_adoption_id
+   AND adoption.contract_name = 'FEE_AWARE_INVENTORY_C2_2'
+  LEFT JOIN bounded_correction_orders entry_correction
+    ON entry_correction.order_id = COALESCE(
+      p.entry_order_id, fills.derived_entry_order_id::text
+    )
+  LEFT JOIN bounded_correction_orders exit_correction
+    ON exit_correction.order_id = COALESCE(
+      p.exit_order_id, fills.derived_exit_order_id::text
+    )
 ),
 evidence AS (
   SELECT p.id AS position_id, p.side,
@@ -486,9 +658,14 @@ evidence AS (
     fills.fill_economics_consistent,
     fills.symbols_consistent, fills.sides_consistent,
     fills.fill_scale,
-    COALESCE(lifecycle.terminal_close_count, 0) AS terminal_close_count,
-    COALESCE(lifecycle.matching_terminal_close_count, 0)
-      AS matching_terminal_close_count,
+    fills.derived_entry_order_id, fills.derived_exit_order_id,
+    fills.position_order_linkage_status,
+    fills.terminal_close_count,
+    CASE WHEN fills.terminal_close_count = 1
+      AND fills.terminal_order_candidate_count = 1
+      AND fills.terminal_order_id = COALESCE(
+        p.exit_order_id, fills.derived_exit_order_id::text
+      ) THEN 1 ELSE 0 END AS matching_terminal_close_count,
     (
       COALESCE(fills.fill_count, 0) > 0
       AND fills.fill_count = fills.distinct_fill_id_count
@@ -499,7 +676,11 @@ evidence AS (
       AND fills.environment_consistent IS TRUE
       AND fills.deployment_consistent IS TRUE
       AND fills.simulation_model_consistent IS TRUE
-      AND fills.order_identity_consistent IS TRUE
+      AND fills.order_position_assignment_consistent IS TRUE
+      AND fills.position_order_linkage_status IN (
+        'EXPLICIT_POSITION_ORDER_LINKAGE',
+        'DERIVED_UNIQUE_FILL_LIFECYCLE_LINKAGE'
+      )
     ) AS simulated_identity_complete,
     (
       COALESCE(fills.fill_count, 0) > 0
@@ -513,14 +694,14 @@ evidence AS (
         OR fills.environment_consistent IS FALSE
         OR fills.deployment_consistent IS FALSE
         OR fills.simulation_model_consistent IS FALSE
-        OR fills.order_identity_conflicted IS TRUE
+        OR fills.order_position_assignment_consistent IS FALSE
         OR fills.fee_evidence_consistent IS FALSE
         OR fills.fill_economics_consistent IS FALSE
       )
     ) AS simulated_evidence_conflicted,
-    (
-      entry_correction.order_id IS NULL
-      AND exit_correction.order_id IS NULL
+    COALESCE(
+      fills.no_pending_correction,
+      entry_correction.order_id IS NULL AND exit_correction.order_id IS NULL
     ) AS no_pending_correction,
     (ft.position_id IS NOT NULL AND ft.authoritative_gross_pnl IS NOT NULL
       AND ft.authoritative_net_pnl IS NOT NULL
@@ -528,8 +709,10 @@ evidence AS (
         ft.authoritative_entry_fees_usdc + ft.authoritative_exit_fees_usdc) IS NOT NULL
     ) AS financial_truth_complete,
     (ft.authoritative_evidence_valid
-      AND entry_correction.order_id IS NULL
-      AND exit_correction.order_id IS NULL
+      AND COALESCE(
+        fills.no_pending_correction,
+        entry_correction.order_id IS NULL AND exit_correction.order_id IS NULL
+      )
     ) AS financial_truth_authoritative_valid,
     (ft.position_id IS NOT NULL AND COALESCE((COALESCE(
       p.exit_context_json, ft.ft_exit_context_json)->>'outcome_provenance' IN (
@@ -579,8 +762,10 @@ evidence AS (
       AND p.entry_price <> 0
       AND (COALESCE(p.qty, 0) > 0 OR p.entry_price <> p.exit_price)
       AND abs(p.net_pnl_usdc - (p.gross_pnl_usdc - p.fees_usdc)) <= 0.00000001
-      AND entry_correction.order_id IS NULL
-      AND exit_correction.order_id IS NULL
+      AND COALESCE(
+        fills.no_pending_correction,
+        entry_correction.order_id IS NULL AND exit_correction.order_id IS NULL
+      )
     ) AS legacy_stored_structurally_valid,
     (COALESCE(fills.entry_fill_count, 0) > 0
       AND COALESCE(fills.exit_fill_count, 0) > 0
@@ -589,14 +774,11 @@ evidence AS (
       AND fills.entry_notional IS NOT NULL AND fills.exit_notional IS NOT NULL
       AND fills.fees_complete IS TRUE AND fills.total_fees IS NOT NULL
       AND fills.symbols_consistent IS TRUE AND fills.sides_consistent IS TRUE
-      AND entry_correction.order_id IS NULL
-      AND exit_correction.order_id IS NULL
+      AND fills.no_pending_correction
     ) AS fills_complete
   FROM bounded_positions p
   LEFT JOIN bounded_ft_authority ft ON ft.position_id = p.id
-  LEFT JOIN bounded_simulated_fills fills ON fills.position_id = p.id
-  LEFT JOIN bounded_terminal_lifecycle lifecycle
-    ON lifecycle.position_id = p.id
+  LEFT JOIN bounded_order_linkage fills ON fills.position_id = p.id
   LEFT JOIN bounded_correction_orders entry_correction
     ON entry_correction.order_id = p.entry_order_id
   LEFT JOIN bounded_correction_orders exit_correction
@@ -694,6 +876,10 @@ supersession_evidence AS (
       AND fill_economics_consistent IS TRUE
       AND symbols_consistent IS TRUE AND sides_consistent IS TRUE
       AND simulated_identity_complete
+      AND position_order_linkage_status IN (
+        'EXPLICIT_POSITION_ORDER_LINKAGE',
+        'DERIVED_UNIQUE_FILL_LIFECYCLE_LINKAGE'
+      )
       AND no_pending_correction
       AND inventory_evidence_status = 'COMPLETE'
       AND remaining_inventory_qty = 0
@@ -800,7 +986,10 @@ closed_outcomes AS (
     exit_context_json,
     simulated_zero_placeholder_supersession,
     simulated_evidence_conflicted,
-    no_pending_correction
+    no_pending_correction,
+    position_order_linkage_status,
+    derived_entry_order_id,
+    derived_exit_order_id
   FROM supersession_evidence
 ),
 rollout_classified AS (
@@ -858,6 +1047,11 @@ rollout_classified AS (
         THEN 'AUTHORITATIVE_FT_SUPERSEDES_UNTRUSTED_STORED_ZERO_PLACEHOLDER'
       WHEN normalization_status = 'MATERIAL_CONFLICT'
         AND simulated_zero_placeholder_supersession
+        AND position_order_linkage_status =
+          'DERIVED_UNIQUE_FILL_LIFECYCLE_LINKAGE'
+        THEN 'HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_UNTRUSTED_STORED_ZERO_PLACEHOLDER_WITH_DERIVED_ORDER_LINKAGE'
+      WHEN normalization_status = 'MATERIAL_CONFLICT'
+        AND simulated_zero_placeholder_supersession
         THEN 'HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_UNTRUSTED_STORED_ZERO_PLACEHOLDER'
       ELSE NULL
     END AS source_superseded_reason
@@ -883,7 +1077,8 @@ SELECT
   gross_rounding_bound, fee_rounding_bound, net_serialization_bound,
   maximum_explainable_net_delta, reconstructed_net_delta,
   selected_source_confidence, rollout_impact, comparison_source,
-  comparison_source_confidence, source_superseded_reason
+  comparison_source_confidence, source_superseded_reason,
+  position_order_linkage_status, derived_entry_order_id, derived_exit_order_id
 FROM classified_outcomes
 ORDER BY position_id
 """
@@ -1157,6 +1352,13 @@ def fetch_closed_outcomes(
             "comparison_source": row[32],
             "comparison_source_confidence": row[33],
             "source_superseded_reason": row[34],
+            "position_order_linkage_status": row[35],
+            "derived_entry_order_id": (
+                int(row[36]) if row[36] is not None else None
+            ),
+            "derived_exit_order_id": (
+                int(row[37]) if row[37] is not None else None
+            ),
         }
         for row in cur.fetchall()
     }

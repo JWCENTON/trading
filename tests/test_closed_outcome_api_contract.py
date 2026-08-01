@@ -123,6 +123,9 @@ def test_rollout_impact_and_source_confidence_contract_is_exposed():
         "comparison_source",
         "comparison_source_confidence",
         "source_superseded_reason",
+        "position_order_linkage_status",
+        "derived_entry_order_id",
+        "derived_exit_order_id",
         "blocking_conflict_count",
         "superseded_conflict_count",
         "authoritative_conflict_count",
@@ -141,6 +144,18 @@ def test_rollout_impact_and_source_confidence_contract_is_exposed():
         "HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_"
         "UNTRUSTED_STORED_ZERO_PLACEHOLDER"
     ) in paper
+    assert (
+        "HIGH_ASSURANCE_SIMULATED_FILLS_SUPERSEDE_UNTRUSTED_"
+        "STORED_ZERO_PLACEHOLDER_WITH_DERIVED_ORDER_LINKAGE"
+    ) in paper
+    for linkage_status in (
+        "EXPLICIT_POSITION_ORDER_LINKAGE",
+        "DERIVED_UNIQUE_FILL_LIFECYCLE_LINKAGE",
+        "MISSING_ORDER_LINKAGE",
+        "AMBIGUOUS_ORDER_LINKAGE",
+        "CONFLICTING_ORDER_LINKAGE",
+    ):
+        assert linkage_status in paper
     for strict_evidence in (
         "simulated_identity_complete",
         "inventory_evidence_status = 'COMPLETE'",
@@ -149,6 +164,7 @@ def test_rollout_impact_and_source_confidence_contract_is_exposed():
         "no_pending_correction",
         "source_authority_consistent",
         "simulation_model_consistent",
+        "order_position_assignment_consistent",
         "fee_evidence_consistent",
         "fill_economics_consistent",
         "order_identity_consistent",
