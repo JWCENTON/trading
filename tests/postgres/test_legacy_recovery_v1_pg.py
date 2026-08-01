@@ -165,7 +165,9 @@ def _calculation(result):
     )
 
 
-def test_fixture_a_position_repair_is_complete_atomic_and_idempotent(recovery_db):
+def test_fixture_a_legacy_position_repair_api_requires_quarantine_context(
+    recovery_db,
+):
     with recovery_db.cursor() as cur:
         cur.execute("INSERT INTO positions VALUES (3080,'OPEN',0.000123)")
         cur.execute(
@@ -174,32 +176,26 @@ def test_fixture_a_position_repair_is_complete_atomic_and_idempotent(recovery_db
         )
     recovery_db.commit()
     result = _result()
-    assert LegacyRecoveryTransactionService.repair_position(
-        recovery_db, result=result,
-        expected_semantic_fingerprint=result.evidence_fingerprint,
-        exit_order_ids=("exit-order",),
-        financial_truth_calculation=_calculation(result),
-        invocation_identity="fixture-a",
-    )
-    assert not LegacyRecoveryTransactionService.repair_position(
-        recovery_db, result=result,
-        expected_semantic_fingerprint=result.evidence_fingerprint,
-        exit_order_ids=("exit-order",),
-        financial_truth_calculation=_calculation(result),
-        invocation_identity="fixture-a",
-    )
+    with pytest.raises(TypeError):
+        LegacyRecoveryTransactionService.repair_position(
+            recovery_db, result=result,
+            expected_semantic_fingerprint=result.evidence_fingerprint,
+            exit_order_ids=("exit-order",),
+            financial_truth_calculation=_calculation(result),
+            invocation_identity="fixture-a",
+        )
     with recovery_db.cursor() as cur:
         cur.execute(
             "SELECT status,qty,remaining_inventory_qty FROM positions WHERE id=3080"
         )
-        assert cur.fetchone() == ("CLOSED", D("0"), D("0"))
+        assert cur.fetchone() == ("OPEN", D("0.000123"), None)
         cur.execute(
             "SELECT financial_truth_status FROM canonical_financial_truth_v1 "
             "WHERE position_id=3080"
         )
-        assert cur.fetchone() == ("COMPLETE",)
+        assert cur.fetchone() is None
         cur.execute("SELECT count(*) FROM legacy_repair_audit_v1")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 0
 
 
 def _candidate(ingestion_id, fingerprint, *, ownership=OrderOwnership.BOT_OWNED,

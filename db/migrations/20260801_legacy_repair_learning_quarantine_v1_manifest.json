@@ -1,0 +1,20 @@
+{
+  "contract_version": "LEGACY_REPAIR_LEARNING_QUARANTINE_V1",
+  "migration_id": "20260801_legacy_repair_learning_quarantine_v1.sql",
+  "migration_sha256": "6997fabb8b2171842ec901c0a1580fc236f2a4250ca750446cc1aef9d527135d",
+  "contract_checksum_sha256": "fab46cd6eb55ac7353732834e7144fc26ce2937a442aa244e8a205f3f724d4d0",
+  "runtime_scope": "PAPER_APPLY_ONLY",
+  "requires": [
+    "20260801_schema_migration_ledger_v1_baseline.sql",
+    "20260730_legacy_position_fill_recovery_v1.sql"
+  ],
+  "required_before": [
+    "future_apply_position"
+  ],
+  "data_policy": {
+    "backfill": false,
+    "position_repair": false,
+    "learning_rebuild": false,
+    "append_only_exclusions": true
+  }
+}

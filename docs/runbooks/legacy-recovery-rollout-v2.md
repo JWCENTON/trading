@@ -1,105 +1,105 @@
-# Legacy recovery operator tooling
+# Legacy recovery rollout V2
 
-The legacy-recovery CLI is an operator-invoked, read-only tool owned by the
-API image. It has no scheduler, HTTP endpoint, or `apply` command. PostgreSQL
-enforces a read-only transaction for every command.
+The legacy-recovery tool has a read-only planner for PAPER and LIVE, plus one
+bounded writer command for PAPER positions. `apply-position` repairs exactly
+one position and always writes the Learning exclusion before changing the
+position to `CLOSED`. LIVE apply is forbidden.
 
-## Required configuration
+## Safety boundary
 
-Set a DSN in an explicitly named environment variable. The DSN is read but
-never rendered. Pass the expected database and environment independently:
+- Use one position per invocation.
+- Never supply quantities, prices, fees, PnL, timestamps, order IDs, or trust
+  classifications manually. They are derived from immutable database evidence.
+- Every legacy position repair is reporting-eligible and Financial-Truth-
+  eligible when complete, but Learning-ineligible with reason `LEGACY_REPAIR`.
+- Do not use one-off SQL. The service owns readiness checks, bounded locks,
+  re-planning, the semantic CAS, all writes, postconditions, commit, and rollback.
+- Do not use `apply-position` against LIVE. It returns
+  `LIVE_APPLY_NOT_AUTHORIZED` before opening a database connection.
 
-```bash
-python -m tools.legacy_recovery \
-  --database-url-env LIVE_DATABASE_URL \
-  --environment LIVE \
-  --expected-database trading_live \
-  check-schema
-```
+The DSN is read from the explicitly named environment variable and is never
+rendered. The independently supplied database name and environment must match
+the DSN identity.
 
-The tool rejects a missing DSN, a database-name mismatch, an environment
-mismatch, or a schema that does not match `LEGACY_RECOVERY_SCHEMA_V2`.
+## Operator sequence
 
-## Index contract
+All examples below are PAPER-only. Keep the global arguments before the
+subcommand for consistency.
 
-All rollout indexes are explicit and non-unique:
+1. Verify the base recovery schema and quarantine schema:
 
-- `ix_legacy_repair_audit_incident_history` orders one incident's audit
-  history by `recorded_at DESC, audit_id DESC`.
-- `ix_legacy_repair_audit_semantic_expected` supports semantic-CAS audit
-  lookup.
-- `ix_legacy_repair_provenance_fingerprint` supports immutable evidence
-  fingerprint lookup.
-- `ix_legacy_repair_provenance_instrument_observed` supports instrument
-  provenance ordered by observation time.
-- `ix_exchange_fill_ingestion_recovery_lookup` resolves one explicit
-  source/symbol/order/trade recovery identity.
-- `ix_exchange_fill_ingestion_application` supports unapplied/application
-  status classification.
+   ```bash
+   python -m tools.legacy_recovery \
+     --database-url-env PAPER_DATABASE_URL \
+     --environment PAPER \
+     --expected-database trading_paper \
+     --deployment-id local-paper \
+     check-schema
+   ```
 
-Uniqueness is expressed separately by bounded identity constraints:
-`invocation_identity` for audit idempotency and
-`(evidence_source, source_identity)` for provenance conflict detection.
+   Both `schema_status` and `quarantine_schema.status` must be
+   `PRESENT_VALID`.
 
-## Plans
+2. Build the plan for one explicit position:
 
-Position planning requires one explicit ID:
+   ```bash
+   python -m tools.legacy_recovery \
+     --database-url-env PAPER_DATABASE_URL \
+     --environment PAPER \
+     --expected-database trading_paper \
+     --deployment-id local-paper \
+     plan-position --position-id 3080
+   ```
 
-```bash
-python -m tools.legacy_recovery \
-  --database-url-env LIVE_DATABASE_URL \
-  --environment LIVE \
-  --expected-database trading_live \
-  --output-json /tmp/legacy-position-plan.json \
-  plan-position --position-id 3080
-```
+3. Review `semantic_fingerprint_v2`, all evidence identities, the planned
+   mutations, `financial_truth_status=COMPLETE`, `reporting_eligible=true`,
+   and `learning_eligible=false`. Confirm independently that the artifact
+   counts for exit trace, shadow, feature warehouse, replay, registry, and
+   outcomes are zero. The writer repeats this check transactionally.
 
-Fill planning requires the complete source identity:
+4. Apply exactly the reviewed fingerprint:
 
-```bash
-python -m tools.legacy_recovery \
-  --database-url-env LIVE_DATABASE_URL \
-  --environment LIVE \
-  --expected-database trading_live \
-  plan-fill --source okx --trade-id 341287 \
-  --order-id 3788537826749489152
-```
+   ```bash
+   python -m tools.legacy_recovery \
+     --database-url-env PAPER_DATABASE_URL \
+     --environment PAPER \
+     --expected-database trading_paper \
+     --deployment-id local-paper \
+     --git-sha 0123456789abcdef0123456789abcdef01234567 \
+     apply-position --position-id 3080 \
+     --expected-fingerprint-v2 FINGERPRINT_FROM_PLAN \
+     --confirm-apply
+   ```
 
-External classification reads an immutable provenance record. It never links
-by symbol or time:
+   Success is machine-readable JSON with `status=APPLIED`,
+   `learning_excluded=true`, `transaction_committed=true`, and the exclusion,
+   audit, and provenance IDs. A changed position or fill produces `PLAN_STALE`.
+   Any pre-existing downstream artifact produces
+   `LEARNING_ARTIFACT_ALREADY_EXISTS`; neither case writes partial state.
 
-```bash
-python -m tools.legacy_recovery \
-  --database-url-env LIVE_DATABASE_URL \
-  --environment LIVE \
-  --expected-database trading_live \
-  classify-external --source okx --trade-id 341617 \
-  --order-id 3789163681263689728
-```
+5. Repeat the identical apply command. It must return
+   `status=ALREADY_APPLIED` and `writes=0`.
 
-Exit code `0` means the schema and requested read operation passed. Exit code
-`2` is a configuration, evidence, identity, or safety failure. Exit code `3`
-means `check-schema` completed but the schema is not ready. Output contains
-database identity, evidence status, blocking reasons, actions, expected
-changes, and invariants. It never contains database credentials.
+6. Validate post-state: the exclusion, closed position, lifecycle event,
+   complete canonical Financial Truth, repair audit, and provenance exist;
+   exit trace, shadow, warehouse, replay, registry, and outcome rows for the
+   position remain absent.
 
-## Migration and rollback
+## Other read-only commands
 
-The forward migration registers
-`20260730_legacy_position_fill_recovery_v1.sql` in the existing append-only
-`schema_migration_ledger_v1` and validates its canonical manifest checksum.
-Run it twice in rollout review to prove idempotency.
+`plan-fill`, `classify-external`, `audit-open-cohort`, and
+`audit-unresolved-closed` remain read-only. They retain the existing explicit
+source identity and evidence contracts.
 
-Rollback is allowed only while both recovery history tables are empty. The
-rollback fails closed after any provenance or audit record exists. It restores
-the prior ingestion status constraint and removes only objects introduced by
-the forward migration. It does not use `CASCADE` and never changes positions,
-orders, fills, or Financial Truth. The applied ledger entry remains as
-immutable historical evidence.
+## Migration and rollback boundary
 
-## Future apply boundary
+The additive migration is
+`20260801_legacy_repair_learning_quarantine_v1.sql`. It requires the canonical
+migration ledger and `LEGACY_RECOVERY_SCHEMA_V2`, performs no backfill, and
+installs the append-only exclusion contract plus Learning ingress guards. Run
+it only in a separately authorized schema rollout. This code change does not
+apply it to any runtime database.
 
-Writer services are internal and inaccessible from this CLI. A future bounded
-apply command requires explicit incident IDs, invocation identity, expected
-semantic fingerprint, environment confirmation, transactional CAS, and an
-append-only audit record. Startup and planning never perform repair writes.
+The earlier legacy recovery rollback remains permitted only while its audit and
+provenance histories are empty. Once a repair is committed, neither repair
+history nor Learning exclusions may be updated or deleted.

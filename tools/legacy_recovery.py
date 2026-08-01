@@ -7,6 +7,7 @@ from enum import Enum
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -32,6 +33,10 @@ from common.legacy_recovery_repository import (
 from common.legacy_recovery_schema import (
     LegacyRecoverySchemaReadinessRepository,
     SchemaContractStatus,
+)
+from common.legacy_repair_quarantine import (
+    LegacyPositionRepairPlanRepository,
+    LegacyRepairQuarantineSchemaReadinessRepository,
 )
 
 
@@ -60,6 +65,8 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--environment", choices=("LIVE", "PAPER"), required=True)
     result.add_argument("--expected-database", required=True)
+    result.add_argument("--deployment-id")
+    result.add_argument("--git-sha")
     result.add_argument("--output-json")
     sub = result.add_subparsers(dest="command", required=True)
     sub.add_parser("check-schema")
@@ -81,6 +88,10 @@ def parser() -> argparse.ArgumentParser:
     open_cohort.add_argument("--limit", type=int, default=100)
     closed_cohort = sub.add_parser("audit-unresolved-closed")
     closed_cohort.add_argument("--limit", type=int, default=100)
+    apply_position = sub.add_parser("apply-position")
+    apply_position.add_argument("--position-id", required=True, type=int)
+    apply_position.add_argument("--expected-fingerprint-v2", required=True)
+    apply_position.add_argument("--confirm-apply", action="store_true")
     return result
 
 
@@ -91,7 +102,7 @@ def _normalize_global_options(argv):
     values = list(argv)
     global_names = {
         "--database-url-env", "--environment", "--expected-database",
-        "--output-json",
+        "--output-json", "--deployment-id", "--git-sha",
     }
     globals_: list[str] = []
     remainder: list[str] = []
@@ -154,6 +165,11 @@ def _schema(connection) -> dict[str, Any]:
     return _json_value(readiness)
 
 
+def _quarantine_schema(connection) -> dict[str, Any]:
+    readiness = LegacyRepairQuarantineSchemaReadinessRepository().check(connection)
+    return _json_value(readiness)
+
+
 def _position(connection, args, environment_identity, schema):
     if schema["status"] != SchemaContractStatus.PRESENT_VALID.value:
         raise RuntimeError("SCHEMA_NOT_READY")
@@ -213,7 +229,7 @@ def _position(connection, args, environment_identity, schema):
     })
     current_ft = (envelope.current_state or {}).get("financial_truth") or []
     current_position = (envelope.current_state or {}).get("position") or {}
-    return {
+    output = {
         **base, "semantic_fingerprint": result.evidence_fingerprint,
         "gross_entry_qty": result.gross_entry_qty,
         "base_asset_entry_fee_qty": result.base_asset_entry_fee_qty,
@@ -242,6 +258,91 @@ def _position(connection, args, environment_identity, schema):
         "expected_row_changes": plan.expected_row_changes,
         "post_state_invariants": plan.post_state_invariants,
     }
+    deployment_id = getattr(args, "deployment_id", None)
+    if deployment_id:
+        quarantine = _quarantine_schema(connection)
+        output["quarantine_schema_status"] = quarantine["status"]
+        output["quarantine_schema_issues"] = quarantine["issues"]
+        if quarantine["status"] == "PRESENT_VALID":
+            plan_v2 = LegacyPositionRepairPlanRepository.build(
+                connection, position_id=args.position_id,
+                environment=args.environment, deployment_id=deployment_id,
+            )
+            output.update({
+                "status": "PLANNED" if plan_v2.eligible else "BLOCKED",
+                "eligible": plan_v2.eligible,
+                "semantic_fingerprint_v2": plan_v2.semantic_fingerprint_v2,
+                "planned_classification": "LEGACY_POSITION_REPAIR",
+                "financial_truth_status": (
+                    plan_v2.financial_truth.financial_truth_status
+                ),
+                "reporting_eligible": (
+                    plan_v2.financial_truth.financial_truth_status == "COMPLETE"
+                ),
+                "learning_excluded": True,
+                "learning_eligible": False,
+                "learning_trust": "LEGACY_RECONSTRUCTED_NOT_TRUSTED_FORWARD",
+                "idempotency_identity": plan_v2.invocation_identity,
+                "blocking_reasons": list(plan_v2.blocking_reasons),
+            })
+    return output
+
+
+def _resolved_git_sha(args) -> str:
+    supplied = getattr(args, "git_sha", None)
+    if supplied:
+        return str(supplied).lower()
+    for name in ("GIT_SHA", "IMAGE_GIT_REVISION"):
+        value = os.environ.get(name)
+        if value:
+            return value.lower()
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+    except Exception as exc:
+        raise RuntimeError("GIT_SHA_REQUIRED") from exc
+    return completed.stdout.strip().lower()
+
+
+def _apply_position(factory, args) -> tuple[dict[str, Any], int]:
+    if args.environment != "PAPER":
+        return {
+            "status": "BLOCKED", "reason": "LIVE_APPLY_NOT_AUTHORIZED",
+            "position_id": args.position_id,
+        }, 2
+    if not args.confirm_apply:
+        return {
+            "status": "BLOCKED", "reason": "CONFIRM_APPLY_REQUIRED",
+            "position_id": args.position_id,
+        }, 2
+    if not args.deployment_id:
+        return {
+            "status": "BLOCKED", "reason": "DEPLOYMENT_ID_REQUIRED",
+            "position_id": args.position_id,
+        }, 2
+    from common.legacy_recovery import LegacyRecoveryTransactionService
+
+    connection = factory()
+    try:
+        invocation_identity = (
+            f"repair-position-v2:PAPER:{args.deployment_id}:"
+            f"{args.expected_database}:position:{args.position_id}"
+        )
+        result = LegacyRecoveryTransactionService.repair_position(
+            connection,
+            position_id=args.position_id,
+            environment=args.environment,
+            deployment_id=args.deployment_id,
+            expected_semantic_fingerprint_v2=args.expected_fingerprint_v2,
+            git_sha=_resolved_git_sha(args),
+            invocation_identity=invocation_identity,
+        )
+        return dict(result), 0
+    finally:
+        connection.close()
 
 
 def _fill(connection, args, environment_identity, schema):
@@ -545,15 +646,41 @@ def main(argv=None) -> int:
         _normalize_global_options(sys.argv[1:] if argv is None else argv)
     )
     try:
+        if args.command == "apply-position":
+            # Reject unsafe or incomplete apply requests before resolving or
+            # opening any database connection.  In particular, a LIVE apply
+            # must remain impossible even when its DSN points at PAPER.
+            factory = (
+                _connection_factory(args)
+                if (
+                    args.environment == "PAPER"
+                    and args.confirm_apply
+                    and args.deployment_id
+                )
+                else None
+            )
+            result, exit_code = _apply_position(factory, args)
+            rendered = json.dumps(
+                _json_value(result), sort_keys=True, separators=(",", ":"),
+            )
+            if args.output_json:
+                Path(args.output_json).write_text(
+                    rendered + "\n", encoding="utf-8"
+                )
+            else:
+                print(rendered)
+            return exit_code
         factory = _connection_factory(args)
         with read_only_db_conn(factory) as connection:
             identity = _identity(connection, args)
             schema = _schema(connection)
             if args.command == "check-schema":
+                quarantine = _quarantine_schema(connection)
                 result = {
                     "schema_status": schema["status"],
                     "environment_identity": identity,
                     "schema": schema,
+                    "quarantine_schema": quarantine,
                 }
             elif args.command == "plan-position":
                 result = _position(connection, args, identity, schema)
@@ -581,6 +708,8 @@ def main(argv=None) -> int:
         )
     except Exception as exc:
         print(json.dumps({
+            "status": "BLOCKED",
+            "reason": str(exc).split(":", 1)[0],
             "error": str(exc), "command": getattr(args, "command", None),
         }, sort_keys=True), file=sys.stderr)
         return 2

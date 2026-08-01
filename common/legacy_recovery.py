@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 ZERO = Decimal("0")
 SERIALIZER_VERSION = "LEGACY_RECOVERY_SEMANTIC_V1"
+
+
+def _current_database(cur) -> str:
+    cur.execute("SELECT current_database()")
+    return str(cur.fetchone()[0])
 
 
 class PrecisionStatus(str, Enum):
@@ -725,6 +731,9 @@ class CanonicalPositionLifecycleRepairRepository:
         result: LegacyPositionRecomputation,
         expected_semantic_fingerprint: str,
         exit_order_ids: Sequence[str],
+        invocation_identity: str | None = None,
+        audit_fingerprint: str | None = None,
+        stage_hook: Callable[[str], None] | None = None,
     ) -> bool:
         if result.recomputation_status is not RecomputationStatus.COMPLETE_CLOSED:
             raise RuntimeError("RECOMPUTATION_NOT_COMPLETE_CLOSED")
@@ -766,6 +775,8 @@ class CanonicalPositionLifecycleRepairRepository:
                 result.position_id,
             ),
         )
+        if stage_hook is not None:
+            stage_hook("position_update")
         cur.execute(
             """
             INSERT INTO position_lifecycle_events_c2_2(
@@ -791,6 +802,8 @@ class CanonicalPositionLifecycleRepairRepository:
                 }),
             ),
         )
+        if stage_hook is not None:
+            stage_hook("lifecycle")
         if exit_order_ids:
             cur.execute(
                 """
@@ -799,12 +812,14 @@ class CanonicalPositionLifecycleRepairRepository:
                 """,
                 (list(exit_order_ids),),
             )
+        if stage_hook is not None:
+            stage_hook("order_states")
         _append_execution_audit(
             cur, incident_type="LEGACY_POSITION",
             incident_identity=str(result.position_id),
             operation_type="REPAIR_POSITION",
-            fingerprint=expected_semantic_fingerprint,
-            invocation_identity=(
+            fingerprint=audit_fingerprint or expected_semantic_fingerprint,
+            invocation_identity=invocation_identity or (
                 f"repair-position:{result.position_id}:"
                 f"{expected_semantic_fingerprint}"
             ),
@@ -814,6 +829,8 @@ class CanonicalPositionLifecycleRepairRepository:
                 f"raw_inventory_delta:{result.raw_remaining_qty}",
             ),
         )
+        if stage_hook is not None:
+            stage_hook("audit")
         return True
 
 
@@ -824,40 +841,257 @@ class LegacyRecoveryTransactionService:
     def repair_position(
         connection,
         *,
-        result: LegacyPositionRecomputation,
-        expected_semantic_fingerprint: str,
-        exit_order_ids: Sequence[str],
-        financial_truth_calculation,
+        position_id: int,
+        environment: str,
+        deployment_id: str,
+        expected_semantic_fingerprint_v2: str,
+        git_sha: str,
         invocation_identity: str,
-    ) -> bool:
+        stage_hook: Callable[[str], None] | None = None,
+    ) -> Mapping[str, Any]:
         from common.financial_truth_repository import (
             CanonicalFinancialTruthWriteRepository,
         )
+        from common.legacy_repair_quarantine import (
+            EXCLUSION_REASON,
+            SOURCE_TYPE,
+            LearningArtifactRepository,
+            LearningOutcomeExclusionRepository,
+            LegacyPositionRepairPlanRepository,
+            LegacyRepairQuarantineSchemaReadinessRepository,
+            call_stage_hook,
+        )
+        from common.legacy_recovery_repository import LegacyProvenanceRepository
 
         try:
+            if str(environment).upper() != "PAPER":
+                raise RuntimeError("LIVE_APPLY_NOT_AUTHORIZED")
+            if not str(deployment_id).strip():
+                raise RuntimeError("DEPLOYMENT_ID_REQUIRED")
+            if not re.fullmatch(r"[0-9a-f]{64}", expected_semantic_fingerprint_v2):
+                raise RuntimeError("EXPECTED_FINGERPRINT_V2_INVALID")
+            if not re.fullmatch(r"[0-9a-f]{40}", git_sha):
+                raise RuntimeError("GIT_SHA_INVALID")
+            # The writer owns the complete transaction boundary. Discard any
+            # preceding planner/read transaction on a reused connection.
+            connection.rollback()
+            connection.set_session(
+                isolation_level="SERIALIZABLE", readonly=False, autocommit=False
+            )
             with connection.cursor() as cur:
+                cur.execute("SET LOCAL lock_timeout='5s'")
+                cur.execute("SET LOCAL statement_timeout='60s'")
+                readiness = (
+                    LegacyRepairQuarantineSchemaReadinessRepository().check(
+                        connection
+                    )
+                )
+                if readiness.status != "PRESENT_VALID":
+                    raise RuntimeError(
+                        "SCHEMA_NOT_READY:" + ",".join(readiness.issues)
+                    )
+                existing_exclusion = LearningOutcomeExclusionRepository.current(
+                    cur, environment="PAPER", deployment_id=deployment_id,
+                    position_id=position_id,
+                )
+                if existing_exclusion is not None:
+                    if str(existing_exclusion[1]) != expected_semantic_fingerprint_v2:
+                        raise RuntimeError("LEARNING_EXCLUSION_IDEMPOTENCY_CONFLICT")
+                    cur.execute(
+                        """
+                        SELECT audit_id FROM legacy_repair_audit_v1
+                        WHERE incident_type='LEGACY_POSITION'
+                          AND incident_identity=%s
+                          AND invocation_identity=%s
+                          AND execution_status='APPLIED'
+                        """,
+                        (str(position_id), invocation_identity),
+                    )
+                    audit = cur.fetchone()
+                    provenance_identity = (
+                        f"PAPER:{deployment_id}:"
+                        f"{_current_database(cur)}:position:{position_id}"
+                    )
+                    cur.execute(
+                        """
+                        SELECT provenance_id
+                        FROM legacy_repair_provenance_v1
+                        WHERE evidence_source=%s AND source_identity=%s
+                        """,
+                        (SOURCE_TYPE, provenance_identity),
+                    )
+                    provenance = cur.fetchone()
+                    cur.execute(
+                        "SELECT status,remaining_inventory_qty FROM positions "
+                        "WHERE id=%s",
+                        (position_id,),
+                    )
+                    position = cur.fetchone()
+                    cur.execute(
+                        "SELECT financial_truth_status "
+                        "FROM canonical_financial_truth_v1 WHERE position_id=%s",
+                        (position_id,),
+                    )
+                    financial_truth = cur.fetchone()
+                    LearningArtifactRepository.assert_absent(cur, position_id)
+                    if (
+                        audit is None or provenance is None or position is None
+                        or position[0] != "CLOSED"
+                        or Decimal(str(position[1])) != ZERO
+                        or financial_truth != ("COMPLETE",)
+                    ):
+                        raise RuntimeError("IDEMPOTENCY_STATE_CONFLICT")
+                    connection.rollback()
+                    return {
+                        "status": "ALREADY_APPLIED",
+                        "position_id": int(position_id),
+                        "semantic_fingerprint_v2": expected_semantic_fingerprint_v2,
+                        "learning_excluded": True,
+                        "transaction_committed": False,
+                        "writes": 0,
+                        "audit_id": int(audit[0]),
+                        "provenance_id": int(provenance[0]),
+                        "exclusion_id": int(existing_exclusion[0]),
+                    }
+
+                initial = LegacyPositionRepairPlanRepository.build(
+                    connection, position_id=position_id, environment="PAPER",
+                    deployment_id=deployment_id,
+                )
+                if initial.semantic_fingerprint_v2 != expected_semantic_fingerprint_v2:
+                    raise RuntimeError("PLAN_STALE")
+                LegacyPositionRepairPlanRepository.lock_evidence(cur, initial)
+                locked = LegacyPositionRepairPlanRepository.build(
+                    connection, position_id=position_id, environment="PAPER",
+                    deployment_id=deployment_id,
+                )
+                if locked.semantic_fingerprint_v2 != expected_semantic_fingerprint_v2:
+                    raise RuntimeError("PLAN_STALE")
+                if not locked.eligible:
+                    raise RuntimeError(
+                        "REPAIR_NOT_ELIGIBLE:" + ",".join(locked.blocking_reasons)
+                    )
+                LearningArtifactRepository.assert_absent(cur, position_id)
+                exclusion_id = LearningOutcomeExclusionRepository.insert(
+                    cur, environment="PAPER", deployment_id=deployment_id,
+                    position_id=position_id,
+                    semantic_fingerprint_v2=locked.semantic_fingerprint_v2,
+                    git_sha=git_sha,
+                )
+                call_stage_hook(stage_hook, "exclusion")
                 changed = CanonicalPositionLifecycleRepairRepository.apply(
-                    cur, result=result,
-                    expected_semantic_fingerprint=expected_semantic_fingerprint,
-                    exit_order_ids=exit_order_ids,
+                    cur, result=locked.recomputation,
+                    expected_semantic_fingerprint=(
+                        locked.semantic_fingerprint_v1
+                    ),
+                    exit_order_ids=locked.exit_order_ids,
+                    invocation_identity=invocation_identity,
+                    audit_fingerprint=locked.semantic_fingerprint_v2,
+                    stage_hook=stage_hook,
                 )
                 if not changed:
-                    connection.rollback()
-                    return False
-                if (
-                    financial_truth_calculation.position_id
-                    != result.position_id
-                    or financial_truth_calculation.financial_truth_status
-                    != "COMPLETE"
-                ):
+                    raise RuntimeError("IDEMPOTENCY_STATE_CONFLICT")
+                if locked.financial_truth.financial_truth_status != "COMPLETE":
                     raise RuntimeError("FINANCIAL_TRUTH_NOT_COMPLETE")
                 CanonicalFinancialTruthWriteRepository.write(
-                    cur, financial_truth_calculation,
+                    cur, locked.financial_truth,
                     invocation_type="LEGACY_POSITION_REPAIR",
                     invocation_identity=invocation_identity,
                 )
+                call_stage_hook(stage_hook, "financial_truth")
+                provenance_payload = dict(locked.evidence_payload)
+                provenance_payload.update({
+                    "learning_exclusion_id": exclusion_id,
+                    "learning_eligible": False,
+                    "git_sha": git_sha,
+                    "invocation_identity": invocation_identity,
+                })
+                LegacyProvenanceRepository.record(cur, {
+                    "evidence_source": SOURCE_TYPE,
+                    "source_identity": locked.provenance_identity,
+                    "source_fingerprint": locked.semantic_fingerprint_v2,
+                    "instrument_identity": (
+                        (locked.evidence_payload.get("position_state") or {}).get(
+                            "symbol"
+                        )
+                    ),
+                    "account_provenance": {
+                        "fill_ids": list(
+                            locked.entry_fill_ids + locked.exit_fill_ids
+                        )
+                    },
+                    "deployment_provenance": {
+                        "environment": "PAPER",
+                        "deployment_id": deployment_id,
+                        "database_identity": locked.database_name,
+                        "git_sha": git_sha,
+                    },
+                    "fee_evidence": {
+                        "base_asset_entry_fee_qty": str(
+                            locked.recomputation.base_asset_entry_fee_qty
+                        ),
+                        "base_asset_exit_fee_qty": str(
+                            locked.recomputation.base_asset_exit_fee_qty
+                        ),
+                    },
+                    "valuation_evidence": {
+                        "financial_truth_status": (
+                            locked.financial_truth.financial_truth_status
+                        ),
+                        "authoritative_net_pnl": (
+                            str(locked.financial_truth.authoritative_net_pnl)
+                            if locked.financial_truth.authoritative_net_pnl
+                            is not None else None
+                        ),
+                    },
+                    "immutable_payload": provenance_payload,
+                    "observed_at": datetime.now(timezone.utc),
+                })
+                call_stage_hook(stage_hook, "provenance")
+                cur.execute(
+                    "SELECT audit_id FROM legacy_repair_audit_v1 "
+                    "WHERE invocation_identity=%s",
+                    (invocation_identity,),
+                )
+                audit_id = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT provenance_id FROM legacy_repair_provenance_v1 "
+                    "WHERE evidence_source=%s AND source_identity=%s",
+                    (SOURCE_TYPE, locked.provenance_identity),
+                )
+                provenance_id = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT status,remaining_inventory_qty FROM positions "
+                    "WHERE id=%s",
+                    (position_id,),
+                )
+                position = cur.fetchone()
+                cur.execute(
+                    "SELECT financial_truth_status "
+                    "FROM canonical_financial_truth_v1 WHERE position_id=%s",
+                    (position_id,),
+                )
+                financial_truth = cur.fetchone()
+                LearningArtifactRepository.assert_absent(cur, position_id)
+                if (
+                    position is None or position[0] != "CLOSED"
+                    or Decimal(str(position[1])) != ZERO
+                    or financial_truth != ("COMPLETE",)
+                ):
+                    raise RuntimeError("POSTCONDITION_FAILED")
+                call_stage_hook(stage_hook, "postconditions")
             connection.commit()
-            return True
+            return {
+                "status": "APPLIED",
+                "position_id": int(position_id),
+                "semantic_fingerprint_v2": locked.semantic_fingerprint_v2,
+                "learning_excluded": True,
+                "transaction_committed": True,
+                "writes": None,
+                "audit_id": audit_id,
+                "provenance_id": provenance_id,
+                "exclusion_id": exclusion_id,
+            }
         except Exception:
             connection.rollback()
             raise
