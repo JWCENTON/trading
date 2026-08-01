@@ -169,10 +169,44 @@ whole transaction. A repeated identical apply returns
 
 Eligibility is fail-closed: PAPER, OPEN, pre-adoption legacy classification,
 exactly one entry order/fill, positive fully executable remaining inventory,
-no exit order/fill, no terminal lifecycle or complete Financial Truth, no prior
-repair/retirement/exclusion/provenance, a benign or empty artifact snapshot,
-and fresh current market evidence. LIVE plan and apply both return
+no executed or ambiguous exit evidence, no terminal lifecycle or complete
+Financial Truth, no prior repair/retirement/exclusion/provenance, a benign or
+empty artifact snapshot, and fresh current market evidence. LIVE plan and
+apply both return
 `LIVE_RETIREMENT_NOT_AUTHORIZED` before opening a database connection.
+
+### Historical unfilled exit-intent gate
+
+An old unfilled PAPER simulated SELL intent is not an exit execution. The
+planner classifies the exact slot snapshot as one of:
+
+- `NO_EXIT_INTENTS`;
+- `BENIGN_UNFILLED_LEGACY_EXIT_INTENTS`;
+- `EXECUTED_OR_AMBIGUOUS_EXIT_EVIDENCE`.
+
+Only the first two allow retirement. Benign classification requires every row
+to be an exact post-entry PAPER simulated `SELL`/`is_exit` intent for the
+position's symbol, strategy, interval and full remaining quantity, with the
+derived status `PAPER_SIMULATED_UNFILLED_INTENT`. There must be zero fills,
+filled quantity, inventory reduction, lifecycle linkage, terminal Financial
+Truth, exchange/external identity, overlapping same-slot position, source
+conflict or conflicting duplicate identity. A fill row, including a partial
+fill, an unknown shape/status, an oversized or mismatched quantity, external
+identity or ambiguous linkage blocks with
+`EXIT_EVIDENCE_EXECUTED_OR_AMBIGUOUS` and a specific reason.
+
+The public plan reports bounded counts, first/last identity, distributions and
+hashes rather than thousands of rows. The semantic fingerprint includes a
+hash of every ordered intent identity and content, status and quantity
+distributions, fill state, external identity, lifecycle and Financial Truth.
+Any new or changed intent or fill makes the old plan stale.
+
+Historical benign rows are never deleted, updated, marked executed or linked
+retroactively. A successful administrative close creates its own new
+`LEGACY_ADMINISTRATIVE_CLOSE` order, fill and lifecycle evidence. The writer
+uses an exact-slot transaction advisory lock shared by canonical PAPER exit
+order/fill writers, then bounded row locks and a locked re-plan. It never takes
+a table lock.
 
 For benign legacy artifacts only, deployment compatibility is narrow:
 shadow `NULL` requires the same position/environment/source identity;

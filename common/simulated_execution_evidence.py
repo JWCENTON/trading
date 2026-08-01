@@ -393,6 +393,25 @@ def _assets(symbol: str) -> tuple[str, str]:
     raise ValueError("unsupported quote asset")
 
 
+def lock_simulated_exit_slot_cursor(
+    cur, *, symbol: str, interval: str, strategy: str
+) -> None:
+    """Serialize canonical PAPER exit intent/fill activity for one slot.
+
+    The lock is transaction-scoped.  It is shared by normal forward PAPER
+    writers and the bounded legacy-retirement writer, avoiding a broad table
+    lock while making an exact-slot snapshot stable during re-plan and CAS.
+    """
+    identity = (
+        "PAPER_SIMULATED_EXIT_SLOT_V1:"
+        f"{str(symbol).upper()}:{str(interval)}:{str(strategy)}"
+    )
+    cur.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+        (identity,),
+    )
+
+
 def create_simulated_order_cursor(
     cur,
     *,
@@ -413,6 +432,10 @@ def create_simulated_order_cursor(
     Runtime strategies and bounded administrative workflows share the same
     row shape and database idempotency key.  The caller owns the transaction.
     """
+    if is_exit:
+        lock_simulated_exit_slot_cursor(
+            cur, symbol=symbol, interval=interval, strategy=strategy,
+        )
     cur.execute(
         """
         INSERT INTO simulated_orders (
@@ -450,6 +473,8 @@ def create_simulated_execution_fill_cursor(
     environment: str,
     deployment_id: str,
     execution_at,
+    interval: str | None = None,
+    strategy: str | None = None,
     account_identity_fingerprint: str | None = None,
     instrument_metadata_fingerprint: str | None = None,
 ) -> int | None:
@@ -457,6 +482,12 @@ def create_simulated_execution_fill_cursor(
     purpose = str(order_purpose).upper()
     if purpose not in {"ENTRY", "EXIT"}:
         raise ValueError("INVALID_SIMULATED_ORDER_PURPOSE")
+    if purpose == "EXIT":
+        if interval is None or strategy is None:
+            raise ValueError("EXIT_SLOT_IDENTITY_REQUIRED")
+        lock_simulated_exit_slot_cursor(
+            cur, symbol=symbol, interval=interval, strategy=strategy,
+        )
     quantity = Decimal(str(quantity))
     price = Decimal(str(price))
     if quantity <= 0 or price < 0:
@@ -558,7 +589,8 @@ def record_simulated_fill_evidence(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT symbol,side,price,quantity_btc,is_exit,created_at
+                    SELECT symbol,side,price,quantity_btc,is_exit,created_at,
+                           "interval",strategy
                     FROM simulated_orders WHERE id=%s
                     """,
                     (int(simulated_order_id),),
@@ -566,7 +598,10 @@ def record_simulated_fill_evidence(
                 order = cur.fetchone()
                 if order is None:
                     return False
-                symbol, side, price, qty, is_exit, execution_at = order
+                (
+                    symbol, side, price, qty, is_exit, execution_at,
+                    interval, strategy,
+                ) = order
                 cur.execute(
                     """
                     SELECT
@@ -738,6 +773,7 @@ def record_simulated_fill_evidence(
                     ),
                     environment=str(environment), deployment_id=str(deployment_id),
                     execution_at=execution_at,
+                    interval=str(interval), strategy=str(strategy),
                     account_identity_fingerprint=identity_fingerprint,
                     instrument_metadata_fingerprint=metadata_fingerprint,
                 ) is not None

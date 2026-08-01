@@ -18,6 +18,9 @@ from common.inventory_quantity import (
     floor_to_lot,
     project_inventory_from_execution_evidence,
 )
+from common.legacy_exit_intent_gate import (
+    HistoricalExitIntentGateRepository,
+)
 from common.legacy_recovery import semantic_repair_fingerprint
 from common.legacy_recovery_order_evidence import (
     LegacyRecoveryOrderEvidenceRepository,
@@ -38,6 +41,7 @@ from common.simulated_execution_evidence import (
     SIMULATION_MODEL_VERSION,
     create_simulated_execution_fill_cursor,
     create_simulated_order_cursor,
+    lock_simulated_exit_slot_cursor,
 )
 
 
@@ -112,6 +116,7 @@ class LegacyOpenRetirementPlan:
     remaining_inventory: Decimal
     planned_exit_qty: Decimal
     market: CurrentMarketEvidence | None
+    historical_exit_intent_gate: Any
     artifact_gate: Any
     provenance_identity: str
     invocation_identity: str
@@ -134,6 +139,9 @@ class LegacyOpenRetirementPlan:
             "price_source": self.market.source_type if self.market else None,
             "market_evidence": market,
             "planned_exit_qty": self.planned_exit_qty,
+            "historical_exit_intent_gate": (
+                self.historical_exit_intent_gate.public_payload()
+            ),
             "financial_truth_status": "COMPLETE" if self.eligible else "BLOCKED",
             "learning_eligible": False,
             "learning_trust": LEARNING_TRUST,
@@ -375,24 +383,17 @@ class LegacyOpenRetirementPlanRepository:
                 (int(position_id),),
             )
             exclusion_count = int(cur.fetchone()[0])
-            cur.execute(
-                """
-                SELECT count(*)
-                FROM simulated_orders so
-                LEFT JOIN simulated_execution_fills_v1 sf
-                  ON sf.simulated_order_id=so.id
-                WHERE upper(so.symbol)=upper(%s) AND so."interval"=%s
-                  AND so.strategy=%s AND so.is_exit
-                  AND so.created_at>=%s
-                  AND (sf.position_id=%s OR sf.id IS NULL)
-                """,
-                (
-                    position["symbol"], position["interval"],
-                    position["strategy"], position["entry_time"],
-                    int(position_id),
-                ),
+            historical_exit_intent_gate = (
+                HistoricalExitIntentGateRepository.classify(
+                    cur,
+                    position=position,
+                    resolved_exit_order_count=len(resolution.exit_orders),
+                    source_conflict_count=len(resolution.conflicting_evidence),
+                    position_exit_fill_count=len(exit_fills),
+                    terminal_lifecycle_count=terminal_lifecycle_count,
+                    terminal_financial_truth_count=terminal_ft_count,
+                )
             )
-            exit_intent_count = int(cur.fetchone()[0])
             artifact_gate = LearningArtifactRepository.classify(
                 cur, position_id=int(position_id), environment="PAPER",
                 deployment_id=str(deployment_id),
@@ -415,17 +416,16 @@ class LegacyOpenRetirementPlanRepository:
                 if len(resolution.entry_orders) > 1
                 else "ENTRY_ORDER_EVIDENCE_NOT_FOUND"
             )
-        if resolution.exit_orders:
-            blocking.append("HISTORICAL_EXIT_ORDER_EXISTS")
-        if exit_intent_count:
-            blocking.append("HISTORICAL_OR_UNLINKED_EXIT_ORDER_EXISTS")
+        if not historical_exit_intent_gate.retirement_allowed:
+            blocking.append(
+                "EXIT_EVIDENCE_EXECUTED_OR_AMBIGUOUS:"
+                + str(historical_exit_intent_gate.reason or "UNKNOWN")
+            )
         if len(entry_fills) != 1:
             blocking.append(
                 "ENTRY_FILL_EVIDENCE_AMBIGUOUS"
                 if len(entry_fills) > 1 else "ENTRY_FILL_EVIDENCE_NOT_FOUND"
             )
-        if exit_fills:
-            blocking.append("HISTORICAL_EXIT_FILL_EXISTS")
         if terminal_lifecycle_count:
             blocking.append("TERMINAL_LIFECYCLE_EXISTS")
         if terminal_ft_count:
@@ -576,6 +576,9 @@ class LegacyOpenRetirementPlanRepository:
                 "remaining_inventory": "0",
             },
             "planned_financial_truth": "COMPLETE",
+            "historical_exit_intent_gate": (
+                historical_exit_intent_gate.fingerprint_payload()
+            ),
             "learning_artifact_gate": artifact_gate.fingerprint_payload(),
             "existing_terminal_evidence": {
                 "terminal_lifecycle_count": terminal_lifecycle_count,
@@ -583,7 +586,9 @@ class LegacyOpenRetirementPlanRepository:
                 "repair_or_retirement_audit_count": audit_count,
                 "repair_or_retirement_provenance_count": provenance_count,
                 "learning_exclusion_count": exclusion_count,
-                "exit_order_or_intent_count": exit_intent_count,
+                "historical_exit_intent_count": (
+                    historical_exit_intent_gate.intent_count
+                ),
             },
             "learning_exclusion": {
                 "learning_eligible": False, "learning_trust": LEARNING_TRUST,
@@ -607,12 +612,19 @@ class LegacyOpenRetirementPlanRepository:
             int(entry["id"]) if entry is not None else None,
             int(entry["account_identity_id"]) if entry is not None and entry.get("account_identity_id") is not None else None,
             int(entry["instrument_snapshot_id"]) if entry is not None and entry.get("instrument_snapshot_id") is not None else None,
-            _safe(instrument), remaining, planned_qty, market, artifact_gate,
+            _safe(instrument), remaining, planned_qty, market,
+            historical_exit_intent_gate, artifact_gate,
             provenance_identity, invocation_identity, payload,
         )
 
     @staticmethod
     def lock_evidence(cur, plan: LegacyOpenRetirementPlan) -> None:
+        lock_simulated_exit_slot_cursor(
+            cur,
+            symbol=str(plan.position["symbol"]),
+            interval=str(plan.position["interval"]),
+            strategy=str(plan.position["strategy"]),
+        )
         cur.execute("SELECT id FROM positions WHERE id=%s FOR UPDATE", (plan.position_id,))
         if cur.fetchone() is None:
             raise RuntimeError("POSITION_NOT_FOUND")
@@ -645,6 +657,27 @@ class LegacyOpenRetirementPlanRepository:
             (plan.position_id,),
         )
         cur.fetchall()
+        historical_ids = list(plan.historical_exit_intent_gate.intent_ids)
+        if historical_ids:
+            cur.execute(
+                "SELECT id FROM simulated_orders WHERE id=ANY(%s) "
+                "ORDER BY id FOR UPDATE",
+                (historical_ids,),
+            )
+            if tuple(int(row[0]) for row in cur.fetchall()) != tuple(
+                historical_ids
+            ):
+                raise RuntimeError("PLAN_STALE")
+            cur.execute(
+                "SELECT id FROM simulated_execution_fills_v1 "
+                "WHERE simulated_order_id=ANY(%s) ORDER BY id FOR UPDATE",
+                (historical_ids,),
+            )
+            locked_fill_ids = tuple(int(row[0]) for row in cur.fetchall())
+            if locked_fill_ids != tuple(
+                plan.historical_exit_intent_gate.fill_ids
+            ):
+                raise RuntimeError("PLAN_STALE")
         LearningArtifactRepository.lock(cur, plan.position_id)
         for sql, params in (
             (
@@ -812,6 +845,8 @@ class LegacyOpenRetirementTransactionService:
                     instrument_snapshot_id=locked.instrument_snapshot_id,
                     environment="paper", deployment_id=deployment_id,
                     execution_at=execution_at,
+                    interval=str(locked.position["interval"]),
+                    strategy=str(locked.position["strategy"]),
                     account_identity_fingerprint=str(
                         locked.evidence_payload["entry_fill"][
                             "identity_fingerprint"
