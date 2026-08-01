@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,13 @@ def supertrend(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    def allow_preflight(*_args, action, **_kwargs):
+        row = module.get_open_position()
+        return action(SimpleNamespace(position_id=int(row[0]) if row else 77))
+
+    monkeypatch.setattr(
+        module, "execute_paper_exit_after_preflight", allow_preflight,
+    )
     monkeypatch.setattr(
         module, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
     )

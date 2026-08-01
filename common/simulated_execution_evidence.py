@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import asdict, dataclass
 from decimal import Decimal
 import hashlib
 import json
@@ -20,6 +21,277 @@ SIMULATION_MODEL_VERSION = "PAPER_SIMULATOR_FINANCIAL_MODEL_V1"
 SIMULATION_FEE_RATE = Decimal("0.0004")
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
 INSTRUMENT_METADATA_VERSION = "EXECUTION_INSTRUMENT_SNAPSHOT_V1"
+
+
+@dataclass(frozen=True)
+class PaperExitPreflightResult:
+    """Read-only decision for a PAPER exit before execution evidence exists."""
+
+    allowed: bool
+    reason_code: str
+    position_id: int | None
+    position_status: str | None
+    position_adoption_id: int | None
+    position_generation: int | None
+    active_adoption_id: int | None
+    active_generation: int | None
+    legacy_compatibility: bool
+    detail: str | None = None
+
+    def event_fields(self) -> dict:
+        return asdict(self)
+
+
+def _paper_exit_result(
+    *,
+    allowed: bool,
+    reason_code: str,
+    position=None,
+    active=None,
+    legacy_compatibility: bool = False,
+    detail: str | None = None,
+) -> PaperExitPreflightResult:
+    position = position or (None, None, None, None, None)
+    active = active or (None, None, None)
+    return PaperExitPreflightResult(
+        allowed=bool(allowed),
+        reason_code=str(reason_code),
+        position_id=int(position[0]) if position[0] is not None else None,
+        position_status=str(position[1]) if position[1] is not None else None,
+        position_adoption_id=(
+            int(position[2]) if position[2] is not None else None
+        ),
+        position_generation=(
+            int(position[3]) if position[3] is not None else None
+        ),
+        active_adoption_id=int(active[0]) if active[0] is not None else None,
+        active_generation=int(active[1]) if active[1] is not None else None,
+        legacy_compatibility=bool(legacy_compatibility),
+        detail=detail,
+    )
+
+
+def paper_exit_preflight_cursor(
+    cur,
+    *,
+    deployment_id: str,
+    symbol: str,
+    strategy: str,
+    interval: str,
+    position_id: int | None = None,
+) -> PaperExitPreflightResult:
+    """Classify one PAPER position without creating durable state."""
+    revision = require_runtime_git_revision()
+    scope = f"paper-exit|{deployment_id}|{symbol}|{strategy}|{interval}"
+    # The transaction-scoped lock serializes patched workers for one strategy slot.
+    # It disappears on rollback and does not mutate application data.
+    cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (scope,))
+    cur.fetchone()
+
+    if position_id is None:
+        cur.execute(
+            """
+            SELECT id,status,inventory_contract_adoption_id,
+                   inventory_contract_generation,entry_time
+            FROM positions
+            WHERE symbol=%s AND strategy=%s AND interval=%s
+            ORDER BY CASE WHEN status='OPEN' THEN 0 ELSE 1 END,
+                     entry_time DESC NULLS LAST,id DESC
+            LIMIT 1
+            """,
+            (str(symbol), str(strategy), str(interval)),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id,status,inventory_contract_adoption_id,
+                   inventory_contract_generation,entry_time
+            FROM positions
+            WHERE id=%s AND symbol=%s AND strategy=%s AND interval=%s
+            """,
+            (int(position_id), str(symbol), str(strategy), str(interval)),
+        )
+    position = cur.fetchone()
+    if position is None:
+        return _paper_exit_result(
+            allowed=False, reason_code="POSITION_NOT_FOUND"
+        )
+    if str(position[1]).upper() != "OPEN":
+        return _paper_exit_result(
+            allowed=False,
+            reason_code="POSITION_ALREADY_CLOSED",
+            position=position,
+        )
+
+    cur.execute(
+        """
+        SELECT adoption_id,generation,adopted_at
+        FROM runtime_contract_adoption_v2
+        WHERE contract_name='FEE_AWARE_INVENTORY_C2_2'
+          AND environment='paper'
+          AND deployment_id=%s
+          AND status='ACTIVE'
+          AND git_revision=%s
+        """,
+        (str(deployment_id), revision),
+    )
+    active = cur.fetchone()
+    if (
+        active is None
+        or active[0] is None
+        or active[1] is None
+        or active[2] is None
+    ):
+        return _paper_exit_result(
+            allowed=False,
+            reason_code="INVENTORY_CONTRACT_INCOMPLETE",
+            position=position,
+            active=active,
+        )
+
+    cur.execute(
+        "SELECT is_existing_projected_c2_2_compatible(%s,'paper')",
+        (int(position[0]),),
+    )
+    compatibility_row = cur.fetchone()
+    compatible = bool(compatibility_row and compatibility_row[0])
+    adoption_id, generation, entry_time = position[2], position[3], position[4]
+    active_adoption_id, active_generation, adopted_at = active
+
+    if (
+        adoption_id == active_adoption_id
+        and generation == active_generation
+    ):
+        return _paper_exit_result(
+            allowed=True, reason_code="ACTIVE_GENERATION_MATCH",
+            position=position, active=active,
+        )
+    if compatible:
+        return _paper_exit_result(
+            allowed=True, reason_code="LEGACY_COMPATIBLE",
+            position=position, active=active, legacy_compatibility=True,
+        )
+    if adoption_id is None and generation is not None:
+        reason = "MISSING_ADOPTION_ID"
+    elif adoption_id is not None and generation is None:
+        reason = "MISSING_GENERATION"
+    elif adoption_id is None and generation is None:
+        if entry_time is None:
+            reason = "LEGACY_NOT_COMPATIBLE"
+        elif entry_time < adopted_at:
+            reason = "ENTRY_BEFORE_ACTIVE_ADOPTION"
+        else:
+            # Preserve the existing guard's forward-position compatibility rule.
+            return _paper_exit_result(
+                allowed=True, reason_code="FORWARD_ENTRY_COMPATIBLE",
+                position=position, active=active,
+            )
+    elif (
+        adoption_id != active_adoption_id
+        or generation != active_generation
+    ):
+        reason = "GENERATION_MISMATCH"
+    else:
+        reason = "MUTATION_NOT_ALLOWED_OTHER"
+    return _paper_exit_result(
+        allowed=False, reason_code=reason, position=position, active=active,
+    )
+
+
+class PaperExitPreflightGuard:
+    """Hold the slot lock until the existing PAPER execution path completes."""
+
+    def __init__(self, connection_factory, **kwargs):
+        self._connection_factory = connection_factory
+        self._kwargs = kwargs
+        self._conn = None
+        self._cur = None
+        self.result = _paper_exit_result(
+            allowed=False, reason_code="INVENTORY_CONTRACT_INCOMPLETE"
+        )
+
+    def __enter__(self) -> PaperExitPreflightResult:
+        try:
+            self._conn = self._connection_factory()
+            self._cur = self._conn.cursor()
+            self.result = paper_exit_preflight_cursor(
+                self._cur, **self._kwargs
+            )
+        except Exception as exc:
+            self.result = _paper_exit_result(
+                allowed=False,
+                reason_code="INVENTORY_CONTRACT_INCOMPLETE",
+                detail=f"{type(exc).__name__}:{exc}",
+            )
+        return self.result
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        if self._conn is not None:
+            try:
+                self._conn.rollback()
+            finally:
+                if self._cur is not None:
+                    self._cur.close()
+                self._conn.close()
+        return False
+
+
+def paper_exit_preflight_guard(connection_factory, **kwargs):
+    return PaperExitPreflightGuard(connection_factory, **kwargs)
+
+
+def execute_paper_exit_after_preflight(
+    connection_factory,
+    *,
+    deployment_id: str,
+    symbol: str,
+    strategy: str,
+    interval: str,
+    exit_trigger: str,
+    decision: str,
+    price: float,
+    candle_open_time,
+    emit_event,
+    action,
+):
+    """Run an existing PAPER exit path only while its preflight lease is held."""
+    with paper_exit_preflight_guard(
+        connection_factory,
+        deployment_id=deployment_id,
+        symbol=symbol,
+        strategy=strategy,
+        interval=interval,
+    ) as result:
+        if result.allowed:
+            return action(result)
+        info = {
+            **result.event_fields(),
+            "symbol": str(symbol),
+            "interval": str(interval),
+            "strategy": str(strategy),
+            "exit_trigger": str(exit_trigger),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        emit_event(
+            event_type="PAPER_EXIT_PREFLIGHT_BLOCKED",
+            decision=decision,
+            reason=result.reason_code,
+            price=float(price),
+            candle_open_time=candle_open_time,
+            info=info,
+        )
+        return {
+            "ledger_ok": False,
+            "live_attempted": False,
+            "order_accepted": False,
+            "live_ok": False,
+            "paper_executed": False,
+            "blocked_reason": "PAPER_EXIT_PREFLIGHT_BLOCKED",
+            "preflight_reason_code": result.reason_code,
+            "position_id": result.position_id,
+            "client_order_id": None,
+            "resp": {"paper_exit_preflight": info},
+        }
 
 
 def paper_position_mutation_allowed_cursor(

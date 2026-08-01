@@ -52,6 +52,12 @@ def trend(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "execute_paper_exit_after_preflight",
+        lambda *_args, action, **_kwargs: action(
+            SimpleNamespace(position_id=77)
+        ),
+    )
     assert calls == []
     return module
 

@@ -53,7 +53,11 @@ from common.supertrend_terminal_outcome import (
     reconcile_terminal_compatibility_outcome,
 )
 from common.final_decision_observation_sink import finalize_decision_observation
-from common.simulated_execution_evidence import record_simulated_fill_evidence
+from common.simulated_execution_evidence import (
+    execute_paper_exit_after_preflight,
+    paper_position_mutation_allowed_cursor,
+    record_simulated_fill_evidence,
+)
 
 
 logging.basicConfig(
@@ -793,6 +797,22 @@ def close_position(
 
     pos_id, pos_side, pos_entry_price, pos_entry_time = row
 
+    if (
+        str(os.getenv("TRADING_MODE", "")).upper() == "PAPER"
+        and not paper_position_mutation_allowed_cursor(
+            cur,
+            position_id=int(pos_id),
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+        )
+    ):
+        conn.rollback()
+        cur.close()
+        conn.close()
+        return False
+
     enriched_reason = build_exit_reason_context(
         base_reason=reason,
         strategy=STRATEGY_NAME,
@@ -1014,6 +1034,47 @@ def insert_simulated_order(
 
 def execute_and_record(
     *,
+    side: str,
+    price: float,
+    qty_btc: float,
+    reason: str,
+    candle_open_time,
+    is_exit: bool,
+    cfg_used: RuntimeConfig,
+    allow_live_orders: bool,
+    allow_meta: dict,
+):
+    def action(preflight):
+        return _execute_and_record_after_paper_exit_preflight(
+            side=side, price=price, qty_btc=qty_btc, reason=reason,
+            candle_open_time=candle_open_time, is_exit=is_exit,
+            cfg_used=cfg_used, allow_live_orders=allow_live_orders,
+            allow_meta=allow_meta,
+            paper_position_id=(preflight.position_id if preflight else None),
+        )
+
+    if str(cfg_used.trading_mode).upper() == "PAPER" and is_exit:
+        return execute_paper_exit_after_preflight(
+            get_db_conn,
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+            symbol=cfg_used.symbol,
+            strategy=STRATEGY_NAME,
+            interval=cfg_used.interval,
+            exit_trigger=reason,
+            decision=side,
+            price=price,
+            candle_open_time=candle_open_time,
+            emit_event=emit_strategy_event,
+            action=action,
+        )
+    return action(None)
+
+
+def _execute_and_record_after_paper_exit_preflight(
+    *,
     side: str,                 # BUY or SELL
     price: float,
     qty_btc: float,
@@ -1023,6 +1084,7 @@ def execute_and_record(
     cfg_used: RuntimeConfig,
     allow_live_orders: bool,
     allow_meta: dict,
+    paper_position_id: int | None = None,
 ):
     """
     Guard-first (jak RSI/BBRANGE):
@@ -1117,8 +1179,12 @@ def execute_and_record(
     # LIVE remains below and never creates a position before confirmed execution.
     if trading_mode == "PAPER":
         if is_exit:
-            open_row = get_open_position()
-            position_id = int(open_row[0]) if open_row else None
+            open_row = get_open_position() if paper_position_id is None else None
+            position_id = (
+                int(paper_position_id)
+                if paper_position_id is not None
+                else int(open_row[0]) if open_row else None
+            )
             if position_id is None:
                 return {
                     "ledger_ok": False,

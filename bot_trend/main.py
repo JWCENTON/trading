@@ -16,6 +16,7 @@ from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.simulated_execution_evidence import (
+    execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
     record_simulated_fill_evidence,
 )
@@ -709,20 +710,37 @@ def open_position_from_live_ack(
     return pos_id
 
 
-def close_position(exit_price: float, reason: str, open_time) -> bool:
+def close_position(
+    exit_price: float,
+    reason: str,
+    open_time,
+    *,
+    expected_position_id: int | None = None,
+) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT id, side, entry_price, entry_time
-        FROM positions
-        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
-        ORDER BY entry_time DESC
-        LIMIT 1;
-        """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
-    )
+    if expected_position_id is None:
+        cur.execute(
+            """
+            SELECT id, side, entry_price, entry_time
+            FROM positions
+            WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+            ORDER BY entry_time DESC
+            LIMIT 1;
+            """,
+            (SYMBOL, STRATEGY_NAME, INTERVAL),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, side, entry_price, entry_time
+            FROM positions
+            WHERE id=%s AND symbol=%s AND strategy=%s AND interval=%s
+              AND status='OPEN'
+            """,
+            (int(expected_position_id), SYMBOL, STRATEGY_NAME, INTERVAL),
+        )
     row = cur.fetchone()
 
     if not row:
@@ -1291,6 +1309,7 @@ def ssot_apply_positions_paper(
     qty_btc: float,
     candle_open_time,
     is_exit: bool,
+    expected_position_id: int | None = None,
 ) -> dict:
     """
     PAPER SSOT:
@@ -1316,17 +1335,21 @@ def ssot_apply_positions_paper(
         return {"paper_pos_action": "ENTRY_OPENED", "paper_pos_id": int(pos_id)}
 
     # EXIT
-    pos = get_open_position()
-    if not pos:
+    pos = get_open_position() if expected_position_id is None else None
+    position_id = int(expected_position_id) if expected_position_id is not None else (
+        int(pos[0]) if pos else None
+    )
+    if position_id is None:
         return {"paper_pos_action": "EXIT_SKIPPED_NO_OPEN", "paper_pos_id": None}
     closed = close_position(
-        exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time
+        exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time,
+        expected_position_id=position_id,
     )
     return {
         "paper_pos_action": (
             "EXIT_CLOSED" if closed else "EXIT_POSITION_CLOSE_FAILED"
         ),
-        "paper_pos_id": int(pos[0]),
+        "paper_pos_id": position_id,
         "position_close_succeeded": bool(closed),
     }
 
@@ -1345,6 +1368,51 @@ def execute_and_record(
     rsi_14: float | None = None,
     ema_21: float | None = None,
     pos_id: int | None = None,
+):
+    def action(preflight):
+        return _execute_and_record_after_paper_exit_preflight(
+            side, price, qty_btc, reason, candle_open_time,
+            is_exit=is_exit, cfg_used=cfg_used,
+            allow_live_orders=allow_live_orders, allow_meta=allow_meta,
+            rsi_14=rsi_14, ema_21=ema_21, pos_id=pos_id,
+            paper_position_id=(preflight.position_id if preflight else None),
+        )
+
+    if str(cfg_used.trading_mode).upper() == "PAPER" and is_exit:
+        return execute_paper_exit_after_preflight(
+            get_db_conn,
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+            symbol=cfg_used.symbol,
+            strategy=STRATEGY_NAME,
+            interval=cfg_used.interval,
+            exit_trigger=reason,
+            decision=side,
+            price=price,
+            candle_open_time=candle_open_time,
+            emit_event=emit_strategy_event,
+            action=action,
+        )
+    return action(None)
+
+
+def _execute_and_record_after_paper_exit_preflight(
+    side: str,
+    price: float,
+    qty_btc: float,
+    reason: str,
+    candle_open_time,
+    *,
+    is_exit: bool,
+    cfg_used: RuntimeConfig,
+    allow_live_orders: bool,
+    allow_meta: dict,
+    rsi_14: float | None = None,
+    ema_21: float | None = None,
+    pos_id: int | None = None,
+    paper_position_id: int | None = None,
 ):
     trading_mode = str(cfg_used.trading_mode).upper()
     if trading_mode not in {"PAPER", "LIVE"}:
@@ -1404,6 +1472,7 @@ def execute_and_record(
             qty_btc=float(qty_btc),
             candle_open_time=candle_open_time,
             is_exit=bool(is_exit),
+            expected_position_id=paper_position_id,
         )
         if (
             meta.get("paper_pos_id")

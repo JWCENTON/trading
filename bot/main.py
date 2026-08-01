@@ -19,6 +19,7 @@ from psycopg2.extras import execute_batch
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.simulated_execution_evidence import (
+    execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
     record_simulated_fill_evidence,
 )
@@ -303,6 +304,47 @@ def execute_and_record(
     allow_live_orders: bool,
     allow_meta: dict,
 ):
+    def action(preflight):
+        return _execute_and_record_after_paper_exit_preflight(
+            side, price, qty_btc, reason, candle_open_time,
+            is_exit=is_exit, cfg_used=cfg_used,
+            allow_live_orders=allow_live_orders, allow_meta=allow_meta,
+            paper_position_id=(preflight.position_id if preflight else None),
+        )
+
+    if str(cfg_used.trading_mode).upper() == "PAPER" and is_exit:
+        return execute_paper_exit_after_preflight(
+            get_db_conn,
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+            symbol=cfg_used.symbol,
+            strategy=STRATEGY_NAME,
+            interval=cfg_used.interval,
+            exit_trigger=reason,
+            decision=side,
+            price=price,
+            candle_open_time=candle_open_time,
+            emit_event=emit_strategy_event,
+            action=action,
+        )
+    return action(None)
+
+
+def _execute_and_record_after_paper_exit_preflight(
+    side: str,
+    price: float,
+    qty_btc: float,
+    reason: str,
+    candle_open_time,
+    *,
+    is_exit: bool,
+    cfg_used: RuntimeConfig,
+    allow_live_orders: bool,
+    allow_meta: dict,
+    paper_position_id: int | None = None,
+):
     """
     Guard-first:
     1) Rezerwuj slot w DB (simulated_orders) -> idempotencja per candle + is_exit.
@@ -379,6 +421,7 @@ def execute_and_record(
             is_exit=bool(is_exit),
             cfg_used=cfg_used,
             reason_text=str(reason or ""),
+            expected_position_id=paper_position_id,
         )
 
         if paper_res.get("ok") and is_exit:
@@ -1709,6 +1752,7 @@ def ssot_apply_positions_paper(
     is_exit: bool,
     cfg_used: RuntimeConfig,
     reason_text: str,
+    expected_position_id: int | None = None,
 ) -> dict:
     """
     PAPER mode: mirror LIVE SSOT behavior into `positions` (hard truth),
@@ -1751,8 +1795,12 @@ def ssot_apply_positions_paper(
         return {"ok": True, "blocked_reason": None, "pos_id": int(pos_id), "client_order_id": client_order_id}
 
     # EXIT
-    open_row = get_open_position()
-    pos_id = int(open_row[0]) if open_row else None
+    open_row = get_open_position() if expected_position_id is None else None
+    pos_id = (
+        int(expected_position_id)
+        if expected_position_id is not None
+        else int(open_row[0]) if open_row else None
+    )
     if not pos_id:
         return {"ok": False, "blocked_reason": "EXIT_NO_OPEN_POSITION", "pos_id": None, "client_order_id": None}
     client_order_id = make_client_order_id(

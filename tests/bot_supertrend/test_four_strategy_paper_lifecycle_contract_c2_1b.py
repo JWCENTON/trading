@@ -31,6 +31,13 @@ def load_strategy(monkeypatch, strategy):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "execute_paper_exit_after_preflight",
+        lambda *_args, action, **_kwargs: action(
+            SimpleNamespace(position_id=77)
+        ),
+    )
     if strategy == "SUPERTREND":
         monkeypatch.setattr(
             module, "paper_supertrend_entries_enabled", lambda *_a, **_k: (True, None)
@@ -312,3 +319,67 @@ def test_four_strategy_close_exception_never_reports_success(
         )
     assert result["position_close_succeeded"] is False
     assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
+
+
+@pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))
+def test_four_strategy_paper_exit_denial_precedes_simulated_order(
+    monkeypatch, strategy
+):
+    module = load_strategy(monkeypatch, strategy)
+    calls = {"preflight": 0, "insert": 0}
+
+    def deny(*_args, **_kwargs):
+        calls["preflight"] += 1
+        return {
+            "ledger_ok": False,
+            "blocked_reason": "PAPER_EXIT_PREFLIGHT_BLOCKED",
+            "preflight_reason_code": "ENTRY_BEFORE_ACTIVE_ADOPTION",
+        }
+
+    monkeypatch.setattr(module, "execute_paper_exit_after_preflight", deny)
+    monkeypatch.setattr(
+        module, "insert_simulated_order",
+        lambda **_kwargs: calls.__setitem__("insert", calls["insert"] + 1),
+    )
+    config = SimpleNamespace(
+        symbol="BTCUSDC", interval="1m", trading_mode="PAPER",
+        live_orders_enabled=False, quote_asset="USDC",
+    )
+    kwargs = dict(
+        side="SELL", price=99.0, qty_btc=0.1, reason="STOP_LOSS",
+        candle_open_time=NOW, is_exit=True, cfg_used=config,
+        allow_live_orders=False, allow_meta={},
+    )
+    if strategy in {"TREND", "BBRANGE"}:
+        kwargs.update(rsi_14=50.0, ema_21=100.0)
+    result = module.execute_and_record(**kwargs)
+    assert result["blocked_reason"] == "PAPER_EXIT_PREFLIGHT_BLOCKED"
+    assert result["preflight_reason_code"] == "ENTRY_BEFORE_ACTIVE_ADOPTION"
+    assert calls == {"preflight": 1, "insert": 0}
+
+
+@pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))
+def test_four_strategy_live_exit_does_not_enter_paper_preflight(
+    monkeypatch, strategy
+):
+    module = load_strategy(monkeypatch, strategy)
+    monkeypatch.setattr(
+        module, "execute_paper_exit_after_preflight",
+        lambda *_args, **_kwargs: pytest.fail("PAPER preflight reached by LIVE"),
+    )
+    monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 801)
+    monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
+    config = SimpleNamespace(
+        symbol="BTCUSDC", interval="1m", trading_mode="LIVE",
+        live_orders_enabled=False, quote_asset="USDC",
+    )
+    kwargs = dict(
+        side="SELL", price=99.0, qty_btc=0.1, reason="STOP_LOSS",
+        candle_open_time=NOW, is_exit=True, cfg_used=config,
+        allow_live_orders=False, allow_meta={},
+    )
+    if strategy in {"TREND", "BBRANGE"}:
+        kwargs.update(rsi_14=50.0, ema_21=100.0)
+    result = module.execute_and_record(**kwargs)
+    assert result["ledger_ok"] is True
+    assert result["live_attempted"] is False

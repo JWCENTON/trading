@@ -36,6 +36,7 @@ from common.db import db_write_conn, get_db_conn, read_only_db_conn
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.simulated_execution_evidence import (
+    execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
     record_simulated_fill_evidence,
 )
@@ -500,20 +501,37 @@ def open_position_from_live_ack(
     return pos_id
 
 
-def close_position(exit_price: float, reason: str, candle_open_time) -> bool:
+def close_position(
+    exit_price: float,
+    reason: str,
+    candle_open_time,
+    *,
+    expected_position_id: int | None = None,
+) -> bool:
     conn = get_db_conn()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT id, side, entry_price, entry_time
-        FROM positions
-        WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
-        ORDER BY entry_time DESC
-        LIMIT 1;
-        """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL),
-    )
+    if expected_position_id is None:
+        cur.execute(
+            """
+            SELECT id, side, entry_price, entry_time
+            FROM positions
+            WHERE symbol=%s AND strategy=%s AND interval=%s AND status='OPEN'
+            ORDER BY entry_time DESC
+            LIMIT 1;
+            """,
+            (SYMBOL, STRATEGY_NAME, INTERVAL),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, side, entry_price, entry_time
+            FROM positions
+            WHERE id=%s AND symbol=%s AND strategy=%s AND interval=%s
+              AND status='OPEN'
+            """,
+            (int(expected_position_id), SYMBOL, STRATEGY_NAME, INTERVAL),
+        )
     row = cur.fetchone()
 
     if not row:
@@ -766,6 +784,50 @@ def execute_and_record(
     rsi_14: float | None,
     ema_21: float | None,
 ):
+    def action(preflight):
+        return _execute_and_record_after_paper_exit_preflight(
+            side, price, qty_btc, reason, candle_open_time,
+            is_exit=is_exit, cfg_used=cfg_used,
+            allow_live_orders=allow_live_orders, allow_meta=allow_meta,
+            rsi_14=rsi_14, ema_21=ema_21,
+            paper_position_id=(preflight.position_id if preflight else None),
+        )
+
+    if str(cfg_used.trading_mode).upper() == "PAPER" and is_exit:
+        return execute_paper_exit_after_preflight(
+            get_db_conn,
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+            symbol=cfg_used.symbol,
+            strategy=STRATEGY_NAME,
+            interval=cfg_used.interval,
+            exit_trigger=reason,
+            decision=side,
+            price=price,
+            candle_open_time=candle_open_time,
+            emit_event=emit_strategy_event,
+            action=action,
+        )
+    return action(None)
+
+
+def _execute_and_record_after_paper_exit_preflight(
+    side: str,
+    price: float,
+    qty_btc: float,
+    reason: str,
+    candle_open_time,
+    *,
+    is_exit: bool,
+    cfg_used: RuntimeConfig,
+    allow_live_orders: bool,
+    allow_meta: dict,
+    rsi_14: float | None,
+    ema_21: float | None,
+    paper_position_id: int | None = None,
+):
     """
     Guard-first (Model A jak RSI):
     1) Rezerwuj slot w DB (simulated_orders) -> idempotencja per candle + is_exit.
@@ -844,11 +906,17 @@ def execute_and_record(
                     info={"pos_id": pos_id, "qty_btc": float(qty_btc), "reason_text": reason},
                 )
             else:
-                open_before_close = get_open_position()
-                evidence_position_id = (
-                    int(open_before_close[0]) if open_before_close else None
+                if paper_position_id is None:
+                    open_before_close = get_open_position()
+                    evidence_position_id = (
+                        int(open_before_close[0]) if open_before_close else None
+                    )
+                else:
+                    evidence_position_id = int(paper_position_id)
+                closed_ok = close_position(
+                    price, reason, candle_open_time,
+                    expected_position_id=evidence_position_id,
                 )
-                closed_ok = close_position(price, reason, candle_open_time)
                 if not closed_ok:
                     emit_strategy_event(
                         event_type="POSITION_CLOSE_FAILED",

@@ -7,6 +7,7 @@ import socket
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import psycopg2
 import pytest
@@ -78,6 +79,12 @@ def rsi(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "execute_paper_exit_after_preflight",
+        lambda *_args, action, **_kwargs: action(
+            SimpleNamespace(position_id=77)
+        ),
+    )
     assert factory_calls == []
     assert module._exchange_client is None
     return module
