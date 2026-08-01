@@ -1,0 +1,19 @@
+{
+  "contract_version": "RUNTIME_DDL_SCHEMA_PARITY_V1",
+  "migration_id": "20260724_runtime_ddl_schema_parity_v1.sql",
+  "migration_sha256": "1eaa5a4ecab4481b9cc14d69007fedde85b850df22c27d76f90440a7424f03a6",
+  "canonical_totp_tables": [
+    "user_totp",
+    "user_recovery_codes"
+  ],
+  "canonical_totp_indexes": [
+    "ix_user_recovery_codes_user_active"
+  ],
+  "runtime_policy": {
+    "schema_installation": "explicit_migration_only",
+    "startup_schema_mutation": false,
+    "startup_verification": "read_only_fail_closed",
+    "backfill": false,
+    "data_repair": false
+  }
+}

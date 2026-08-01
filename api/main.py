@@ -29,6 +29,7 @@ import hashlib
 import pyotp
 from common.exchange_client import get_market_data_client
 from common.runtime import trading_mode_from_env
+from common.totp_schema import TotpSchemaReport, require_totp_schema
 
 
 TRADING_MODE = trading_mode_from_env()
@@ -1307,30 +1308,9 @@ def record_auth_event(
 
 
 
-def ensure_totp_schema() -> None:
-    with db_cursor() as (conn, cur):
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_totp (
-              user_id integer PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-              totp_secret text NOT NULL,
-              enabled boolean NOT NULL DEFAULT false,
-              created_at timestamptz NOT NULL DEFAULT now(),
-              enabled_at timestamptz NULL,
-              disabled_at timestamptz NULL,
-              last_used_at timestamptz NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_recovery_codes (
-              id bigserial PRIMARY KEY,
-              user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              code_hash text NOT NULL,
-              created_at timestamptz NOT NULL DEFAULT now(),
-              used_at timestamptz NULL
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS ix_user_recovery_codes_user_active ON user_recovery_codes(user_id, used_at)")
-        conn.commit()
+def verify_totp_schema() -> TotpSchemaReport:
+    with db_cursor() as (_conn, cur):
+        return require_totp_schema(cur)
 
 
 def normalize_totp_code(code: Optional[str]) -> str:
@@ -1355,7 +1335,7 @@ def generate_recovery_codes(n: int = 10) -> list[str]:
 
 
 def get_totp_row(user_id: int) -> Optional[tuple[str, bool]]:
-    ensure_totp_schema()
+    verify_totp_schema()
     with db_cursor() as (_conn, cur):
         cur.execute("SELECT totp_secret, enabled FROM user_totp WHERE user_id = %s LIMIT 1", (user_id,))
         row = cur.fetchone()
@@ -1389,7 +1369,7 @@ def consume_recovery_code(user_id: int, code: Optional[str]) -> bool:
     normalized = normalize_recovery_code(code)
     if len(normalized) < 8:
         return False
-    ensure_totp_schema()
+    verify_totp_schema()
     with db_cursor() as (conn, cur):
         cur.execute(
             """
@@ -1412,7 +1392,7 @@ def consume_recovery_code(user_id: int, code: Optional[str]) -> bool:
 
 
 def replace_recovery_codes(user_id: int) -> list[str]:
-    ensure_totp_schema()
+    verify_totp_schema()
     codes = generate_recovery_codes()
     hashes = [hash_recovery_code(code) for code in codes]
     with db_cursor() as (conn, cur):
@@ -2284,7 +2264,7 @@ def auth_2fa_setup_start(
     request: Request,
     user: CurrentUser = Depends(require_admin),
 ):
-    ensure_totp_schema()
+    verify_totp_schema()
     existing = get_totp_row(user.id)
     if existing and existing[1]:
         raise HTTPException(status_code=400, detail="2FA already enabled")
@@ -2318,7 +2298,7 @@ def auth_2fa_setup_verify(
     request: Request,
     user: CurrentUser = Depends(require_admin),
 ):
-    ensure_totp_schema()
+    verify_totp_schema()
     row = get_totp_row(user.id)
     if not row:
         raise HTTPException(status_code=400, detail="2FA setup not started")
@@ -3324,10 +3304,7 @@ def ui_trading_24h(user: CurrentUser = Depends(require_auth)):
 
 @app.on_event("startup")
 def start_ai_tuner():
-    try:
-        ensure_totp_schema()
-    except Exception as exc:
-        logging.warning("2FA schema ensure failed: %s", exc)
+    verify_totp_schema()
     t = threading.Thread(target=ai_auto_tuner_loop, daemon=True)
     t.start()
     logging.info("AI tuner thread started.")

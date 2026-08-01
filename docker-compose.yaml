@@ -58,6 +58,11 @@ services:
   frontend:
     build:
       context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        BUILD_MODE: ${IMAGE_BUILD_MODE:-development}
+        GIT_SHA: ${GIT_SHA:-DEV-UNKNOWN}
+        BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-DEV-UNKNOWN}
     restart: always
     logging:
       driver: "json-file"
