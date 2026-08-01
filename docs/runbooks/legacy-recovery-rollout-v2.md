@@ -12,6 +12,14 @@ position to `CLOSED`. LIVE apply is forbidden.
   classifications manually. They are derived from immutable database evidence.
 - Every legacy position repair is reporting-eligible and Financial-Truth-
   eligible when complete, but Learning-ineligible with reason `LEGACY_REPAIR`.
+- Existing Learning artifacts are not automatically fatal. Only explicitly
+  enumerated open/incomplete shadow, warehouse, replay and OPEN registry rows
+  may remain. Exit traces, outcomes, trusted/terminal/unknown states, identity
+  mismatches and duplicates always block the repair.
+- Existing benign artifacts are immutable historical evidence: never delete,
+  update, close, rebuild or backfill them. Their snapshot is fingerprinted and
+  written into repair provenance; the exclusion removes them from eligible
+  future Learning reads.
 - Do not use one-off SQL. The service owns readiness checks, bounded locks,
   re-planning, the semantic CAS, all writes, postconditions, commit, and rollback.
 - Do not use `apply-position` against LIVE. It returns
@@ -55,7 +63,9 @@ subcommand for consistency.
    mutations, `financial_truth_status=COMPLETE`, `reporting_eligible=true`,
    and `learning_eligible=false`. Confirm independently that the artifact
    counts for exit trace, shadow, feature warehouse, replay, registry, and
-   outcomes are zero. The writer repeats this check transactionally.
+   outcomes are zero. Review `learning_artifact_gate.classification`, every
+   artifact ID/status and the exact reason for any blocker. The writer locks
+   and reclassifies the same snapshot transactionally.
 
 4. Apply exactly the reviewed fingerprint:
 
@@ -74,8 +84,10 @@ subcommand for consistency.
    Success is machine-readable JSON with `status=APPLIED`,
    `learning_excluded=true`, `transaction_committed=true`, and the exclusion,
    audit, and provenance IDs. A changed position or fill produces `PLAN_STALE`.
-   Any pre-existing downstream artifact produces
-   `LEARNING_ARTIFACT_ALREADY_EXISTS`; neither case writes partial state.
+   A terminal, trusted, unknown or ambiguous artifact produces
+   `LEARNING_TERMINAL_OR_AMBIGUOUS_ARTIFACT`; neither it nor a stale plan writes
+   partial state. `BENIGN_OPEN_INCOMPLETE_ARTIFACTS` is allowed only after the
+   exclusion becomes visible to every canonical reader view and guard.
 
 5. Repeat the identical apply command. It must return
    `status=ALREADY_APPLIED` and `writes=0`.
@@ -83,7 +95,8 @@ subcommand for consistency.
 6. Validate post-state: the exclusion, closed position, lifecycle event,
    complete canonical Financial Truth, repair audit, and provenance exist;
    exit trace, shadow, warehouse, replay, registry, and outcome rows for the
-   position remain absent.
+   position remain absent. Pre-existing benign artifacts must have an identical
+   physical snapshot but return zero rows through exclusion-aware reader views.
 
 ## Other read-only commands
 

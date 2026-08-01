@@ -282,6 +282,9 @@ def _position(connection, args, environment_identity, schema):
                 "learning_excluded": True,
                 "learning_eligible": False,
                 "learning_trust": "LEGACY_RECONSTRUCTED_NOT_TRUSTED_FORWARD",
+                "learning_artifact_gate": (
+                    plan_v2.artifact_gate.public_payload()
+                ),
                 "idempotency_identity": plan_v2.invocation_identity,
                 "blocking_reasons": list(plan_v2.blocking_reasons),
             })

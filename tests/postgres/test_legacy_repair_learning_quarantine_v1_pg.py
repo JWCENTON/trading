@@ -7,6 +7,8 @@ import pytest
 
 from common.legacy_recovery import LegacyRecoveryTransactionService
 from common.legacy_repair_quarantine import (
+    ArtifactGateClassification,
+    LearningArtifactRepository,
     LegacyPositionRepairPlanRepository,
     LegacyRepairQuarantineSchemaReadinessRepository,
 )
@@ -28,6 +30,9 @@ LEGACY = (
 ).read_text()
 QUARANTINE = (
     ROOT / "db/migrations/20260801_legacy_repair_learning_quarantine_v1.sql"
+).read_text()
+ARTIFACT_POLICY = (
+    ROOT / "db/migrations/20260801_legacy_repair_existing_artifact_policy_v1.sql"
 ).read_text()
 
 GIT_SHA = "2fc6efae2bf2a342ac4ea73968d47432d1a964b5"
@@ -104,18 +109,49 @@ CREATE TABLE exchange_fill_ingestion_state_v2(
       'AMBIGUOUS','REJECTED'
     ))
 );
-CREATE TABLE exit_trace_v1(position_id BIGINT PRIMARY KEY);
-CREATE TABLE exit_trace_v2(position_id BIGINT PRIMARY KEY);
-CREATE TABLE exit_trace_v3(position_id BIGINT PRIMARY KEY);
+CREATE TABLE exit_trace_v1(
+  id BIGSERIAL PRIMARY KEY,position_id BIGINT UNIQUE
+);
+CREATE TABLE exit_trace_v2(
+  id BIGSERIAL PRIMARY KEY,position_id BIGINT UNIQUE
+);
+CREATE TABLE exit_trace_v3(
+  id BIGSERIAL PRIMARY KEY,position_id BIGINT UNIQUE
+);
 CREATE TABLE learning_feedback_shadow_recommendations(
-  id BIGSERIAL PRIMARY KEY,position_id BIGINT
+  id BIGSERIAL PRIMARY KEY,position_id BIGINT,environment TEXT DEFAULT 'paper',
+  decision_key TEXT,recommendation_type TEXT DEFAULT 'UNKNOWN',
+  recommendation_action TEXT DEFAULT 'SHADOW_OBSERVE_ONLY',
+  evidence JSONB DEFAULT '{}',created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE TABLE learning_feature_warehouse_v1(
-  id BIGSERIAL PRIMARY KEY,position_id BIGINT
+  id BIGSERIAL PRIMARY KEY,position_id BIGINT,environment TEXT DEFAULT 'paper',
+  deployment_id TEXT DEFAULT 'legacy-unknown',decision_key TEXT,
+  evidence_status TEXT DEFAULT 'UNKNOWN',net_pnl_usdc NUMERIC,
+  exit_time TIMESTAMPTZ,causal_linkage_status TEXT DEFAULT 'LEGACY_NOT_ATTRIBUTABLE',
+  created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE TABLE decision_replay_v1(id BIGSERIAL PRIMARY KEY,position_id BIGINT);
-CREATE TABLE decision_registry_v1(id BIGSERIAL PRIMARY KEY,position_id BIGINT);
-CREATE TABLE decision_outcomes_v1(id BIGSERIAL PRIMARY KEY,position_id BIGINT);
+CREATE TABLE decision_replay_v1(
+  id BIGSERIAL PRIMARY KEY,position_id BIGINT,environment TEXT DEFAULT 'paper',
+  deployment_id TEXT DEFAULT 'legacy-unknown',decision_key TEXT,
+  replay_status TEXT DEFAULT 'UNKNOWN',exit_time TIMESTAMPTZ,
+  causal_linkage_status TEXT DEFAULT 'LEGACY_NOT_ATTRIBUTABLE',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE decision_registry_v1(
+  decision_id BIGSERIAL PRIMARY KEY,position_id BIGINT,
+  environment TEXT DEFAULT 'paper',deployment_id TEXT DEFAULT 'LOCAL',
+  legacy_decision_key TEXT,decision_type TEXT DEFAULT 'TRADE_EXECUTED',
+  source_table TEXT DEFAULT 'positions',source_record_id TEXT,
+  source_natural_key TEXT,decision_payload JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE decision_outcomes_v1(
+  outcome_id BIGSERIAL PRIMARY KEY,position_id BIGINT,
+  environment TEXT DEFAULT 'paper',deployment_id TEXT DEFAULT 'LOCAL',
+  outcome_status TEXT DEFAULT 'UNKNOWN',learning_eligible BOOLEAN,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 CREATE OR REPLACE FUNCTION trg_capture_exit_trace_v1()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
@@ -148,6 +184,7 @@ def quarantine_db(disposable_postgres_v16):
         cur.execute(FINANCIAL_WRITER)
         cur.execute(LEGACY)
         cur.execute(QUARANTINE)
+        cur.execute(ARTIFACT_POLICY)
     connection.commit()
     yield connection
     connection.close()
@@ -260,14 +297,94 @@ def _counts(connection, position_id: int) -> dict[str, int]:
         return result
 
 
+def _seed_benign_artifacts(connection, position_id: int = 3080) -> None:
+    decision_key = f"legacy-open-{position_id}"
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO learning_feedback_shadow_recommendations(
+              position_id,environment,decision_key,recommendation_type,
+              recommendation_action,evidence
+            ) VALUES (%s,'trading_paper',%s,'OBSERVE_INCOMPLETE_PNL',
+                      'SHADOW_OBSERVE_ONLY',%s)
+            """,
+            (position_id, decision_key, json.dumps({"position_id": position_id})),
+        )
+        cur.execute(
+            """
+            INSERT INTO learning_feature_warehouse_v1(
+              position_id,environment,deployment_id,decision_key,
+              evidence_status,causal_linkage_status
+            ) VALUES (%s,'trading_paper','legacy-unknown',%s,
+                      'OPEN_OR_INCOMPLETE','LEGACY_NOT_ATTRIBUTABLE')
+            """,
+            (position_id, decision_key),
+        )
+        cur.execute(
+            """
+            INSERT INTO decision_replay_v1(
+              position_id,environment,deployment_id,decision_key,
+              replay_status,causal_linkage_status
+            ) VALUES (%s,'trading_paper','legacy-unknown',%s,
+                      'REPLAY_OPEN_OR_INCOMPLETE','LEGACY_NOT_ATTRIBUTABLE')
+            """,
+            (position_id, decision_key),
+        )
+        cur.execute(
+            """
+            INSERT INTO decision_registry_v1(
+              position_id,environment,deployment_id,legacy_decision_key,
+              source_record_id,source_natural_key,decision_payload
+            ) VALUES (%s,'trading_paper','LOCAL',%s,%s,%s,%s)
+            """,
+            (
+                position_id, decision_key, str(position_id),
+                f"LOCAL|trading_paper|positions|{position_id}|TRADE_EXECUTED",
+                json.dumps({"position_status": "OPEN", "exit_time": None}),
+            ),
+        )
+    connection.commit()
+
+
 def test_migration_is_idempotent_and_schema_ready(quarantine_db):
     with quarantine_db.cursor() as cur:
         cur.execute(QUARANTINE)
+        cur.execute(ARTIFACT_POLICY)
     quarantine_db.commit()
     readiness = LegacyRepairQuarantineSchemaReadinessRepository().check(
         quarantine_db
     )
     assert readiness.status == "PRESENT_VALID", readiness.issues
+
+
+def test_artifact_gate_no_artifacts_allows_repair(quarantine_db):
+    _seed_position(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        gate = LearningArtifactRepository.classify(
+            cur, position_id=3080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+        )
+    assert gate.classification is ArtifactGateClassification.NO_ARTIFACTS
+    assert gate.repair_allowed is True
+    assert gate.artifacts == ()
+
+
+def test_artifact_gate_explicit_benign_cohort_allows_repair(quarantine_db):
+    _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        gate = LearningArtifactRepository.classify(
+            cur, position_id=3080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+        )
+    assert gate.classification is (
+        ArtifactGateClassification.BENIGN_OPEN_INCOMPLETE_ARTIFACTS
+    )
+    assert gate.repair_allowed is True
+    assert [artifact["status"] for artifact in gate.artifacts] == [
+        "OBSERVE_INCOMPLETE_PNL", "OPEN_OR_INCOMPLETE",
+        "REPLAY_OPEN_OR_INCOMPLETE", "OPEN",
+    ]
 
 
 def test_exclusion_is_visible_to_close_trigger_and_normal_close_is_preserved(
@@ -311,6 +428,9 @@ def test_all_ingress_guards_exclude_shadow_warehouse_replay_and_decisions(
             "VALUES (11,'BNBUSDC','BBRANGE','1m','CLOSED',0),"
             "(12,'BNBUSDC','BBRANGE','1m','CLOSED',0)"
         )
+    quarantine_db.commit()
+    _seed_benign_artifacts(quarantine_db, 11)
+    with quarantine_db.cursor() as cur:
         cur.execute(
             """
             INSERT INTO learning_outcome_exclusion_v1(
@@ -344,24 +464,72 @@ def test_all_ingress_guards_exclude_shadow_warehouse_replay_and_decisions(
                 f"INSERT INTO {table}(position_id) "
                 "SELECT id FROM positions WHERE status='CLOSED'"
             )
+        direct_terminal = (
+            "exit_trace_v1", "exit_trace_v2", "exit_trace_v3",
+            "decision_outcomes_v1",
+        )
+        historical_benign = (
+            "learning_feedback_shadow_recommendations",
+            "learning_feature_warehouse_v1", "decision_replay_v1",
+            "decision_registry_v1",
+        )
+        for table in direct_terminal:
+            cur.execute(f"SELECT position_id FROM {table} ORDER BY position_id")
+            assert cur.fetchall() == [(12,)], table
+        for table in historical_benign:
+            cur.execute(f"SELECT position_id FROM {table} ORDER BY position_id")
+            assert cur.fetchall() == [(11,), (12,)], table
+        for _table, view in (
+            ("exit_trace_v1", "v_learning_eligible_exit_trace_v1"),
+            ("exit_trace_v2", "v_learning_eligible_exit_trace_v2"),
+            ("exit_trace_v3", "v_learning_eligible_exit_trace_v3"),
+            (
+                "learning_feedback_shadow_recommendations",
+                "v_learning_eligible_shadow_recommendations_v1",
+            ),
+            (
+                "learning_feature_warehouse_v1",
+                "v_learning_eligible_feature_warehouse_v1",
+            ),
+            ("decision_replay_v1", "v_learning_eligible_decision_replay_v1"),
+            (
+                "decision_registry_v1",
+                "v_learning_eligible_decision_registry_v1",
+            ),
+            (
+                "decision_outcomes_v1",
+                "v_learning_eligible_decision_outcomes_v1",
+            ),
+        ):
+            cur.execute(f"SELECT position_id FROM {view} ORDER BY position_id")
+            assert cur.fetchall() == [(12,)], view
         for table in (
             "exit_trace_v1", "exit_trace_v2", "exit_trace_v3",
             "learning_feedback_shadow_recommendations",
             "learning_feature_warehouse_v1", "decision_replay_v1",
             "decision_registry_v1", "decision_outcomes_v1",
         ):
-            cur.execute(f"SELECT position_id FROM {table} ORDER BY position_id")
-            assert cur.fetchall() == [(12,)], table
+            cur.execute(
+                f"SELECT count(*) FROM {table} WHERE position_id=11"
+            )
+            expected = 0 if table in direct_terminal else 1
+            assert cur.fetchone()[0] == expected, table
     quarantine_db.rollback()
 
 
 def test_successful_repair_is_atomic_quarantined_and_idempotent(quarantine_db):
     _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        artifacts_before = LearningArtifactRepository.snapshot(cur, 3080)
     plan = LegacyPositionRepairPlanRepository.build(
         quarantine_db, position_id=3080, environment="PAPER",
         deployment_id=DEPLOYMENT,
     )
     assert plan.eligible, plan.blocking_reasons
+    assert plan.artifact_gate.classification is (
+        ArtifactGateClassification.BENIGN_OPEN_INCOMPLETE_ARTIFACTS
+    )
     first = LegacyRecoveryTransactionService.repair_position(
         quarantine_db, position_id=3080, environment="PAPER",
         deployment_id=DEPLOYMENT,
@@ -380,6 +548,18 @@ def test_successful_repair_is_atomic_quarantined_and_idempotent(quarantine_db):
             "WHERE position_id=3080"
         )
         assert cur.fetchone() == ("COMPLETE",)
+        assert LearningArtifactRepository.snapshot(cur, 3080) == artifacts_before
+        LearningArtifactRepository.assert_excluded_from_readers(cur, 3080)
+        cur.execute(
+            "SELECT immutable_payload FROM legacy_repair_provenance_v1 "
+            "WHERE source_identity LIKE %s",
+            ("%:position:3080",),
+        )
+        provenance = cur.fetchone()[0]
+        assert provenance["learning_artifact_gate"]["classification"] == (
+            "BENIGN_OPEN_INCOMPLETE_ARTIFACTS"
+        )
+        assert len(provenance["learning_artifact_gate"]["artifacts"]) == 4
     assert _counts(quarantine_db, 3080) == {
         "learning_outcome_exclusion_v1": 1,
         "position_lifecycle_events_c2_2": 1,
@@ -398,6 +578,8 @@ def test_successful_repair_is_atomic_quarantined_and_idempotent(quarantine_db):
     assert second["status"] == "ALREADY_APPLIED"
     assert second["writes"] == 0
     assert _counts(quarantine_db, 3080) == before
+    with quarantine_db.cursor() as cur:
+        assert LearningArtifactRepository.snapshot(cur, 3080) == artifacts_before
 
 
 def test_plan_v2_fingerprint_is_deterministic(quarantine_db):
@@ -421,6 +603,9 @@ def test_plan_v2_fingerprint_is_deterministic(quarantine_db):
 )
 def test_failpoints_roll_back_every_partial_write(quarantine_db, stage):
     _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        artifacts_before = LearningArtifactRepository.snapshot(cur, 3080)
     plan = LegacyPositionRepairPlanRepository.build(
         quarantine_db, position_id=3080, environment="PAPER",
         deployment_id=DEPLOYMENT,
@@ -449,28 +634,22 @@ def test_failpoints_roll_back_every_partial_write(quarantine_db, stage):
     with quarantine_db.cursor() as cur:
         cur.execute("SELECT status FROM positions WHERE id=3080")
         assert cur.fetchone() == ("OPEN",)
+        assert LearningArtifactRepository.snapshot(cur, 3080) == artifacts_before
 
 
-@pytest.mark.parametrize(
-    "artifact",
-    [
-        "exit_trace_v1", "learning_feedback_shadow_recommendations",
-        "learning_feature_warehouse_v1", "decision_replay_v1",
-        "decision_registry_v1", "decision_outcomes_v1",
-    ],
-)
-def test_existing_learning_artifact_blocks_with_zero_writes(
-    quarantine_db, artifact,
-):
+@pytest.mark.parametrize("artifact", ["exit_trace_v1", "decision_outcomes_v1"])
+def test_terminal_learning_artifact_blocks_with_zero_writes(quarantine_db, artifact):
     _seed_position(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(f"INSERT INTO {artifact}(position_id) VALUES (3080)")
+    quarantine_db.commit()
     plan = LegacyPositionRepairPlanRepository.build(
         quarantine_db, position_id=3080, environment="PAPER",
         deployment_id=DEPLOYMENT,
     )
-    with quarantine_db.cursor() as cur:
-        cur.execute(f"INSERT INTO {artifact}(position_id) VALUES (3080)")
-    quarantine_db.commit()
-    with pytest.raises(RuntimeError, match="LEARNING_ARTIFACT_ALREADY_EXISTS"):
+    with pytest.raises(
+        RuntimeError, match="LEARNING_TERMINAL_OR_AMBIGUOUS_ARTIFACT"
+    ):
         LegacyRecoveryTransactionService.repair_position(
             quarantine_db, position_id=3080, environment="PAPER",
             deployment_id=DEPLOYMENT,
@@ -482,6 +661,121 @@ def test_existing_learning_artifact_blocks_with_zero_writes(
         assert cur.fetchone() == ("OPEN",)
         cur.execute("SELECT count(*) FROM learning_outcome_exclusion_v1")
         assert cur.fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "learning_feedback_shadow_recommendations",
+        "learning_feature_warehouse_v1", "decision_replay_v1",
+        "decision_registry_v1",
+    ],
+)
+def test_unknown_or_terminal_status_is_blocked(quarantine_db, artifact):
+    _seed_position(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(f"INSERT INTO {artifact}(position_id) VALUES (3080)")
+    quarantine_db.commit()
+    plan = LegacyPositionRepairPlanRepository.build(
+        quarantine_db, position_id=3080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+    )
+    assert plan.artifact_gate.classification is (
+        ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS
+    )
+    assert plan.artifact_gate.repair_allowed is False
+    with pytest.raises(
+        RuntimeError, match="LEARNING_TERMINAL_OR_AMBIGUOUS_ARTIFACT"
+    ):
+        LegacyRecoveryTransactionService.repair_position(
+            quarantine_db, position_id=3080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+            expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+            git_sha=GIT_SHA, invocation_identity=plan.invocation_identity,
+        )
+    assert _counts(quarantine_db, 3080)["learning_outcome_exclusion_v1"] == 0
+
+
+def test_duplicate_benign_artifact_is_ambiguous_and_blocked(quarantine_db):
+    _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO learning_feedback_shadow_recommendations(
+              position_id,environment,decision_key,recommendation_type
+            ) VALUES (3080,'trading_paper','legacy-open-3080',
+                      'OBSERVE_INCOMPLETE_PNL')
+            """
+        )
+    quarantine_db.commit()
+    plan = LegacyPositionRepairPlanRepository.build(
+        quarantine_db, position_id=3080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+    )
+    assert plan.artifact_gate.classification is (
+        ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS
+    )
+    assert plan.artifact_gate.reason == "DUPLICATE_ARTIFACT:shadow_recommendation"
+
+
+def test_benign_status_with_terminal_shadow_evidence_is_blocked(quarantine_db):
+    _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            "UPDATE learning_feedback_shadow_recommendations "
+            "SET evidence=evidence || '{\"net_pnl_usdc\":\"1.0\"}'::jsonb "
+            "WHERE position_id=3080"
+        )
+    quarantine_db.commit()
+    plan = LegacyPositionRepairPlanRepository.build(
+        quarantine_db, position_id=3080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+    )
+    assert plan.artifact_gate.repair_allowed is False
+    assert plan.artifact_gate.reason == "SHADOW_TERMINAL_EVIDENCE"
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [("environment", "trading_live"), ("deployment_id", "VPS")],
+)
+def test_artifact_identity_mismatch_is_blocked(quarantine_db, column, value):
+    _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            f"UPDATE learning_feature_warehouse_v1 SET {column}=%s "
+            "WHERE position_id=3080",
+            (value,),
+        )
+    quarantine_db.commit()
+    plan = LegacyPositionRepairPlanRepository.build(
+        quarantine_db, position_id=3080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+    )
+    assert plan.artifact_gate.repair_allowed is False
+    assert "MISMATCH" in str(plan.artifact_gate.reason)
+
+
+def test_terminal_artifact_appearing_after_plan_makes_plan_stale(quarantine_db):
+    _seed_position(quarantine_db)
+    plan = LegacyPositionRepairPlanRepository.build(
+        quarantine_db, position_id=3080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+    )
+    with quarantine_db.cursor() as cur:
+        cur.execute("INSERT INTO decision_outcomes_v1(position_id) VALUES (3080)")
+    quarantine_db.commit()
+    with pytest.raises(RuntimeError, match="PLAN_STALE"):
+        LegacyRecoveryTransactionService.repair_position(
+            quarantine_db, position_id=3080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+            expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+            git_sha=GIT_SHA, invocation_identity=plan.invocation_identity,
+        )
+    assert _counts(quarantine_db, 3080)["learning_outcome_exclusion_v1"] == 0
 
 
 @pytest.mark.parametrize("changed_evidence", ["fill", "position"])
@@ -550,6 +844,7 @@ def test_cli_confirmation_live_and_plan_hash_contract(
     quarantine_db, disposable_postgres_v16, monkeypatch, capsys,
 ):
     _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
     dsn = (
         f"host=127.0.0.1 port={disposable_postgres_v16.port} "
         "dbname=waltrade_baseline_test_paper_legacy_quarantine "
@@ -567,6 +862,11 @@ def test_cli_confirmation_live_and_plan_hash_contract(
     assert planned["eligible"] is True
     assert len(planned["semantic_fingerprint_v2"]) == 64
     assert planned["learning_eligible"] is False
+    assert planned["learning_artifact_gate"]["classification"] == (
+        "BENIGN_OPEN_INCOMPLETE_ARTIFACTS"
+    )
+    assert planned["learning_artifact_gate"]["repair_allowed"] is True
+    assert len(planned["learning_artifact_gate"]["artifacts"]) == 4
     apply = base + [
         "--git-sha", GIT_SHA, "apply-position", "--position-id", "3080",
         "--expected-fingerprint-v2", planned["semantic_fingerprint_v2"],

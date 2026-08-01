@@ -1,0 +1,23 @@
+{
+  "contract_version": "LEGACY_REPAIR_EXISTING_ARTIFACT_POLICY_V1",
+  "migration_id": "20260801_legacy_repair_existing_artifact_policy_v1.sql",
+  "migration_sha256": "2cbc12b825db8ae3d8ab76edf5a89b42cab07c01bad1b0db9146fa6c81536152",
+  "contract_checksum_sha256": "5ee1ef4cc66cf9fac368ce31aa23b2d730b5869bb5d43f3792b8c7689d41e30d",
+  "runtime_scope": "PAPER_APPLY_ONLY",
+  "requires": [
+    "20260801_legacy_repair_learning_quarantine_v1.sql"
+  ],
+  "data_policy": {
+    "backfill": false,
+    "artifact_update": false,
+    "artifact_delete": false,
+    "learning_rebuild": false,
+    "reader_filter_views": true
+  },
+  "allowed_artifact_gate_statuses": {
+    "shadow_recommendation": "OBSERVE_INCOMPLETE_PNL/SHADOW_OBSERVE_ONLY",
+    "feature_warehouse": "OPEN_OR_INCOMPLETE",
+    "decision_replay": "REPLAY_OPEN_OR_INCOMPLETE",
+    "decision_registry_position_status": "OPEN"
+  }
+}

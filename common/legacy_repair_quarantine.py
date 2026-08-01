@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Callable, Mapping
 
 from common.financial_truth_calculator import (
@@ -26,10 +27,10 @@ from common.legacy_recovery_schema import (
 )
 
 
-MIGRATION_ID = "20260801_legacy_repair_learning_quarantine_v1.sql"
-SCHEMA_VERSION = "LEGACY_REPAIR_LEARNING_QUARANTINE_V1"
+MIGRATION_ID = "20260801_legacy_repair_existing_artifact_policy_v1.sql"
+SCHEMA_VERSION = "LEGACY_REPAIR_EXISTING_ARTIFACT_POLICY_V1"
 MANIFEST_CHECKSUM = (
-    "fab46cd6eb55ac7353732834e7144fc26ce2937a442aa244e8a205f3f724d4d0"
+    "5ee1ef4cc66cf9fac368ce31aa23b2d730b5869bb5d43f3792b8c7689d41e30d"
 )
 FINGERPRINT_VERSION = "LEGACY_REPAIR_PLAN_FINGERPRINT_V2"
 EXCLUSION_REASON = "LEGACY_REPAIR"
@@ -48,6 +49,62 @@ LEARNING_ARTIFACT_TABLES = (
 )
 
 GUARDED_ARTIFACT_TABLES = LEARNING_ARTIFACT_TABLES
+
+ELIGIBLE_ARTIFACT_VIEWS = {
+    "exit_trace_v1": "v_learning_eligible_exit_trace_v1",
+    "exit_trace_v2": "v_learning_eligible_exit_trace_v2",
+    "exit_trace_v3": "v_learning_eligible_exit_trace_v3",
+    "learning_feedback_shadow_recommendations": (
+        "v_learning_eligible_shadow_recommendations_v1"
+    ),
+    "learning_feature_warehouse_v1": (
+        "v_learning_eligible_feature_warehouse_v1"
+    ),
+    "decision_replay_v1": "v_learning_eligible_decision_replay_v1",
+    "decision_registry_v1": "v_learning_eligible_decision_registry_v1",
+    "decision_outcomes_v1": "v_learning_eligible_decision_outcomes_v1",
+}
+
+
+class ArtifactGateClassification(str, Enum):
+    NO_ARTIFACTS = "NO_ARTIFACTS"
+    BENIGN_OPEN_INCOMPLETE_ARTIFACTS = (
+        "BENIGN_OPEN_INCOMPLETE_ARTIFACTS"
+    )
+    TERMINAL_OR_AMBIGUOUS_ARTIFACTS = (
+        "TERMINAL_OR_AMBIGUOUS_ARTIFACTS"
+    )
+
+
+@dataclass(frozen=True)
+class LearningArtifactGate:
+    classification: ArtifactGateClassification
+    repair_allowed: bool
+    reason: str | None
+    artifacts: tuple[Mapping[str, Any], ...]
+    raw_snapshot: tuple[Mapping[str, Any], ...]
+    exit_trace_count: int
+    decision_outcome_count: int
+
+    def fingerprint_payload(self) -> Mapping[str, Any]:
+        return {
+            "classification": self.classification.value,
+            "repair_allowed": self.repair_allowed,
+            "reason": self.reason,
+            "exit_trace_count": self.exit_trace_count,
+            "decision_outcome_count": self.decision_outcome_count,
+            "artifacts": self.raw_snapshot,
+        }
+
+    def public_payload(self) -> Mapping[str, Any]:
+        return {
+            "classification": self.classification.value,
+            "repair_allowed": self.repair_allowed,
+            "reason": self.reason,
+            "exit_trace_count": self.exit_trace_count,
+            "decision_outcome_count": self.decision_outcome_count,
+            "artifacts": self.artifacts,
+        }
 
 
 @dataclass(frozen=True)
@@ -74,6 +131,7 @@ class LegacyPositionRepairPlanV2:
     exit_fill_ids: tuple[int, ...]
     provenance_identity: str
     invocation_identity: str
+    artifact_gate: LearningArtifactGate
     evidence_payload: Mapping[str, Any]
 
 
@@ -235,6 +293,17 @@ class LegacyRepairQuarantineSchemaReadinessRepository:
             if predicate is None:
                 issues.append("QUARANTINE_PREDICATE")
             cur.execute(
+                "SELECT relname FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE n.nspname='public' AND c.relkind='v' "
+                "AND c.relname=ANY(%s)",
+                (list(ELIGIBLE_ARTIFACT_VIEWS.values()),),
+            )
+            present_views = {str(row[0]) for row in cur.fetchall()}
+            for view_name in ELIGIBLE_ARTIFACT_VIEWS.values():
+                if view_name not in present_views:
+                    issues.append(f"QUARANTINE_READER_VIEW:{view_name}")
+            cur.execute(
                 """
                 SELECT c.relname,t.tgname
                 FROM pg_trigger t
@@ -292,29 +361,295 @@ class LegacyRepairQuarantineSchemaReadinessRepository:
 
 
 class LearningArtifactRepository:
+    SPECS = {
+        "exit_trace_v1": ("exit_trace_v1", "id", None),
+        "exit_trace_v2": ("exit_trace_v2", "id", None),
+        "exit_trace_v3": ("exit_trace_v3", "id", None),
+        "learning_feedback_shadow_recommendations": (
+            "shadow_recommendation", "id", "recommendation_type",
+        ),
+        "learning_feature_warehouse_v1": (
+            "feature_warehouse", "id", "evidence_status",
+        ),
+        "decision_replay_v1": (
+            "decision_replay", "id", "replay_status",
+        ),
+        "decision_registry_v1": (
+            "decision_registry", "decision_id", None,
+        ),
+        "decision_outcomes_v1": (
+            "decision_outcome", "outcome_id", "outcome_status",
+        ),
+    }
+
     @staticmethod
-    def counts(cur, position_id: int) -> dict[str, int]:
-        result: dict[str, int] = {}
-        for table in LEARNING_ARTIFACT_TABLES:
-            cur.execute(
-                f"SELECT count(*) FROM public.{table} WHERE position_id=%s",
-                (int(position_id),),
+    def _environment_matches(expected: str, actual: Any) -> bool:
+        aliases = {
+            "PAPER": {"PAPER", "paper", "trading_paper"},
+            "LIVE": {"LIVE", "live", "trading_live"},
+        }
+        return str(actual) in aliases.get(expected, {expected})
+
+    @staticmethod
+    def _deployment_matches(
+        *, expected: str, actual: Any, artifact_type: str,
+        payload: Mapping[str, Any],
+    ) -> bool:
+        if artifact_type == "shadow_recommendation" and actual is None:
+            return True
+        if str(actual).lower() == str(expected).lower():
+            return True
+        if str(expected).lower() != "local-paper":
+            return False
+        if artifact_type in {"feature_warehouse", "decision_replay"}:
+            return (
+                str(actual) == "legacy-unknown"
+                and payload.get("causal_linkage_status")
+                == "LEGACY_NOT_ATTRIBUTABLE"
             )
-            result[table] = int(cur.fetchone()[0])
-        return result
+        if artifact_type == "decision_registry":
+            return str(actual) == "LOCAL"
+        return False
 
     @classmethod
-    def assert_absent(cls, cur, position_id: int) -> None:
-        found = {
-            table: count
-            for table, count in cls.counts(cur, position_id).items()
-            if count
-        }
-        if found:
-            raise RuntimeError(
-                "LEARNING_ARTIFACT_ALREADY_EXISTS:"
-                + ",".join(f"{table}={count}" for table, count in found.items())
+    def snapshot(cls, cur, position_id: int) -> tuple[Mapping[str, Any], ...]:
+        snapshot: list[Mapping[str, Any]] = []
+        for table, (artifact_type, id_field, _status_field) in cls.SPECS.items():
+            cur.execute(
+                f"SELECT to_jsonb(artifact) FROM public.{table} artifact "
+                f"WHERE position_id=%s ORDER BY {id_field}",
+                (int(position_id),),
             )
+            for (payload,) in cur.fetchall():
+                safe = _json_safe(payload or {})
+                snapshot.append({
+                    "type": artifact_type,
+                    "table": table,
+                    "id": safe.get(id_field),
+                    "row": safe,
+                })
+        return tuple(snapshot)
+
+    @staticmethod
+    def _trusted_marker(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key in {"learning_eligible", "trusted"} and item is True:
+                    return True
+                if LearningArtifactRepository._trusted_marker(item):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(
+                LearningArtifactRepository._trusted_marker(item)
+                for item in value
+            )
+        return False
+
+    @classmethod
+    def classify(
+        cls,
+        cur,
+        *,
+        position_id: int,
+        environment: str,
+        deployment_id: str,
+    ) -> LearningArtifactGate:
+        snapshot = cls.snapshot(cur, position_id)
+        by_type: dict[str, list[Mapping[str, Any]]] = {}
+        public: list[Mapping[str, Any]] = []
+        for artifact in snapshot:
+            artifact_type = str(artifact["type"])
+            row = artifact["row"]
+            by_type.setdefault(artifact_type, []).append(artifact)
+            status = None
+            if artifact_type == "decision_registry":
+                decision_payload = row.get("decision_payload") or {}
+                status = decision_payload.get("position_status")
+            else:
+                table = str(artifact["table"])
+                status_field = cls.SPECS[table][2]
+                status = row.get(status_field) if status_field else None
+            public.append({
+                "type": artifact_type,
+                "id": artifact["id"],
+                "position_id": row.get("position_id"),
+                "environment": row.get("environment"),
+                "deployment_id": row.get("deployment_id"),
+                "status": status,
+                "source_identity": (
+                    row.get("decision_key")
+                    or row.get("legacy_decision_key")
+                    or row.get("source_natural_key")
+                ),
+            })
+
+        exit_count = sum(
+            len(by_type.get(name, ()))
+            for name in ("exit_trace_v1", "exit_trace_v2", "exit_trace_v3")
+        )
+        outcome_count = len(by_type.get("decision_outcome", ()))
+
+        def result(
+            classification: ArtifactGateClassification,
+            allowed: bool,
+            reason: str | None,
+        ) -> LearningArtifactGate:
+            return LearningArtifactGate(
+                classification, allowed, reason, tuple(public), snapshot,
+                exit_count, outcome_count,
+            )
+
+        if not snapshot:
+            return result(ArtifactGateClassification.NO_ARTIFACTS, True, None)
+        if exit_count:
+            return result(
+                ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                False, "EXIT_TRACE_ALREADY_EXISTS",
+            )
+        if outcome_count:
+            return result(
+                ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                False, "DECISION_OUTCOME_ALREADY_EXISTS",
+            )
+        for artifact_type, artifacts in by_type.items():
+            if len(artifacts) != 1:
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, f"DUPLICATE_ARTIFACT:{artifact_type}",
+                )
+            row = artifacts[0]["row"]
+            if int(row.get("position_id") or -1) != int(position_id):
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, f"POSITION_ID_MISMATCH:{artifact_type}",
+                )
+            if row.get("environment") is not None and not cls._environment_matches(
+                environment, row.get("environment")
+            ):
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, f"ENVIRONMENT_MISMATCH:{artifact_type}",
+                )
+            if not cls._deployment_matches(
+                expected=deployment_id, actual=row.get("deployment_id"),
+                artifact_type=artifact_type, payload=row,
+            ):
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, f"DEPLOYMENT_MISMATCH:{artifact_type}",
+                )
+            if cls._trusted_marker(row):
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, f"TRUSTED_ARTIFACT:{artifact_type}",
+                )
+
+        allowed_statuses = {
+            "shadow_recommendation": "OBSERVE_INCOMPLETE_PNL",
+            "feature_warehouse": "OPEN_OR_INCOMPLETE",
+            "decision_replay": "REPLAY_OPEN_OR_INCOMPLETE",
+            "decision_registry": "OPEN",
+        }
+        for artifact_type, expected_status in allowed_statuses.items():
+            artifacts = by_type.get(artifact_type, ())
+            if not artifacts:
+                continue
+            row = artifacts[0]["row"]
+            if artifact_type == "decision_registry":
+                payload = row.get("decision_payload") or {}
+                status = payload.get("position_status")
+                registry_valid = (
+                    row.get("decision_type") == "TRADE_EXECUTED"
+                    and row.get("source_table") == "positions"
+                    and str(row.get("source_record_id")) == str(position_id)
+                    and payload.get("exit_time") in (None, "")
+                )
+                if not registry_valid:
+                    status = None
+            else:
+                table = str(artifacts[0]["table"])
+                status = row.get(cls.SPECS[table][2])
+            if status != expected_status:
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, f"STATUS_NOT_ALLOWED:{artifact_type}",
+                )
+            if artifact_type == "shadow_recommendation":
+                evidence = row.get("evidence") or {}
+                if (
+                    row.get("recommendation_action")
+                    != "SHADOW_OBSERVE_ONLY"
+                    or evidence.get("net_pnl_usdc") not in (None, "")
+                    or evidence.get("exit_time") not in (None, "")
+                ):
+                    return result(
+                        ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                        False, "SHADOW_TERMINAL_EVIDENCE",
+                    )
+            if artifact_type == "feature_warehouse" and (
+                row.get("net_pnl_usdc") is not None
+                or row.get("exit_time") is not None
+            ):
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, "WAREHOUSE_TERMINAL_EVIDENCE",
+                )
+            if artifact_type == "decision_replay" and row.get("exit_time") is not None:
+                return result(
+                    ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                    False, "REPLAY_TERMINAL_EVIDENCE",
+                )
+
+        keys = set()
+        for artifact in snapshot:
+            row = artifact["row"]
+            key = row.get("decision_key") or row.get("legacy_decision_key")
+            if key:
+                keys.add(str(key))
+        if len(keys) > 1:
+            return result(
+                ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                False, "CONFLICTING_DECISION_IDENTITIES",
+            )
+        cur.execute(
+            "SELECT financial_truth_status FROM canonical_financial_truth_v1 "
+            "WHERE position_id=%s",
+            (int(position_id),),
+        )
+        if any(str(row[0]) == "COMPLETE" for row in cur.fetchall()):
+            return result(
+                ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                False, "FINANCIAL_TRUTH_COMPLETE_TERMINAL_SOURCE",
+            )
+        return result(
+            ArtifactGateClassification.BENIGN_OPEN_INCOMPLETE_ARTIFACTS,
+            True, None,
+        )
+
+    @classmethod
+    def lock(cls, cur, position_id: int) -> None:
+        for table, (_artifact_type, id_field, _status_field) in cls.SPECS.items():
+            cur.execute(
+                f"SELECT {id_field} FROM public.{table} "
+                f"WHERE position_id=%s ORDER BY {id_field} FOR UPDATE",
+                (int(position_id),),
+            )
+            cur.fetchall()
+
+    @classmethod
+    def assert_snapshot(cls, cur, gate: LearningArtifactGate, position_id: int) -> None:
+        if cls.snapshot(cur, position_id) != gate.raw_snapshot:
+            raise RuntimeError("PLAN_STALE")
+
+    @staticmethod
+    def assert_excluded_from_readers(cur, position_id: int) -> None:
+        for view in ELIGIBLE_ARTIFACT_VIEWS.values():
+            cur.execute(
+                f"SELECT count(*) FROM public.{view} WHERE position_id=%s",
+                (int(position_id),),
+            )
+            if int(cur.fetchone()[0]):
+                raise RuntimeError(f"LEARNING_READER_EXCLUSION_FAILED:{view}")
 
 
 class LearningOutcomeExclusionRepository:
@@ -411,6 +746,11 @@ class LegacyPositionRepairPlanRepository:
             position_id=int(position_id), position_status="CLOSED",
             fills=canonical_fills, position_symbol=position.get("symbol"),
         )
+        with connection.cursor() as cur:
+            artifact_gate = LearningArtifactRepository.classify(
+                cur, position_id=int(position_id), environment=environment,
+                deployment_id=deployment_id,
+            )
         entry_rows = tuple(
             row for row in fills if str(row.get("side") or "").upper() == "BUY"
         )
@@ -443,6 +783,11 @@ class LegacyPositionRepairPlanRepository:
             )
             if financial_truth.failure_detail:
                 blocking.append(financial_truth.failure_detail)
+        if not artifact_gate.repair_allowed:
+            blocking.append(
+                "LEARNING_TERMINAL_OR_AMBIGUOUS_ARTIFACT:"
+                + str(artifact_gate.reason or "UNKNOWN")
+            )
         evidence_payload = {
             "fingerprint_version": FINGERPRINT_VERSION,
             "environment": environment,
@@ -465,6 +810,7 @@ class LegacyPositionRepairPlanRepository:
             "planned_lifecycle": repair_plan.post_state_invariants,
             "financial_truth": financial_truth.semantic_values(),
             "learning_exclusion_reason": EXCLUSION_REASON,
+            "learning_artifact_gate": artifact_gate.fingerprint_payload(),
             "repair_classification": SOURCE_TYPE,
             "provenance_identity": provenance_identity,
             "idempotency_identity": invocation_identity,
@@ -477,7 +823,7 @@ class LegacyPositionRepairPlanRepository:
             recomputation.evidence_fingerprint, fingerprint_v2,
             recomputation, financial_truth, entry_order_ids, exit_order_ids,
             entry_fill_ids, exit_fill_ids, provenance_identity,
-            invocation_identity, evidence_payload,
+            invocation_identity, artifact_gate, evidence_payload,
         )
 
     @staticmethod
@@ -514,6 +860,7 @@ class LegacyPositionRepairPlanRepository:
             (SOURCE_TYPE, plan.provenance_identity),
         )
         cur.fetchall()
+        LearningArtifactRepository.lock(cur, plan.position_id)
 
 
 def call_stage_hook(

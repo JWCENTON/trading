@@ -853,7 +853,6 @@ class LegacyRecoveryTransactionService:
             CanonicalFinancialTruthWriteRepository,
         )
         from common.legacy_repair_quarantine import (
-            EXCLUSION_REASON,
             SOURCE_TYPE,
             LearningArtifactRepository,
             LearningOutcomeExclusionRepository,
@@ -933,7 +932,9 @@ class LegacyRecoveryTransactionService:
                         (position_id,),
                     )
                     financial_truth = cur.fetchone()
-                    LearningArtifactRepository.assert_absent(cur, position_id)
+                    LearningArtifactRepository.assert_excluded_from_readers(
+                        cur, position_id
+                    )
                     if (
                         audit is None or provenance is None or position is None
                         or position[0] != "CLOSED"
@@ -968,10 +969,17 @@ class LegacyRecoveryTransactionService:
                 if locked.semantic_fingerprint_v2 != expected_semantic_fingerprint_v2:
                     raise RuntimeError("PLAN_STALE")
                 if not locked.eligible:
+                    gate_reason = next((
+                        reason for reason in locked.blocking_reasons
+                        if reason.startswith(
+                            "LEARNING_TERMINAL_OR_AMBIGUOUS_ARTIFACT:"
+                        )
+                    ), None)
+                    if gate_reason:
+                        raise RuntimeError(gate_reason)
                     raise RuntimeError(
                         "REPAIR_NOT_ELIGIBLE:" + ",".join(locked.blocking_reasons)
                     )
-                LearningArtifactRepository.assert_absent(cur, position_id)
                 exclusion_id = LearningOutcomeExclusionRepository.insert(
                     cur, environment="PAPER", deployment_id=deployment_id,
                     position_id=position_id,
@@ -979,6 +987,9 @@ class LegacyRecoveryTransactionService:
                     git_sha=git_sha,
                 )
                 call_stage_hook(stage_hook, "exclusion")
+                LearningArtifactRepository.assert_excluded_from_readers(
+                    cur, position_id
+                )
                 changed = CanonicalPositionLifecycleRepairRepository.apply(
                     cur, result=locked.recomputation,
                     expected_semantic_fingerprint=(
@@ -1072,7 +1083,12 @@ class LegacyRecoveryTransactionService:
                     (position_id,),
                 )
                 financial_truth = cur.fetchone()
-                LearningArtifactRepository.assert_absent(cur, position_id)
+                LearningArtifactRepository.assert_snapshot(
+                    cur, locked.artifact_gate, position_id
+                )
+                LearningArtifactRepository.assert_excluded_from_readers(
+                    cur, position_id
+                )
                 if (
                     position is None or position[0] != "CLOSED"
                     or Decimal(str(position[1])) != ZERO
@@ -1086,6 +1102,9 @@ class LegacyRecoveryTransactionService:
                 "position_id": int(position_id),
                 "semantic_fingerprint_v2": locked.semantic_fingerprint_v2,
                 "learning_excluded": True,
+                "artifact_gate_classification": (
+                    locked.artifact_gate.classification.value
+                ),
                 "transaction_committed": True,
                 "writes": None,
                 "audit_id": audit_id,
