@@ -1,0 +1,16 @@
+{
+  "contract_version": "LIVE_ENTRY_POSITION_PROJECTION_V1",
+  "migration_id": "20260801_live_entry_position_projection_v1.sql",
+  "migration_sha256": "a7f3c4da8ce4c69a20c4df7340fb81843a6dd45e037f89f3a3a29063b9e388f8",
+  "rollback_id": "20260801_live_entry_position_projection_v1_rollback.sql",
+  "rollback_sha256": "e0488ad767dd6075cffdc254946bc43bda89c9543393b4a5f610bad4a450972c",
+  "feature_flag": "LIVE_ENTRY_POSITION_PROJECTION_MODE",
+  "default_mode": "OFF",
+  "runtime_scope": "LIVE_ONLY",
+  "canonical_identity": "live_entry_intents_v1.intent_id -> positions.entry_intent_id",
+  "projection_high_water": "projected_gross_entry_qty",
+  "lifecycle_event": "POSITION_OPENED",
+  "activation": "explicit_future_rollout_only",
+  "backfill": false,
+  "historical_repair": false
+}

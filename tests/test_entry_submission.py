@@ -729,6 +729,57 @@ def test_common_entry_gate_commits_before_wire_and_returns_linked_ack(
     ]
 
 
+def test_lei1d_enforce_never_projects_position_from_ack_execution_fields(
+    monkeypatch,
+):
+    repository = StubRepository()
+    repository.resolve_active_adoption = lambda **_: (
+        ActiveEntrySubmissionAdoption(
+            adoption_id=1,
+            generation=1,
+            environment="live",
+            deployment_id="local-live",
+            git_revision=GIT_REVISION,
+        )
+    )
+
+    class Client:
+        def place_market_order(self, **_kwargs):
+            return {
+                "orderId": "okx-order-lei1d",
+                "status": "FILLED",
+                "executedQty": "0.033895",
+            }
+
+        def find_order_by_client_order_id(self, **_kwargs):
+            return {"outcome": "NOT_FOUND", "order": None}
+
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+    monkeypatch.setenv("GIT_SHA", GIT_REVISION)
+    monkeypatch.setenv("LIVE_ENTRY_POSITION_PROJECTION_MODE", "ENFORCE")
+    monkeypatch.setattr(
+        execution,
+        "preflight_live_order",
+        lambda *_args, **_kwargs: {"ok": True, "qty_adj": 0.033895},
+    )
+    result = execution.place_live_order(
+        Client(), "BNBUSDC", "BUY", 0.033895,
+        trading_mode="LIVE", live_orders_enabled=True, quote_asset="USDC",
+        panic_disable_trading=False, live_max_notional=0.0,
+        client_order_id=_intent().client_order_id, strategy="TREND",
+        interval="1m", exchange_source="okx", order_purpose="ENTRY",
+        entry_submission_mode=EntrySubmissionMode.ENFORCE,
+        entry_submission_repository=repository,
+        entry_submission_clock=lambda: ACKNOWLEDGED_AT,
+    )
+    assert result["order_accepted"] is True
+    assert result["executed"] is False
+    assert result["live_ok"] is False
+    assert result["executed_qty"] == 0
+    assert result["fill_evidence"] == ()
+    assert result["status"] == "ENTRY_FILL_AWAITING_LEI1D_PROJECTION"
+
+
 def test_common_enforce_identity_failure_blocks_wire(monkeypatch):
     repository = StubRepository()
 

@@ -1111,6 +1111,18 @@ def place_live_order(
             and (status == "FILLED" or executed_qty >= float(qty) * 0.999)
         )
 
+        # LEI1D ENFORCE makes immutable LEI1C evidence the sole authority for
+        # entry position creation.  Even an ACK carrying execution fields is
+        # treated as pending projection; order admission/network semantics are
+        # unchanged and OFF/UNSET never enters this branch.
+        lei1d_projection_pending = False
+        if is_entry_submission and order_accepted:
+            from common.entry_position_projection import (
+                entry_ack_requires_projection,
+            )
+
+            lei1d_projection_pending = entry_ack_requires_projection()
+
         # Persist order ACK when the caller provides a DB transaction. This is best-effort and
         # intentionally does not fail trading if the legacy table is missing/different.
         if db_conn is not None and order_id is not None:
@@ -1202,6 +1214,17 @@ def place_live_order(
             "resp": resp,
             "client_order_id": client_order_id,
         }
+        if lei1d_projection_pending:
+            result.update({
+                "live_ok": False,
+                "executed": False,
+                "fully_executed": False,
+                "executed_qty": 0.0,
+                "fill_evidence": (),
+                "status": "ENTRY_FILL_AWAITING_LEI1D_PROJECTION",
+                "pending_fill": True,
+                "entry_position_projection": "PENDING_IMMUTABLE_FILL_EVIDENCE",
+            })
         if entry_submission_metadata is not None:
             result.update(entry_submission_metadata)
         return result

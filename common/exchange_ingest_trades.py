@@ -13,6 +13,10 @@ from psycopg2.extras import execute_batch
 
 from common.contract_adoption import require_runtime_git_revision
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.entry_position_projection import (
+    EntryPositionProjectionMode,
+    run_entry_position_projection,
+)
 from common.entry_fill_attribution import (
     EntryFillAttributionMode,
     EntryFillAttributionRepository,
@@ -1142,43 +1146,59 @@ def ingest_my_trades(
                 cur.execute(PRICE_FEES_SQL, (min_event_time_ms_seen,))
                 priced_updated = cur.rowcount
 
-        # The due gate runs even when this ingest fetched no new fills, so bounded
-        # backlog and retryable rows cannot depend on future exchange activity.
-        with conn.cursor() as cur:
-            cur.execute("SAVEPOINT pending_entry_fill_batch")
-        try:
-            entry_run = run_pending_entry_reconciliation_if_due(
-                conn,
-                batch_size=100,
-                trading_mode=mode,
+        # LEI1D ENFORCE owns the fill-to-position boundary.  OFF/SHADOW retain
+        # the legacy reconciler exactly; there are never two active projectors.
+        lei1d_mode = EntryPositionProjectionMode.from_env()
+        if lei1d_mode is EntryPositionProjectionMode.ENFORCE:
+            projection_stats = run_entry_position_projection(
+                conn, mode=lei1d_mode, batch_size=100,
             )
-            with conn.cursor() as cur:
-                cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
-            entry_stats = entry_run.stats
-            reconciled_entries = entry_stats.created + entry_stats.updated
+            reconciled_entries = projection_stats.opened + projection_stats.updated
             logging.info(
-                "EXCHANGE_INGEST|entry fill reconciliation "
-                "status=%s ran=%s scanned=%s created=%s updated=%s already=%s "
-                "ambiguous=%s alarms=%s failed=%s has_more=%s",
-                entry_run.status,
-                entry_run.ran,
-                entry_stats.scanned,
-                entry_stats.created,
-                entry_stats.updated,
-                entry_stats.already_reconciled,
-                entry_stats.ambiguous,
-                entry_stats.alarms,
-                entry_stats.failed,
-                entry_stats.has_more,
+                "EXCHANGE_INGEST|LEI1D mode=%s scanned=%s opened=%s "
+                "updated=%s no_op=%s blocked=%s",
+                lei1d_mode.value, projection_stats.scanned,
+                projection_stats.opened, projection_stats.updated,
+                projection_stats.no_op, projection_stats.blocked,
             )
-        except Exception:
+        else:
+            # The due gate runs even when this ingest fetched no new fills, so
+            # bounded backlog cannot depend on future exchange activity.
             with conn.cursor() as cur:
-                cur.execute("ROLLBACK TO SAVEPOINT pending_entry_fill_batch")
-                cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
-            logging.exception(
-                "EXCHANGE_INGEST|entry fill reconciliation failed source=%s",
-                source,
-            )
+                cur.execute("SAVEPOINT pending_entry_fill_batch")
+            try:
+                entry_run = run_pending_entry_reconciliation_if_due(
+                    conn,
+                    batch_size=100,
+                    trading_mode=mode,
+                )
+                with conn.cursor() as cur:
+                    cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
+                entry_stats = entry_run.stats
+                reconciled_entries = entry_stats.created + entry_stats.updated
+                logging.info(
+                    "EXCHANGE_INGEST|entry fill reconciliation "
+                    "status=%s ran=%s scanned=%s created=%s updated=%s already=%s "
+                    "ambiguous=%s alarms=%s failed=%s has_more=%s",
+                    entry_run.status,
+                    entry_run.ran,
+                    entry_stats.scanned,
+                    entry_stats.created,
+                    entry_stats.updated,
+                    entry_stats.already_reconciled,
+                    entry_stats.ambiguous,
+                    entry_stats.alarms,
+                    entry_stats.failed,
+                    entry_stats.has_more,
+                )
+            except Exception:
+                with conn.cursor() as cur:
+                    cur.execute("ROLLBACK TO SAVEPOINT pending_entry_fill_batch")
+                    cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
+                logging.exception(
+                    "EXCHANGE_INGEST|entry fill reconciliation failed source=%s",
+                    source,
+                )
 
         if min_event_time_ms_seen is not None:
             try:
