@@ -1,9 +1,12 @@
 # Legacy recovery rollout V2
 
-The legacy-recovery tool has a read-only planner for PAPER and LIVE, plus one
-bounded writer command for PAPER positions. `apply-position` repairs exactly
-one position and always writes the Learning exclusion before changing the
-position to `CLOSED`. LIVE apply is forbidden.
+The legacy-recovery tool has read-only planners for PAPER and LIVE and two
+strictly separate, one-position PAPER writers. `apply-position` reconstructs a
+historical outcome only when authoritative exit evidence already exists.
+`apply-open-retirement` creates a new, current-time administrative PAPER exit
+for a still-open legacy position that has no historical exit evidence. Both
+write the Learning exclusion before changing the position to `CLOSED`. LIVE
+apply is forbidden.
 
 ## Safety boundary
 
@@ -105,6 +108,81 @@ subcommand for consistency.
 `plan-fill`, `classify-external`, `audit-open-cohort`, and
 `audit-unresolved-closed` remain read-only. They retain the existing explicit
 source identity and evidence contracts.
+
+## PAPER legacy open-position retirement V1
+
+This is not an extension of `apply-position` and must never be used to invent a
+historical exit. It is a new canonical PAPER execution with:
+
+- `exit_reason` and `outcome_origin` equal to
+  `LEGACY_ADMINISTRATIVE_CLOSE`;
+- one canonical `SELL` row in `simulated_orders` and one canonical EXIT row in
+  `simulated_execution_fills_v1`;
+- the normal PAPER fee rate, instrument precision, inventory lifecycle
+  projector, and Financial Truth writer;
+- a price taken only from the latest canonical candle for the exact
+  symbol/interval, under the existing 20-minute freshness contract;
+- `learning_eligible=false`, trust
+  `LEGACY_RECONSTRUCTED_NOT_TRUSTED_FORWARD`, and
+  `reporting_eligible=false`.
+
+The administrative outcome is excluded from 24-hour performance, win rate,
+strategy expectancy, exit learning, shadow recommendations, warehouse,
+replay, decision outcomes, and future trusted-outcome consumers. The PAPER
+account reconstruction explicitly includes it so the retired inventory and
+realized account value remain coherent.
+
+Plan exactly one position (read-only):
+
+```bash
+python -m tools.legacy_recovery \
+  --database-url-env PAPER_DATABASE_URL \
+  --environment PAPER \
+  --expected-database trading_paper \
+  --deployment-id local-paper \
+  plan-open-retirement --position-id 10326
+```
+
+Review `status=READY`, the market row identity and timestamp, freshness,
+quantity, precision snapshot, artifact gate, and `semantic_fingerprint_v2`.
+There are no manual price, quantity, fee, timestamp, order-ID, or trust inputs.
+Then, under a separate apply authorization, submit the exact fingerprint:
+
+```bash
+python -m tools.legacy_recovery \
+  --database-url-env PAPER_DATABASE_URL \
+  --environment PAPER \
+  --expected-database trading_paper \
+  --deployment-id local-paper \
+  --git-sha 0123456789abcdef0123456789abcdef01234567 \
+  apply-open-retirement --position-id 10326 \
+  --expected-fingerprint-v2 FINGERPRINT_FROM_PLAN \
+  --confirm-apply
+```
+
+The transaction uses SERIALIZABLE isolation, 5-second lock timeout, 60-second
+statement timeout, exact bounded evidence locks, re-planning, and semantic CAS.
+It writes exclusion, order, fill, position linkage, terminal lifecycle,
+Financial Truth, audit, and provenance in that order. Any error rolls back the
+whole transaction. A repeated identical apply returns
+`status=ALREADY_RETIRED` and `writes=0`.
+
+Eligibility is fail-closed: PAPER, OPEN, pre-adoption legacy classification,
+exactly one entry order/fill, positive fully executable remaining inventory,
+no exit order/fill, no terminal lifecycle or complete Financial Truth, no prior
+repair/retirement/exclusion/provenance, a benign or empty artifact snapshot,
+and fresh current market evidence. LIVE plan and apply both return
+`LIVE_RETIREMENT_NOT_AUTHORIZED` before opening a database connection.
+
+For benign legacy artifacts only, deployment compatibility is narrow:
+shadow `NULL` requires the same position/environment/source identity;
+warehouse/replay `legacy-unknown` additionally require their exact incomplete
+status and `LEGACY_NOT_ATTRIBUTABLE`; registry `LOCAL` maps only to
+`local-paper`, and registry `VPS` only to `vps-paper`. Unknown, terminal,
+trusted, duplicated, conflicting, or source-mismatched rows block.
+
+There is no batch command, one-off SQL path, LIVE variant, or migration in this
+workflow. Apply it to one explicitly reviewed PAPER position at a time.
 
 ## Order-evidence capability contract V1
 

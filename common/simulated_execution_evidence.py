@@ -393,6 +393,116 @@ def _assets(symbol: str) -> tuple[str, str]:
     raise ValueError("unsupported quote asset")
 
 
+def create_simulated_order_cursor(
+    cur,
+    *,
+    symbol: str,
+    interval: str,
+    strategy: str,
+    side: str,
+    price: Decimal,
+    quantity: Decimal,
+    reason: str,
+    candle_open_time,
+    is_exit: bool,
+    rsi_14: Decimal | None = None,
+    ema_21: Decimal | None = None,
+) -> int | None:
+    """Canonical transaction-bound simulated-order writer.
+
+    Runtime strategies and bounded administrative workflows share the same
+    row shape and database idempotency key.  The caller owns the transaction.
+    """
+    cur.execute(
+        """
+        INSERT INTO simulated_orders (
+          symbol,interval,strategy,side,price,quantity_btc,reason,
+          rsi_14,ema_21,candle_open_time,is_exit
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (symbol,interval,strategy,candle_open_time,is_exit)
+        DO NOTHING
+        RETURNING id
+        """,
+        (
+            str(symbol), str(interval), str(strategy), str(side).upper(),
+            Decimal(str(price)), Decimal(str(quantity)), str(reason),
+            None if rsi_14 is None else Decimal(str(rsi_14)),
+            None if ema_21 is None else Decimal(str(ema_21)),
+            candle_open_time, bool(is_exit),
+        ),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def create_simulated_execution_fill_cursor(
+    cur,
+    *,
+    simulated_order_id: int,
+    position_id: int,
+    order_purpose: str,
+    side: str,
+    symbol: str,
+    quantity: Decimal,
+    price: Decimal,
+    account_identity_id: int | None,
+    instrument_snapshot_id: int | None,
+    environment: str,
+    deployment_id: str,
+    execution_at,
+    account_identity_fingerprint: str | None = None,
+    instrument_metadata_fingerprint: str | None = None,
+) -> int | None:
+    """Canonical transaction-bound PAPER fill writer and fee policy."""
+    purpose = str(order_purpose).upper()
+    if purpose not in {"ENTRY", "EXIT"}:
+        raise ValueError("INVALID_SIMULATED_ORDER_PURPOSE")
+    quantity = Decimal(str(quantity))
+    price = Decimal(str(price))
+    if quantity <= 0 or price < 0:
+        raise ValueError("INVALID_SIMULATED_EXECUTION_VALUE")
+    _base_asset, quote_asset = _assets(symbol)
+    notional = quantity * price
+    fee_usdc = notional * SIMULATION_FEE_RATE
+    source_payload = {
+        "simulated_order_id": int(simulated_order_id),
+        "position_id": int(position_id),
+        "purpose": purpose,
+        "quantity": str(quantity),
+        "price": str(price),
+        "fee_usdc": str(fee_usdc),
+        "identity": account_identity_fingerprint,
+        "instrument": instrument_metadata_fingerprint,
+        "environment": str(environment),
+        "deployment_id": str(deployment_id),
+        "model": SIMULATION_MODEL_VERSION,
+    }
+    cur.execute(
+        """
+        INSERT INTO simulated_execution_fills_v1 (
+          simulated_order_id,position_id,order_purpose,side,symbol,
+          fill_qty,fill_price,fill_notional,fee_qty,fee_asset,
+          authoritative_fee_usdc,account_identity_id,instrument_snapshot_id,
+          environment,deployment_id,simulation_model_version,execution_at,
+          source_fingerprint
+        ) VALUES (
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+        )
+        ON CONFLICT (simulated_order_id,fill_index) DO NOTHING
+        RETURNING id
+        """,
+        (
+            int(simulated_order_id), int(position_id), purpose,
+            str(side).upper(), str(symbol), quantity, price, notional,
+            fee_usdc, quote_asset, fee_usdc, account_identity_id,
+            instrument_snapshot_id, str(environment), str(deployment_id),
+            SIMULATION_MODEL_VERSION, execution_at, _hash(source_payload),
+        ),
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row is not None else None
+
+
 def _instrument_values(client, symbol: str, *, allow_remote: bool = True):
     try:
         from common.sizing import _FILTERS_CACHE
@@ -616,43 +726,21 @@ def record_simulated_fill_evidence(
                     instrument_id = cur.fetchone()[0]
                 quantity = Decimal(str(qty))
                 fill_price = Decimal(str(price))
-                notional = quantity * fill_price
-                fee_usdc = notional * SIMULATION_FEE_RATE
-                source_payload = {
-                    "simulated_order_id": int(simulated_order_id),
-                    "position_id": int(position_id), "purpose": (
-                        "EXIT" if is_exit else "ENTRY"
+                fill_inserted = create_simulated_execution_fill_cursor(
+                    cur,
+                    simulated_order_id=int(simulated_order_id),
+                    position_id=int(position_id),
+                    order_purpose="EXIT" if is_exit else "ENTRY",
+                    side=str(side), symbol=str(symbol), quantity=quantity,
+                    price=fill_price, account_identity_id=int(identity_id),
+                    instrument_snapshot_id=(
+                        int(instrument_id) if instrument_id is not None else None
                     ),
-                    "quantity": str(quantity), "price": str(fill_price),
-                    "fee_usdc": str(fee_usdc),
-                    "identity": identity_fingerprint,
-                    "instrument": metadata_fingerprint,
-                    "environment": environment, "deployment_id": deployment_id,
-                    "model": SIMULATION_MODEL_VERSION,
-                }
-                cur.execute(
-                    """
-                    INSERT INTO simulated_execution_fills_v1 (
-                      simulated_order_id,position_id,order_purpose,side,symbol,
-                      fill_qty,fill_price,fill_notional,fee_qty,fee_asset,
-                      authoritative_fee_usdc,account_identity_id,
-                      instrument_snapshot_id,environment,deployment_id,
-                      simulation_model_version,execution_at,source_fingerprint
-                    ) VALUES (
-                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
-                    )
-                    ON CONFLICT (simulated_order_id,fill_index) DO NOTHING
-                    """,
-                    (
-                        int(simulated_order_id), int(position_id),
-                        "EXIT" if is_exit else "ENTRY", str(side).upper(), symbol,
-                        quantity, fill_price, notional, fee_usdc, quote_asset,
-                        fee_usdc, identity_id, instrument_id, environment,
-                        deployment_id, SIMULATION_MODEL_VERSION, execution_at,
-                        _hash(source_payload),
-                    ),
-                )
-                fill_inserted = cur.rowcount == 1
+                    environment=str(environment), deployment_id=str(deployment_id),
+                    execution_at=execution_at,
+                    account_identity_fingerprint=identity_fingerprint,
+                    instrument_metadata_fingerprint=metadata_fingerprint,
+                ) is not None
 
                 cur.execute(
                     """

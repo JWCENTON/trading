@@ -32,6 +32,7 @@ def _database(disposable_postgres_v16, purpose):
               entry_price NUMERIC,
               exit_price NUMERIC,
               exit_time TIMESTAMPTZ,
+              exit_reason TEXT,
               gross_pnl_usdc NUMERIC,
               fees_usdc NUMERIC,
               net_pnl_usdc NUMERIC,
@@ -160,6 +161,7 @@ def _position(cur, position_id, **values):
         "exit_context": None,
         "entry_order_id": None,
         "exit_order_id": None,
+        "exit_reason": None,
     }
     defaults.update(values)
     cur.execute(
@@ -171,10 +173,11 @@ def _position(cur, position_id, **values):
           net_entry_inventory_qty,cumulative_exit_executed_qty,
           exit_inventory_reduction_qty,inventory_contract_adoption_id,
           inventory_contract_generation,
-          entry_context_json,exit_context_json,entry_order_id,exit_order_id
+          entry_context_json,exit_context_json,entry_order_id,exit_order_id,
+          exit_reason
         ) VALUES (
           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-          %s,%s,%s,%s,%s
+          %s,%s,%s,%s,%s,%s
         )
         """,
         (
@@ -205,6 +208,7 @@ def _position(cur, position_id, **values):
             ),
             defaults["entry_order_id"],
             defaults["exit_order_id"],
+            defaults["exit_reason"],
         ),
     )
 
@@ -517,6 +521,46 @@ def test_multiple_fills_do_not_duplicate_position(disposable_postgres_v16):
         assert summary["trades"] == 1
         assert summary["wins"] == 1
         assert summary["net_pnl"] == Decimal("1.80")
+    finally:
+        conn.close()
+
+
+def test_paper_administrative_retirement_is_performance_excluded_but_account_visible(
+    disposable_postgres_v16,
+):
+    conn = _database(disposable_postgres_v16, "administrative_retirement")
+    try:
+        with conn.cursor() as cur:
+            _position(
+                cur, 21, qty="0", evidence="COMPLETE", remaining="0",
+                entry_order_id="210", exit_order_id="211",
+                exit_reason="LEGACY_ADMINISTRATIVE_CLOSE",
+            )
+            _fill(
+                cur, 21, "ENTRY", "10", fee="0.10", index=0,
+                simulated_order_id=210,
+            )
+            _fill(
+                cur, 21, "EXIT", "11", fee="0.10", index=1,
+                simulated_order_id=211,
+            )
+            _terminal_close(
+                cur, 21, 211, execution_source="PAPER_SIMULATED"
+            )
+            conn.commit()
+            performance = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END
+            )
+            account = fetch_closed_outcome_summary(
+                cur, environment="PAPER", window_start=START, window_end=END,
+                include_administrative_retirements=True,
+            )
+        assert performance["trades"] == 0
+        assert performance["wins"] == 0
+        assert performance["net_pnl"] is None
+        assert account["trades"] == 1
+        assert account["wins"] == 1
+        assert account["net_pnl"] == Decimal("0.80")
     finally:
         conn.close()
 

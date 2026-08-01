@@ -3149,6 +3149,7 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
                 environment=TRADING_MODE,
                 window_start=account_window_start,
                 window_end=account_window_end,
+                include_administrative_retirements=True,
             )
             cur.execute("""
               WITH open_unrealized AS (

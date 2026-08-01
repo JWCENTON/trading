@@ -63,6 +63,16 @@ def test_recent_rows_can_be_bounded_to_the_preselected_position_cohort():
     assert "ORDER BY position_id" in sql
 
 
+def test_administrative_retirement_is_excluded_from_reporting_not_accounting():
+    performance = build_closed_outcome_summary_sql("PAPER")
+    account = build_closed_outcome_summary_sql(
+        "PAPER", include_administrative_retirements=True
+    )
+    assert "LEGACY_ADMINISTRATIVE_CLOSE" in performance
+    assert "LEGACY_ADMINISTRATIVE_CLOSE" not in account
+    assert "include_administrative_retirements=True" in API
+
+
 def test_unresolved_and_flat_are_distinct():
     assert "WHEN NOT evidence_complete THEN 'UNRESOLVED'" in MODEL
     assert "WHEN net_pnl_usdc < 0 THEN 'LOSS'" in MODEL

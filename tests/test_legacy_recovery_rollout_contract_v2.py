@@ -86,6 +86,7 @@ def test_cli_has_explicit_read_only_operations_and_bounded_paper_apply():
     assert set(subcommands) == {
         "check-schema", "plan-position", "plan-fill", "classify-external",
         "audit-open-cohort", "audit-unresolved-closed", "apply-position",
+        "plan-open-retirement", "apply-open-retirement",
     }
     apply = subcommands["apply-position"]
     assert "--position-id" in apply.format_help()

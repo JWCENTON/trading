@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from common.legacy_repair_quarantine import (
     LearningArtifactRepository,
     LegacyPositionRepairPlanRepository,
     LegacyRepairQuarantineSchemaReadinessRepository,
+)
+from common.legacy_open_retirement import (
+    LegacyOpenRetirementPlanRepository,
+    LegacyOpenRetirementTransactionService,
+    RETIREMENT_TYPE,
 )
 from tools.legacy_recovery import main as cli_main
 
@@ -54,7 +60,11 @@ CREATE TABLE positions(
   entry_base_fee_qty NUMERIC,net_entry_inventory_qty NUMERIC,
   cumulative_exit_executed_qty NUMERIC,exit_inventory_reduction_qty NUMERIC,
   remaining_inventory_qty NUMERIC,terminal_dust_qty NUMERIC,
-  terminal_reason TEXT,inventory_calculated_at TIMESTAMPTZ
+  terminal_reason TEXT,inventory_calculated_at TIMESTAMPTZ,
+  entry_client_order_id TEXT,exit_client_order_id TEXT,
+  inventory_contract_adoption_id BIGINT,inventory_contract_generation BIGINT,
+  entry_context_json JSONB DEFAULT '{}',exit_context_json JSONB DEFAULT '{}',
+  gross_pnl_usdc NUMERIC,fees_usdc NUMERIC,net_pnl_usdc NUMERIC
 );
 CREATE TABLE binance_orders(
   id BIGSERIAL PRIMARY KEY,order_id TEXT UNIQUE,status TEXT,symbol TEXT,side TEXT,
@@ -901,3 +911,414 @@ def test_cli_confirmation_live_and_plan_hash_contract(
     assert cli_main(apply + ["--confirm-apply"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ALREADY_APPLIED"
     assert _counts(quarantine_db, 3080)["learning_outcome_exclusion_v1"] == 1
+
+
+def _seed_open_retirement_position(connection, position_id: int = 4080) -> None:
+    with connection.cursor() as cur:
+        cur.execute("DROP TABLE simulated_execution_fills_v1")
+        cur.execute("DROP TABLE simulated_orders")
+        cur.execute(
+            """
+            CREATE TABLE simulated_orders(
+              id BIGSERIAL PRIMARY KEY,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              symbol TEXT NOT NULL,"interval" TEXT NOT NULL,
+              strategy TEXT NOT NULL,side TEXT NOT NULL,price NUMERIC NOT NULL,
+              quantity_btc NUMERIC NOT NULL,reason TEXT,rsi_14 NUMERIC,
+              ema_21 NUMERIC,candle_open_time TIMESTAMPTZ NOT NULL,
+              is_exit BOOLEAN NOT NULL DEFAULT false,
+              UNIQUE(symbol,"interval",strategy,candle_open_time,is_exit)
+            );
+            CREATE TABLE candles(
+              id BIGSERIAL PRIMARY KEY,symbol TEXT NOT NULL,
+              "interval" TEXT NOT NULL,open_time TIMESTAMPTZ NOT NULL,
+              close_time TIMESTAMPTZ NOT NULL,open NUMERIC,high NUMERIC,
+              low NUMERIC,close NUMERIC,volume NUMERIC,
+              UNIQUE(symbol,"interval",open_time)
+            );
+            CREATE TABLE runtime_contract_adoption_v2(
+              adoption_id BIGSERIAL PRIMARY KEY,contract_name TEXT NOT NULL,
+              environment TEXT NOT NULL,deployment_id TEXT NOT NULL,
+              generation BIGINT NOT NULL,status TEXT NOT NULL,
+              adopted_at TIMESTAMPTZ,git_revision TEXT NOT NULL DEFAULT '',
+              UNIQUE(contract_name,environment,deployment_id,generation)
+            );
+            """
+        )
+    connection.commit()
+    with connection.cursor() as cur:
+        cur.execute(FINANCIAL_WRITER)
+    connection.commit()
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO runtime_contract_adoption_v2(
+              contract_name,environment,deployment_id,generation,status,
+              adopted_at,git_revision
+            ) VALUES (
+              'FEE_AWARE_INVENTORY_C2_2','paper',%s,7,'ACTIVE',
+              now()-interval '1 day',%s
+            )
+            """,
+            (DEPLOYMENT, GIT_SHA),
+        )
+        cur.execute(
+            """
+            INSERT INTO financial_truth_instrument_snapshot_v1(
+              id,base_asset,quote_asset,step_size,min_qty,min_notional,
+              quantity_precision,metadata_fingerprint
+            ) VALUES (%s,'BNB','USDC',0.000001,0.000001,1,6,%s)
+            """,
+            (position_id, "d" * 64),
+        )
+        cur.execute(
+            "INSERT INTO financial_truth_account_identity_v1("
+            "id,identity_fingerprint) VALUES (%s,%s)",
+            (position_id, "e" * 64),
+        )
+        cur.execute(
+            """
+            INSERT INTO simulated_orders(
+              id,created_at,symbol,"interval",strategy,side,price,
+              quantity_btc,reason,candle_open_time,is_exit
+            ) VALUES (
+              %s,now()-interval '2 days','BNBUSDC','1m','BBRANGE','BUY',
+              500,0.010000,'LEGACY_ENTRY',now()-interval '2 days',false
+            )
+            """,
+            (position_id,),
+        )
+        cur.execute(
+            """
+            INSERT INTO positions(
+              id,symbol,strategy,"interval",status,side,qty,entry_price,
+              entry_time,entry_order_id,inventory_evidence_status,
+              gross_entry_executed_qty,entry_base_fee_qty,
+              net_entry_inventory_qty,cumulative_exit_executed_qty,
+              exit_inventory_reduction_qty,remaining_inventory_qty
+            ) VALUES (
+              %s,'BNBUSDC','BBRANGE','1m','OPEN','LONG',0.010000,500,
+              now()-interval '2 days',%s,'COMPLETE',0.010000,0,
+              0.010000,0,0,0.010000
+            )
+            """,
+            (position_id, str(position_id)),
+        )
+        cur.execute(
+            """
+            INSERT INTO simulated_execution_fills_v1(
+              simulated_order_id,position_id,order_purpose,side,symbol,
+              fill_qty,fill_price,fill_notional,fee_qty,fee_asset,
+              authoritative_fee_usdc,account_identity_id,instrument_snapshot_id,
+              environment,deployment_id,simulation_model_version,execution_at,
+              source_fingerprint
+            ) VALUES (
+              %s,%s,'ENTRY','BUY','BNBUSDC',0.010000,500,5,0.002,'USDC',
+              0.002,%s,%s,'paper',%s,'PAPER_SIMULATOR_FINANCIAL_MODEL_V1',
+              now()-interval '2 days',%s
+            )
+            """,
+            (
+                position_id, position_id, position_id, position_id,
+                DEPLOYMENT, "f" * 64,
+            ),
+        )
+        cur.execute(
+            """
+            INSERT INTO candles(
+              symbol,"interval",open_time,close_time,open,high,low,close,volume
+            ) VALUES (
+              'BNBUSDC','1m',date_trunc('minute',now())-interval '1 minute',
+              date_trunc('minute',now()),510,512,509,511,100
+            )
+            """
+        )
+    connection.commit()
+
+
+def _retirement_counts(connection, position_id: int = 4080) -> dict[str, int]:
+    queries = {
+        "exit_orders": (
+            "SELECT count(*) FROM simulated_orders WHERE is_exit", ()
+        ),
+        "exit_fills": (
+            "SELECT count(*) FROM simulated_execution_fills_v1 "
+            "WHERE position_id=%s AND order_purpose='EXIT'", (position_id,)
+        ),
+        "lifecycle": (
+            "SELECT count(*) FROM position_lifecycle_events_c2_2 "
+            "WHERE position_id=%s AND mutation_kind='POSITION_CLOSED'", (position_id,)
+        ),
+        "financial_truth": (
+            "SELECT count(*) FROM canonical_financial_truth_v1 WHERE position_id=%s",
+            (position_id,),
+        ),
+        "exclusion": (
+            "SELECT count(*) FROM learning_outcome_exclusion_v1 WHERE position_id=%s",
+            (position_id,),
+        ),
+        "audit": (
+            "SELECT count(*) FROM legacy_repair_audit_v1 "
+            "WHERE incident_type='LEGACY_OPEN_RETIREMENT' AND incident_identity=%s",
+            (str(position_id),),
+        ),
+        "provenance": (
+            "SELECT count(*) FROM legacy_repair_provenance_v1 "
+            "WHERE evidence_source='LEGACY_OPEN_POSITION_RETIREMENT'",
+            (),
+        ),
+    }
+    result = {}
+    with connection.cursor() as cur:
+        for name, (sql, params) in queries.items():
+            cur.execute(sql, params)
+            result[name] = int(cur.fetchone()[0])
+    return result
+
+
+def test_open_retirement_local_paper_plan_ready(quarantine_db):
+    _seed_open_retirement_position(quarantine_db)
+    plan = LegacyOpenRetirementPlanRepository.build(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT, git_sha=GIT_SHA,
+    )
+    assert plan.status == "READY", plan.blocking_reasons
+    assert plan.planned_exit_qty == Decimal("0.010000")
+    assert plan.market.freshness == "FRESH"
+    assert plan.public_payload()["reporting_eligible"] is False
+    assert plan.evidence_payload["planned_simulated_fill"]["fee_rate"] == "0.0004"
+
+
+def test_vps_benign_namespace_is_narrowly_compatible(quarantine_db):
+    _seed_position(quarantine_db)
+    _seed_benign_artifacts(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            "UPDATE decision_registry_v1 SET deployment_id='VPS' "
+            "WHERE position_id=3080"
+        )
+    quarantine_db.commit()
+    with quarantine_db.cursor() as cur:
+        gate = LearningArtifactRepository.classify(
+            cur, position_id=3080, environment="PAPER",
+            deployment_id="vps-paper",
+        )
+    assert gate.classification is (
+        ArtifactGateClassification.BENIGN_OPEN_INCOMPLETE_ARTIFACTS
+    )
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            "UPDATE decision_replay_v1 SET decision_key='wrong-source' "
+            "WHERE position_id=3080"
+        )
+    quarantine_db.commit()
+    with quarantine_db.cursor() as cur:
+        mismatch = LearningArtifactRepository.classify(
+            cur, position_id=3080, environment="PAPER",
+            deployment_id="vps-paper",
+        )
+    assert mismatch.classification is (
+        ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS
+    )
+    assert mismatch.reason == "CONFLICTING_DECISION_IDENTITIES"
+
+
+def test_open_retirement_stale_market_blocks_without_writes(quarantine_db):
+    _seed_open_retirement_position(quarantine_db)
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            "UPDATE candles SET open_time=now()-interval '30 minutes',"
+            "close_time=now()-interval '29 minutes'"
+        )
+    quarantine_db.commit()
+    plan = LegacyOpenRetirementPlanRepository.build(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT, git_sha=GIT_SHA,
+    )
+    assert plan.status == "BLOCKED"
+    assert "CURRENT_MARKET_EVIDENCE_STALE" in plan.blocking_reasons
+    assert _retirement_counts(quarantine_db) == {
+        "exit_orders": 0, "exit_fills": 0, "lifecycle": 0,
+        "financial_truth": 0, "exclusion": 0, "audit": 0,
+        "provenance": 0,
+    }
+
+
+@pytest.mark.parametrize("mutation", ["price", "inventory", "artifact"])
+def test_open_retirement_semantic_changes_make_plan_stale(
+    quarantine_db, mutation,
+):
+    _seed_open_retirement_position(quarantine_db)
+    plan = LegacyOpenRetirementPlanRepository.build(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT, git_sha=GIT_SHA,
+    )
+    with quarantine_db.cursor() as cur:
+        if mutation == "price":
+            cur.execute("UPDATE candles SET close=close+1")
+        elif mutation == "inventory":
+            cur.execute("UPDATE positions SET qty=qty-0.000001 WHERE id=4080")
+        else:
+            cur.execute(
+                "INSERT INTO decision_outcomes_v1(position_id) VALUES (4080)"
+            )
+    quarantine_db.commit()
+    with pytest.raises(RuntimeError, match="PLAN_STALE"):
+        LegacyOpenRetirementTransactionService.apply(
+            quarantine_db, position_id=4080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+            expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+            git_sha=GIT_SHA,
+        )
+    assert _retirement_counts(quarantine_db)["exclusion"] == 0
+
+
+def test_successful_open_retirement_is_canonical_isolated_and_idempotent(
+    quarantine_db,
+):
+    _seed_open_retirement_position(quarantine_db)
+    plan = LegacyOpenRetirementPlanRepository.build(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT, git_sha=GIT_SHA,
+    )
+    stages = []
+    result = LegacyOpenRetirementTransactionService.apply(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+        expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+        git_sha=GIT_SHA, stage_hook=stages.append,
+    )
+    assert result["status"] == "APPLIED"
+    assert stages[:8] == [
+        "exclusion", "exit_order", "exit_fill", "position_update",
+        "lifecycle", "financial_truth", "audit", "provenance",
+    ]
+    with quarantine_db.cursor() as cur:
+        cur.execute(
+            "SELECT status,qty,remaining_inventory_qty,exit_reason "
+            "FROM positions WHERE id=4080"
+        )
+        assert cur.fetchone() == ("CLOSED", 0, 0, RETIREMENT_TYPE)
+        cur.execute(
+            "SELECT side,reason FROM simulated_orders WHERE is_exit"
+        )
+        assert cur.fetchone() == ("SELL", RETIREMENT_TYPE)
+        cur.execute(
+            "SELECT authoritative_fee_usdc,fill_notional*0.0004 "
+            "FROM simulated_execution_fills_v1 WHERE order_purpose='EXIT'"
+        )
+        fee, expected_fee = cur.fetchone()
+        assert fee == expected_fee == Decimal("0.002044")
+        cur.execute(
+            "SELECT financial_truth_status,remaining_inventory_qty "
+            "FROM canonical_financial_truth_v1 WHERE position_id=4080"
+        )
+        assert cur.fetchone() == ("COMPLETE", 0)
+        LearningArtifactRepository.assert_excluded_from_readers(cur, 4080)
+    expected = {
+        "exit_orders": 1, "exit_fills": 1, "lifecycle": 1,
+        "financial_truth": 1, "exclusion": 1, "audit": 1,
+        "provenance": 1,
+    }
+    assert _retirement_counts(quarantine_db) == expected
+    second = LegacyOpenRetirementTransactionService.apply(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT,
+        expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+        git_sha=GIT_SHA,
+    )
+    assert second["status"] == "ALREADY_RETIRED"
+    assert second["writes"] == 0
+    assert _retirement_counts(quarantine_db) == expected
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "exclusion", "exit_order", "exit_fill", "position_update",
+        "lifecycle", "financial_truth", "audit", "provenance",
+    ],
+)
+def test_open_retirement_failpoints_roll_back_all_stages(quarantine_db, stage):
+    _seed_open_retirement_position(quarantine_db)
+    plan = LegacyOpenRetirementPlanRepository.build(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT, git_sha=GIT_SHA,
+    )
+
+    def fail(current):
+        if current == stage:
+            raise RuntimeError("TEST_RETIREMENT_FAILPOINT:" + stage)
+
+    with pytest.raises(RuntimeError, match="TEST_RETIREMENT_FAILPOINT"):
+        LegacyOpenRetirementTransactionService.apply(
+            quarantine_db, position_id=4080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+            expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+            git_sha=GIT_SHA, stage_hook=fail,
+        )
+    assert _retirement_counts(quarantine_db) == {
+        "exit_orders": 0, "exit_fills": 0, "lifecycle": 0,
+        "financial_truth": 0, "exclusion": 0, "audit": 0,
+        "provenance": 0,
+    }
+    with quarantine_db.cursor() as cur:
+        cur.execute("SELECT status FROM positions WHERE id=4080")
+        assert cur.fetchone() == ("OPEN",)
+
+
+def test_open_retirement_live_cli_rejected_before_connection(monkeypatch, capsys):
+    import tools.legacy_recovery as cli
+
+    monkeypatch.setattr(
+        cli, "_connection_factory",
+        lambda _args: (_ for _ in ()).throw(AssertionError("DB_CONNECTED")),
+    )
+    base = [
+        "--database-url-env", "NOT_USED", "--expected-database", "trading_live",
+        "--environment", "LIVE", "--deployment-id", "local-live",
+    ]
+    assert cli.main(base + ["plan-open-retirement", "--position-id", "1"]) == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == (
+        "LIVE_RETIREMENT_NOT_AUTHORIZED"
+    )
+    assert cli.main(base + [
+        "apply-open-retirement", "--position-id", "1",
+        "--expected-fingerprint-v2", "a" * 64, "--confirm-apply",
+    ]) == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == (
+        "LIVE_RETIREMENT_NOT_AUTHORIZED"
+    )
+
+
+def test_open_retirement_cli_plan_confirmation_and_apply(
+    quarantine_db, disposable_postgres_v16, monkeypatch, capsys,
+):
+    _seed_open_retirement_position(quarantine_db)
+    dsn = (
+        f"host=127.0.0.1 port={disposable_postgres_v16.port} "
+        "dbname=waltrade_baseline_test_paper_legacy_quarantine "
+        f"user={disposable_postgres_v16.user} "
+        f"password={disposable_postgres_v16.password}"
+    )
+    monkeypatch.setenv("OPEN_RETIREMENT_TEST_DSN", dsn)
+    base = [
+        "--database-url-env", "OPEN_RETIREMENT_TEST_DSN",
+        "--expected-database", "waltrade_baseline_test_paper_legacy_quarantine",
+        "--environment", "PAPER", "--deployment-id", DEPLOYMENT,
+        "--git-sha", GIT_SHA,
+    ]
+    assert cli_main(base + [
+        "plan-open-retirement", "--position-id", "4080"
+    ]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["status"] == "READY"
+    assert plan["retirement_type"] == RETIREMENT_TYPE
+    apply = base + [
+        "apply-open-retirement", "--position-id", "4080",
+        "--expected-fingerprint-v2", plan["semantic_fingerprint_v2"],
+    ]
+    assert cli_main(apply) == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == "CONFIRM_APPLY_REQUIRED"
+    assert cli_main(apply + ["--confirm-apply"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "APPLIED"

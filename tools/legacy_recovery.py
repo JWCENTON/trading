@@ -95,6 +95,12 @@ def parser() -> argparse.ArgumentParser:
     apply_position.add_argument("--position-id", required=True, type=int)
     apply_position.add_argument("--expected-fingerprint-v2", required=True)
     apply_position.add_argument("--confirm-apply", action="store_true")
+    retirement = sub.add_parser("plan-open-retirement")
+    retirement.add_argument("--position-id", required=True, type=int)
+    apply_retirement = sub.add_parser("apply-open-retirement")
+    apply_retirement.add_argument("--position-id", required=True, type=int)
+    apply_retirement.add_argument("--expected-fingerprint-v2", required=True)
+    apply_retirement.add_argument("--confirm-apply", action="store_true")
     return result
 
 
@@ -381,6 +387,58 @@ def _apply_position(factory, args) -> tuple[dict[str, Any], int]:
             expected_semantic_fingerprint_v2=args.expected_fingerprint_v2,
             git_sha=_resolved_git_sha(args),
             invocation_identity=invocation_identity,
+        )
+        return dict(result), 0
+    finally:
+        connection.close()
+
+
+def _plan_open_retirement(connection, args) -> dict[str, Any]:
+    from common.legacy_open_retirement import LegacyOpenRetirementPlanRepository
+
+    if not args.deployment_id:
+        return {
+            "status": "BLOCKED", "reason": "DEPLOYMENT_ID_REQUIRED",
+            "position_id": args.position_id,
+        }
+    plan = LegacyOpenRetirementPlanRepository.build(
+        connection, position_id=args.position_id,
+        environment=args.environment, deployment_id=args.deployment_id,
+        git_sha=_resolved_git_sha(args),
+    )
+    return {
+        "schema_status": "PRESENT_VALID",
+        **dict(plan.public_payload()),
+    }
+
+
+def _apply_open_retirement(factory, args) -> tuple[dict[str, Any], int]:
+    if args.environment != "PAPER":
+        return {
+            "status": "BLOCKED", "reason": "LIVE_RETIREMENT_NOT_AUTHORIZED",
+            "position_id": args.position_id,
+        }, 2
+    if not args.confirm_apply:
+        return {
+            "status": "BLOCKED", "reason": "CONFIRM_APPLY_REQUIRED",
+            "position_id": args.position_id,
+        }, 2
+    if not args.deployment_id:
+        return {
+            "status": "BLOCKED", "reason": "DEPLOYMENT_ID_REQUIRED",
+            "position_id": args.position_id,
+        }, 2
+    from common.legacy_open_retirement import (
+        LegacyOpenRetirementTransactionService,
+    )
+
+    connection = factory()
+    try:
+        result = LegacyOpenRetirementTransactionService.apply(
+            connection, position_id=args.position_id,
+            environment=args.environment, deployment_id=args.deployment_id,
+            expected_semantic_fingerprint_v2=args.expected_fingerprint_v2,
+            git_sha=_resolved_git_sha(args),
         )
         return dict(result), 0
     finally:
@@ -698,7 +756,7 @@ def main(argv=None) -> int:
         _normalize_global_options(sys.argv[1:] if argv is None else argv)
     )
     try:
-        if args.command == "apply-position":
+        if args.command in {"apply-position", "apply-open-retirement"}:
             # Reject unsafe or incomplete apply requests before resolving or
             # opening any database connection.  In particular, a LIVE apply
             # must remain impossible even when its DSN points at PAPER.
@@ -711,7 +769,11 @@ def main(argv=None) -> int:
                 )
                 else None
             )
-            result, exit_code = _apply_position(factory, args)
+            result, exit_code = (
+                _apply_position(factory, args)
+                if args.command == "apply-position"
+                else _apply_open_retirement(factory, args)
+            )
             rendered = json.dumps(
                 _json_value(result), sort_keys=True, separators=(",", ":"),
             )
@@ -722,6 +784,18 @@ def main(argv=None) -> int:
             else:
                 print(rendered)
             return exit_code
+        if args.command == "plan-open-retirement" and args.environment != "PAPER":
+            result = {
+                "status": "BLOCKED",
+                "reason": "LIVE_RETIREMENT_NOT_AUTHORIZED",
+                "position_id": args.position_id,
+            }
+            rendered = json.dumps(result, sort_keys=True, separators=(",", ":"))
+            if args.output_json:
+                Path(args.output_json).write_text(rendered + "\n", encoding="utf-8")
+            else:
+                print(rendered)
+            return 2
         factory = _connection_factory(args)
         with read_only_db_conn(factory) as connection:
             identity = _identity(connection, args)
@@ -768,6 +842,8 @@ def main(argv=None) -> int:
                 }
             elif args.command == "plan-position":
                 result = _position(connection, args, identity, schema)
+            elif args.command == "plan-open-retirement":
+                result = _plan_open_retirement(connection, args)
             elif args.command == "plan-fill":
                 result = _fill(connection, args, identity, schema)
             elif args.command == "audit-open-cohort":

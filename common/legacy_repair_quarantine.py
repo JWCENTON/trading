@@ -403,16 +403,20 @@ class LearningArtifactRepository:
             return True
         if str(actual).lower() == str(expected).lower():
             return True
-        if str(expected).lower() != "local-paper":
-            return False
+        expected_normalized = str(expected).lower()
         if artifact_type in {"feature_warehouse", "decision_replay"}:
             return (
+                expected_normalized in {"local-paper", "vps-paper"}
+                and
                 str(actual) == "legacy-unknown"
                 and payload.get("causal_linkage_status")
                 == "LEGACY_NOT_ATTRIBUTABLE"
             )
         if artifact_type == "decision_registry":
-            return str(actual) == "LOCAL"
+            return str(actual) == (
+                "LOCAL" if expected_normalized == "local-paper" else
+                "VPS" if expected_normalized == "vps-paper" else ""
+            )
         return False
 
     @classmethod
@@ -605,11 +609,23 @@ class LearningArtifactRepository:
                 )
 
         keys = set()
+        missing_source_identity = []
         for artifact in snapshot:
             row = artifact["row"]
             key = row.get("decision_key") or row.get("legacy_decision_key")
             if key:
                 keys.add(str(key))
+            elif artifact["type"] in {
+                "shadow_recommendation", "feature_warehouse",
+                "decision_replay", "decision_registry",
+            }:
+                missing_source_identity.append(str(artifact["type"]))
+        if missing_source_identity:
+            return result(
+                ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,
+                False,
+                "SOURCE_IDENTITY_MISSING:" + ",".join(missing_source_identity),
+            )
         if len(keys) > 1:
             return result(
                 ArtifactGateClassification.TERMINAL_OR_AMBIGUOUS_ARTIFACTS,

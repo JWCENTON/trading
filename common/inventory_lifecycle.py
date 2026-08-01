@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import json
+from typing import Mapping, Any
 
 from common.inventory_quantity import (
     ExitInventoryStatus,
@@ -33,6 +35,8 @@ def apply_inventory_lifecycle_mutation(
     exit_price: Decimal | None,
     exit_time,
     execution_source: str,
+    exit_reason: str | None = None,
+    event_payload: Mapping[str, Any] | None = None,
 ) -> InventoryMutationResult:
     """Atomically project inventory and append committed lifecycle evidence.
 
@@ -99,9 +103,9 @@ def apply_inventory_lifecycle_mutation(
           exit_price=CASE WHEN %s THEN COALESCE(%s,exit_price) ELSE exit_price END,
           exit_time=CASE WHEN %s THEN COALESCE(%s,exit_time) ELSE exit_time END,
           exit_reason=CASE
-            WHEN %s THEN 'TERMINAL_DUST'
-            ELSE exit_reason
-          END
+            WHEN %s THEN COALESCE(%s,'TERMINAL_DUST')
+            WHEN %s THEN COALESCE(%s,exit_reason)
+            ELSE exit_reason END
         WHERE id=%s
         RETURNING status
         """,
@@ -122,6 +126,9 @@ def apply_inventory_lifecycle_mutation(
             bool(terminal),
             exit_time,
             terminal_dust,
+            exit_reason,
+            bool(terminal),
+            exit_reason,
             int(position_id),
         ),
     )
@@ -160,7 +167,7 @@ def apply_inventory_lifecycle_mutation(
                 'lotSz',%s,'minSz',%s,'min_notional',%s,
                 'financial_truth_status','UNKNOWN',
                 'execution_source',%s
-              )
+              ) || %s::jsonb
             )
             ON CONFLICT DO NOTHING
             RETURNING event_id
@@ -179,6 +186,7 @@ def apply_inventory_lifecycle_mutation(
                 "TERMINAL_DUST" if terminal_dust else None,
                 limits.lot_size, limits.min_size, limits.min_notional,
                 str(execution_source),
+                json.dumps(dict(event_payload or {}), sort_keys=True),
             ),
         )
         event_inserted = cur.fetchone() is not None

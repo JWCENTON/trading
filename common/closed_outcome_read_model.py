@@ -1217,9 +1217,20 @@ def _closed_outcome_cte(environment: str) -> str:
 
 
 def build_closed_outcome_rows_sql(
-    environment: str, *, bounded_position_ids: bool = False
+    environment: str, *, bounded_position_ids: bool = False,
+    include_administrative_retirements: bool = False,
 ) -> str:
     cte = _closed_outcome_cte(environment)
+    if (
+        str(environment).strip().upper() == "PAPER"
+        and not include_administrative_retirements
+    ):
+        cte = cte.replace(
+            "AND p.exit_time >= %(window_start)s AND p.exit_time <= %(window_end)s",
+            "AND p.exit_time >= %(window_start)s AND p.exit_time <= %(window_end)s\n"
+            "    AND COALESCE(p.exit_reason, '') <> 'LEGACY_ADMINISTRATIVE_CLOSE'",
+            1,
+        )
     if bounded_position_ids:
         cte = cte.replace(
             "AND p.exit_time <= %(window_end)s",
@@ -1230,13 +1241,26 @@ def build_closed_outcome_rows_sql(
     return cte + ROWS_SQL_SUFFIX
 
 
-def build_closed_outcome_summary_sql(environment: str) -> str:
+def build_closed_outcome_summary_sql(
+    environment: str, *, include_administrative_retirements: bool = False
+) -> str:
     cte = _closed_outcome_cte(environment)
+    if (
+        str(environment).strip().upper() == "PAPER"
+        and not include_administrative_retirements
+    ):
+        cte = cte.replace(
+            "AND p.exit_time >= %(window_start)s AND p.exit_time <= %(window_end)s",
+            "AND p.exit_time >= %(window_start)s AND p.exit_time <= %(window_end)s\n"
+            "    AND COALESCE(p.exit_reason, '') <> 'LEGACY_ADMINISTRATIVE_CLOSE'",
+            1,
+        )
     return cte + SUMMARY_SQL_SUFFIX
 
 
 def fetch_closed_outcome_summary(
-    cur: Any, *, environment: str, window_start: datetime, window_end: datetime
+    cur: Any, *, environment: str, window_start: datetime, window_end: datetime,
+    include_administrative_retirements: bool = False,
 ) -> dict[str, Any]:
     if window_start > window_end:
         raise ValueError("window_start must not be after window_end")
@@ -1244,7 +1268,10 @@ def fetch_closed_outcome_summary(
     # per-request compilation cost; LOCAL keeps the setting transaction-scoped.
     cur.execute("SET LOCAL jit = off")
     cur.execute(
-        build_closed_outcome_summary_sql(environment),
+        build_closed_outcome_summary_sql(
+            environment,
+            include_administrative_retirements=include_administrative_retirements,
+        ),
         {"window_start": window_start, "window_end": window_end},
     )
     row = cur.fetchone()
@@ -1301,13 +1328,15 @@ def fetch_closed_outcome_summary(
 def fetch_closed_outcomes(
     cur: Any, *, environment: str, window_start: datetime, window_end: datetime,
     position_ids: list[int] | None = None,
+    include_administrative_retirements: bool = False,
 ) -> dict[int, dict[str, Any]]:
     if window_start > window_end:
         raise ValueError("window_start must not be after window_end")
     cur.execute("SET LOCAL jit = off")
     cur.execute(
         build_closed_outcome_rows_sql(
-            environment, bounded_position_ids=position_ids is not None
+            environment, bounded_position_ids=position_ids is not None,
+            include_administrative_retirements=include_administrative_retirements,
         ),
         {
             "window_start": window_start,

@@ -54,6 +54,7 @@ from common.supertrend_terminal_outcome import (
 )
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.simulated_execution_evidence import (
+    create_simulated_order_cursor,
     execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
     record_simulated_fill_evidence,
@@ -1002,30 +1003,11 @@ def insert_simulated_order(
 ):
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO simulated_orders (
-            symbol, interval, side, price, quantity_btc,
-            reason, rsi_14, ema_21, candle_open_time, strategy, is_exit
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s)
-        ON CONFLICT (symbol, interval, strategy, candle_open_time, is_exit) DO NOTHING
-        RETURNING id;
-        """,
-        (
-            symbol,
-            interval,
-            side,
-            float(price),
-            float(qty_btc),
-            reason,
-            candle_open_time,
-            strategy,
-            bool(is_exit),
-        ),
+    inserted = create_simulated_order_cursor(
+        cur, symbol=symbol, interval=interval, strategy=strategy, side=side,
+        price=Decimal(str(price)), quantity=Decimal(str(qty_btc)),
+        reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
     )
-    inserted_row = cur.fetchone()
-    inserted = inserted_row[0] if inserted_row else None
     conn.commit()
     cur.close()
     conn.close()
