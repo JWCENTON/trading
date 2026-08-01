@@ -252,7 +252,7 @@ def test_gate_b_commit_visible_before_network_and_failures_submit_zero(
     assert _counts(factory) == (1, 1, 1)
 
 
-def test_active_adoption_resolution_is_exact_and_sha_mismatch_fails_closed(
+def test_active_adoption_resolution_separates_contract_from_runtime_revision(
     disposable_postgres_v16,
 ):
     _, _, repository = _install(disposable_postgres_v16, "adoption")
@@ -276,12 +276,16 @@ def test_active_adoption_resolution_is_exact_and_sha_mismatch_fails_closed(
             deployment_id="local-live",
             runtime_git_revision=GIT_REVISION,
         )
-    with pytest.raises(ActiveAdoptionResolutionError, match="SHA_MISMATCH"):
-        repository.resolve_active_adoption(
-            environment="live",
-            deployment_id="local-live",
-            runtime_git_revision="e" * 40,
-        )
+    newer_runtime = repository.resolve_active_adoption(
+        environment="live",
+        deployment_id="local-live",
+        runtime_git_revision="e" * 40,
+    )
+    assert newer_runtime.adoption_id == 1
+    assert newer_runtime.generation == 1
+    assert newer_runtime.git_revision == GIT_REVISION
+    assert newer_runtime.runtime_git_revision == "e" * 40
+    assert newer_runtime.runtime_revision_matches_adoption_provenance is False
 
 
 def test_gate_c_two_identical_sessions_claim_at_most_one_network_submission(

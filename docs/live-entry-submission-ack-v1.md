@@ -119,9 +119,10 @@ the adapter and does not replace the persisted identity.
 
 Before constructing an intent, the shared repository can resolve exactly one
 ACTIVE `FEE_AWARE_INVENTORY_C2_2` adoption for the requested environment and
-deployment.  The adoption Git revision must exactly match the runtime SHA.
-Zero rows, multiple rows, deployment/environment mismatch, or SHA mismatch
-fail closed.
+deployment. Zero rows, multiple rows, or deployment/environment mismatch fail
+closed. The adoption Git revision is immutable activation provenance; the
+runtime SHA is separately persisted on the intent. Their mismatch is reported
+as a deployment diagnostic and does not change contract eligibility.
 
 Submission and ACK triggers revalidate every duplicated attribution field
 against the immutable intent and adoption row.  ACK triggers additionally

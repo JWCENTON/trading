@@ -11,12 +11,23 @@ from common.simulated_execution_evidence import (
 )
 
 
-SHA = "a" * 40
+ADOPTION_SHA = "a" * 40
+RUNTIME_SHA = "b" * 40
 ADOPTED = datetime(2026, 7, 1, tzinfo=timezone.utc)
+ACTIVE = (
+    41,
+    "FEE_AWARE_INVENTORY_C2_2",
+    "paper",
+    "local-paper",
+    7,
+    "ACTIVE",
+    ADOPTED,
+    ADOPTION_SHA,
+)
 
 
 class Cursor:
-    def __init__(self, *, position, active=(41, 7, ADOPTED), compatible=False):
+    def __init__(self, *, position, active=ACTIVE, compatible=False):
         self.position = position
         self.active = active
         self.compatible = compatible
@@ -39,8 +50,8 @@ class Cursor:
         return self.result
 
 
-def classify(monkeypatch, *, position, active=(41, 7, ADOPTED), compatible=False):
-    monkeypatch.setenv("GIT_SHA", SHA)
+def classify(monkeypatch, *, position, active=ACTIVE, compatible=False):
+    monkeypatch.setenv("GIT_SHA", RUNTIME_SHA)
     return paper_exit_preflight_cursor(
         Cursor(position=position, active=active, compatible=compatible),
         deployment_id="local-paper", symbol="BTCUSDC", strategy="RSI",
@@ -51,18 +62,18 @@ def classify(monkeypatch, *, position, active=(41, 7, ADOPTED), compatible=False
 @pytest.mark.parametrize(
     ("position", "active", "compatible", "reason"),
     [
-        (None, (41, 7, ADOPTED), False, "POSITION_NOT_FOUND"),
-        ((77, "CLOSED", 41, 7, ADOPTED), (41, 7, ADOPTED), False,
+        (None, ACTIVE, False, "POSITION_NOT_FOUND"),
+        ((77, "CLOSED", 41, 7, ADOPTED), ACTIVE, False,
          "POSITION_ALREADY_CLOSED"),
         ((77, "OPEN", None, None, ADOPTED - timedelta(seconds=1)),
-         (41, 7, ADOPTED), False, "ENTRY_BEFORE_ACTIVE_ADOPTION"),
-        ((77, "OPEN", None, 7, ADOPTED), (41, 7, ADOPTED), False,
+         ACTIVE, False, "ENTRY_BEFORE_ACTIVE_ADOPTION"),
+        ((77, "OPEN", None, 7, ADOPTED), ACTIVE, False,
          "MISSING_ADOPTION_ID"),
-        ((77, "OPEN", 41, None, ADOPTED), (41, 7, ADOPTED), False,
+        ((77, "OPEN", 41, None, ADOPTED), ACTIVE, False,
          "MISSING_GENERATION"),
-        ((77, "OPEN", 40, 6, ADOPTED), (41, 7, ADOPTED), False,
+        ((77, "OPEN", 40, 6, ADOPTED), ACTIVE, False,
          "GENERATION_MISMATCH"),
-        ((77, "OPEN", None, None, None), (41, 7, ADOPTED), False,
+        ((77, "OPEN", None, None, None), ACTIVE, False,
          "LEGACY_NOT_COMPATIBLE"),
         ((77, "OPEN", 41, 7, ADOPTED), None, False,
          "INVENTORY_CONTRACT_INCOMPLETE"),
@@ -94,6 +105,62 @@ def test_existing_guard_allow_semantics_are_preserved(
     result = classify(monkeypatch, position=position, compatible=compatible)
     assert result.allowed is True
     assert result.reason_code == reason
+    assert result.active_adoption_git_revision == ADOPTION_SHA
+    assert result.runtime_git_revision == RUNTIME_SHA
+    assert result.runtime_revision_matches_adoption_provenance is False
+
+
+@pytest.mark.parametrize(
+    "active",
+    [
+        ACTIVE[:2] + ("live",) + ACTIVE[3:],
+        ACTIVE[:3] + ("wrong-paper",) + ACTIVE[4:],
+        ACTIVE[:5] + ("SUPERSEDED",) + ACTIVE[6:],
+    ],
+)
+def test_wrong_scope_or_inactive_adoption_fails_closed(monkeypatch, active):
+    result = classify(
+        monkeypatch,
+        position=(77, "OPEN", 41, 7, ADOPTED),
+        active=active,
+    )
+    assert result.allowed is False
+    assert result.reason_code == "INVENTORY_CONTRACT_INCOMPLETE"
+
+
+@pytest.mark.parametrize("position_id", [10326, 10333, 10340])
+def test_known_legacy_targets_remain_denied_with_newer_runtime(
+    monkeypatch, position_id
+):
+    result = classify(
+        monkeypatch,
+        position=(
+            position_id,
+            "OPEN",
+            None,
+            None,
+            ADOPTED - timedelta(seconds=1),
+        ),
+        compatible=False,
+    )
+    assert result.allowed is False
+    assert result.reason_code == "ENTRY_BEFORE_ACTIVE_ADOPTION"
+    assert result.runtime_revision_matches_adoption_provenance is False
+
+
+@pytest.mark.parametrize("position_id", [10491, 10493, 10495, 10496, 10498])
+def test_known_generation_five_positions_allow_newer_runtime(
+    monkeypatch, position_id
+):
+    active_generation_five = ACTIVE[:4] + (5,) + ACTIVE[5:]
+    result = classify(
+        monkeypatch,
+        position=(position_id, "OPEN", 41, 5, ADOPTED),
+        active=active_generation_five,
+    )
+    assert result.allowed is True
+    assert result.reason_code == "ACTIVE_GENERATION_MATCH"
+    assert result.runtime_revision_matches_adoption_provenance is False
 
 
 def test_denial_emits_diagnostic_and_never_runs_execution_action(monkeypatch):

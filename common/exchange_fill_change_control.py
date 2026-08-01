@@ -7,8 +7,6 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Mapping
 
-from common.contract_adoption import require_runtime_git_revision
-
 
 class FillMutationDecision(str, Enum):
     NEW_AUTHORITATIVE_EVIDENCE = "NEW_AUTHORITATIVE_EVIDENCE"
@@ -416,7 +414,6 @@ def _resolve_row_generation(cur, row: Mapping[str, Any]):
          AND adoption.status = 'ACTIVE'
          AND adoption.environment = lower(%s)
          AND adoption.deployment_id = %s
-         AND adoption.git_revision = %s
         WHERE p.entry_order_id = %s OR p.exit_order_id = %s
            OR bo.order_id = %s
         ORDER BY p.id
@@ -425,7 +422,6 @@ def _resolve_row_generation(cur, row: Mapping[str, Any]):
         (
             str(row.get("environment") or "").lower(),
             str(row.get("deployment_id") or ""),
-            require_runtime_git_revision(),
             str(row.get("order_id") or ""),
             str(row.get("order_id") or ""),
             str(row.get("order_id") or ""),

@@ -25,6 +25,10 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol
 
+from common.contract_adoption import (
+    contract_adoption_compatible,
+    log_runtime_revision_provenance_diagnostic,
+)
 from common.entry_intent import (
     EntryIntentContractVersion,
     EntryIntentDeployment,
@@ -552,6 +556,8 @@ class ActiveEntrySubmissionAdoption:
     environment: EntryIntentEnvironment
     deployment_id: EntryIntentDeployment
     git_revision: str
+    runtime_git_revision: str | None = None
+    runtime_revision_matches_adoption_provenance: bool = True
 
 
 class EntrySubmissionRepositoryProtocol(Protocol):
@@ -621,7 +627,8 @@ class EntrySubmissionRepository:
         try:
             cur.execute(
                 """
-                SELECT adoption_id,generation,git_revision
+                SELECT adoption_id,contract_name,environment,deployment_id,
+                       generation,status,git_revision
                 FROM runtime_contract_adoption_v2
                 WHERE contract_name='FEE_AWARE_INVENTORY_C2_2'
                   AND environment=%s AND deployment_id=%s AND status='ACTIVE'
@@ -640,17 +647,41 @@ class EntrySubmissionRepository:
             raise ActiveAdoptionResolutionError(
                 "ENTRY_SUBMISSION_ACTIVE_ADOPTION_NOT_UNIQUE"
             )
-        adoption_id, generation, git_revision = rows[0]
-        if str(git_revision) != revision:
+        (
+            adoption_id,
+            contract_name,
+            adoption_environment,
+            adoption_deployment_id,
+            generation,
+            status,
+            adoption_git_revision,
+        ) = rows[0]
+        if not contract_adoption_compatible(
+            contract_name=contract_name,
+            environment=adoption_environment,
+            deployment_id=adoption_deployment_id,
+            status=status,
+            generation=generation,
+            expected_environment=environment_value.value,
+            expected_deployment_id=deployment_value.value,
+        ):
             raise ActiveAdoptionResolutionError(
-                "ENTRY_SUBMISSION_ACTIVE_ADOPTION_SHA_MISMATCH"
+                "ENTRY_SUBMISSION_ACTIVE_ADOPTION_INCOMPATIBLE"
             )
+        revision_matches = log_runtime_revision_provenance_diagnostic(
+            adoption_id=int(adoption_id),
+            generation=int(generation),
+            adoption_git_revision=str(adoption_git_revision),
+            runtime_git_revision=revision,
+        )
         return ActiveEntrySubmissionAdoption(
             adoption_id=int(adoption_id),
             generation=int(generation),
             environment=environment_value,
             deployment_id=deployment_value,
-            git_revision=revision,
+            git_revision=str(adoption_git_revision),
+            runtime_git_revision=revision,
+            runtime_revision_matches_adoption_provenance=revision_matches,
         )
 
     def commit_intent(

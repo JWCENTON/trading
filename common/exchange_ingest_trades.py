@@ -11,7 +11,10 @@ from typing import Iterable, Dict, Any, Optional
 import psycopg2
 from psycopg2.extras import execute_batch
 
-from common.contract_adoption import require_runtime_git_revision
+from common.contract_adoption import (
+    log_runtime_revision_provenance_diagnostic,
+    require_runtime_git_revision,
+)
 from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
 from common.entry_position_projection import (
     EntryPositionProjectionMode,
@@ -319,7 +322,6 @@ WITH sell_orders AS (
       AND a.status='ACTIVE'
       AND a.environment=lower(%s)
       AND a.deployment_id=%s
-      AND a.git_revision=%s
     LIMIT 1
   ) adoption ON true
   WHERE bo.order_purpose='EXIT' AND bo.position_id IS NOT NULL
@@ -585,7 +587,6 @@ def reconcile_okx_exit_fills(
                         or os.getenv("DEPLOYMENT_ID")
                         or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
                     ),
-                    require_runtime_git_revision(),
                     changed_orders,
                 )
                 if c2_2_ready
@@ -672,13 +673,13 @@ def _record_lei1c_observations(
                                AND ledger.checksum_sha256=%s
                                AND ledger.status='APPLIED'
                                AND ledger.success=true
-                           ) AS contract_activated_at
+                           ) AS contract_activated_at,
+                           adoption.git_revision
                     FROM runtime_contract_adoption_v2 adoption
                     WHERE adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
                       AND adoption.status='ACTIVE'
                       AND adoption.environment=%s
                       AND adoption.deployment_id=%s
-                      AND adoption.git_revision=%s
                     ORDER BY adoption.adoption_id
                     """,
                     (
@@ -686,7 +687,6 @@ def _record_lei1c_observations(
                         LEI1C_LEDGER_CHECKSUM,
                         environment,
                         deployment_id,
-                        git_revision,
                     ),
                 )
                 adoptions = list(cur.fetchall())
@@ -704,7 +704,18 @@ def _record_lei1c_observations(
             raise RuntimeError(message)
         logging.error("ENTRY_FILL_ATTRIBUTION|mode=%s error=%s", mode.value, message)
         return
-    adoption_id, generation, contract_activated_at = adoptions[0]
+    (
+        adoption_id,
+        generation,
+        contract_activated_at,
+        adoption_git_revision,
+    ) = adoptions[0]
+    log_runtime_revision_provenance_diagnostic(
+        adoption_id=int(adoption_id),
+        generation=int(generation),
+        adoption_git_revision=str(adoption_git_revision),
+        runtime_git_revision=git_revision,
+    )
     if (
         not isinstance(contract_activated_at, datetime)
         or contract_activated_at.tzinfo is None

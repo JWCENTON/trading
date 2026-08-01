@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 import os
 import re
 
 
 GIT_REVISION_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+INVENTORY_CONTRACT_NAME = "FEE_AWARE_INVENTORY_C2_2"
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,85 @@ def require_runtime_git_revision() -> str:
     if GIT_REVISION_PATTERN.fullmatch(revision) is None:
         raise RuntimeError("RUNTIME_GIT_REVISION_REQUIRED")
     return revision
+
+
+def contract_adoption_compatible(
+    *,
+    contract_name: str,
+    environment: str,
+    deployment_id: str,
+    status: str,
+    generation: int,
+    expected_environment: str,
+    expected_deployment_id: str,
+    expected_generation: int | None = None,
+) -> bool:
+    """Return contract eligibility without interpreting activation provenance.
+
+    ``git_revision`` and ``container_revision`` identify the artifact which
+    activated a generation.  They deliberately are not inputs to this check.
+    """
+    try:
+        generation_value = int(generation)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        str(contract_name) == INVENTORY_CONTRACT_NAME
+        and str(environment).lower() == str(expected_environment).lower()
+        and str(deployment_id) == str(expected_deployment_id)
+        and str(status).upper() == "ACTIVE"
+        and generation_value > 0
+        and (
+            expected_generation is None
+            or generation_value == int(expected_generation)
+        )
+    )
+
+
+def runtime_revision_matches_adoption_provenance(
+    *,
+    adoption_git_revision: str,
+    runtime_git_revision: str | None = None,
+) -> bool:
+    """Compare deployment identity with immutable activation provenance.
+
+    This is a diagnostic only.  Callers must not use its result as a contract
+    mutation, fill, reconciliation, or projection eligibility gate.
+    """
+    runtime_revision = (
+        require_runtime_git_revision()
+        if runtime_git_revision is None
+        else str(runtime_git_revision).strip().lower()
+    )
+    if GIT_REVISION_PATTERN.fullmatch(runtime_revision) is None:
+        raise RuntimeError("RUNTIME_GIT_REVISION_REQUIRED")
+    adoption_revision = str(adoption_git_revision or "").strip().lower()
+    return adoption_revision == runtime_revision
+
+
+def log_runtime_revision_provenance_diagnostic(
+    *,
+    adoption_id: int,
+    generation: int,
+    adoption_git_revision: str,
+    runtime_git_revision: str,
+) -> bool:
+    """Log, but never enforce, activation/runtime revision parity."""
+    matches = runtime_revision_matches_adoption_provenance(
+        adoption_git_revision=adoption_git_revision,
+        runtime_git_revision=runtime_git_revision,
+    )
+    if not matches:
+        logging.info(
+            "CONTRACT_ADOPTION_RUNTIME_REVISION_MISMATCH|"
+            "adoption_id=%s generation=%s adoption_git_revision=%s "
+            "runtime_git_revision=%s",
+            int(adoption_id),
+            int(generation),
+            str(adoption_git_revision),
+            str(runtime_git_revision),
+        )
+    return matches
 
 
 def prepare_contract_adoption(

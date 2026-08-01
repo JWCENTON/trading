@@ -35,6 +35,13 @@ takes a transaction-scoped advisory lock, refuses an existing ACTIVE
 generation, and assigns `adopted_at` from the database clock. A rolled-back
 generation cannot be reactivated.
 
+`generation` is the contract compatibility generation. `git_revision` and
+`container_revision` are immutable provenance for the artifact which activated
+that generation; they are not the identity of every later compatible runtime.
+The current runtime SHA remains separate deployment evidence and is reported
+alongside adoption provenance. A mismatch is diagnostic, not an inventory or
+lifecycle eligibility blocker.
+
 V1 rows remain historical evidence. The migration does not copy, activate, or
 backfill them.
 
@@ -71,13 +78,14 @@ mutation. Its unique identity prevents a replay from producing another event.
 5. Verify the candidate image identity while trading is disabled.
 6. Activate the prepared generation immediately before restarting only the
    candidate runtime.
-7. Verify container revision equals adoption Git/container revision before
-   enabling normal mutation.
+7. Verify the candidate runtime image and Git revision independently, and
+   report whether they match the immutable adoption provenance.
 8. Compare legacy residuals, ingestion ledger and lifecycle high-water, then
    perform bounded observation.
 
-The runtime must fail closed while no matching ACTIVE generation exists. This
-keeps the activation-to-start gap safe.
+The runtime must fail closed while no compatible ACTIVE generation exists.
+Stopping the old mutation-capable runtime before activating a genuinely new
+generation keeps the activation-to-start gap safe.
 
 ## Rollback and re-adoption
 
@@ -110,12 +118,18 @@ returns `ALREADY_REPLACED` without mutation. Partial or mismatched state fails
 closed with a specific replacement error; lifecycle history is never repaired
 or rewritten implicitly.
 
-Every mutation lookup binds the ACTIVE row to the immutable `GIT_SHA` embedded
-in the running image. An old runtime cannot consume a newer ACTIVE generation
-during the activation-to-start boundary. Position ownership is separate: a
-complete evidence-backed position attributed to an older generation keeps
-that attribution and follows existing-projected compatibility. New forward
-positions receive the current runtime generation.
+Every mutation lookup binds to the ACTIVE contract scope and generation, not
+to exact equality between activation provenance and runtime `GIT_SHA`.
+Position ownership remains separate: a complete evidence-backed position
+attributed to an older generation keeps that attribution and follows
+existing-projected compatibility. New forward positions receive the current
+contract generation. Runtime/adoption SHA parity remains visible in rollout
+and audit diagnostics.
+
+A later runtime patch that does not change the adopted contract does not
+require a new contract adoption generation. A new generation is required only
+when contract semantics, schema requirements, inventory equations, or the
+compatibility boundary change.
 
 The operational order is build and verify candidate images, create PREPARED,
 stop the old mutation-capable bot-runner, atomically replace ACTIVE, start the

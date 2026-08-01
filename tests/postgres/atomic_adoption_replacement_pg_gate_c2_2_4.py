@@ -538,7 +538,7 @@ def test_wrong_environment_or_contract_name_is_scope_mismatch(
     assert_one_active()
 
 
-def test_runtime_sha_binding_and_generation_owned_position(monkeypatch):
+def test_runtime_revision_does_not_gate_generation_owned_position(monkeypatch):
     old_id = seed(1, "ACTIVE", OLD_SHA)
     new_id = seed(2, "PREPARED", CANDIDATE_SHA, supersedes=old_id)
     conn = connection()
@@ -583,7 +583,7 @@ def test_runtime_sha_binding_and_generation_owned_position(monkeypatch):
 
     monkeypatch.setenv("GIT_SHA", OLD_SHA)
     with conn.cursor() as cur:
-        assert not paper_position_mutation_allowed_cursor(
+        assert paper_position_mutation_allowed_cursor(
             cur, position_id=100, deployment_id=DEPLOYMENT
         )
     conn.rollback()
@@ -592,11 +592,11 @@ def test_runtime_sha_binding_and_generation_owned_position(monkeypatch):
             monkeypatch.delenv("GIT_SHA", raising=False)
         else:
             monkeypatch.setenv("GIT_SHA", bad)
-        with pytest.raises(RuntimeError, match="RUNTIME_GIT_REVISION_REQUIRED"):
-            with conn.cursor() as cur:
-                paper_position_mutation_allowed_cursor(
-                    cur, position_id=100, deployment_id=DEPLOYMENT
-                )
+        with conn.cursor() as cur:
+            assert paper_position_mutation_allowed_cursor(
+                cur, position_id=100, deployment_id=DEPLOYMENT
+            )
+        conn.rollback()
     conn.close()
     assert_one_active()
 

@@ -22,8 +22,10 @@ exit trigger -> read-only diagnostic preflight -> existing execution path
 ```
 
 The preflight returns `allowed`, `reason_code`, position identity/status,
-position adoption/generation, active adoption/generation, and legacy
-compatibility. Denials distinguish `POSITION_NOT_FOUND`,
+position adoption/generation, active adoption/generation, legacy
+compatibility, activation-provenance Git revision, runtime Git revision, and
+their diagnostic parity. Revision mismatch does not affect eligibility.
+Denials distinguish `POSITION_NOT_FOUND`,
 `POSITION_ALREADY_CLOSED`, `MISSING_ADOPTION_ID`, `MISSING_GENERATION`,
 `GENERATION_MISMATCH`, `LEGACY_NOT_COMPATIBLE`,
 `ENTRY_BEFORE_ACTIVE_ADOPTION`, `INVENTORY_CONTRACT_INCOMPLETE`, and the

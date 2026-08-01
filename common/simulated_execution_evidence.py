@@ -8,7 +8,11 @@ import json
 import os
 import uuid
 
-from common.contract_adoption import require_runtime_git_revision
+from common.contract_adoption import (
+    contract_adoption_compatible,
+    log_runtime_revision_provenance_diagnostic,
+    require_runtime_git_revision,
+)
 from common.financial_truth_identity import IDENTITY_VERSION
 from common.inventory_lifecycle import apply_inventory_lifecycle_mutation
 from common.inventory_quantity import (
@@ -36,6 +40,9 @@ class PaperExitPreflightResult:
     active_adoption_id: int | None
     active_generation: int | None
     legacy_compatibility: bool
+    active_adoption_git_revision: str | None = None
+    runtime_git_revision: str | None = None
+    runtime_revision_matches_adoption_provenance: bool | None = None
     detail: str | None = None
 
     def event_fields(self) -> dict:
@@ -49,10 +56,12 @@ def _paper_exit_result(
     position=None,
     active=None,
     legacy_compatibility: bool = False,
+    runtime_git_revision: str | None = None,
+    runtime_revision_matches_adoption_provenance: bool | None = None,
     detail: str | None = None,
 ) -> PaperExitPreflightResult:
     position = position or (None, None, None, None, None)
-    active = active or (None, None, None)
+    active = active or (None, None, None, None)
     return PaperExitPreflightResult(
         allowed=bool(allowed),
         reason_code=str(reason_code),
@@ -67,6 +76,13 @@ def _paper_exit_result(
         active_adoption_id=int(active[0]) if active[0] is not None else None,
         active_generation=int(active[1]) if active[1] is not None else None,
         legacy_compatibility=bool(legacy_compatibility),
+        active_adoption_git_revision=(
+            str(active[3]) if active[3] is not None else None
+        ),
+        runtime_git_revision=runtime_git_revision,
+        runtime_revision_matches_adoption_provenance=(
+            runtime_revision_matches_adoption_provenance
+        ),
         detail=detail,
     )
 
@@ -125,17 +141,30 @@ def paper_exit_preflight_cursor(
 
     cur.execute(
         """
-        SELECT adoption_id,generation,adopted_at
+        SELECT adoption_id,contract_name,environment,deployment_id,generation,
+               status,adopted_at,git_revision
         FROM runtime_contract_adoption_v2
         WHERE contract_name='FEE_AWARE_INVENTORY_C2_2'
           AND environment='paper'
           AND deployment_id=%s
           AND status='ACTIVE'
-          AND git_revision=%s
         """,
-        (str(deployment_id), revision),
+        (str(deployment_id),),
     )
-    active = cur.fetchone()
+    active_row = cur.fetchone()
+    active = None
+    if active_row is not None and contract_adoption_compatible(
+        contract_name=active_row[1],
+        environment=active_row[2],
+        deployment_id=active_row[3],
+        status=active_row[5],
+        generation=active_row[4],
+        expected_environment="paper",
+        expected_deployment_id=str(deployment_id),
+    ):
+        active = (
+            active_row[0], active_row[4], active_row[6], active_row[7]
+        )
     if (
         active is None
         or active[0] is None
@@ -147,7 +176,15 @@ def paper_exit_preflight_cursor(
             reason_code="INVENTORY_CONTRACT_INCOMPLETE",
             position=position,
             active=active,
+            runtime_git_revision=revision,
         )
+
+    revision_matches = log_runtime_revision_provenance_diagnostic(
+        adoption_id=int(active[0]),
+        generation=int(active[1]),
+        adoption_git_revision=str(active[3]),
+        runtime_git_revision=revision,
+    )
 
     cur.execute(
         "SELECT is_existing_projected_c2_2_compatible(%s,'paper')",
@@ -156,7 +193,7 @@ def paper_exit_preflight_cursor(
     compatibility_row = cur.fetchone()
     compatible = bool(compatibility_row and compatibility_row[0])
     adoption_id, generation, entry_time = position[2], position[3], position[4]
-    active_adoption_id, active_generation, adopted_at = active
+    active_adoption_id, active_generation, adopted_at = active[:3]
 
     if (
         adoption_id == active_adoption_id
@@ -165,11 +202,15 @@ def paper_exit_preflight_cursor(
         return _paper_exit_result(
             allowed=True, reason_code="ACTIVE_GENERATION_MATCH",
             position=position, active=active,
+            runtime_git_revision=revision,
+            runtime_revision_matches_adoption_provenance=revision_matches,
         )
     if compatible:
         return _paper_exit_result(
             allowed=True, reason_code="LEGACY_COMPATIBLE",
             position=position, active=active, legacy_compatibility=True,
+            runtime_git_revision=revision,
+            runtime_revision_matches_adoption_provenance=revision_matches,
         )
     if adoption_id is None and generation is not None:
         reason = "MISSING_ADOPTION_ID"
@@ -185,6 +226,8 @@ def paper_exit_preflight_cursor(
             return _paper_exit_result(
                 allowed=True, reason_code="FORWARD_ENTRY_COMPATIBLE",
                 position=position, active=active,
+                runtime_git_revision=revision,
+                runtime_revision_matches_adoption_provenance=revision_matches,
             )
     elif (
         adoption_id != active_adoption_id
@@ -195,6 +238,8 @@ def paper_exit_preflight_cursor(
         reason = "MUTATION_NOT_ALLOWED_OTHER"
     return _paper_exit_result(
         allowed=False, reason_code=reason, position=position, active=active,
+        runtime_git_revision=revision,
+        runtime_revision_matches_adoption_provenance=revision_matches,
     )
 
 
@@ -307,7 +352,6 @@ def paper_position_mutation_allowed_cursor(
                AND adoption.environment='paper'
                AND adoption.deployment_id=%s
                AND adoption.status='ACTIVE'
-               AND adoption.git_revision=%s
               WHERE p.id=%s
                 AND (
                   (
@@ -327,7 +371,6 @@ def paper_position_mutation_allowed_cursor(
             """,
             (
                 str(deployment_id),
-                require_runtime_git_revision(),
                 int(position_id),
             ),
         )
@@ -425,6 +468,7 @@ def record_simulated_fill_evidence(
                         p.inventory_contract_generation,
                         adoption.generation
                       ),
+                      adoption.git_revision,
                       CASE
                         WHEN p.inventory_contract_adoption_id=adoption.adoption_id
                          AND p.inventory_contract_generation=adoption.generation
@@ -446,26 +490,33 @@ def record_simulated_fill_evidence(
                      AND adoption.environment='paper'
                      AND adoption.deployment_id=%s
                      AND adoption.status='ACTIVE'
-                     AND adoption.git_revision=%s
                     WHERE p.id=%s
                     FOR UPDATE OF p
                     """,
                     (
                         str(deployment_id),
-                        require_runtime_git_revision(),
                         int(position_id),
                     ),
                 )
                 generation_gate = cur.fetchone()
                 if generation_gate is None:
                     return False
-                adoption_id, contract_generation, classification = (
-                    generation_gate
-                )
+                (
+                    adoption_id,
+                    contract_generation,
+                    adoption_git_revision,
+                    classification,
+                ) = generation_gate
                 if classification not in (
                     "FORWARD_C2_2", "EXISTING_PROJECTED_C2_2"
                 ):
                     return False
+                log_runtime_revision_provenance_diagnostic(
+                    adoption_id=int(adoption_id),
+                    generation=int(contract_generation),
+                    adoption_git_revision=str(adoption_git_revision),
+                    runtime_git_revision=require_runtime_git_revision(),
+                )
                 cur.execute(
                     """
                     UPDATE positions

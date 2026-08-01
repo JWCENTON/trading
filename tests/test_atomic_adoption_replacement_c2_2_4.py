@@ -8,9 +8,11 @@ import threading
 import pytest
 
 from common.contract_adoption import (
+    contract_adoption_compatible,
     replace_active_contract_adoption,
     require_runtime_git_revision,
     rollback_active_to_prepared_contract_adoption,
+    runtime_revision_matches_adoption_provenance,
 )
 from common.exchange_fill_change_control import (
     InventoryRowGeneration,
@@ -284,12 +286,43 @@ def test_helper_declares_advisory_and_row_locking():
     assert "supersedes_adoption_id=%s" in source
 
 
-def test_old_runtime_revision_fails_closed_after_replacement(monkeypatch):
+def test_runtime_revision_remains_a_rollout_diagnostic(monkeypatch):
     monkeypatch.setenv("GIT_SHA", OLD_SHA)
     assert require_runtime_git_revision() == OLD_SHA
 
     active_generation_sha = NEW_SHA
-    assert require_runtime_git_revision() != active_generation_sha
+    assert not runtime_revision_matches_adoption_provenance(
+        adoption_git_revision=active_generation_sha,
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "compatible"),
+    [
+        ({}, True),
+        ({"contract_name": "OTHER"}, False),
+        ({"environment": "live"}, False),
+        ({"deployment_id": "other-paper"}, False),
+        ({"status": "SUPERSEDED"}, False),
+        ({"generation": 0}, False),
+        ({"generation": 4}, False),
+    ],
+)
+def test_contract_compatibility_excludes_runtime_provenance(
+    overrides, compatible
+):
+    values = {
+        "contract_name": "FEE_AWARE_INVENTORY_C2_2",
+        "environment": "paper",
+        "deployment_id": "local-paper",
+        "status": "ACTIVE",
+        "generation": 5,
+        "expected_environment": "paper",
+        "expected_deployment_id": "local-paper",
+        "expected_generation": 5,
+    }
+    values.update(overrides)
+    assert contract_adoption_compatible(**values) is compatible
 
 
 def test_missing_or_invalid_runtime_revision_fails_closed(monkeypatch):

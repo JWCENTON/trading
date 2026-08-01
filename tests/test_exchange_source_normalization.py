@@ -189,6 +189,7 @@ def test_lei1c_failure_mode_preserves_shadow_legacy_ingest_and_enforces_gate(
                         datetime(
                             2026, 7, 31, 11, 59, tzinfo=timezone.utc
                         ),
+                        "b" * 40,
                     )
                 ]
 
@@ -333,7 +334,7 @@ def test_lei1c_forward_producer_uses_migration_activation_boundary(
             return None
 
         def fetchall(self):
-            return [(17, 3, activated_at)]
+            return [(17, 3, activated_at, "b" * 40)]
 
         def __enter__(self):
             return self

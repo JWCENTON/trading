@@ -9,7 +9,8 @@ from common.simulated_execution_evidence import (
 )
 
 
-GIT_SHA = "b" * 40
+ADOPTION_GIT_SHA = "a" * 40
+RUNTIME_GIT_SHA = "b" * 40
 
 
 def test_two_workers_create_at_most_one_exit_order(
@@ -55,15 +56,18 @@ def test_two_workers_create_at_most_one_exit_order(
                       '2026-08-01T08:01:00Z'
                     );
                     """,
-                    (GIT_SHA,),
+                    (ADOPTION_GIT_SHA,),
                 )
     finally:
         conn.close()
 
-    monkeypatch.setenv("GIT_SHA", GIT_SHA)
+    monkeypatch.setenv("GIT_SHA", RUNTIME_GIT_SHA)
     events = []
 
     def action(result):
+        assert result.active_adoption_git_revision == ADOPTION_GIT_SHA
+        assert result.runtime_git_revision == RUNTIME_GIT_SHA
+        assert result.runtime_revision_matches_adoption_provenance is False
         action_conn = connect()
         try:
             with action_conn:
@@ -106,6 +110,8 @@ def test_two_workers_create_at_most_one_exit_order(
     finally:
         conn.close()
     assert sum(result["ledger_ok"] for result in results) == 1
+    successful = next(result for result in results if result["ledger_ok"])
+    assert successful["position_id"] == 77
     denied = [
         result for result in results
         if result.get("blocked_reason") == "PAPER_EXIT_PREFLIGHT_BLOCKED"
