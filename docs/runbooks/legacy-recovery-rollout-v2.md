@@ -45,8 +45,10 @@ subcommand for consistency.
      check-schema
    ```
 
-   Both `schema_status` and `quarantine_schema.status` must be
-   `PRESENT_VALID`.
+   Global `schema_status` is `PRESENT_VALID` only when all three independent
+   gates pass: `migration_schema_status`, `planner_readiness_status`, and
+   `writer_readiness_status`. Inspect `planner_readiness.order_evidence_source`
+   and its capability flags; a valid migration ledger alone is not readiness.
 
 2. Build the plan for one explicit position:
 
@@ -103,6 +105,51 @@ subcommand for consistency.
 `plan-fill`, `classify-external`, `audit-open-cohort`, and
 `audit-unresolved-closed` remain read-only. They retain the existing explicit
 source identity and evidence contracts.
+
+## Order-evidence capability contract V1
+
+Source selection is based on the explicit `--environment`, deployment ID,
+current database identity, and actual tables/columns. An env-file name is never
+an authority. The supported variants are:
+
+- `PAPER_SIMULATED_ORDER_SOURCE`: PAPER with canonical `simulated_orders` and
+  `simulated_execution_fills_v1` evidence. It never queries `binance_orders`.
+- `LEGACY_ORDER_SOURCE`: PAPER with a sufficient legacy `binance_orders` and
+  `binance_order_fills` contract.
+- `LIVE_EXCHANGE_ORDER_SOURCE`: LIVE exchange order/fill evidence. Incidental
+  simulated tables do not change LIVE routing.
+- `UNSUPPORTED_ORDER_SOURCE`: no executable contract; planning returns
+  `ORDER_EVIDENCE_SOURCE_UNSUPPORTED` as JSON.
+
+When both PAPER sources exist, simulated evidence has deterministic precedence.
+An authoritative legacy linkage for the same position is not silently ignored:
+it blocks with `ORDER_EVIDENCE_SOURCE_CONFLICT`.
+
+`reconciled_position_id` is an optional historical linkage hint, not the only
+authoritative identity. Explicit exchange/client order identity and
+`position_id` remain sufficient. A legacy table without the optional column is
+read with a typed `NULL::BIGINT` projection and never by a query that names the
+absent column.
+
+For old PAPER positions without stored order IDs, entry reconstruction requires
+one exact candidate matching environment, symbol, strategy, interval, side,
+derived order purpose, quantity, price, `created_at <= entry_time`, and a
+maximum five-second delta. The timestamp only bounds an already exact match;
+the planner never picks the nearest row. Zero candidates produce
+`ENTRY_ORDER_EVIDENCE_NOT_FOUND`; multiple candidates produce
+`ENTRY_ORDER_EVIDENCE_AMBIGUOUS`. Exit evidence follows explicit or canonical
+fill linkage and the same exact-match rule where all fields exist.
+
+Plan fingerprint V2 includes source type/table/primary key, exchange/client
+identity, linkage classification, exact matching criteria, timestamp delta,
+quantity, price, and status. Apply re-detects capabilities, locks those exact
+source and fill rows, and re-resolves the candidate set. A changed source, row,
+or new competing candidate produces `PLAN_STALE` before business writes.
+
+Missing tables, optional columns, unsupported variants, and missing or
+ambiguous order evidence must be controlled blockers, never PostgreSQL
+tracebacks. No unambiguous evidence means no repair; the planner never guesses
+order identity.
 
 ## Migration and rollback boundary
 

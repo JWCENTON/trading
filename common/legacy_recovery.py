@@ -731,6 +731,7 @@ class CanonicalPositionLifecycleRepairRepository:
         result: LegacyPositionRecomputation,
         expected_semantic_fingerprint: str,
         exit_order_ids: Sequence[str],
+        order_evidence_source_type: str = "LEGACY_ORDER_SOURCE",
         invocation_identity: str | None = None,
         audit_fingerprint: str | None = None,
         stage_hook: Callable[[str], None] | None = None,
@@ -804,7 +805,9 @@ class CanonicalPositionLifecycleRepairRepository:
         )
         if stage_hook is not None:
             stage_hook("lifecycle")
-        if exit_order_ids:
+        if exit_order_ids and order_evidence_source_type in {
+            "LEGACY_ORDER_SOURCE", "LIVE_EXCHANGE_ORDER_SOURCE",
+        }:
             cur.execute(
                 """
                 UPDATE binance_orders SET status='FILLED'
@@ -996,6 +999,9 @@ class LegacyRecoveryTransactionService:
                         locked.semantic_fingerprint_v1
                     ),
                     exit_order_ids=locked.exit_order_ids,
+                    order_evidence_source_type=str(
+                        locked.order_evidence.get("source_type") or ""
+                    ),
                     invocation_identity=invocation_identity,
                     audit_fingerprint=locked.semantic_fingerprint_v2,
                     stage_hook=stage_hook,

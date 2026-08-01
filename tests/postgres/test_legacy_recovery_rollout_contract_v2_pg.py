@@ -271,7 +271,8 @@ def test_gate_e_position_reader_is_complete_and_decimal_safe(contract_db):
     _apply(contract_db, FORWARD)
     _seed_complete_position(contract_db)
     envelope = LegacyPositionEvidenceRepository().read(
-        contract_db, position_id=3080,
+        contract_db, position_id=3080, environment="LIVE",
+        deployment_id="test-live",
     )
     assert envelope.evidence_status is EvidenceStatus.COMPLETE
     assert str(envelope.evidence.entry_fills[0].quantity) == "0.035152"
@@ -300,7 +301,8 @@ def test_gate_e2_large_unrelated_strategy_history_is_not_read(contract_db):
     contract_db.commit()
     started = time.monotonic()
     envelope = LegacyPositionEvidenceRepository().read(
-        contract_db, position_id=3080,
+        contract_db, position_id=3080, environment="LIVE",
+        deployment_id="test-live",
     )
     elapsed = time.monotonic() - started
     assert envelope.current_state["strategy_events"] == []
@@ -406,7 +408,12 @@ def test_cli_check_schema_uses_explicit_identity_without_credential_output(
         "check-schema",
     ])
     output = capsys.readouterr().out
-    assert code == 0
+    # Migration readiness alone is no longer a global PASS: this fixture does
+    # not install the later quarantine/writer contract.
+    assert code == 3
+    assert '"migration_schema_status":"PRESENT_VALID"' in output
+    assert '"planner_readiness_status":"PRESENT_VALID"' in output
+    assert '"writer_readiness_status":"NOT_READY"' in output
     assert '"transaction_read_only":true' in output
     assert disposable_postgres_v16.password not in output
 

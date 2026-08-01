@@ -21,6 +21,9 @@ from common.legacy_recovery import (
     value_fee,
 )
 from common.legacy_recovery_repository import LegacyPositionEvidenceRepository
+from common.legacy_recovery_order_evidence import (
+    LegacyRecoveryOrderEvidenceRepository,
+)
 from common.legacy_recovery_schema import (
     LegacyRecoverySchemaReadinessRepository,
     SchemaContractStatus,
@@ -131,6 +134,7 @@ class LegacyPositionRepairPlanV2:
     exit_fill_ids: tuple[int, ...]
     provenance_identity: str
     invocation_identity: str
+    order_evidence: Mapping[str, Any]
     artifact_gate: LearningArtifactGate
     evidence_payload: Mapping[str, Any]
 
@@ -719,7 +723,8 @@ class LegacyPositionRepairPlanRepository:
             raise RuntimeError("DEPLOYMENT_ID_REQUIRED")
         database_name = _database_name(connection)
         envelope = LegacyPositionEvidenceRepository().read(
-            connection, position_id=int(position_id),
+            connection, position_id=int(position_id), environment=environment,
+            deployment_id=deployment_id,
         )
         if envelope.evidence is None:
             raise RuntimeError(
@@ -731,6 +736,7 @@ class LegacyPositionRepairPlanRepository:
         state = envelope.current_state or {}
         position = state.get("position") or {}
         fills = tuple(state.get("fills") or ())
+        order_evidence = state.get("order_evidence") or {}
         recomputation = LegacyPositionRecomputationService().recompute(
             envelope.evidence
         )
@@ -796,6 +802,7 @@ class LegacyPositionRepairPlanRepository:
             "position_id": int(position_id),
             "position_state": semantic_repair_state(position),
             "orders": semantic_repair_state(state.get("orders") or []),
+            "order_evidence": order_evidence,
             "fills": semantic_repair_state(fills),
             "entry_order_ids": entry_order_ids,
             "exit_order_ids": exit_order_ids,
@@ -823,7 +830,7 @@ class LegacyPositionRepairPlanRepository:
             recomputation.evidence_fingerprint, fingerprint_v2,
             recomputation, financial_truth, entry_order_ids, exit_order_ids,
             entry_fill_ids, exit_fill_ids, provenance_identity,
-            invocation_identity, artifact_gate, evidence_payload,
+            invocation_identity, order_evidence, artifact_gate, evidence_payload,
         )
 
     @staticmethod
@@ -834,19 +841,7 @@ class LegacyPositionRepairPlanRepository:
         )
         if cur.fetchone() is None:
             raise RuntimeError("POSITION_NOT_FOUND")
-        order_ids = list(plan.entry_order_ids + plan.exit_order_ids)
-        cur.execute(
-            "SELECT id FROM binance_orders WHERE order_id=ANY(%s) "
-            "ORDER BY id FOR UPDATE",
-            (order_ids or [""],),
-        )
-        cur.fetchall()
-        fill_ids = list(plan.entry_fill_ids + plan.exit_fill_ids)
-        cur.execute(
-            "SELECT id FROM binance_order_fills WHERE id=ANY(%s) ORDER BY id FOR UPDATE",
-            (fill_ids or [-1],),
-        )
-        cur.fetchall()
+        LegacyRecoveryOrderEvidenceRepository.lock_order_evidence(cur, plan)
         cur.execute(
             "SELECT audit_id FROM legacy_repair_audit_v1 "
             "WHERE incident_type='LEGACY_POSITION' AND incident_identity=%s "

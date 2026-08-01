@@ -19,6 +19,10 @@ from common.legacy_recovery import (
     semantic_repair_fingerprint,
     value_fee,
 )
+from common.legacy_recovery_order_evidence import (
+    LegacyRecoveryOrderEvidenceRepository,
+    OrderEvidenceSourceType,
+)
 
 
 class EvidenceStatus(str, Enum):
@@ -45,83 +49,173 @@ def _rows(cur) -> list[dict[str, Any]]:
 
 
 class LegacyPositionEvidenceRepository:
-    def read(self, connection, *, position_id: int) -> EvidenceEnvelope:
+    def read(
+        self,
+        connection,
+        *,
+        position_id: int,
+        environment: str,
+        deployment_id: str,
+    ) -> EvidenceEnvelope:
         if int(position_id) <= 0:
             raise ValueError("explicit positive position_id required")
         missing: list[str] = []
         conflicts: list[str] = []
+        position = LegacyRecoveryOrderEvidenceRepository.read_position(
+            connection, position_id=int(position_id),
+        )
+        if position is None:
+            return EvidenceEnvelope(
+                EvidenceStatus.NOT_FOUND, ("POSITION_NOT_FOUND",), (), {},
+            )
+        resolution = LegacyRecoveryOrderEvidenceRepository.resolve(
+            connection, position=position, environment=environment,
+            deployment_id=deployment_id,
+        )
+        missing.extend(resolution.missing_evidence)
+        conflicts.extend(resolution.conflicting_evidence)
+        order_records = resolution.entry_orders + resolution.exit_orders
+        orders = [
+            {
+                "id": item.source_primary_key,
+                "order_id": item.order_identity,
+                "client_order_id": item.client_order_identity,
+                "symbol": position.get("symbol"),
+                "side": item.side,
+                "status": item.status,
+                "position_id": int(position_id),
+                "reconciled_position_id": None,
+                "strategy": position.get("strategy"),
+                "interval": position.get("interval"),
+                "order_purpose": item.order_purpose,
+                "requested_qty": item.quantity,
+                "price": item.price,
+                "source_table": item.source_table,
+                "source_primary_key": item.source_primary_key,
+                "linkage_type": item.linkage_type,
+                "matching_criteria": item.matching_criteria,
+                "timestamp_delta_ms": item.timestamp_delta_ms,
+                "source_type": item.source_type.value,
+            }
+            for item in order_records
+        ]
+        if not orders:
+            missing.append("LINKED_ORDERS")
+        order_ids = [item.order_identity for item in order_records]
         with connection.cursor() as cur:
-            cur.execute("SELECT * FROM positions WHERE id=%s", (int(position_id),))
-            positions = _rows(cur)
-            if not positions:
-                return EvidenceEnvelope(
-                    EvidenceStatus.NOT_FOUND, ("POSITION_NOT_FOUND",), (), {},
-                )
-            if len(positions) != 1:
-                return EvidenceEnvelope(
-                    EvidenceStatus.CONFLICT, (), ("MULTIPLE_POSITIONS",), {},
-                )
-            position = positions[0]
             position_symbol = str(position.get("symbol") or "").upper()
-            cur.execute(
-                """
-                SELECT * FROM binance_orders
-                WHERE position_id=%s OR reconciled_position_id=%s
-                   OR order_id IN (%s,%s)
-                ORDER BY id
-                """,
-                (
-                    int(position_id), int(position_id),
-                    position.get("entry_order_id"),
-                    position.get("exit_order_id"),
-                ),
+            if (
+                resolution.capabilities.source_type
+                is OrderEvidenceSourceType.PAPER_SIMULATED_ORDER_SOURCE
+                and resolution.capabilities.simulated_execution_fills
+            ):
+                cur.execute(
+                    """
+                    SELECT sf.id,'simulator'::text AS source,
+                           ('simulated:' || sf.id::text) AS trade_id,
+                           sf.simulated_order_id::text AS order_id,sf.symbol,
+                           sf.side,sf.fill_qty AS executed_qty,
+                           sf.fill_price AS avg_price,
+                           sf.fee_qty AS commission_amount,
+                           sf.fee_asset AS commission_asset,
+                           sf.execution_at AS event_time,
+                           sf.order_purpose,im.step_size,
+                           im.quantity_precision,im.base_asset,im.quote_asset,
+                           im.metadata_fingerprint,ai.identity_fingerprint
+                    FROM public.simulated_execution_fills_v1 sf
+                    LEFT JOIN public.financial_truth_instrument_snapshot_v1 im
+                      ON im.id=sf.instrument_snapshot_id
+                    LEFT JOIN public.financial_truth_account_identity_v1 ai
+                      ON ai.id=sf.account_identity_id
+                    WHERE sf.position_id=%s
+                      AND sf.simulated_order_id=ANY(%s)
+                      AND lower(sf.environment)=%s AND sf.deployment_id=%s
+                    ORDER BY sf.execution_at,sf.id
+                    """,
+                    (
+                        int(position_id),
+                        [int(value) for value in order_ids] or [-1],
+                        str(environment).lower(), str(deployment_id),
+                    ),
+                )
+                fills = _rows(cur)
+                ingestion = []
+            elif (
+                resolution.capabilities.source_type
+                in {
+                    OrderEvidenceSourceType.LEGACY_ORDER_SOURCE,
+                    OrderEvidenceSourceType.LIVE_EXCHANGE_ORDER_SOURCE,
+                }
+                and resolution.capabilities.binance_order_fills
+            ):
+                cur.execute(
+                    """
+                    SELECT f.id,f.source,f.trade_id,f.order_id,f.symbol,f.side,
+                           f.executed_qty,f.avg_price,f.commission_amount,
+                           f.commission_asset,f.event_time,
+                           im.step_size,im.quantity_precision,
+                           im.base_asset,im.quote_asset,im.metadata_fingerprint,
+                           ai.identity_fingerprint
+                    FROM public.binance_order_fills f
+                    LEFT JOIN public.financial_truth_instrument_snapshot_v1 im
+                      ON im.id=f.instrument_snapshot_id
+                    LEFT JOIN public.financial_truth_account_identity_v1 ai
+                      ON ai.id=f.account_identity_id
+                    WHERE f.order_id=ANY(%s)
+                    ORDER BY f.event_time,f.id
+                    """,
+                    (order_ids or [""],),
+                )
+                fills = _rows(cur)
+                cur.execute(
+                    "SELECT to_regclass('public.exchange_fill_ingestion_state_v2')"
+                )
+                if cur.fetchone()[0] is None:
+                    ingestion = []
+                else:
+                    cur.execute(
+                        "SELECT to_jsonb(i) AS row FROM "
+                        "public.exchange_fill_ingestion_state_v2 i "
+                        "WHERE order_id=ANY(%s) ORDER BY ingestion_id",
+                        (order_ids or [""],),
+                    )
+                    ingestion = [row[0] for row in cur.fetchall()]
+                if not ingestion:
+                    missing.append("INGESTION_EVIDENCE")
+            else:
+                fills = []
+                ingestion = []
+
+            def json_rows(table: str, key: str, value: Any, order: str):
+                cur.execute(f"SELECT to_regclass('public.{table}')")
+                if cur.fetchone()[0] is None:
+                    return []
+                cur.execute(
+                    f"SELECT to_jsonb(t) FROM public.{table} t "
+                    f"WHERE {key}=%s ORDER BY {order}",
+                    (value,),
+                )
+                return [row[0] for row in cur.fetchall()]
+
+            lifecycle = json_rows(
+                "position_lifecycle_events_c2_2", "position_id",
+                int(position_id), "event_id",
             )
-            orders = _rows(cur)
-            order_ids = [str(row["order_id"]) for row in orders]
-            if not order_ids:
-                missing.append("LINKED_ORDERS")
-            cur.execute(
-                """
-                SELECT f.*,im.step_size,im.quantity_precision,
-                       im.base_asset,im.quote_asset,im.metadata_fingerprint,
-                       ai.identity_fingerprint
-                FROM binance_order_fills f
-                LEFT JOIN financial_truth_instrument_snapshot_v1 im
-                  ON im.id=f.instrument_snapshot_id
-                LEFT JOIN financial_truth_account_identity_v1 ai
-                  ON ai.id=f.account_identity_id
-                WHERE f.order_id=ANY(%s)
-                ORDER BY f.event_time,f.id
-                """,
-                (order_ids or [""],),
+            financial_truth = json_rows(
+                "canonical_financial_truth_v1", "position_id",
+                int(position_id), "position_id",
             )
-            fills = _rows(cur)
-            cur.execute(
-                "SELECT * FROM exchange_fill_ingestion_state_v2 "
-                "WHERE order_id=ANY(%s) ORDER BY ingestion_id",
-                (order_ids or [""],),
-            )
-            ingestion = _rows(cur)
-            if not ingestion:
-                missing.append("INGESTION_EVIDENCE")
-            cur.execute(
-                "SELECT * FROM position_lifecycle_events_c2_2 "
-                "WHERE position_id=%s ORDER BY event_id",
-                (int(position_id),),
-            )
-            lifecycle = _rows(cur)
-            cur.execute(
-                "SELECT * FROM canonical_financial_truth_v1 WHERE position_id=%s",
-                (int(position_id),),
-            )
-            financial_truth = _rows(cur)
-            cur.execute(
-                "SELECT * FROM legacy_repair_audit_v1 "
-                "WHERE incident_type='LEGACY_POSITION' AND incident_identity=%s "
-                "ORDER BY recorded_at,audit_id",
-                (str(position_id),),
-            )
-            audit = _rows(cur)
+            cur.execute("SELECT to_regclass('public.legacy_repair_audit_v1')")
+            if cur.fetchone()[0] is None:
+                audit = []
+            else:
+                cur.execute(
+                    "SELECT to_jsonb(a) FROM public.legacy_repair_audit_v1 a "
+                    "WHERE incident_type='LEGACY_POSITION' "
+                    "AND incident_identity=%s ORDER BY recorded_at,audit_id",
+                    (str(position_id),),
+                )
+                audit = [row[0] for row in cur.fetchall()]
 
         symbols = {
             str(row.get("symbol") or "").upper()
@@ -225,6 +319,7 @@ class LegacyPositionEvidenceRepository:
             "position": position, "orders": orders, "fills": fills,
             "ingestion": ingestion, "lifecycle": lifecycle,
             "financial_truth": financial_truth, "audit": audit,
+            "order_evidence": resolution.fingerprint_payload(),
             # Strategy telemetry is deliberately excluded. Economic evidence is
             # linked by position/order IDs above; a symbol-wide telemetry scan
             # is neither authoritative nor bounded.
@@ -242,6 +337,7 @@ class LegacyPositionEvidenceRepository:
                     str(row["metadata_fingerprint"]) for row in fills
                     if row.get("metadata_fingerprint")
                 }),
+                "order_evidence": resolution.fingerprint_payload(),
             },
             evidence, state,
         )
@@ -263,16 +359,60 @@ class UnappliedFillEvidenceRepository:
             )
             ingestion = _rows(cur)
             cur.execute(
-                "SELECT * FROM binance_orders WHERE order_id=%s ORDER BY id",
-                (order_id,),
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='binance_orders'
+                """
             )
-            orders = _rows(cur)
+            order_columns = {str(row[0]) for row in cur.fetchall()}
+            required_order_columns = {
+                "id", "order_id", "client_order_id", "position_id",
+            }
+            if required_order_columns.issubset(order_columns):
+                reconciled_projection = (
+                    "reconciled_position_id"
+                    if "reconciled_position_id" in order_columns
+                    else "NULL::BIGINT AS reconciled_position_id"
+                )
+                optional = [
+                    (
+                        f'"{name}" AS {name}' if name == "interval" else name
+                    ) if name in order_columns else f"NULL::TEXT AS {name}"
+                    for name in ("strategy", "interval", "order_purpose")
+                ]
+                cur.execute(
+                    "SELECT id,order_id,client_order_id,position_id,"
+                    + reconciled_projection + "," + ",".join(optional)
+                    + " FROM public.binance_orders WHERE order_id=%s ORDER BY id",
+                    (order_id,),
+                )
+                orders = _rows(cur)
+            else:
+                orders = []
             cur.execute(
-                "SELECT * FROM binance_order_fills "
-                "WHERE lower(source)=lower(%s) AND trade_id=%s",
-                (source, trade_id),
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema='public'
+                  AND table_name='binance_order_fills'
+                """
             )
-            fills = _rows(cur)
+            fill_columns = {str(row[0]) for row in cur.fetchall()}
+            required_fill_columns = {
+                "id", "source", "trade_id", "order_id", "symbol", "side",
+                "executed_qty", "avg_price", "commission_amount",
+                "commission_asset", "event_time",
+            }
+            if required_fill_columns.issubset(fill_columns):
+                cur.execute(
+                    "SELECT id,source,trade_id,order_id,symbol,side,"
+                    "executed_qty,avg_price,commission_amount,commission_asset,"
+                    "event_time FROM public.binance_order_fills "
+                    "WHERE lower(source)=lower(%s) AND trade_id=%s",
+                    (source, trade_id),
+                )
+                fills = _rows(cur)
+            else:
+                fills = []
         if not ingestion:
             return EvidenceEnvelope(
                 EvidenceStatus.NOT_FOUND, ("INGESTION_NOT_FOUND",), (), {},

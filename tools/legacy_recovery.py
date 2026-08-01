@@ -30,6 +30,9 @@ from common.legacy_recovery_repository import (
     LegacyPositionEvidenceRepository,
     UnappliedFillEvidenceRepository,
 )
+from common.legacy_recovery_order_evidence import (
+    LegacyRecoveryOrderEvidenceRepository,
+)
 from common.legacy_recovery_schema import (
     LegacyRecoverySchemaReadinessRepository,
     SchemaContractStatus,
@@ -170,11 +173,24 @@ def _quarantine_schema(connection) -> dict[str, Any]:
     return _json_value(readiness)
 
 
+def _order_readiness(connection, args) -> dict[str, Any]:
+    capabilities = LegacyRecoveryOrderEvidenceRepository.detect_capabilities(
+        connection, environment=args.environment,
+        deployment_id=args.deployment_id or "READ_ONLY_PLANNER",
+    )
+    return _json_value(capabilities.public_payload())
+
+
 def _position(connection, args, environment_identity, schema):
     if schema["status"] != SchemaContractStatus.PRESENT_VALID.value:
         raise RuntimeError("SCHEMA_NOT_READY")
     envelope = LegacyPositionEvidenceRepository().read(
         connection, position_id=args.position_id,
+        environment=environment_identity["environment"],
+        deployment_id=(
+            getattr(args, "deployment_id", None)
+            or "READ_ONLY_PLANNER"
+        ),
     )
     base = {
         "schema_status": schema["status"],
@@ -185,6 +201,7 @@ def _position(connection, args, environment_identity, schema):
         "evidence_status": envelope.evidence_status.value,
         "missing_evidence": envelope.missing_evidence,
         "conflicting_evidence": envelope.conflicting_evidence,
+        "order_evidence": envelope.source_provenance.get("order_evidence"),
         "provenance_completeness": (
             "COMPLETE"
             if envelope.source_provenance.get("account_fingerprints")
@@ -193,8 +210,32 @@ def _position(connection, args, environment_identity, schema):
         ),
     }
     if envelope.evidence is None:
+        reasons = list(
+            envelope.missing_evidence + envelope.conflicting_evidence
+        )
+        priority = (
+            "ORDER_EVIDENCE_SOURCE_UNSUPPORTED",
+            "ORDER_EVIDENCE_SOURCE_CONFLICT",
+            "ENTRY_ORDER_EVIDENCE_AMBIGUOUS",
+            "ENTRY_ORDER_EVIDENCE_NOT_FOUND",
+            "EXIT_ORDER_EVIDENCE_AMBIGUOUS",
+            "EXIT_ORDER_EVIDENCE_NOT_FOUND",
+        )
+        reason = next(
+            (item for item in priority if item in reasons),
+            reasons[0] if reasons else "POSITION_EVIDENCE_INCOMPLETE",
+        )
+        order_evidence = envelope.source_provenance.get("order_evidence") or {}
+        candidate_count = None
+        if reason == "ENTRY_ORDER_EVIDENCE_AMBIGUOUS":
+            candidate_count = len(order_evidence.get("entry_orders") or [])
+        elif reason == "EXIT_ORDER_EVIDENCE_AMBIGUOUS":
+            candidate_count = len(order_evidence.get("exit_orders") or [])
         return {
-            **base, "semantic_fingerprint": None,
+            **base, "status": "BLOCKED", "reason": reason,
+            "position_id": args.position_id,
+            "candidate_count": candidate_count,
+            "semantic_fingerprint": None,
             "gross_entry_qty": None, "base_asset_entry_fee_qty": None,
             "net_entry_inventory_qty": None, "gross_exit_qty": None,
             "base_asset_exit_fee_qty": None,
@@ -211,9 +252,7 @@ def _position(connection, args, environment_identity, schema):
             "financial_truth_eligibility": False,
             "eligible_actions": [],
             "blocked_actions": list(LegacyRecoveryPlanner.POSITION_ACTIONS),
-            "blocking_reasons": list(
-                envelope.missing_evidence + envelope.conflicting_evidence
-            ),
+            "blocking_reasons": reasons,
             "expected_row_changes": [],
             "post_state_invariants": ["NO_WRITES"],
         }
@@ -508,9 +547,13 @@ def _raw_inventory(state):
     return gross_entry, net_entry, gross_exit, net_entry - gross_exit - exit_base_fee
 
 
-def _cohort_item(connection, position_id: int, *, closed: bool):
+def _cohort_item(
+    connection, position_id: int, *, closed: bool, environment: str,
+    deployment_id: str,
+):
     envelope = LegacyPositionEvidenceRepository().read(
-        connection, position_id=position_id,
+        connection, position_id=position_id, environment=environment,
+        deployment_id=deployment_id,
     )
     state = envelope.current_state or {}
     position = state.get("position") or {}
@@ -614,7 +657,13 @@ def _cohort(connection, args, environment_identity, schema, *, closed: bool):
             )
         ids = [int(row[0]) for row in cur.fetchall()]
     items = [
-        _cohort_item(connection, position_id, closed=closed)
+        _cohort_item(
+            connection, position_id, closed=closed,
+            environment=environment_identity["environment"],
+            deployment_id=(
+                getattr(args, "deployment_id", None) or "READ_ONLY_PLANNER"
+            ),
+        )
         for position_id in ids
     ]
     statuses = [item["planner_status"] for item in items]
@@ -679,11 +728,43 @@ def main(argv=None) -> int:
             schema = _schema(connection)
             if args.command == "check-schema":
                 quarantine = _quarantine_schema(connection)
+                planner = _order_readiness(connection, args)
+                migration_ok = schema["status"] == "PRESENT_VALID"
+                planner_ok = planner["status"] == "PRESENT_VALID"
+                writer_ok = (
+                    planner.get("writer_status") == "PRESENT_VALID"
+                    and quarantine["status"] == "PRESENT_VALID"
+                )
+                global_ok = migration_ok and planner_ok and writer_ok
                 result = {
-                    "schema_status": schema["status"],
+                    "schema_status": (
+                        "PRESENT_VALID" if global_ok else "NOT_READY"
+                    ),
+                    "migration_schema_status": schema["status"],
+                    "planner_readiness_status": planner["status"],
+                    "writer_readiness_status": (
+                        "PRESENT_VALID" if writer_ok else "NOT_READY"
+                    ),
                     "environment_identity": identity,
                     "schema": schema,
                     "quarantine_schema": quarantine,
+                    "planner_readiness": planner,
+                    "writer_readiness": {
+                        "status": (
+                            "PRESENT_VALID" if writer_ok else "NOT_READY"
+                        ),
+                        "issues": (
+                            [] if writer_ok else list(dict.fromkeys(
+                                list(planner.get("issues") or [])
+                                + list(planner.get("writer_issues") or [])
+                                + (
+                                    list(quarantine.get("issues") or [])
+                                    if quarantine["status"] != "PRESENT_VALID"
+                                    else []
+                                )
+                            ))
+                        ),
+                    },
                 }
             elif args.command == "plan-position":
                 result = _position(connection, args, identity, schema)
@@ -709,6 +790,13 @@ def main(argv=None) -> int:
         return (
             0 if result["schema_status"] == "PRESENT_VALID" else 3
         )
+    except (psycopg2.errors.UndefinedTable, psycopg2.errors.UndefinedColumn):
+        print(json.dumps({
+            "status": "BLOCKED",
+            "reason": "PLANNER_SCHEMA_DEPENDENCY_UNAVAILABLE",
+            "command": getattr(args, "command", None),
+        }, sort_keys=True), file=sys.stderr)
+        return 2
     except Exception as exc:
         print(json.dumps({
             "status": "BLOCKED",

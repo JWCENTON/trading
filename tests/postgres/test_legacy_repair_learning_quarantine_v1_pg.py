@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from common.legacy_recovery import LegacyRecoveryTransactionService
+from common.legacy_recovery import (
+    LegacyRecoveryTransactionService,
+    semantic_repair_fingerprint,
+)
 from common.legacy_repair_quarantine import (
     ArtifactGateClassification,
     LearningArtifactRepository,
@@ -527,6 +531,20 @@ def test_successful_repair_is_atomic_quarantined_and_idempotent(quarantine_db):
         deployment_id=DEPLOYMENT,
     )
     assert plan.eligible, plan.blocking_reasons
+    assert plan.order_evidence["source_type"] == "LEGACY_ORDER_SOURCE"
+    assert plan.evidence_payload["order_evidence"]["entry_orders"][0][
+        "source_primary_key"
+    ]
+    assert semantic_repair_fingerprint(plan.evidence_payload) == (
+        plan.semantic_fingerprint_v2
+    )
+    changed_source = deepcopy(plan.evidence_payload)
+    changed_source["order_evidence"]["entry_orders"][0][
+        "source_primary_key"
+    ] += 1
+    assert semantic_repair_fingerprint(changed_source) != (
+        plan.semantic_fingerprint_v2
+    )
     assert plan.artifact_gate.classification is (
         ArtifactGateClassification.BENIGN_OPEN_INCOMPLETE_ARTIFACTS
     )
