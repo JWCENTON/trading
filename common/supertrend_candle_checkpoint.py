@@ -190,6 +190,7 @@ def assess_freshness(
 
 class CheckpointStore(Protocol):
     def load(self) -> CheckpointSnapshot | None: ...
+    def last_event_reason(self) -> str | None: ...
     def observe(self, assessment: FreshnessAssessment) -> None: ...
     def advance(
         self, *, expected_before: datetime | None, processed_open_time: datetime,
@@ -225,6 +226,10 @@ def process_resume_workset(
         checkpoint_before=checkpoint,
         latest_closed_candle_open_time=latest_closed_candle_open_time,
         candidate_open_times=open_times,
+    )
+    previous_evidence_pending = (
+        assessment.state is FreshnessState.CATCHING_UP
+        and store.last_event_reason() == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
     )
     store.observe(assessment)
     if assessment.state in {FreshnessState.READY, FreshnessState.STALLED}:
@@ -265,6 +270,27 @@ def process_resume_workset(
                 resume_source=assessment.resume_source,
             )
         except CandleEvidencePending:
+            if previous_evidence_pending:
+                stalled = FreshnessAssessment(
+                    state=FreshnessState.STALLED,
+                    checkpoint_before=current_checkpoint,
+                    latest_closed_candle_open_time=(
+                        assessment.latest_closed_candle_open_time
+                    ),
+                    backlog_size=remaining + 1,
+                    reason="CANDLE_DEPENDENT_EVIDENCE_NO_PROGRESS",
+                    resume_source=assessment.resume_source,
+                )
+                store.mark_stalled(
+                    expected_before=current_checkpoint,
+                    latest_closed_candle_open_time=(
+                        assessment.latest_closed_candle_open_time
+                    ),
+                    backlog_size=remaining + 1,
+                    reason=stalled.reason,
+                    resume_source=assessment.resume_source,
+                )
+                return ResumeResult(stalled, tuple(processed), current_checkpoint)
             pending = FreshnessAssessment(
                 state=FreshnessState.CATCHING_UP,
                 checkpoint_before=current_checkpoint,
@@ -342,6 +368,29 @@ class PostgresCheckpointStore:
         try:
             with conn.cursor() as cur:
                 return self._select(cur)
+        finally:
+            try:
+                conn.rollback()
+            finally:
+                conn.close()
+
+    def last_event_reason(self) -> str | None:
+        conn = self.connection_factory()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT reason
+                    FROM public.supertrend_candle_checkpoint_event_v1
+                    WHERE environment=%s AND deployment_id=%s AND symbol=%s
+                      AND "interval"=%s AND strategy=%s
+                    ORDER BY event_id DESC
+                    LIMIT 1
+                    """,
+                    self._identity_params,
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row is not None else None
         finally:
             try:
                 conn.rollback()

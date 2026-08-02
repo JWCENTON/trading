@@ -32,6 +32,16 @@ class MemoryStore:
     def load(self):
         return self.snapshot
 
+    def last_event_reason(self):
+        if not self.events:
+            return None
+        event = self.events[-1]
+        if event[0] == "OBSERVED":
+            return event[1].reason
+        if event[0] == "STALLED":
+            return event[2]
+        return None
+
     def observe(self, assessment):
         self.events.append(("OBSERVED", assessment))
         if self.snapshot is not None:
@@ -155,6 +165,26 @@ def test_pending_dependent_evidence_catches_up_without_advancing_then_becomes_re
     assert processed == [(t1, FreshnessState.READY)]
     assert caught_up.checkpoint_after == t1
     assert store.snapshot.state is FreshnessState.READY
+
+
+def test_repeated_pending_evidence_without_progress_becomes_stalled():
+    store = MemoryStore(T0)
+    t1 = T0 + timedelta(minutes=1)
+
+    def pending(*_args):
+        raise CandleEvidencePending("indicator evidence pending")
+
+    first = _run(store, latest=t1, work=[t1], processor=pending)
+    assert first.assessment.state is FreshnessState.CATCHING_UP
+    second = _run(store, latest=t1, work=[t1], processor=pending)
+    assert second.assessment.state is FreshnessState.STALLED
+    assert second.assessment.reason == "CANDLE_DEPENDENT_EVIDENCE_NO_PROGRESS"
+    assert second.checkpoint_after == T0
+    assert store.snapshot.last_processed_candle_open_time == T0
+    assert store.snapshot.state is FreshnessState.STALLED
+    assert store.events[-1] == (
+        "STALLED", T0, "CANDLE_DEPENDENT_EVIDENCE_NO_PROGRESS",
+    )
 
 
 def test_dependent_evidence_is_pending_but_sequence_or_core_evidence_is_stalled(
