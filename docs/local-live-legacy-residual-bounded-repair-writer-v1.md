@@ -85,6 +85,13 @@ while all eligible Learning views exclude the repaired outcome. A complete repea
 run with the same fingerprint is an `ALREADY_REPAIRED` no-op. Partial artifacts or
 any fingerprint conflict fail closed.
 
+The canonical closed-position eligibility view exposes the position identity as
+`id` (directly from `positions.id`), while the remaining eligibility views expose
+`position_id`. The writer validates each explicit view/column contract, reads at
+most two matching rows, and fails closed if a view returns a duplicate identity.
+It never catches `UndefinedColumn`, probes alternate column names, or changes the
+production view schema.
+
 ## Production apply runbook
 
 Production apply is intentionally not authorized by this patch. After a fresh PLAN

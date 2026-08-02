@@ -84,16 +84,16 @@ PLANNED_MUTATIONS = (
     "legacy_repair_audit_v1:INSERT",
     "legacy_repair_provenance_v1:INSERT",
 )
-ELIGIBLE_LEARNING_VIEWS = (
-    "v_learning_eligible_closed_positions_v1",
-    "v_learning_eligible_exit_trace_v1",
-    "v_learning_eligible_exit_trace_v2",
-    "v_learning_eligible_exit_trace_v3",
-    "v_learning_eligible_shadow_recommendations_v1",
-    "v_learning_eligible_feature_warehouse_v1",
-    "v_learning_eligible_decision_replay_v1",
-    "v_learning_eligible_decision_registry_v1",
-    "v_learning_eligible_decision_outcomes_v1",
+LEARNING_ELIGIBILITY_VIEW_CONTRACTS = (
+    ("v_learning_eligible_closed_positions_v1", "id"),
+    ("v_learning_eligible_exit_trace_v1", "position_id"),
+    ("v_learning_eligible_exit_trace_v2", "position_id"),
+    ("v_learning_eligible_exit_trace_v3", "position_id"),
+    ("v_learning_eligible_shadow_recommendations_v1", "position_id"),
+    ("v_learning_eligible_feature_warehouse_v1", "position_id"),
+    ("v_learning_eligible_decision_replay_v1", "position_id"),
+    ("v_learning_eligible_decision_registry_v1", "position_id"),
+    ("v_learning_eligible_decision_outcomes_v1", "position_id"),
 )
 
 
@@ -120,6 +120,23 @@ def _json_safe(value: Any) -> Any:
 def _rows(cur) -> list[dict[str, Any]]:
     names = [column[0] for column in cur.description]
     return [dict(zip(names, row)) for row in cur.fetchall()]
+
+
+def is_position_learning_eligible(
+    cur, *, view_name: str, position_column: str, position_id: int,
+) -> bool:
+    contract = (str(view_name), str(position_column))
+    if contract not in LEARNING_ELIGIBILITY_VIEW_CONTRACTS:
+        raise RuntimeError("LEARNING_ELIGIBILITY_VIEW_CONTRACT_INVALID")
+    cur.execute(
+        f"SELECT {position_column} AS position_id FROM {view_name} "
+        f"WHERE {position_column}=%s LIMIT 2",
+        (int(position_id),),
+    )
+    rows = cur.fetchall()
+    if len(rows) > 1:
+        raise RuntimeError("LEARNING_ELIGIBILITY_DUPLICATE_POSITION:" + view_name)
+    return bool(rows)
 
 
 def _one(cur) -> dict[str, Any] | None:
@@ -1127,10 +1144,14 @@ class BoundedResidualRepairService:
 
     @staticmethod
     def _assert_learning_excluded(cur, position_id: int) -> None:
-        for view in ELIGIBLE_LEARNING_VIEWS:
-            cur.execute(f"SELECT count(*) FROM {view} WHERE position_id=%s", (position_id,))
-            if int(cur.fetchone()[0]):
-                raise RuntimeError("LEARNING_READER_EXCLUSION_FAILED:" + view)
+        for view_name, position_column in LEARNING_ELIGIBILITY_VIEW_CONTRACTS:
+            if is_position_learning_eligible(
+                cur, view_name=view_name, position_column=position_column,
+                position_id=position_id,
+            ):
+                raise RuntimeError(
+                    "LEARNING_READER_EXCLUSION_FAILED:" + view_name
+                )
 
     def apply(
         self,

@@ -15,6 +15,7 @@ from common.local_live_legacy_residual_repair import (
     ManifestPosition,
     RepairManifest,
     RuntimeIdentity,
+    is_position_learning_eligible,
 )
 from tests.postgres.database_baseline_fixture import disposable_postgres_v16
 
@@ -161,7 +162,7 @@ CREATE TABLE decision_outcomes_v1(id BIGSERIAL PRIMARY KEY,position_id BIGINT);
 CREATE TABLE learning_feedback_shadow_recommendations(id BIGSERIAL PRIMARY KEY,position_id BIGINT);
 CREATE TABLE decision_registry_v1(id BIGSERIAL PRIMARY KEY,position_id BIGINT);
 CREATE VIEW v_learning_eligible_closed_positions_v1 AS
- SELECT id AS position_id FROM positions p WHERE status='CLOSED' AND exit_time IS NOT NULL
+ SELECT id FROM positions p WHERE status='CLOSED' AND exit_time IS NOT NULL
  AND NOT EXISTS(SELECT 1 FROM learning_outcome_exclusion_v1 x WHERE x.position_id=p.id);
 CREATE VIEW v_learning_eligible_exit_trace_v1 AS SELECT position_id FROM exit_trace_v1 s
  WHERE NOT EXISTS(SELECT 1 FROM learning_outcome_exclusion_v1 x WHERE x.position_id=s.position_id);
@@ -347,6 +348,124 @@ def _scalar(pg, sql, params=()):
             return cur.fetchone()[0]
     finally:
         connection.close()
+
+
+def _eligibility_test_database(disposable_postgres_v16, database):
+    disposable_postgres_v16.create_database(database)
+    pg = replace(disposable_postgres_v16, database=database)
+    connection = pg.connect()
+    try:
+        _seed(connection)
+    finally:
+        connection.close()
+    return pg
+
+
+def test_closed_position_eligibility_uses_id_and_exclusion(
+    disposable_postgres_v16,
+):
+    pg = _eligibility_test_database(
+        disposable_postgres_v16,
+        "waltrade_baseline_test_residual_learning_id_v1",
+    )
+    connection = pg.connect()
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                "UPDATE positions SET status='CLOSED',exit_time=now() WHERE id=3079"
+            )
+            assert is_position_learning_eligible(
+                cur, view_name="v_learning_eligible_closed_positions_v1",
+                position_column="id", position_id=3079,
+            ) is True
+            with pytest.raises(
+                RuntimeError, match="LEARNING_READER_EXCLUSION_FAILED",
+            ):
+                BoundedResidualRepairService._assert_learning_excluded(cur, 3079)
+        connection.rollback()
+        assert _scalar(
+            pg, "SELECT count(*) FROM positions WHERE id=3079 AND status='CLOSED'"
+        ) == 0
+        with connection.cursor() as cur:
+            cur.execute(
+                "UPDATE positions SET status='CLOSED',exit_time=now() WHERE id=3079"
+            )
+            cur.execute(
+                "INSERT INTO learning_outcome_exclusion_v1("
+                "environment,deployment_id,position_id,exclusion_reason,"
+                "source_type,semantic_fingerprint_v2,created_by,git_sha) "
+                "VALUES('LIVE','local-live',3079,'LEGACY_REPAIR',"
+                "'LEGACY_POSITION_REPAIR',%s,'test',%s)",
+                ("1" * 64, GIT_SHA),
+            )
+            assert is_position_learning_eligible(
+                cur, view_name="v_learning_eligible_closed_positions_v1",
+                position_column="id", position_id=3079,
+            ) is False
+            BoundedResidualRepairService._assert_learning_excluded(cur, 3079)
+        connection.rollback()
+    finally:
+        connection.close()
+    assert _scalar(
+        pg, "SELECT count(*) FROM positions WHERE id=3079 AND status='CLOSED'"
+    ) == 0
+    assert _scalar(
+        pg, "SELECT count(*) FROM learning_outcome_exclusion_v1 WHERE position_id=3079"
+    ) == 0
+
+
+@pytest.mark.parametrize("duplicate", [False, True], ids=["visible", "duplicate"])
+def test_learning_eligibility_failure_rolls_back_without_partial_artifacts(
+    disposable_postgres_v16, duplicate,
+):
+    suffix = "duplicate" if duplicate else "visible"
+    pg = _eligibility_test_database(
+        disposable_postgres_v16,
+        f"waltrade_baseline_test_residual_learning_{suffix}_v1",
+    )
+    _execute(
+        pg,
+        "DROP VIEW v_learning_eligible_closed_positions_v1;"
+        "CREATE VIEW v_learning_eligible_closed_positions_v1 AS "
+        "SELECT id FROM positions WHERE status='CLOSED'"
+        + (
+            " UNION ALL SELECT id FROM positions WHERE status='CLOSED'"
+            if duplicate else ""
+        ),
+    )
+    connection = pg.connect()
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "LEARNING_ELIGIBILITY_DUPLICATE_POSITION"
+                if duplicate else "LEARNING_READER_EXCLUSION_FAILED"
+            ),
+        ):
+            with connection.cursor() as cur:
+                cur.execute(
+                    "UPDATE positions SET status='CLOSED',exit_time=now() WHERE id=3079"
+                )
+                cur.execute(
+                    "INSERT INTO learning_outcome_exclusion_v1("
+                    "environment,deployment_id,position_id,exclusion_reason,"
+                    "source_type,semantic_fingerprint_v2,created_by,git_sha) "
+                    "VALUES('LIVE','local-live',3079,'LEGACY_REPAIR',"
+                    "'LEGACY_POSITION_REPAIR',%s,'test',%s)",
+                    ("1" * 64, GIT_SHA),
+                )
+                BoundedResidualRepairService._assert_learning_excluded(cur, 3079)
+        connection.rollback()
+    finally:
+        connection.close()
+    assert _scalar(
+        pg, "SELECT count(*) FROM positions WHERE id=3079 AND status='CLOSED'"
+    ) == 0
+    assert _scalar(
+        pg, "SELECT count(*) FROM learning_outcome_exclusion_v1 WHERE position_id=3079"
+    ) == 0
+    assert _scalar(pg, "SELECT count(*) FROM canonical_financial_truth_v1") == 0
+    assert _scalar(pg, "SELECT count(*) FROM legacy_repair_audit_v1") == 0
 
 
 def test_disposable_pg_bounded_writer_contract(disposable_postgres_v16, monkeypatch):
