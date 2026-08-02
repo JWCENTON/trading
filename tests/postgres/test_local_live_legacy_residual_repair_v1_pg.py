@@ -554,20 +554,24 @@ def _seed_vps_profile(connection):
     return exchange_evidence
 
 
-def _vps_manifest():
+def _vps_manifest(fingerprints=None):
+    fingerprints = fingerprints or {
+        position_id: "0" * 64 for position_id in VPS_CASES
+    }
     return RepairManifest("LIVE", "vps-live", tuple(
         ManifestPosition(
-            position_id, values[4], values[5], "0" * 64,
+            position_id, values[4], values[5], fingerprints[position_id],
         )
         for position_id, values in sorted(VPS_CASES.items())
     ))
 
 
-def _vps_service(pg, exchange):
+def _vps_service(pg, exchange, manifest=None):
     return BoundedResidualRepairService(
         pg.connect, exchange,
         RuntimeIdentity("OKX", "LIVE", "vps-live", GIT_SHA, "PROCESS_SUPERVISOR"),
-        _vps_manifest(), expected_git_sha=GIT_SHA, expected_database=pg.database,
+        manifest or _vps_manifest(),
+        expected_git_sha=GIT_SHA, expected_database=pg.database,
     )
 
 
@@ -621,6 +625,15 @@ def test_vps_live_profile_read_only_candidate_contract(
             item.financial_truth.precision_contract_version
             == PRECISION_CONTRACT_VERSION
         )
+    fingerprints = {
+        item.position_id: item.semantic_fingerprint for item in plan.positions
+    }
+    assert len(_vps_service(
+        pg, exchange, _vps_manifest(fingerprints),
+    ).plan().positions) == 3
+    fingerprints[3092] = "f" * 64
+    with pytest.raises(RuntimeError, match="SEMANTIC_FINGERPRINT_DRIFT:3092"):
+        _vps_service(pg, exchange, _vps_manifest(fingerprints)).plan()
     assert _scalar(pg, "SELECT count(*) FROM positions WHERE status='CLOSED'") == 0
     assert _scalar(pg, "SELECT count(*) FROM canonical_financial_truth_v1") == 0
     assert _scalar(pg, "SELECT count(*) FROM learning_outcome_exclusion_v1") == 0

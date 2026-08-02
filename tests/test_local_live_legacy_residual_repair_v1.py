@@ -165,21 +165,43 @@ def test_normal_manifest_rejects_placeholder_and_candidate_loader_is_explicit(
     }
 
 
-def test_vps_candidate_manifest_is_exact_and_fail_closed(tmp_path):
-    repository_manifest = (
-        Path(__file__).resolve().parents[1]
-        / "config/vps_live_legacy_residual_repair_v1_candidate.json"
+def test_repository_manifests_are_final_exact_and_fail_closed(tmp_path):
+    config = Path(__file__).resolve().parents[1] / "config"
+    repository_manifest = config / "vps_live_legacy_residual_repair_v1.json"
+    manifest = RepairManifest.load(repository_manifest)
+    assert manifest.deployment_id == VPS_LIVE_DEPLOYMENT
+    assert manifest.generated_from_git_revision == (
+        "cdf59dfa6fb18a5bd2f9d0d7c0dd90071ed0a965"
     )
-    with pytest.raises(RuntimeError, match="MANIFEST_FINGERPRINT_PLACEHOLDER"):
-        RepairManifest.load(repository_manifest)
-    candidate = RepairManifest.load(repository_manifest, allow_placeholders=True)
-    assert candidate.deployment_id == VPS_LIVE_DEPLOYMENT
     assert {
         row.position_id: (row.entry_order_id, row.exit_order_id)
-        for row in candidate.positions
+        for row in manifest.positions
     } == POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT[VPS_LIVE_DEPLOYMENT]
+    assert {
+        row.position_id: row.semantic_fingerprint for row in manifest.positions
+    } == {
+        3092: "a4b83bc032ea35b8b24168048086807dc32caedc4a9e03072cc0a75950abf412",
+        3094: "dbcd9a128e88b7dae80090b87a47f447df950a4d5c1fb57e3f11853dae04eb00",
+        3096: "eea7fd898d3ef262d7beb3e9ed646e8c3c67498abcb43419946e821bb33649d2",
+    }
+    assert all(
+        row.semantic_fingerprint != PLACEHOLDER_FINGERPRINT
+        for row in manifest.positions
+    )
+
+    local_manifest = RepairManifest.load(
+        config / "local_live_legacy_residual_repair_v1.json"
+    )
+    assert local_manifest.deployment_id == "local-live"
+    assert {row.position_id for row in local_manifest.positions} == (
+        ALLOWED_POSITION_IDS
+    )
 
     path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(_vps_manifest_payload()), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="MANIFEST_FINGERPRINT_PLACEHOLDER"):
+        RepairManifest.load(path)
+
     unknown = _vps_manifest_payload()
     unknown["deployment_id"] = "unknown-live"
     path.write_text(json.dumps(unknown), encoding="utf-8")

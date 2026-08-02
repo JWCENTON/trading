@@ -1,0 +1,30 @@
+{
+  "contract_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_V1",
+  "manifest_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_MANIFEST_V1",
+  "generated_from_git_revision": "cdf59dfa6fb18a5bd2f9d0d7c0dd90071ed0a965",
+  "generated_at": "2026-08-02T22:08:33.103635+00:00",
+  "fingerprint_contract_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_V1_SEMANTIC_FINGERPRINT_V1",
+  "proof_contract_version": "LEGACY_FILL_EQUIVALENCE_PROOF_V1",
+  "environment": "LIVE",
+  "deployment_id": "vps-live",
+  "positions": [
+    {
+      "position_id": 3092,
+      "entry_order_id": "3751478428604506112",
+      "exit_order_id": "3751586284192342017",
+      "semantic_fingerprint": "a4b83bc032ea35b8b24168048086807dc32caedc4a9e03072cc0a75950abf412"
+    },
+    {
+      "position_id": 3094,
+      "entry_order_id": "3758376674027315200",
+      "exit_order_id": "3758437411173113856",
+      "semantic_fingerprint": "dbcd9a128e88b7dae80090b87a47f447df950a4d5c1fb57e3f11853dae04eb00"
+    },
+    {
+      "position_id": 3096,
+      "entry_order_id": "3759648872868290560",
+      "exit_order_id": "3759681423553011712",
+      "semantic_fingerprint": "eea7fd898d3ef262d7beb3e9ed646e8c3c67498abcb43419946e821bb33649d2"
+    }
+  ]
+}
