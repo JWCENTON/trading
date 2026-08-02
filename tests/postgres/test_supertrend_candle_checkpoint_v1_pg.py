@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from common.supertrend_candle_checkpoint import (
+    CandleEvidencePending,
     CheckpointIdentity,
     FreshnessState,
     PostgresCheckpointStore,
@@ -64,6 +65,28 @@ def test_persistent_checkpoint_resume_and_failure_state(disposable_postgres_v16)
     t1 = t0 + timedelta(minutes=1)
     t2 = t0 + timedelta(minutes=2)
 
+    def pending_evidence(_item, _context):
+        raise CandleEvidencePending("indicator evidence pending")
+
+    pending = process_resume_workset(
+        store=store, interval="1m",
+        latest_closed_candle_open_time=t1,
+        work_items=[t1], open_time_of=lambda value: value,
+        processor=pending_evidence,
+    )
+    assert pending.assessment.state is FreshnessState.CATCHING_UP
+    assert pending.assessment.reason == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
+    assert pending.checkpoint_after == t0
+    assert store.load().last_processed_candle_open_time == t0
+
+    process_resume_workset(
+        store=store, interval="1m",
+        latest_closed_candle_open_time=t1,
+        work_items=[t1], open_time_of=lambda value: value,
+        processor=lambda *_args: None,
+    )
+    assert store.load().last_processed_candle_open_time == t1
+
     def fail_on_latest(item, _context):
         if item == t2:
             raise RuntimeError("targeted failure")
@@ -72,7 +95,7 @@ def test_persistent_checkpoint_resume_and_failure_state(disposable_postgres_v16)
         process_resume_workset(
             store=store, interval="1m",
             latest_closed_candle_open_time=t2,
-            work_items=[t1, t2], open_time_of=lambda value: value,
+            work_items=[t2], open_time_of=lambda value: value,
             processor=fail_on_latest,
         )
 

@@ -13,6 +13,10 @@ class FreshnessState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class CandleEvidencePending(RuntimeError):
+    """The canonical candle exists but its derived evidence is not ready yet."""
+
+
 def _utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -260,6 +264,19 @@ def process_resume_workset(
                 backlog_size=remaining,
                 resume_source=assessment.resume_source,
             )
+        except CandleEvidencePending:
+            pending = FreshnessAssessment(
+                state=FreshnessState.CATCHING_UP,
+                checkpoint_before=current_checkpoint,
+                latest_closed_candle_open_time=(
+                    assessment.latest_closed_candle_open_time
+                ),
+                backlog_size=remaining + 1,
+                reason="CANDLE_DEPENDENT_EVIDENCE_PENDING",
+                resume_source=assessment.resume_source,
+            )
+            store.observe(pending)
+            return ResumeResult(pending, tuple(processed), current_checkpoint)
         except Exception as primary:
             try:
                 store.mark_stalled(

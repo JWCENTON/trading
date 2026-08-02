@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from common.supertrend_candle_checkpoint import (
+    CandleEvidencePending,
     CheckpointIdentity,
     CheckpointSnapshot,
     FreshnessState,
@@ -126,6 +127,98 @@ def test_processing_error_does_not_advance_and_marks_stalled():
     assert store.snapshot.last_processed_candle_open_time == T0
     assert store.snapshot.state is FreshnessState.STALLED
     assert store.events[-1][0] == "STALLED"
+
+
+def test_pending_dependent_evidence_catches_up_without_advancing_then_becomes_ready():
+    store = MemoryStore(T0)
+    t1 = T0 + timedelta(minutes=1)
+    attempts = []
+
+    def pending(_item, context):
+        attempts.append(context.state)
+        raise CandleEvidencePending("indicator evidence pending")
+
+    result = _run(store, latest=t1, work=[t1], processor=pending)
+    assert result.assessment.state is FreshnessState.CATCHING_UP
+    assert result.assessment.reason == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
+    assert result.checkpoint_after == T0
+    assert store.snapshot.last_processed_candle_open_time == T0
+    assert store.snapshot.state is FreshnessState.CATCHING_UP
+    assert [event[0] for event in store.events].count("ADVANCED") == 0
+    assert attempts == [FreshnessState.READY]
+
+    processed = []
+    caught_up = _run(
+        store, latest=t1, work=[t1],
+        processor=lambda item, context: processed.append((item, context.state)),
+    )
+    assert processed == [(t1, FreshnessState.READY)]
+    assert caught_up.checkpoint_after == t1
+    assert store.snapshot.state is FreshnessState.READY
+
+
+def test_dependent_evidence_is_pending_but_sequence_or_core_evidence_is_stalled(
+    supertrend,
+):
+    latest = candle(minute=1)
+    previous = candle()
+    pending_latest = (*latest[:2], None, None, None, None, None)
+    with pytest.raises(CandleEvidencePending, match="latest_missing=ema_21,rsi_14"):
+        supertrend._validate_resume_candle_pair(pending_latest, previous)
+
+    missing_core = (latest[0], None, *latest[2:])
+    with pytest.raises(
+        RuntimeError, match="SUPERTREND_CANDLE_SEQUENCE_EVIDENCE_INCOMPLETE",
+    ):
+        supertrend._validate_resume_candle_pair(missing_core, previous)
+
+    with pytest.raises(
+        RuntimeError, match="SUPERTREND_PREVIOUS_CANDLE_SEQUENCE_MISMATCH",
+    ):
+        supertrend._validate_resume_candle_pair(candle(minute=2), previous)
+
+
+def test_pending_evidence_blocks_strategy_and_preserves_checkpoint(
+    supertrend, monkeypatch,
+):
+    store = MemoryStore(T0)
+    latest = (T0 + timedelta(minutes=1), 100.0, 99.0, 50.0, 1.0, 99.5, 1)
+    pending_latest = (*latest[:2], None, None, None, None, None)
+    previous = (T0, 100.0, 99.0, 50.0, 1.0, 99.5, 1)
+    strategy_calls = []
+    monkeypatch.setattr(supertrend, "PostgresCheckpointStore", lambda *_a: store)
+    monkeypatch.setattr(supertrend, "get_last_closed_candle", lambda: pending_latest)
+    monkeypatch.setattr(
+        supertrend, "get_resume_candle_pairs",
+        lambda *_a: [(pending_latest, previous)],
+    )
+    monkeypatch.setattr(
+        supertrend, "run_strategy", lambda *_a, **_k: strategy_calls.append(True),
+    )
+
+    result = supertrend.process_supertrend_candle_resume()
+    assert result.assessment.state is FreshnessState.CATCHING_UP
+    assert result.assessment.reason == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
+    assert result.checkpoint_after == T0
+    assert store.snapshot.last_processed_candle_open_time == T0
+    assert strategy_calls == []
+
+
+def test_five_minute_ready_regression():
+    store = MemoryStore(T0)
+    t5 = T0 + timedelta(minutes=5)
+    processed = []
+    result = process_resume_workset(
+        store=store,
+        interval="5m",
+        latest_closed_candle_open_time=t5,
+        work_items=[t5],
+        open_time_of=lambda value: value,
+        processor=lambda item, context: processed.append((item, context.state)),
+    )
+    assert result.checkpoint_after == t5
+    assert store.snapshot.state is FreshnessState.READY
+    assert processed == [(t5, FreshnessState.READY)]
 
 
 def test_restart_resumes_next_candle_and_catchup_transitions_to_ready():

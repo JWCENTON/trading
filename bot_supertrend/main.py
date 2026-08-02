@@ -53,6 +53,7 @@ from common.supertrend_terminal_outcome import (
     reconcile_terminal_compatibility_outcome,
 )
 from common.supertrend_candle_checkpoint import (
+    CandleEvidencePending,
     CandleProcessingContext,
     CheckpointIdentity,
     FreshnessState,
@@ -1989,11 +1990,33 @@ def get_resume_candle_pairs(checkpoint_before, latest_closed):
 
 def _validate_resume_candle_pair(latest, prev) -> None:
     if latest is None or prev is None or len(latest) != 7 or len(prev) != 7:
-        raise RuntimeError("SUPERTREND_CANDLE_EVIDENCE_INCOMPLETE")
-    if any(value is None for value in latest) or any(value is None for value in prev):
-        raise RuntimeError("SUPERTREND_CANDLE_EVIDENCE_INCOMPLETE")
+        raise RuntimeError("SUPERTREND_CANDLE_SEQUENCE_EVIDENCE_INCOMPLETE")
+    if any(value is None for value in latest[:2]) or any(
+        value is None for value in prev[:2]
+    ):
+        raise RuntimeError("SUPERTREND_CANDLE_SEQUENCE_EVIDENCE_INCOMPLETE")
     if _as_aware_utc(prev[0]) + interval_duration(INTERVAL) != _as_aware_utc(latest[0]):
         raise RuntimeError("SUPERTREND_PREVIOUS_CANDLE_SEQUENCE_MISMATCH")
+    evidence_names = (
+        "ema_21", "rsi_14", "atr_14", "supertrend", "supertrend_direction",
+    )
+    latest_missing = tuple(
+        name for name, value in zip(evidence_names, latest[2:]) if value is None
+    )
+    prev_missing = tuple(
+        name for name, value in zip(evidence_names, prev[2:]) if value is None
+    )
+    if latest_missing or prev_missing:
+        logging.info(
+            "SUPERTREND candle evidence pending latest=%s latest_missing=%s "
+            "previous=%s previous_missing=%s",
+            latest[0], latest_missing, prev[0], prev_missing,
+        )
+        raise CandleEvidencePending(
+            "SUPERTREND_CANDLE_DEPENDENT_EVIDENCE_PENDING:"
+            f"latest={latest[0]}:latest_missing={','.join(latest_missing) or '-'}:"
+            f"previous={prev[0]}:previous_missing={','.join(prev_missing) or '-'}"
+        )
 
 
 def process_supertrend_candle_resume():
