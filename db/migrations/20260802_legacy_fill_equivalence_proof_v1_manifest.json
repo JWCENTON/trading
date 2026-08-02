@@ -1,0 +1,34 @@
+{
+  "migration_id": "20260802_legacy_fill_equivalence_proof_v1.sql",
+  "rollback_id": "20260802_legacy_fill_equivalence_proof_v1_rollback.sql",
+  "schema_version": "LEGACY_FILL_EQUIVALENCE_PROOF_V1",
+  "checksum_sha256": "a5b9ed1882338a4e90db41703e13b1709510e2f7be62210e4cb89099c7636135",
+  "scope": {
+    "environment": "LIVE",
+    "deployment_id": "local-live",
+    "database": "trading_live"
+  },
+  "objects": {
+    "tables": ["legacy_fill_equivalence_proof_v1"],
+    "views": ["v_legacy_fill_equivalence_proof_status_v1"],
+    "functions": ["prevent_legacy_fill_equivalence_mutation_v1"],
+    "triggers": [
+      "trg_legacy_fill_equivalence_row_append_only_v1",
+      "trg_legacy_fill_equivalence_truncate_v1"
+    ]
+  },
+  "data_policy": {
+    "backfill": false,
+    "runtime_writer_activation": false,
+    "append_only": true,
+    "application_proof": false,
+    "canonical_fill_mutation": false,
+    "position_mutation": false
+  },
+  "proof_contract": {
+    "proof_type": "LEGACY_CANONICAL_OKX_EQUIVALENCE",
+    "equivalence_state": "PROVEN",
+    "fill_mutation_required": false,
+    "repair_impact": "NONE"
+  }
+}

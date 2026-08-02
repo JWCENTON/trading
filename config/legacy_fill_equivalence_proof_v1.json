@@ -1,0 +1,80 @@
+{
+  "proof_version": "LEGACY_FILL_EQUIVALENCE_PROOF_V1",
+  "environment": "LIVE",
+  "deployment_id": "local-live",
+  "database": "trading_live",
+  "proofs": [
+    {
+      "ingestion_id": 8,
+      "position_id": 3084,
+      "exchange_order_id": "3762009375217590272",
+      "exchange_trade_id": "4085812",
+      "canonical_local_fill_id": 9615235,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "b74df241b0700b25833f3687142942af86a221d73cced883b627a4a3b1885c58"
+    },
+    {
+      "ingestion_id": 10,
+      "position_id": 3079,
+      "exchange_order_id": "3749848403589767168",
+      "exchange_trade_id": "4017377",
+      "canonical_local_fill_id": 6520538,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "95934246ee10586eadd244ca0f38fb9edb7afa1bedb04bfe0e4a051ca30ef4e4"
+    },
+    {
+      "ingestion_id": 12,
+      "position_id": 3082,
+      "exchange_order_id": "3759628252160237568",
+      "exchange_trade_id": "1171129",
+      "canonical_local_fill_id": 8986287,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "aef673f7859398f50a226885ff7b8c1a3f905b48467749f2ec76248247652884"
+    },
+    {
+      "ingestion_id": 14,
+      "position_id": 3081,
+      "exchange_order_id": "3758376872065933312",
+      "exchange_trade_id": "1167758",
+      "canonical_local_fill_id": 8660889,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "9cae3a7282ba471926c74e3a2262c57149529914bee424022a678970ec90b597"
+    },
+    {
+      "ingestion_id": 16,
+      "position_id": 3085,
+      "exchange_order_id": "3785263640706850816",
+      "exchange_trade_id": "998164",
+      "canonical_local_fill_id": 15970414,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "a75d6b819eaecb82e7aa4ee1aa301674855e79b2de693207131db9881a57cb06"
+    },
+    {
+      "ingestion_id": 18,
+      "position_id": 3085,
+      "exchange_order_id": "3785263640706850816",
+      "exchange_trade_id": "998162",
+      "canonical_local_fill_id": 15970416,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "f784e27024b909d0b771f59bc7f39e1a27fd1d4e0b82ebc4ce88013ed5998a67"
+    },
+    {
+      "ingestion_id": 19,
+      "position_id": 3085,
+      "exchange_order_id": "3785263640706850816",
+      "exchange_trade_id": "998161",
+      "canonical_local_fill_id": 15970417,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "0a9fd48cb4521a33655451ae78c7f884fbcff8c33f35ab54322916da79704402"
+    },
+    {
+      "ingestion_id": 20,
+      "position_id": 3085,
+      "exchange_order_id": "3785263640706850816",
+      "exchange_trade_id": "998160",
+      "canonical_local_fill_id": 15970418,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "d3e8ed71b205af76c53760a2ab485193ca896c40b449e2426f14f8052b97768d"
+    }
+  ]
+}
