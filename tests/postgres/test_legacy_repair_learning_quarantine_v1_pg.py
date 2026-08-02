@@ -47,6 +47,9 @@ QUARANTINE = (
 ARTIFACT_POLICY = (
     ROOT / "db/migrations/20260801_legacy_repair_existing_artifact_policy_v1.sql"
 ).read_text()
+ORDER_NAMESPACE = (
+    ROOT / "db/migrations/20260802_simulated_order_namespace_v1.sql"
+).read_text()
 
 GIT_SHA = "2fc6efae2bf2a342ac4ea73968d47432d1a964b5"
 DEPLOYMENT = "local-paper"
@@ -916,7 +919,9 @@ def test_cli_confirmation_live_and_plan_hash_contract(
     assert _counts(quarantine_db, 3080)["learning_outcome_exclusion_v1"] == 1
 
 
-def _seed_open_retirement_position(connection, position_id: int = 4080) -> None:
+def _seed_open_retirement_position(
+    connection, position_id: int = 4080, *, apply_namespace: bool = True,
+) -> None:
     with connection.cursor() as cur:
         cur.execute("DROP TABLE simulated_execution_fills_v1")
         cur.execute("DROP TABLE simulated_orders")
@@ -930,8 +935,15 @@ def _seed_open_retirement_position(connection, position_id: int = 4080) -> None:
               quantity_btc NUMERIC NOT NULL,reason TEXT,rsi_14 NUMERIC,
               ema_21 NUMERIC,candle_open_time TIMESTAMPTZ NOT NULL,
               is_exit BOOLEAN NOT NULL DEFAULT false,
-              UNIQUE(symbol,"interval",strategy,candle_open_time,is_exit)
+              CONSTRAINT sim_orders_uniq_candle_exit
+                UNIQUE(symbol,"interval",strategy,candle_open_time,is_exit)
             );
+            CREATE UNIQUE INDEX ux_sim_orders_one_per_candle
+              ON simulated_orders(symbol,"interval",strategy,candle_open_time);
+            CREATE UNIQUE INDEX ux_sim_orders_one_per_candle_isexit
+              ON simulated_orders(
+                symbol,"interval",strategy,candle_open_time,is_exit
+              );
             CREATE TABLE candles(
               id BIGSERIAL PRIMARY KEY,symbol TEXT NOT NULL,
               "interval" TEXT NOT NULL,open_time TIMESTAMPTZ NOT NULL,
@@ -1037,6 +1049,10 @@ def _seed_open_retirement_position(connection, position_id: int = 4080) -> None:
             """
         )
     connection.commit()
+    if apply_namespace:
+        with connection.cursor() as cur:
+            cur.execute(ORDER_NAMESPACE)
+        connection.commit()
 
 
 def _retirement_counts(connection, position_id: int = 4080) -> dict[str, int]:
@@ -1163,6 +1179,25 @@ def test_open_retirement_local_paper_plan_ready(quarantine_db):
     assert plan.public_payload()["historical_exit_intent_gate"][
         "retirement_allowed"
     ] is True
+
+
+def test_open_retirement_apply_is_blocked_on_legacy_namespace(quarantine_db):
+    _seed_open_retirement_position(quarantine_db, apply_namespace=False)
+    plan = LegacyOpenRetirementPlanRepository.build(
+        quarantine_db, position_id=4080, environment="PAPER",
+        deployment_id=DEPLOYMENT, git_sha=GIT_SHA,
+    )
+    assert plan.status == "READY", plan.blocking_reasons
+    with pytest.raises(
+        RuntimeError, match="SIMULATED_ORDER_NAMESPACE_MIGRATION_REQUIRED"
+    ):
+        LegacyOpenRetirementTransactionService.apply(
+            quarantine_db, position_id=4080, environment="PAPER",
+            deployment_id=DEPLOYMENT,
+            expected_semantic_fingerprint_v2=plan.semantic_fingerprint_v2,
+            git_sha=GIT_SHA,
+        )
+    assert _retirement_counts(quarantine_db)["exit_orders"] == 0
 
 
 def test_thousands_of_benign_unfilled_exit_intents_are_ready(quarantine_db):

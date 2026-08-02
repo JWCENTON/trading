@@ -40,6 +40,7 @@ from common.simulated_execution_evidence import (
     execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
     record_simulated_fill_evidence,
+    simulated_order_write_status,
 )
 from common.permissions import can_trade
 from common.execution import place_live_order
@@ -746,7 +747,10 @@ def insert_simulated_order(
         rsi_14=None if rsi_14 is None else Decimal(str(rsi_14)),
         ema_21=None if ema_21 is None else Decimal(str(ema_21)),
     )
-    conn.commit()
+    if inserted:
+        conn.commit()
+    else:
+        conn.rollback()
     cur.close()
     conn.close()
     return inserted
@@ -847,10 +851,11 @@ def _execute_and_record_after_paper_exit_preflight(
     )
 
     if not inserted:
+        slot_result = simulated_order_write_status(inserted)
         emit_strategy_event(
             event_type="BLOCKED",
             decision=side,
-            reason="DB_GUARD_DUPLICATE",
+            reason=slot_result,
             price=price,
             candle_open_time=candle_open_time,
             info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
@@ -859,7 +864,7 @@ def _execute_and_record_after_paper_exit_preflight(
             "ledger_ok": False,
             "live_attempted": False,
             "live_ok": False,
-            "blocked_reason": "DB_GUARD_DUPLICATE",
+            "blocked_reason": slot_result,
             "client_order_id": None,
             "resp": None,
         }

@@ -8,6 +8,8 @@ import json
 import os
 import uuid
 
+import psycopg2
+
 from common.contract_adoption import (
     contract_adoption_compatible,
     log_runtime_revision_provenance_diagnostic,
@@ -19,12 +21,34 @@ from common.inventory_quantity import (
     InstrumentExecutionLimits,
     project_inventory_from_execution_evidence,
 )
+from common.simulated_order_namespace import (
+    ADMINISTRATIVE_ORDER_CLASS,
+    FORWARD_ORDER_CLASS,
+    detect_simulated_order_namespace,
+)
 
 
 SIMULATION_MODEL_VERSION = "PAPER_SIMULATOR_FINANCIAL_MODEL_V1"
 SIMULATION_FEE_RATE = Decimal("0.0004")
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
 INSTRUMENT_METADATA_VERSION = "EXECUTION_INSTRUMENT_SNAPSHOT_V1"
+
+
+@dataclass(frozen=True)
+class SimulatedOrderWriteBlocked:
+    status: str
+    existing_order_id: int | None = None
+
+    def __bool__(self) -> bool:
+        return False
+
+
+def simulated_order_write_status(value) -> str:
+    if isinstance(value, SimulatedOrderWriteBlocked):
+        return value.status
+    if not value:
+        return "DB_GUARD_DUPLICATE"
+    return "INSERTED"
 
 
 @dataclass(frozen=True)
@@ -426,36 +450,155 @@ def create_simulated_order_cursor(
     is_exit: bool,
     rsi_14: Decimal | None = None,
     ema_21: Decimal | None = None,
-) -> int | None:
+    order_class: str = FORWARD_ORDER_CLASS,
+    position_id: int | None = None,
+    environment: str | None = None,
+    deployment_id: str | None = None,
+) -> int | SimulatedOrderWriteBlocked:
     """Canonical transaction-bound simulated-order writer.
 
-    Runtime strategies and bounded administrative workflows share the same
-    row shape and database idempotency key.  The caller owns the transaction.
+    The caller owns the transaction.  Expected unique conflicts are contained
+    by a savepoint and classified by reading the exact namespace identity.
     """
+    order_class = str(order_class).upper()
+    if order_class not in {FORWARD_ORDER_CLASS, ADMINISTRATIVE_ORDER_CLASS}:
+        raise ValueError(f"unsupported simulated order class: {order_class}")
+    if order_class == FORWARD_ORDER_CLASS:
+        if any(value is not None for value in (position_id, environment, deployment_id)):
+            raise ValueError("FORWARD_ORDER_IDENTITY_MUST_BE_NULL")
+    else:
+        if (
+            position_id is None
+            or not str(environment or "").strip()
+            or not str(deployment_id or "").strip()
+            or not is_exit
+            or str(side).upper() != "SELL"
+            or str(reason) != ADMINISTRATIVE_ORDER_CLASS
+        ):
+            raise ValueError("ADMINISTRATIVE_ORDER_IDENTITY_INVALID")
+
+    namespace = detect_simulated_order_namespace(cur.connection)
+    if not (namespace.is_legacy or namespace.is_namespace_v1):
+        raise RuntimeError(
+            "SIMULATED_ORDER_NAMESPACE_SCHEMA_INVALID:"
+            + ",".join(namespace.issues)
+        )
+    if order_class == ADMINISTRATIVE_ORDER_CLASS and not namespace.is_namespace_v1:
+        raise RuntimeError("SIMULATED_ORDER_NAMESPACE_MIGRATION_REQUIRED")
+
     if is_exit:
         lock_simulated_exit_slot_cursor(
             cur, symbol=symbol, interval=interval, strategy=strategy,
         )
-    cur.execute(
+    params = (
+        str(symbol), str(interval), str(strategy), str(side).upper(),
+        Decimal(str(price)), Decimal(str(quantity)), str(reason),
+        None if rsi_14 is None else Decimal(str(rsi_14)),
+        None if ema_21 is None else Decimal(str(ema_21)),
+        candle_open_time, bool(is_exit),
+    )
+    if namespace.is_namespace_v1:
+        insert_sql = """
+            INSERT INTO simulated_orders (
+              symbol,interval,strategy,side,price,quantity_btc,reason,
+              rsi_14,ema_21,candle_open_time,is_exit,
+              order_class,position_id,environment,deployment_id
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
         """
-        INSERT INTO simulated_orders (
-          symbol,interval,strategy,side,price,quantity_btc,reason,
-          rsi_14,ema_21,candle_open_time,is_exit
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (symbol,interval,strategy,candle_open_time,is_exit)
-        DO NOTHING
-        RETURNING id
-        """,
-        (
-            str(symbol), str(interval), str(strategy), str(side).upper(),
-            Decimal(str(price)), Decimal(str(quantity)), str(reason),
+        insert_params = params + (
+            order_class,
+            None if position_id is None else int(position_id),
+            None if environment is None else str(environment),
+            None if deployment_id is None else str(deployment_id),
+        )
+    else:
+        insert_sql = """
+            INSERT INTO simulated_orders (
+              symbol,interval,strategy,side,price,quantity_btc,reason,
+              rsi_14,ema_21,candle_open_time,is_exit
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+        """
+        insert_params = params
+
+    savepoint = "simulated_order_namespace_v1_insert"
+    cur.execute(f"SAVEPOINT {savepoint}")
+    try:
+        cur.execute(insert_sql, insert_params)
+        inserted = cur.fetchone()
+    except psycopg2.errors.UniqueViolation as exc:
+        cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        if namespace.is_legacy:
+            expected_constraints = {
+                "sim_orders_uniq_candle_exit",
+                "ux_sim_orders_one_per_candle",
+                "ux_sim_orders_one_per_candle_isexit",
+            }
+        elif order_class == FORWARD_ORDER_CLASS:
+            expected_constraints = {"ux_sim_orders_forward_one_per_candle"}
+        else:
+            expected_constraints = {"ux_sim_orders_admin_position"}
+        if getattr(exc.diag, "constraint_name", None) not in expected_constraints:
+            cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        if order_class == FORWARD_ORDER_CLASS:
+            class_filter = (
+                " AND order_class='FORWARD'" if namespace.is_namespace_v1 else ""
+            )
+            cur.execute(
+                """
+                SELECT id,side,price,quantity_btc,reason,rsi_14,ema_21,is_exit
+                FROM simulated_orders
+                WHERE symbol=%s AND interval=%s AND strategy=%s
+                  AND candle_open_time=%s
+                """ + class_filter + " ORDER BY id LIMIT 2",
+                (str(symbol), str(interval), str(strategy), candle_open_time),
+            )
+            existing = cur.fetchall()
+            conflict_status = "PAPER_ORDER_SLOT_ALREADY_OCCUPIED"
+            identical_status = "IDEMPOTENT_EXISTING_FORWARD_ORDER"
+        else:
+            cur.execute(
+                """
+                SELECT id,side,price,quantity_btc,reason,rsi_14,ema_21,is_exit
+                FROM simulated_orders
+                WHERE order_class='LEGACY_ADMINISTRATIVE_CLOSE'
+                  AND environment=%s AND deployment_id=%s AND position_id=%s
+                ORDER BY id LIMIT 2
+                """,
+                (str(environment), str(deployment_id), int(position_id)),
+            )
+            existing = cur.fetchall()
+            conflict_status = "ADMINISTRATIVE_ORDER_IDENTITY_CONFLICT"
+            identical_status = "IDEMPOTENT_EXISTING_ADMINISTRATIVE_ORDER"
+        cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if len(existing) != 1:
+            raise
+        row = existing[0]
+        expected_identity = (
+            str(side).upper(), Decimal(str(price)), Decimal(str(quantity)),
+            str(reason),
             None if rsi_14 is None else Decimal(str(rsi_14)),
             None if ema_21 is None else Decimal(str(ema_21)),
-            candle_open_time, bool(is_exit),
-        ),
-    )
-    row = cur.fetchone()
-    return int(row[0]) if row is not None else None
+            bool(is_exit),
+        )
+        actual_identity = (
+            str(row[1]).upper(), Decimal(str(row[2])), Decimal(str(row[3])),
+            str(row[4]),
+            None if row[5] is None else Decimal(str(row[5])),
+            None if row[6] is None else Decimal(str(row[6])),
+            bool(row[7]),
+        )
+        return SimulatedOrderWriteBlocked(
+            identical_status if actual_identity == expected_identity else conflict_status,
+            int(row[0]),
+        )
+    else:
+        cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if inserted is None:
+            raise RuntimeError("SIMULATED_ORDER_INSERT_RETURNING_MISSING")
+        return int(inserted[0])
 
 
 def create_simulated_execution_fill_cursor(

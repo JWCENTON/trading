@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from common.runtime import normalize_trading_mode
+from common.simulated_order_namespace import detect_simulated_order_namespace
 
 
 REQUIRED_COLUMNS = {
@@ -89,7 +90,6 @@ REQUIRED_COLUMNS = {
 
 REQUIRED_INDEXES = {
     "ux_positions_open",
-    "ux_sim_orders_one_per_candle_isexit",
     "ux_strategy_params_sym_strat_int_name",
     "uq_user_settings_user_id",
     "ix_worker_heartbeats_status_updated",
@@ -122,6 +122,7 @@ class SchemaReadinessResult:
     environment: str
     status: str
     pending_entry_reconciliation_applicable: bool
+    simulated_order_namespace: dict | None = None
 
 
 PENDING_ENTRY_INDEX_CONTRACT = {
@@ -177,6 +178,7 @@ def validate_pending_entry_reconciliation_schema(
             environment="PAPER",
             status="NOT_APPLICABLE",
             pending_entry_reconciliation_applicable=False,
+            simulated_order_namespace=None,
         )
 
     missing = []
@@ -317,14 +319,30 @@ def validate_strategy_runtime_schema(
             + "; ".join(missing)
         )
 
+    namespace = detect_simulated_order_namespace(conn)
+    if not (namespace.is_legacy or namespace.is_namespace_v1):
+        raise RuntimeError(
+            "strategy runtime schema is not ready; simulated order namespace: "
+            + ",".join(namespace.issues)
+        )
+
     if mode == "PAPER":
         return SchemaReadinessResult(
             environment="PAPER",
             status="NOT_APPLICABLE",
             pending_entry_reconciliation_applicable=False,
+            simulated_order_namespace=namespace.public_payload(),
         )
 
-    return validate_pending_entry_reconciliation_schema(
+    pending = validate_pending_entry_reconciliation_schema(
         conn,
         trading_mode="LIVE",
+    )
+    return SchemaReadinessResult(
+        environment=pending.environment,
+        status=pending.status,
+        pending_entry_reconciliation_applicable=(
+            pending.pending_entry_reconciliation_applicable
+        ),
+        simulated_order_namespace=namespace.public_payload(),
     )

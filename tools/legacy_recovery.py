@@ -41,6 +41,7 @@ from common.legacy_repair_quarantine import (
     LegacyPositionRepairPlanRepository,
     LegacyRepairQuarantineSchemaReadinessRepository,
 )
+from common.simulated_order_namespace import detect_simulated_order_namespace
 
 
 PLANNER_VERSION = "LEGACY_RECOVERY_PLANNER_V2"
@@ -803,11 +804,19 @@ def main(argv=None) -> int:
             if args.command == "check-schema":
                 quarantine = _quarantine_schema(connection)
                 planner = _order_readiness(connection, args)
+                order_namespace = detect_simulated_order_namespace(
+                    connection
+                ).public_payload()
                 migration_ok = schema["status"] == "PRESENT_VALID"
                 planner_ok = planner["status"] == "PRESENT_VALID"
+                namespace_writer_ok = (
+                    order_namespace["retirement_writer_readiness"]
+                    == "PRESENT_VALID"
+                )
                 writer_ok = (
                     planner.get("writer_status") == "PRESENT_VALID"
                     and quarantine["status"] == "PRESENT_VALID"
+                    and namespace_writer_ok
                 )
                 global_ok = migration_ok and planner_ok and writer_ok
                 result = {
@@ -820,6 +829,13 @@ def main(argv=None) -> int:
                         "PRESENT_VALID" if writer_ok else "NOT_READY"
                     ),
                     "environment_identity": identity,
+                    "simulated_order_namespace": order_namespace,
+                    "forward_writer_readiness": order_namespace[
+                        "forward_writer_readiness"
+                    ],
+                    "retirement_writer_readiness": order_namespace[
+                        "retirement_writer_readiness"
+                    ],
                     "schema": schema,
                     "quarantine_schema": quarantine,
                     "planner_readiness": planner,
@@ -835,6 +851,12 @@ def main(argv=None) -> int:
                                     list(quarantine.get("issues") or [])
                                     if quarantine["status"] != "PRESENT_VALID"
                                     else []
+                                )
+                                + (
+                                    list(order_namespace.get("issues") or [])
+                                    or [order_namespace[
+                                        "retirement_writer_readiness"
+                                    ]]
                                 )
                             ))
                         ),

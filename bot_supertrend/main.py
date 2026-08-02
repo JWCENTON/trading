@@ -58,6 +58,7 @@ from common.simulated_execution_evidence import (
     execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
     record_simulated_fill_evidence,
+    simulated_order_write_status,
 )
 
 
@@ -1008,7 +1009,10 @@ def insert_simulated_order(
         price=Decimal(str(price)), quantity=Decimal(str(qty_btc)),
         reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
     )
-    conn.commit()
+    if inserted:
+        conn.commit()
+    else:
+        conn.rollback()
     cur.close()
     conn.close()
     return inserted
@@ -1131,10 +1135,11 @@ def _execute_and_record_after_paper_exit_preflight(
     )
 
     if not inserted:
+        slot_result = simulated_order_write_status(inserted)
         emit_strategy_event(
             event_type="BLOCKED",
             decision=side,
-            reason="DB_GUARD_DUPLICATE",
+            reason=slot_result,
             price=price,
             candle_open_time=candle_open_time,
             info={"is_exit": bool(is_exit), "qty_btc": float(qty_btc), "reason_text": reason},
@@ -1143,7 +1148,7 @@ def _execute_and_record_after_paper_exit_preflight(
             "ledger_ok": False,
             "live_attempted": False,
             "live_ok": False,
-            "blocked_reason": "DB_GUARD_DUPLICATE",
+            "blocked_reason": slot_result,
             "client_order_id": None,
             "resp": None,
         }

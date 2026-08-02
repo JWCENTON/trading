@@ -275,3 +275,46 @@ apply it to any runtime database.
 The earlier legacy recovery rollback remains permitted only while its audit and
 provenance histories are empty. Once a repair is committed, neither repair
 history nor Learning exclusions may be updated or deleted.
+
+## Administrative simulated-order namespace V1
+
+`20260802_simulated_order_namespace_v1.sql` separates administrative
+retirement evidence from the forward trading slot. Normal orders have the
+explicit class `FORWARD`, null position/deployment identity, and remain subject
+to one order per `symbol/interval/strategy/candle_open_time`. A
+`LEGACY_ADMINISTRATIVE_CLOSE` order has explicit position, environment and
+deployment identity, is a canonical `SELL` exit, and is unique per
+`environment/deployment_id/position_id`. It does not occupy a forward slot.
+
+The migration backfills only administrative rows with exactly one matching
+canonical EXIT fill. Missing, ambiguous, mismatched or duplicated evidence
+raises and rolls back the complete migration. Existing order IDs, fill IDs,
+prices, quantities, timestamps, lifecycle, Financial Truth, audit, provenance
+and Learning exclusions are not rewritten.
+
+The code detects both catalog contracts. On the legacy schema, forward writers
+remain available and expected duplicates return a controlled
+`PAPER_ORDER_SLOT_ALREADY_OCCUPIED` or idempotent replay result without a
+traceback. Administrative apply is blocked with
+`SIMULATED_ORDER_NAMESPACE_MIGRATION_REQUIRED`. On Namespace V1, forward and
+administrative writers use separate partial unique indexes and retirement
+fingerprint V2 includes the class and full per-position identity.
+
+This contract is the regression closure for VPS PAPER position `6394`, order
+`33339`, `SOLUSDC/BBRANGE/1m`, candle `2026-08-02 08:39:00 UTC`, where forward
+runtime at `08:40:55 UTC` previously hit
+`ux_sim_orders_one_per_candle`. The committed retirement remains unchanged;
+after migration a forward order in that same slot is allowed.
+
+The only safe future rollout order is:
+
+1. commit and separately authorized push;
+2. VPS pull-only parity;
+3. code rollout 4/4 while the legacy schema is still active;
+4. confirm normal forward runtime;
+5. apply Namespace V1 migration 4/4;
+6. confirm readiness parity 4/4;
+7. observe the `6394` slot regression;
+8. separately authorize resumption of remaining retirements.
+
+Schema-first rollout with the old runtime is prohibited.

@@ -42,6 +42,13 @@ from common.simulated_execution_evidence import (
     create_simulated_execution_fill_cursor,
     create_simulated_order_cursor,
     lock_simulated_exit_slot_cursor,
+    simulated_order_write_status,
+)
+from common.simulated_order_namespace import (
+    ADMINISTRATIVE_ORDER_CLASS,
+    NAMESPACE_SCHEMA_VERSION,
+    detect_simulated_order_namespace,
+    require_simulated_order_namespace_v1,
 )
 
 
@@ -249,6 +256,7 @@ class LegacyOpenRetirementPlanRepository:
         if not re.fullmatch(r"[0-9a-f]{40}", str(git_sha).lower()):
             raise RuntimeError("GIT_SHA_INVALID")
         cls._schema_ready(connection)
+        namespace = detect_simulated_order_namespace(connection)
         with connection.cursor() as cur:
             cur.execute("SELECT current_database(),clock_timestamp()")
             database_name, database_now = cur.fetchone()
@@ -283,6 +291,7 @@ class LegacyOpenRetirementPlanRepository:
             cur.execute(
                 """
                 SELECT sf.id,sf.simulated_order_id,sf.position_id,
+                       sf.environment,sf.deployment_id,
                        sf.order_purpose,sf.side,sf.symbol,
                        sf.fill_qty AS executed_qty,sf.fill_price AS avg_price,
                        sf.fill_notional,sf.fee_qty AS commission_amount,
@@ -439,6 +448,14 @@ class LegacyOpenRetirementPlanRepository:
             )
 
         entry = entry_fills[0] if len(entry_fills) == 1 else None
+        administrative_environment = (
+            str(entry["environment"]) if entry is not None
+            else environment.lower()
+        )
+        administrative_deployment_id = (
+            str(entry["deployment_id"]) if entry is not None
+            else str(deployment_id)
+        )
         instrument: Mapping[str, Any] = {}
         remaining = ZERO
         planned_qty = ZERO
@@ -447,6 +464,7 @@ class LegacyOpenRetirementPlanRepository:
                 "account_identity_id", "instrument_snapshot_id",
                 "identity_fingerprint", "metadata_fingerprint", "step_size",
                 "quantity_precision", "base_asset", "quote_asset",
+                "environment", "deployment_id",
             )
             if any(entry.get(name) is None for name in required):
                 blocking.append("INSTRUMENT_OR_ACCOUNT_EVIDENCE_INCOMPLETE")
@@ -528,17 +546,32 @@ class LegacyOpenRetirementPlanRepository:
 
         if market is not None:
             with connection.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT count(*) FROM simulated_orders
-                    WHERE upper(symbol)=upper(%s) AND "interval"=%s
-                      AND strategy=%s AND candle_open_time=%s AND is_exit
-                    """,
-                    (
-                        position["symbol"], position["interval"],
-                        position["strategy"], market.market_timestamp,
-                    ),
-                )
+                if namespace.is_namespace_v1:
+                    cur.execute(
+                        """
+                        SELECT count(*) FROM simulated_orders
+                        WHERE order_class='LEGACY_ADMINISTRATIVE_CLOSE'
+                          AND environment=%s AND deployment_id=%s
+                          AND position_id=%s
+                        """,
+                        (
+                            administrative_environment,
+                            administrative_deployment_id,
+                            int(position_id),
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT count(*) FROM simulated_orders
+                        WHERE upper(symbol)=upper(%s) AND "interval"=%s
+                          AND strategy=%s AND candle_open_time=%s AND is_exit
+                        """,
+                        (
+                            position["symbol"], position["interval"],
+                            position["strategy"], market.market_timestamp,
+                        ),
+                    )
                 if int(cur.fetchone()[0]):
                     blocking.append("PARALLEL_EXIT_OR_RETIREMENT_INTENT")
 
@@ -556,6 +589,16 @@ class LegacyOpenRetirementPlanRepository:
             "planned_exit_quantity": planned_qty,
             "planned_simulated_order": {
                 "side": "SELL", "reason": RETIREMENT_TYPE,
+                "order_class": ADMINISTRATIVE_ORDER_CLASS,
+                "position_id": int(position_id),
+                "environment": administrative_environment,
+                "deployment_id": administrative_deployment_id,
+                "administrative_idempotency_identity": (
+                    f"{administrative_environment}:"
+                    f"{administrative_deployment_id}:"
+                    f"{int(position_id)}"
+                ),
+                "namespace_schema_version": NAMESPACE_SCHEMA_VERSION,
                 "candle_open_time": (
                     market.market_timestamp if market else None
                 ),
@@ -774,6 +817,7 @@ class LegacyOpenRetirementTransactionService:
                 cur.execute("SET LOCAL lock_timeout='5s'")
                 cur.execute("SET LOCAL statement_timeout='60s'")
                 LegacyOpenRetirementPlanRepository._schema_ready(connection)
+                require_simulated_order_namespace_v1(connection)
                 cur.execute("SELECT current_database()")
                 database_name = str(cur.fetchone()[0])
                 identity = (
@@ -802,6 +846,7 @@ class LegacyOpenRetirementTransactionService:
                     (0x4C52, int(position_id)),
                 )
                 LegacyOpenRetirementPlanRepository.lock_evidence(cur, initial)
+                require_simulated_order_namespace_v1(connection)
                 locked = LegacyOpenRetirementPlanRepository.build(
                     connection, position_id=position_id, environment="PAPER",
                     deployment_id=deployment_id, git_sha=git_sha,
@@ -832,9 +877,22 @@ class LegacyOpenRetirementTransactionService:
                     reason=RETIREMENT_TYPE,
                     candle_open_time=locked.market.market_timestamp,
                     is_exit=True,
+                    order_class=ADMINISTRATIVE_ORDER_CLASS,
+                    position_id=int(position_id),
+                    environment=str(
+                        locked.evidence_payload["planned_simulated_order"]
+                        ["environment"]
+                    ),
+                    deployment_id=str(
+                        locked.evidence_payload["planned_simulated_order"]
+                        ["deployment_id"]
+                    ),
                 )
-                if exit_order_id is None:
-                    raise RuntimeError("PARALLEL_EXIT_OR_RETIREMENT_INTENT")
+                if not exit_order_id:
+                    status = simulated_order_write_status(exit_order_id)
+                    if status == "IDEMPOTENT_EXISTING_ADMINISTRATIVE_ORDER":
+                        raise RuntimeError("ALREADY_RETIRED")
+                    raise RuntimeError(status)
                 call_stage_hook(stage_hook, "exit_order")
                 exit_fill_id = create_simulated_execution_fill_cursor(
                     cur, simulated_order_id=exit_order_id,

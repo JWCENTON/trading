@@ -117,7 +117,41 @@ def _base_ready_responses():
         for table, names in BASE_REQUIRED_COLUMNS.items()
         for column in names
     ]
-    return [columns, [(name,) for name in BASE_REQUIRED_INDEXES]]
+    return [
+        columns,
+        [(name,) for name in BASE_REQUIRED_INDEXES],
+        *_legacy_namespace_responses(),
+    ]
+
+
+def _legacy_namespace_responses():
+    return [
+        [("id", "integer", "NO", None)],
+        [],
+        [
+            (
+                "ux_sim_orders_one_per_candle",
+                'CREATE UNIQUE INDEX ux_sim_orders_one_per_candle ON '
+                'public.simulated_orders USING btree '
+                '(symbol, "interval", strategy, candle_open_time)',
+                None, True, True, True,
+            ),
+            (
+                "ux_sim_orders_one_per_candle_isexit",
+                'CREATE UNIQUE INDEX ux_sim_orders_one_per_candle_isexit ON '
+                'public.simulated_orders USING btree '
+                '(symbol, "interval", strategy, candle_open_time, is_exit)',
+                None, True, True, True,
+            ),
+            (
+                "sim_orders_uniq_candle_exit",
+                'CREATE UNIQUE INDEX sim_orders_uniq_candle_exit ON '
+                'public.simulated_orders USING btree '
+                '(symbol, "interval", strategy, candle_open_time, is_exit)',
+                None, True, True, True,
+            ),
+        ],
+    ]
 
 
 def test_strategy_modules_do_not_import_or_call_ensure_schema():
@@ -149,12 +183,13 @@ def test_schema_readiness_uses_selects_only():
     conn = RecordingConnection([
         columns,
         [(name,) for name in REQUIRED_INDEXES],
+        *_legacy_namespace_responses(),
         *_pending_ready_responses(),
     ])
 
     validate_strategy_runtime_schema(conn, trading_mode="LIVE")
 
-    assert len(conn.cursor_obj.sql) == 7
+    assert len(conn.cursor_obj.sql) == 10
     assert all(sql.upper().startswith("SELECT") for sql, _ in conn.cursor_obj.sql)
     assert not any("PG_ADVISORY" in sql.upper() for sql, _ in conn.cursor_obj.sql)
 
@@ -192,10 +227,10 @@ def test_paper_readiness_accepts_base_schema_without_live_order_queries():
     assert result.environment == "PAPER"
     assert result.status == "NOT_APPLICABLE"
     assert result.pending_entry_reconciliation_applicable is False
-    assert len(conn.cursor_obj.sql) == 2
+    assert len(conn.cursor_obj.sql) == 5
     queried_names = {
         name
-        for _sql, params in conn.cursor_obj.sql
+        for _sql, params in conn.cursor_obj.sql[:2]
         for name in params[0]
     }
     assert "binance_orders" not in queried_names
@@ -233,7 +268,7 @@ def test_strategy_runtime_readiness_uses_full_mode_matrix(raw, expected):
         assert result.environment == "PAPER"
         assert result.status == "NOT_APPLICABLE"
         assert result.pending_entry_reconciliation_applicable is False
-        assert len(conn.cursor_obj.sql) == 2
+        assert len(conn.cursor_obj.sql) == 5
         return
 
     from common.schema_readiness import REQUIRED_COLUMNS, REQUIRED_INDEXES
@@ -246,13 +281,14 @@ def test_strategy_runtime_readiness_uses_full_mode_matrix(raw, expected):
     conn = RecordingConnection([
         columns,
         [(name,) for name in REQUIRED_INDEXES],
+        *_legacy_namespace_responses(),
         *_pending_ready_responses(),
     ])
     result = validate_strategy_runtime_schema(conn, trading_mode=raw)
     assert result.environment == "LIVE"
     assert result.status == "READY"
     assert result.pending_entry_reconciliation_applicable is True
-    assert len(conn.cursor_obj.sql) == 7
+    assert len(conn.cursor_obj.sql) == 10
 
 
 @pytest.mark.parametrize("raw", INVALID_TRADING_MODES)
