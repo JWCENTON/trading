@@ -76,7 +76,7 @@ CREATE TABLE exchange_fill_ingestion_state_v2(
   correction_revision INTEGER, source_fingerprint TEXT NOT NULL,
   applied_fingerprint TEXT, applied_at TIMESTAMPTZ,
   application_status TEXT, adoption_id BIGINT,
-  contract_generation BIGINT, local_fill_id BIGINT
+  contract_generation BIGINT, local_fill_id BIGINT, last_seen_at TIMESTAMPTZ
 );
 CREATE TABLE position_lifecycle_events_c2_2(
   event_id BIGSERIAL PRIMARY KEY, position_id BIGINT NOT NULL REFERENCES positions(id),
@@ -360,7 +360,21 @@ def test_disposable_pg_bounded_writer_contract(disposable_postgres_v16, monkeypa
     finally:
         connection.close()
     exchange = FakeExchange(evidence)
-    provisional = _service(pg, exchange, _manifest()).plan(enforce_fingerprints=False)
+    _execute(
+        pg,
+        "CREATE TABLE candidate_proof_gate(proof_status TEXT NOT NULL);"
+        "INSERT INTO candidate_proof_gate SELECT 'VALID' FROM generate_series(1,8);"
+        "CREATE VIEW v_legacy_fill_equivalence_proof_status_v1 AS "
+        "SELECT proof_status FROM candidate_proof_gate",
+    )
+    provisional = _service(
+        pg, exchange, _manifest(),
+    ).generate_manifest_candidate()
+    _execute(
+        pg,
+        "DROP VIEW v_legacy_fill_equivalence_proof_status_v1;"
+        "DROP TABLE candidate_proof_gate",
+    )
     assert provisional.summary() == {
         "positions_planned": 7, "phantom_closes": 4,
         "terminal_dust_closes": 3, "expected_db_mutations": 49,
@@ -369,7 +383,20 @@ def test_disposable_pg_bounded_writer_contract(disposable_postgres_v16, monkeypa
     fingerprints = {row.position_id: row.semantic_fingerprint for row in provisional.positions}
     manifest = _manifest(fingerprints)
     service = _service(pg, exchange, manifest)
-    assert service.plan().summary()["positions_planned"] == 7
+    first_plan = service.plan()
+    assert first_plan.summary()["positions_planned"] == 7
+    assert all("last_seen_at" not in row.immutable_payload["ingestion_high_water"] for row in first_plan.positions)
+    _execute(pg, "UPDATE exchange_fill_ingestion_state_v2 SET last_seen_at=now()")
+    second_plan = service.plan()
+    assert {
+        row.position_id: row.semantic_fingerprint for row in first_plan.positions
+    } == {
+        row.position_id: row.semantic_fingerprint for row in second_plan.positions
+    }
+    swapped = dict(fingerprints)
+    swapped[3079], swapped[3080] = swapped[3080], swapped[3079]
+    with pytest.raises(RuntimeError, match="SEMANTIC_FINGERPRINT_DRIFT:3079"):
+        _service(pg, exchange, _manifest(swapped)).plan()
 
     # Safety gates use committed disposable state and are restored immediately.
     _execute(pg, "UPDATE bot_control SET live_orders_enabled=true WHERE id=1")

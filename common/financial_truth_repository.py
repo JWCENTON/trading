@@ -312,6 +312,12 @@ class CanonicalFinancialTruthWriteRepository:
             "source_fill_ids": calculation.source_fill_ids,
             "source_fingerprint": calculation.source_fingerprint,
             "calculation_version": calculation.calculation_version,
+            "arithmetic_contract_version": (
+                calculation.arithmetic_contract_version
+            ),
+            "precision_contract_version": (
+                calculation.precision_contract_version
+            ),
         }
         now_complete = calculation.financial_truth_status == "COMPLETE"
         cur.execute(

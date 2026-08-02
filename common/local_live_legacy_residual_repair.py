@@ -41,6 +41,10 @@ from common.legacy_fill_equivalence_proof import (
 
 
 CONTRACT_VERSION = "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_V1"
+MANIFEST_VERSION = "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_MANIFEST_V1"
+FINGERPRINT_CONTRACT_VERSION = CONTRACT_VERSION + "_SEMANTIC_FINGERPRINT_V1"
+PROOF_CONTRACT_VERSION = "LEGACY_FILL_EQUIVALENCE_PROOF_V1"
+PLACEHOLDER_FINGERPRINT = "0" * 64
 PLANNER_VERSION = CONTRACT_VERSION + "_PLANNER"
 WRITER_VERSION = CONTRACT_VERSION + "_WRITER"
 APPLY_ENABLE_ENV = "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_APPLY_ENABLED"
@@ -131,6 +135,8 @@ def resolve_correction_trust(
     cur, ingestion_rows: Iterable[Mapping[str, Any]],
 ) -> tuple[str, dict[int, dict[str, Any]]]:
     rows = tuple(ingestion_rows)
+    if not rows:
+        return "CANONICAL_OKX_DIRECT_EVIDENCE", {}
     corrections = tuple(
         row for row in rows if int(row.get("correction_revision") or 0) > 0
     )
@@ -160,9 +166,11 @@ def resolve_correction_trust(
         raise RuntimeError("BLOCKED_BY_MISSING_EQUIVALENCE_PROOF")
     ids = [int(row["ingestion_id"]) for row in equivalence_required]
     cur.execute(
-        "SELECT ingestion_id,position_id,proof_status,fill_mutation_required,"
-        "repair_impact,latest_observed_fingerprint,canonical_fill_fingerprint,"
-        "okx_truth_fingerprint,canonical_local_fill_id "
+        "SELECT ingestion_id,position_id,proof_version,proof_type,"
+        "equivalence_state,proof_status,exchange_order_id,exchange_trade_id,"
+        "canonical_local_fill_id,latest_observed_fingerprint,"
+        "canonical_fill_fingerprint,okx_truth_fingerprint,"
+        "fill_mutation_required,repair_impact,idempotency_key "
         "FROM v_legacy_fill_equivalence_proof_status_v1 "
         "WHERE ingestion_id=ANY(%s) ORDER BY ingestion_id", (ids,),
     )
@@ -198,12 +206,36 @@ class RepairManifest:
     environment: str
     deployment_id: str
     positions: tuple[ManifestPosition, ...]
+    manifest_version: str = MANIFEST_VERSION
+    generated_from_git_revision: str | None = None
+    generated_at: str | None = None
+    fingerprint_contract_version: str = FINGERPRINT_CONTRACT_VERSION
+    proof_contract_version: str = PROOF_CONTRACT_VERSION
 
     @classmethod
-    def load(cls, path: str | Path) -> "RepairManifest":
+    def load(
+        cls, path: str | Path, *, allow_placeholders: bool = False,
+    ) -> "RepairManifest":
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        allowed_top = {"contract_version", "environment", "deployment_id", "positions"}
-        if set(payload) != allowed_top:
+        legacy_top = {
+            "contract_version", "environment", "deployment_id", "positions",
+        }
+        closed_top = legacy_top | {
+            "manifest_version", "generated_from_git_revision", "generated_at",
+            "fingerprint_contract_version", "proof_contract_version",
+        }
+        allowed_shapes = {frozenset(closed_top)}
+        if allow_placeholders:
+            allowed_shapes.add(frozenset(legacy_top))
+        if frozenset(payload) not in allowed_shapes:
+            if (
+                set(payload) == legacy_top
+                and any(
+                    row.get("semantic_fingerprint") == PLACEHOLDER_FINGERPRINT
+                    for row in payload.get("positions", ())
+                )
+            ):
+                raise RuntimeError("MANIFEST_FINGERPRINT_PLACEHOLDER")
             raise RuntimeError("MANIFEST_FIELDS_INVALID")
         if payload["contract_version"] != CONTRACT_VERSION:
             raise RuntimeError("MANIFEST_CONTRACT_INVALID")
@@ -220,10 +252,46 @@ class RepairManifest:
             )
             if not re.fullmatch(r"[0-9a-f]{64}", row.semantic_fingerprint):
                 raise RuntimeError("MANIFEST_FINGERPRINT_INVALID")
+            if (
+                row.semantic_fingerprint == PLACEHOLDER_FINGERPRINT
+                and not allow_placeholders
+            ):
+                raise RuntimeError("MANIFEST_FINGERPRINT_PLACEHOLDER")
             rows.append(row)
+        metadata_present = set(payload) == closed_top
+        generated_at = str(payload["generated_at"]) if metadata_present else None
+        if metadata_present:
+            if payload["manifest_version"] != MANIFEST_VERSION:
+                raise RuntimeError("MANIFEST_VERSION_INVALID")
+            if payload["fingerprint_contract_version"] != FINGERPRINT_CONTRACT_VERSION:
+                raise RuntimeError("FINGERPRINT_CONTRACT_VERSION_INVALID")
+            if payload["proof_contract_version"] != PROOF_CONTRACT_VERSION:
+                raise RuntimeError("PROOF_CONTRACT_VERSION_INVALID")
+            if not re.fullmatch(
+                r"[0-9a-f]{40}", str(payload["generated_from_git_revision"]),
+            ):
+                raise RuntimeError("MANIFEST_GENERATED_GIT_REVISION_INVALID")
+            try:
+                parsed_generated_at = datetime.fromisoformat(
+                    generated_at.replace("Z", "+00:00"),
+                )
+            except ValueError as exc:
+                raise RuntimeError("MANIFEST_GENERATED_AT_INVALID") from exc
+            if parsed_generated_at.tzinfo is None:
+                raise RuntimeError("MANIFEST_GENERATED_AT_INVALID")
         manifest = cls(
             str(payload["environment"]), str(payload["deployment_id"]),
             tuple(sorted(rows, key=lambda item: item.position_id)),
+            str(payload.get("manifest_version", MANIFEST_VERSION)),
+            (
+                str(payload["generated_from_git_revision"])
+                if metadata_present else None
+            ),
+            generated_at,
+            str(payload.get(
+                "fingerprint_contract_version", FINGERPRINT_CONTRACT_VERSION,
+            )),
+            str(payload.get("proof_contract_version", PROOF_CONTRACT_VERSION)),
         )
         if manifest.environment != EXPECTED_ENVIRONMENT:
             raise RuntimeError("ENVIRONMENT_IDENTITY_MISMATCH")
@@ -242,6 +310,24 @@ class RepairManifest:
         ):
             raise RuntimeError("FORBIDDEN_INCIDENT_IDENTITY")
         return manifest
+
+
+def stable_equivalence_proof_evidence(
+    proofs: Mapping[int, Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Return only immutable proof identity fields; proof sequence IDs are excluded."""
+    fields = (
+        "ingestion_id", "position_id", "proof_version", "proof_type",
+        "equivalence_state", "proof_status", "exchange_order_id",
+        "exchange_trade_id", "canonical_local_fill_id",
+        "latest_observed_fingerprint", "canonical_fill_fingerprint",
+        "okx_truth_fingerprint", "fill_mutation_required", "repair_impact",
+        "idempotency_key",
+    )
+    return tuple(
+        {field: proof.get(field) for field in fields}
+        for _ingestion_id, proof in sorted(proofs.items())
+    )
 
 
 @dataclass(frozen=True)
@@ -808,6 +894,8 @@ class BoundedResidualRepairService:
                     None,
                 )
                 if ingestion_row is None:
+                    if correction_trust_source == "CANONICAL_OKX_DIRECT_EVIDENCE":
+                        continue
                     raise RuntimeError("INGESTION_FILL_IDENTITY_MISSING")
                 proof = equivalence_proofs.get(int(ingestion_row["ingestion_id"]))
                 if proof is not None:
@@ -951,6 +1039,10 @@ class BoundedResidualRepairService:
             "instrument": instrument,
             "account_fingerprint": account_fingerprint,
             "ingestion_high_water": ingestion,
+            "correction_trust_source": correction_trust_source,
+            "equivalence_proofs": stable_equivalence_proof_evidence(
+                equivalence_proofs,
+            ),
             "learning_snapshot": learning_snapshot,
             "inventory": asdict(inventory),
             "classification": asdict(classification),
@@ -978,7 +1070,9 @@ class BoundedResidualRepairService:
             fingerprint_payload,
         )
 
-    def plan(self, *, enforce_fingerprints: bool = True) -> RunPlan:
+    def _plan(
+        self, *, enforce_fingerprints: bool, require_complete_proofs: bool,
+    ) -> RunPlan:
         self._runtime_gates()
         pending = self.exchange.pending_spot_orders()
         if pending:
@@ -987,6 +1081,17 @@ class BoundedResidualRepairService:
         try:
             self._begin_read_only(connection)
             panic = self._database_safety(connection)
+            if require_complete_proofs:
+                with connection.cursor() as cur:
+                    cur.execute(
+                        "SELECT count(*),"
+                        "count(*) FILTER (WHERE proof_status='VALID'),"
+                        "count(*) FILTER (WHERE proof_status<>'VALID') "
+                        "FROM v_legacy_fill_equivalence_proof_status_v1"
+                    )
+                    total, valid, invalid = cur.fetchone()
+                    if (int(total), int(valid), int(invalid)) != (8, 8, 0):
+                        raise RuntimeError("CANDIDATE_PROOF_GATE_FAILED")
             plans = []
             already = []
             for manifest_row in self.manifest.positions:
@@ -1004,6 +1109,21 @@ class BoundedResidualRepairService:
             return RunPlan(tuple(plans), tuple(already), (), panic)
         finally:
             connection.close()
+
+    def plan(self) -> RunPlan:
+        return self._plan(
+            enforce_fingerprints=True, require_complete_proofs=False,
+        )
+
+    def generate_manifest_candidate(self) -> RunPlan:
+        fingerprints = {
+            item.semantic_fingerprint for item in self.manifest.positions
+        }
+        if fingerprints != {PLACEHOLDER_FINGERPRINT}:
+            raise RuntimeError("CANDIDATE_REQUIRES_ALL_PLACEHOLDERS")
+        return self._plan(
+            enforce_fingerprints=False, require_complete_proofs=True,
+        )
 
     @staticmethod
     def _assert_learning_excluded(cur, position_id: int) -> None:
@@ -1031,7 +1151,7 @@ class BoundedResidualRepairService:
             raise RuntimeError("APPLY_MANIFEST_GATE_FAILED")
         if os.environ.get(APPLY_ENABLE_ENV) != "1":
             raise RuntimeError("APPLY_ENV_FLAG_DISABLED")
-        initial = self.plan(enforce_fingerprints=True)
+        initial = self.plan()
         results = [
             {"position_id": position_id, "status": "ALREADY_REPAIRED", "writes": 0}
             for position_id in initial.already_repaired
@@ -1230,6 +1350,40 @@ def render_plan(plan: RunPlan) -> str:
         "already_repaired": plan.already_repaired,
         "blocked": plan.blocked,
         "panic_enabled": plan.panic_enabled,
+        "summary": plan.summary(),
+    }
+    return json.dumps(_json_safe(payload), sort_keys=True, indent=2) + "\n"
+
+
+def render_manifest_candidate(
+    plan: RunPlan,
+    *,
+    generated_from_git_revision: str,
+    generated_at: datetime | None = None,
+) -> str:
+    generated_at = generated_at or datetime.now(timezone.utc)
+    manifest = {
+        "contract_version": CONTRACT_VERSION,
+        "manifest_version": MANIFEST_VERSION,
+        "generated_from_git_revision": generated_from_git_revision,
+        "generated_at": generated_at.astimezone(timezone.utc).isoformat(),
+        "fingerprint_contract_version": FINGERPRINT_CONTRACT_VERSION,
+        "proof_contract_version": PROOF_CONTRACT_VERSION,
+        "environment": EXPECTED_ENVIRONMENT,
+        "deployment_id": EXPECTED_DEPLOYMENT,
+        "positions": [
+            {
+                "position_id": item.position_id,
+                "entry_order_id": item.entry_order_id,
+                "exit_order_id": item.exit_order_id,
+                "semantic_fingerprint": item.semantic_fingerprint,
+            }
+            for item in plan.positions
+        ],
+    }
+    payload = {
+        "candidate_manifest": manifest,
+        "evidence": [item.public_payload() for item in plan.positions],
         "summary": plan.summary(),
     }
     return json.dumps(_json_safe(payload), sort_keys=True, indent=2) + "\n"

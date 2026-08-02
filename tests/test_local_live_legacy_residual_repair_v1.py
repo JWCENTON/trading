@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime, timezone
 import json
 from decimal import Decimal
 
@@ -16,13 +18,24 @@ from common.local_live_legacy_residual_repair import (
     APPLY_ENABLE_ENV,
     BoundedResidualRepairService,
     EXPECTED_DATABASE,
+    FINGERPRINT_CONTRACT_VERSION,
     FORBIDDEN_DB_ORDER_ROW_IDS,
     FORBIDDEN_EXCHANGE_ORDER_IDS,
     FORBIDDEN_INGESTION_IDS,
+    MANIFEST_VERSION,
+    ManifestPosition,
+    PLACEHOLDER_FINGERPRINT,
     POSITION_UPDATE_ALLOWLIST,
+    PROOF_CONTRACT_VERSION,
     RepairManifest,
+    RunPlan,
     RuntimeIdentity,
+    render_manifest_candidate,
+    resolve_correction_trust,
+    stable_equivalence_proof_evidence,
 )
+from common.legacy_recovery import semantic_repair_fingerprint
+from tools.local_live_legacy_residual_repair import parser
 
 
 EXPECTED = {
@@ -88,13 +101,154 @@ def _manifest_payload():
     }
 
 
-def test_manifest_is_closed_and_rejects_forbidden_incident(tmp_path):
+def _closed_manifest_payload():
     payload = _manifest_payload()
+    payload.update({
+        "manifest_version": MANIFEST_VERSION,
+        "generated_from_git_revision": "1" * 40,
+        "generated_at": "2026-08-02T18:00:00+00:00",
+        "fingerprint_contract_version": FINGERPRINT_CONTRACT_VERSION,
+        "proof_contract_version": PROOF_CONTRACT_VERSION,
+    })
+    for index, row in enumerate(payload["positions"], start=1):
+        row["semantic_fingerprint"] = f"{index:064x}"
+    return payload
+
+
+def test_manifest_is_closed_and_rejects_forbidden_incident(tmp_path):
+    payload = _closed_manifest_payload()
     payload["positions"][0]["entry_order_id"] = next(iter(FORBIDDEN_EXCHANGE_ORDER_IDS))
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="FORBIDDEN_INCIDENT_IDENTITY"):
         RepairManifest.load(path)
+
+
+def test_normal_manifest_rejects_placeholder_and_candidate_loader_is_explicit(
+    tmp_path,
+):
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(_manifest_payload()), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="MANIFEST_FINGERPRINT_PLACEHOLDER"):
+        RepairManifest.load(path)
+    candidate = RepairManifest.load(path, allow_placeholders=True)
+    assert {row.semantic_fingerprint for row in candidate.positions} == {
+        PLACEHOLDER_FINGERPRINT,
+    }
+
+
+def test_manifest_rejects_missing_fingerprint_and_loads_closed_metadata(tmp_path):
+    payload = _closed_manifest_payload()
+    del payload["positions"][0]["semantic_fingerprint"]
+    path = tmp_path / "missing.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="MANIFEST_POSITION_FIELDS_INVALID"):
+        RepairManifest.load(path)
+
+    payload = _closed_manifest_payload()
+    path = tmp_path / "closed.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest = RepairManifest.load(path)
+    assert manifest.manifest_version == MANIFEST_VERSION
+    assert manifest.generated_from_git_revision == "1" * 40
+    assert manifest.fingerprint_contract_version == FINGERPRINT_CONTRACT_VERSION
+    assert manifest.proof_contract_version == PROOF_CONTRACT_VERSION
+
+
+def test_candidate_mode_cannot_combine_with_apply():
+    with pytest.raises(SystemExit):
+        parser().parse_args([
+            "--apply", "--emit-manifest-candidate", "--manifest", "x",
+            "--expected-git-sha", "1" * 40,
+            "--expected-database", "trading_live",
+        ])
+
+
+def test_candidate_generation_is_one_time_and_rejects_closed_manifest():
+    runtime = RuntimeIdentity(
+        "OKX", "LIVE", "local-live", "1" * 40, "PROCESS_SUPERVISOR",
+    )
+    positions = tuple(
+        ManifestPosition(
+            position_id, f"entry-{position_id}", f"exit-{position_id}", "1" * 64,
+        )
+        for position_id in sorted(ALLOWED_POSITION_IDS)
+    )
+    service = BoundedResidualRepairService(
+        NoConnection(), NoExchange(), runtime,
+        RepairManifest("LIVE", "local-live", positions),
+        expected_git_sha="1" * 40, expected_database=EXPECTED_DATABASE,
+    )
+    with pytest.raises(RuntimeError, match="CANDIDATE_REQUIRES_ALL_PLACEHOLDERS"):
+        service.generate_manifest_candidate()
+
+
+def test_stable_proof_evidence_ignores_sequence_id_and_sorts():
+    base = {
+        "ingestion_id": 8,
+        "position_id": 3084,
+        "proof_version": PROOF_CONTRACT_VERSION,
+        "proof_type": "LEGACY_CANONICAL_OKX_EQUIVALENCE",
+        "equivalence_state": "PROVEN",
+        "proof_status": "VALID",
+        "exchange_order_id": "order",
+        "exchange_trade_id": "trade",
+        "canonical_local_fill_id": 1,
+        "latest_observed_fingerprint": "1" * 64,
+        "canonical_fill_fingerprint": "2" * 64,
+        "okx_truth_fingerprint": "2" * 64,
+        "fill_mutation_required": False,
+        "repair_impact": "NONE",
+        "idempotency_key": "3" * 64,
+    }
+    first = stable_equivalence_proof_evidence({8: {**base, "proof_id": 1}})
+    second = stable_equivalence_proof_evidence({8: {**base, "proof_id": 999}})
+    assert first == second
+    assert "proof_id" not in first[0]
+
+
+def test_no_ingestion_history_uses_direct_canonical_okx_trust():
+    trust, proofs = resolve_correction_trust(None, ())
+    assert trust == "CANONICAL_OKX_DIRECT_EVIDENCE"
+    assert proofs == {}
+
+
+def test_semantic_payload_detects_economic_and_proof_drift():
+    payload = {
+        "position_before": {"id": 3079},
+        "fills": [{"executed_qty": "1", "commission_amount": "0.01"}],
+        "equivalence_proofs": [{"canonical_fill_fingerprint": "1" * 64}],
+        "classification": {"status": "FULLY_EXECUTED_CLOSE"},
+        "financial_truth": {"authoritative_net_pnl": "2.50"},
+    }
+    original = semantic_repair_fingerprint(payload)
+    mutations = (
+        ("fills", 0, "executed_qty", "2"),
+        ("fills", 0, "commission_amount", "0.02"),
+        ("equivalence_proofs", 0, "canonical_fill_fingerprint", "2" * 64),
+    )
+    for container, index, field, value in mutations:
+        changed = deepcopy(payload)
+        changed[container][index][field] = value
+        assert semantic_repair_fingerprint(changed) != original
+    changed = deepcopy(payload)
+    changed["classification"]["status"] = "TERMINAL_DUST_CLOSE"
+    assert semantic_repair_fingerprint(changed) != original
+    changed = deepcopy(payload)
+    changed["financial_truth"]["authoritative_net_pnl"] = "2.51"
+    assert semantic_repair_fingerprint(changed) != original
+
+
+def test_candidate_renderer_does_not_write_manifest(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("unchanged\n", encoding="utf-8")
+    output = render_manifest_candidate(
+        RunPlan((), (), (), False),
+        generated_from_git_revision="1" * 40,
+        generated_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+    )
+    assert json.loads(output)["candidate_manifest"]["generated_at"].endswith("+00:00")
+    assert manifest_path.read_text(encoding="utf-8") == "unchanged\n"
 
 
 def test_position_allowlist_excludes_all_economic_identity_fields():

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 from enum import Enum
+from functools import wraps
 import hashlib
 import json
 from typing import Iterable
@@ -15,7 +16,36 @@ from common.inventory_quantity import (
 )
 
 
-CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V2"
+CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V3"
+ARITHMETIC_CONTRACT_VERSION = "FINANCIAL_TRUTH_ARITHMETIC_V1"
+PRECISION_CONTRACT_VERSION = "FINANCIAL_TRUTH_DECIMAL_PRECISION_V1"
+DECIMAL_CONTEXT_PRECISION = 120
+DECIMAL_CONTEXT_ROUNDING = ROUND_HALF_UP
+ALLOCATION_RATIO_SCALE = 20
+ALLOCATION_RATIO_QUANTUM = Decimal("1e-20")
+
+
+def _canonical_decimal_context(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with localcontext() as context:
+            context.prec = DECIMAL_CONTEXT_PRECISION
+            context.rounding = DECIMAL_CONTEXT_ROUNDING
+            return function(*args, **kwargs)
+    return wrapped
+
+
+@_canonical_decimal_context
+def canonical_allocation_ratio(numerator: Decimal, denominator: Decimal) -> Decimal:
+    """PostgreSQL NUMERIC-compatible V1 ratio with an explicit scale boundary."""
+    if denominator <= 0 or numerator <= 0:
+        return Decimal("0")
+    if numerator >= denominator:
+        return Decimal("1")
+    return (numerator / denominator).quantize(
+        ALLOCATION_RATIO_QUANTUM,
+        rounding=DECIMAL_CONTEXT_ROUNDING,
+    )
 
 
 class NonCanonicalFinancialTruthIssue(str, Enum):
@@ -107,12 +137,23 @@ class FinancialTruthCalculation:
     failure_code: str | None
     failure_detail: str | None
 
+    @property
+    def arithmetic_contract_version(self) -> str:
+        return ARITHMETIC_CONTRACT_VERSION
+
+    @property
+    def precision_contract_version(self) -> str:
+        return PRECISION_CONTRACT_VERSION
+
     def semantic_values(self) -> dict:
-        return {
+        values = {
             key: _json_value(value)
             for key, value in asdict(self).items()
             if key not in {"position_id"}
         }
+        values["arithmetic_contract_version"] = self.arithmetic_contract_version
+        values["precision_contract_version"] = self.precision_contract_version
+        return values
 
 
 def source_fingerprint(fills: Iterable[FillEvidence]) -> str:
@@ -124,7 +165,11 @@ def source_fingerprint(fills: Iterable[FillEvidence]) -> str:
                 for key, value in asdict(fill).items()
             }
         )
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    raw = json.dumps({
+        "arithmetic_contract_version": ARITHMETIC_CONTRACT_VERSION,
+        "precision_contract_version": PRECISION_CONTRACT_VERSION,
+        "fills": payload,
+    }, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -208,6 +253,7 @@ def resolve_fee_asset_role(
     )
 
 
+@_canonical_decimal_context
 def calculate_financial_truth(
     *,
     position_id: int,
@@ -368,12 +414,11 @@ def calculate_financial_truth(
     gross_pnl = None
     net_pnl = None
     if gross_entry > 0 and gross_exit > 0 and entry_notional is not None:
-        exited_ratio = min(gross_exit / gross_entry, Decimal("1"))
+        exited_ratio = canonical_allocation_ratio(gross_exit, gross_entry)
         allocated_entry_notional = entry_notional * exited_ratio
         gross_pnl = exit_notional - allocated_entry_notional
-        inventory_exit_ratio = (
-            min(net_exit_reduction / net_entry, Decimal("1"))
-            if net_entry > 0 else Decimal("0")
+        inventory_exit_ratio = canonical_allocation_ratio(
+            net_exit_reduction, net_entry,
         )
         allocated_entry_fees = (
             entry_fees * inventory_exit_ratio

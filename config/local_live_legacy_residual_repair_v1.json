@@ -1,14 +1,19 @@
 {
   "contract_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_V1",
+  "manifest_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_MANIFEST_V1",
+  "generated_from_git_revision": "00966eb772a37c84df91d6741f69a5847bc4984c",
+  "generated_at": "2026-08-02T18:19:14.525081+00:00",
+  "fingerprint_contract_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_V1_SEMANTIC_FINGERPRINT_V1",
+  "proof_contract_version": "LEGACY_FILL_EQUIVALENCE_PROOF_V1",
   "environment": "LIVE",
   "deployment_id": "local-live",
   "positions": [
-    {"position_id": 3079, "entry_order_id": "3749848403589767168", "exit_order_id": "3749879237797519360", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"},
-    {"position_id": 3080, "entry_order_id": "3751751866456252416", "exit_order_id": "3751792625159020544", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"},
-    {"position_id": 3081, "entry_order_id": "3758376872065933312", "exit_order_id": "3758406016808034304", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"},
-    {"position_id": 3082, "entry_order_id": "3759628252160237568", "exit_order_id": "3759690367218786304", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"},
-    {"position_id": 3083, "entry_order_id": "3759654231880540160", "exit_order_id": "3759715272391958528", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"},
-    {"position_id": 3084, "entry_order_id": "3762009375217590272", "exit_order_id": "3762201774820728832", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"},
-    {"position_id": 3085, "entry_order_id": "3785263640706850816", "exit_order_id": "3785324726516752384", "semantic_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"}
+    {"position_id": 3079, "entry_order_id": "3749848403589767168", "exit_order_id": "3749879237797519360", "semantic_fingerprint": "8b90293538f7c3a2c14e333de07e1c599a8732e550b8a17f33ee1b611d8357f4"},
+    {"position_id": 3080, "entry_order_id": "3751751866456252416", "exit_order_id": "3751792625159020544", "semantic_fingerprint": "795c8193a2cef946ca8cb8d83b68635e7d9509ac2e48b21a5c1ca17fa218966e"},
+    {"position_id": 3081, "entry_order_id": "3758376872065933312", "exit_order_id": "3758406016808034304", "semantic_fingerprint": "b09a06f2c2ff2855d3758dd435071023b36d276b7c01f4d192a27acc6eb2d5df"},
+    {"position_id": 3082, "entry_order_id": "3759628252160237568", "exit_order_id": "3759690367218786304", "semantic_fingerprint": "b837d0f1ace6cb6efe1b1448c6912ee14587756a13feaec9ac5fa9c1da2dd74e"},
+    {"position_id": 3083, "entry_order_id": "3759654231880540160", "exit_order_id": "3759715272391958528", "semantic_fingerprint": "52fb3f19c2b7969e19e4f191e934e6148ac723678075ab99bc1db7365d5f3d86"},
+    {"position_id": 3084, "entry_order_id": "3762009375217590272", "exit_order_id": "3762201774820728832", "semantic_fingerprint": "8980467c4453afdee9bc87fd3822591d9d384ec776178d06bcc56200860843aa"},
+    {"position_id": 3085, "entry_order_id": "3785263640706850816", "exit_order_id": "3785324726516752384", "semantic_fingerprint": "254fed9950d5abe4a7177b7593962cab6e1a091d8d5670eef8c22d8f2003e677"}
   ]
 }

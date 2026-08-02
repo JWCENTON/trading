@@ -15,6 +15,8 @@ OUTCOME_SOURCE_PRECEDENCE = (
 
 PAPER_OUTCOME_NORMALIZATION_VERSION = "PAPER_OUTCOME_NORMALIZATION_V1"
 PAPER_OUTCOME_CALCULATION_VERSION = "CLOSED_OUTCOME_PAPER_V2"
+FINANCIAL_TRUTH_ARITHMETIC_VERSION = "FINANCIAL_TRUTH_ARITHMETIC_V1"
+FINANCIAL_TRUTH_RATIO_SCALE = 20
 
 
 LIVE_CLOSED_OUTCOME_CTE = """
@@ -111,7 +113,15 @@ bounded_legacy_execution AS MATERIALIZED (
 legacy_calculated AS MATERIALIZED (
   SELECT
     l.*,
-    LEAST(l.exit_qty / NULLIF(l.entry_qty, 0), 1) AS exited_ratio,
+    LEAST(ROUND(l.exit_qty / NULLIF(l.entry_qty, 0), 20), 1) AS exited_ratio,
+    LEAST(
+      ROUND(
+        (l.exit_qty + COALESCE(l.exit_base_fee, 0))
+        / NULLIF(l.entry_qty - COALESCE(l.entry_base_fee, 0), 0),
+        20
+      ),
+      1
+    ) AS inventory_exited_ratio,
     (
       l.entry_qty - COALESCE(l.entry_base_fee, 0)
       - l.exit_qty - COALESCE(l.exit_base_fee, 0)
@@ -133,7 +143,7 @@ bounded_legacy_outcomes AS MATERIALIZED (
         THEN l.entry_notional * l.exited_ratio - l.exit_notional
       ELSE l.exit_notional - l.entry_notional * l.exited_ratio
     END AS gross_pnl,
-    l.entry_fees * l.exited_ratio + l.exit_fees AS fees,
+    l.entry_fees * l.inventory_exited_ratio + l.exit_fees AS fees,
     l.entry_notional,
     (
       p.entry_order_id <> p.exit_order_id

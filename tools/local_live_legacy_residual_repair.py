@@ -21,6 +21,7 @@ from common.local_live_legacy_residual_repair import (
     EXPECTED_ENVIRONMENT,
     OkxReadOnlyEvidenceClient,
     RepairManifest,
+    render_manifest_candidate,
     render_plan,
 )
 
@@ -55,7 +56,9 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Bounded LOCAL LIVE legacy residual repair V1",
     )
-    result.add_argument("--apply", action="store_true")
+    mode = result.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--emit-manifest-candidate", action="store_true")
     result.add_argument("--environment")
     result.add_argument("--deployment-id")
     result.add_argument("--manifest", required=True)
@@ -74,15 +77,29 @@ def main(argv=None) -> int:
     os.environ["DB_PORT"] = "5432"
     os.environ["DB_NAME"] = args.expected_database
     manifest_path = Path(args.manifest).resolve()
-    manifest = RepairManifest.load(manifest_path)
+    manifest = RepairManifest.load(
+        manifest_path, allow_placeholders=args.emit_manifest_candidate,
+    )
     runtime = DockerRuntimeIdentityProbe().read(repository=ROOT)
     service = BoundedResidualRepairService(
         get_db_conn, OkxReadOnlyEvidenceClient(), runtime, manifest,
         expected_git_sha=args.expected_git_sha,
         expected_database=args.expected_database,
     )
+    if args.emit_manifest_candidate:
+        if args.environment != EXPECTED_ENVIRONMENT:
+            raise RuntimeError("CANDIDATE_ENVIRONMENT_GATE_FAILED")
+        if args.deployment_id != EXPECTED_DEPLOYMENT:
+            raise RuntimeError("CANDIDATE_DEPLOYMENT_GATE_FAILED")
+        if args.expected_database != EXPECTED_DATABASE:
+            raise RuntimeError("CANDIDATE_DATABASE_GATE_FAILED")
+        print(render_manifest_candidate(
+            service.generate_manifest_candidate(),
+            generated_from_git_revision=args.expected_git_sha,
+        ), end="")
+        return 0
     if not args.apply:
-        print(render_plan(service.plan(enforce_fingerprints=True)), end="")
+        print(render_plan(service.plan()), end="")
         return 0
     if args.environment is None or args.deployment_id is None:
         raise RuntimeError("EXPLICIT_APPLY_IDENTITY_GATES_REQUIRED")

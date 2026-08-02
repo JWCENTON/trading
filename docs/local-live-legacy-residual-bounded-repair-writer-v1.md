@@ -10,6 +10,12 @@ NATIVE_APPLICATION_PROOF
 LEGACY_EQUIVALENCE_PROOF
 ```
 
+Positions with no ingestion history at all use the separate
+`CANONICAL_OKX_DIRECT_EVIDENCE` source. It is valid only when the complete
+canonical entry/exit fill identity and Decimal evidence match fresh filled OKX
+orders and trades. A partially present ingestion history still fails closed;
+this source never substitutes for a missing correction proof.
+
 Native proof requires a matching applied fingerprint, application timestamp,
 local fill, adoption and generation. The legacy alternative requires a
 `VALID` row from `v_legacy_fill_equivalence_proof_status_v1`,
