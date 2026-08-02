@@ -332,6 +332,105 @@ def test_no_ingestion_history_uses_direct_canonical_okx_trust():
     assert proofs == {}
 
 
+def _ingestion_row(**overrides):
+    row = {
+        "ingestion_id": 54,
+        "correction_revision": 0,
+        "source_fingerprint": "1" * 64,
+        "applied_fingerprint": None,
+        "applied_at": None,
+        "application_status": "OBSERVED_NOT_APPLIED",
+        "adoption_id": None,
+        "contract_generation": None,
+        "local_fill_id": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class ProofCursor:
+    def __init__(self, proof=None, *, relation_exists=True):
+        self.proof = proof
+        self.relation_exists = relation_exists
+        self.description = ()
+        self.result = []
+
+    def execute(self, query, _parameters=None):
+        if "to_regclass" in query:
+            self.description = (("to_regclass",),)
+            self.result = [("proof-view",) if self.relation_exists else (None,)]
+            return
+        fields = (
+            "ingestion_id", "position_id", "proof_version", "proof_type",
+            "equivalence_state", "proof_status", "exchange_order_id",
+            "exchange_trade_id", "canonical_local_fill_id",
+            "latest_observed_fingerprint", "canonical_fill_fingerprint",
+            "okx_truth_fingerprint", "fill_mutation_required",
+            "repair_impact", "idempotency_key",
+        )
+        self.description = tuple((field,) for field in fields)
+        self.result = (
+            [tuple(self.proof[field] for field in fields)] if self.proof else []
+        )
+
+    def fetchone(self):
+        return self.result[0]
+
+    def fetchall(self):
+        return list(self.result)
+
+
+def test_revision_zero_observed_not_applied_uses_direct_okx_evidence():
+    rows = tuple(_ingestion_row(ingestion_id=value) for value in range(54, 61))
+    trust, proofs = resolve_correction_trust(None, rows)
+    assert trust == "CANONICAL_OKX_DIRECT_EVIDENCE"
+    assert proofs == {}
+
+
+def test_complete_native_application_linkage_uses_native_proof():
+    row = _ingestion_row(
+        applied_fingerprint="1" * 64,
+        applied_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        application_status="APPLIED",
+        adoption_id=1,
+        contract_generation=2,
+        local_fill_id=123,
+    )
+    trust, proofs = resolve_correction_trust(None, (row,))
+    assert trust == "NATIVE_APPLICATION_PROOF"
+    assert proofs == {}
+
+
+def test_correction_without_equivalence_proof_fails_closed():
+    row = _ingestion_row(ingestion_id=47, correction_revision=2)
+    with pytest.raises(RuntimeError, match="BLOCKED_BY_MISSING_EQUIVALENCE_PROOF"):
+        resolve_correction_trust(ProofCursor(relation_exists=False), (row,))
+
+
+def test_correction_with_valid_equivalence_proof_uses_legacy_trust():
+    row = _ingestion_row(ingestion_id=47, correction_revision=2)
+    proof = {
+        "ingestion_id": 47,
+        "position_id": 3094,
+        "proof_version": PROOF_CONTRACT_VERSION,
+        "proof_type": "LEGACY_CANONICAL_OKX_EQUIVALENCE",
+        "equivalence_state": "PROVEN",
+        "proof_status": "VALID",
+        "exchange_order_id": "3758376674027315200",
+        "exchange_trade_id": "1167757",
+        "canonical_local_fill_id": 15451809,
+        "latest_observed_fingerprint": "1" * 64,
+        "canonical_fill_fingerprint": "2" * 64,
+        "okx_truth_fingerprint": "2" * 64,
+        "fill_mutation_required": False,
+        "repair_impact": "NONE",
+        "idempotency_key": "3" * 64,
+    }
+    trust, proofs = resolve_correction_trust(ProofCursor(proof), (row,))
+    assert trust == "LEGACY_EQUIVALENCE_PROOF"
+    assert set(proofs) == {47}
+
+
 def test_semantic_payload_detects_economic_and_proof_drift():
     payload = {
         "position_before": {"id": 3079},

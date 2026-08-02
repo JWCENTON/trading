@@ -471,6 +471,22 @@ def _seed_vps_profile(connection):
                 }
                 exchange_evidence[order_id] = (exchange_row,)
 
+                if position_id == 3092:
+                    observed_ids = (
+                        range(54, 58) if not is_exit else range(58, 61)
+                    )
+                    for ingestion_id in observed_ids:
+                        cur.execute(
+                            "INSERT INTO exchange_fill_ingestion_state_v2("
+                            "ingestion_id,symbol,order_id,trade_id,"
+                            "correction_revision,source_fingerprint,"
+                            "application_status) "
+                            "VALUES(%s,%s,%s,%s,0,%s,'OBSERVED_NOT_APPLIED')",
+                            (
+                                ingestion_id, symbol, order_id, trade_id,
+                                f"{ingestion_id:064x}",
+                            ),
+                        )
                 if position_id != 3092:
                     ingestion_id = (
                         proof_ingestion_ids[position_id]

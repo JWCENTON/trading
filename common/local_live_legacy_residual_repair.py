@@ -237,16 +237,13 @@ def resolve_correction_trust(
     rows = tuple(ingestion_rows)
     if not rows:
         return "CANONICAL_OKX_DIRECT_EVIDENCE", {}
-    corrections = tuple(
-        row for row in rows if int(row.get("correction_revision") or 0) > 0
-    )
-    if not corrections:
-        return "NATIVE_APPLICATION_PROOF", {}
-    equivalence_required = []
-    for row in corrections:
-        native_complete = (
-            str(row.get("applied_fingerprint") or "")
-            == str(row.get("source_fingerprint") or "")
+
+    def native_application_proof_complete(row: Mapping[str, Any]) -> bool:
+        applied_fingerprint = str(row.get("applied_fingerprint") or "")
+        source_fingerprint = str(row.get("source_fingerprint") or "")
+        return (
+            bool(applied_fingerprint)
+            and applied_fingerprint == source_fingerprint
             and row.get("applied_at") is not None
             and row.get("local_fill_id") is not None
             and row.get("adoption_id") is not None
@@ -255,7 +252,17 @@ def resolve_correction_trust(
                 "APPLIED", "CORRECTION_APPLIED", "TRUE_DUPLICATE_APPLIED",
             }
         )
-        if not native_complete:
+
+    corrections = tuple(
+        row for row in rows if int(row.get("correction_revision") or 0) > 0
+    )
+    if not corrections:
+        if all(native_application_proof_complete(row) for row in rows):
+            return "NATIVE_APPLICATION_PROOF", {}
+        return "CANONICAL_OKX_DIRECT_EVIDENCE", {}
+    equivalence_required = []
+    for row in corrections:
+        if not native_application_proof_complete(row):
             equivalence_required.append(row)
     if not equivalence_required:
         return "NATIVE_APPLICATION_PROOF", {}
