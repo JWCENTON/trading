@@ -81,7 +81,11 @@ class InventoryQuantity:
         net_entry = gross_entry - entry_base_fee
         exit_reduction = gross_exit + exit_base_fee
         remaining = net_entry - exit_reduction
-        if min(gross_entry, net_entry, remaining) < ZERO:
+        # A small negative exit delta is not, by itself, incomplete evidence.
+        # The canonical exit classifier owns the instrument-aware tolerance
+        # decision and rejects material over-exits.  Treating every negative
+        # delta as incomplete here made that contract unreachable.
+        if min(gross_entry, net_entry) < ZERO:
             reasons.append("INVENTORY_QUANTITY_CONFLICT")
 
         reasons = list(dict.fromkeys(reasons))
@@ -169,11 +173,23 @@ def classify_exit_inventory(
             floor_to_lot(previous, limits.lot_size), ZERO, None,
         )
 
-    remaining = max(inventory.remaining_inventory_qty, ZERO)
-    if remaining <= numeric_tolerance:
+    raw_remaining = inventory.remaining_inventory_qty
+    if raw_remaining < -numeric_tolerance:
+        return ExitInventoryClassification(
+            ExitInventoryStatus.INCOMPLETE_EVIDENCE,
+            ZERO,
+            ZERO,
+            ZERO,
+            "EXIT_QUANTITY_EXCEEDS_ENTRY",
+        )
+    remaining = max(raw_remaining, ZERO)
+    # Tolerance normalizes only a quantization over-exit (or exact zero).
+    # A real positive residual remains economic inventory and must continue
+    # through the canonical lot/minimum dust classification below.
+    if raw_remaining <= ZERO:
         return ExitInventoryClassification(
             ExitInventoryStatus.FULLY_EXECUTED_CLOSE,
-            remaining, ZERO, remaining, None,
+            ZERO, ZERO, ZERO, None,
         )
 
     executable = floor_to_lot(remaining, limits.lot_size)

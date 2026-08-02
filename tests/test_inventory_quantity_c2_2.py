@@ -100,3 +100,40 @@ def test_duplicate_high_water_is_no_new_fill():
         limits=limits(),
     )
     assert result.status is ExitInventoryStatus.NO_NEW_FILL
+
+
+def test_canonical_tolerance_normalizes_small_over_exit_only():
+    inventory = InventoryQuantity.from_fills(
+        symbol="BNBUSDC",
+        entry_fills=[fill("0.035152", "0.000123032", "BNB")],
+        exit_fills=[fill("0.035029", "0.06952731065", "USDC")],
+    )
+    assert inventory.evidence_status is InventoryEvidenceStatus.COMPLETE
+    assert inventory.remaining_inventory_qty == Decimal("-0.000000032")
+    result = classify_exit_inventory(
+        previous_remaining_qty="0.035028968",
+        cumulative_exit_inventory_reduction_qty="0.035029",
+        previous_cumulative_exit_inventory_reduction_qty="0",
+        inventory=inventory,
+        limits=limits(lot="0.000001", minimum="0.001"),
+        tolerance="0.000000032",
+    )
+    assert result.status is ExitInventoryStatus.FULLY_EXECUTED_CLOSE
+    assert result.remaining_inventory_qty == 0
+
+
+def test_canonical_tolerance_rejects_material_over_exit():
+    inventory = InventoryQuantity.from_fills(
+        symbol="BNBUSDC",
+        entry_fills=[fill("1", "0", "USDC")],
+        exit_fills=[fill("1.01", "0", "USDC")],
+    )
+    result = classify_exit_inventory(
+        previous_remaining_qty="1",
+        cumulative_exit_inventory_reduction_qty="1.01",
+        previous_cumulative_exit_inventory_reduction_qty="0",
+        inventory=inventory,
+        limits=limits(lot="0.000001", minimum="0.001"),
+    )
+    assert result.status is ExitInventoryStatus.INCOMPLETE_EVIDENCE
+    assert result.terminal_reason == "EXIT_QUANTITY_EXCEEDS_ENTRY"

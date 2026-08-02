@@ -37,6 +37,7 @@ def apply_inventory_lifecycle_mutation(
     execution_source: str,
     exit_reason: str | None = None,
     event_payload: Mapping[str, Any] | None = None,
+    normalization_tolerance: Decimal | None = None,
 ) -> InventoryMutationResult:
     """Atomically project inventory and append committed lifecycle evidence.
 
@@ -54,6 +55,11 @@ def apply_inventory_lifecycle_mutation(
             ),
             inventory=inventory,
             limits=limits,
+            tolerance=(
+                normalization_tolerance
+                if normalization_tolerance is not None
+                else "0.000000000001"
+            ),
         )
 
     if (
@@ -106,7 +112,7 @@ def apply_inventory_lifecycle_mutation(
             WHEN %s THEN COALESCE(%s,'TERMINAL_DUST')
             WHEN %s THEN COALESCE(%s,exit_reason)
             ELSE exit_reason END
-        WHERE id=%s
+        WHERE id=%s AND status='OPEN'
         RETURNING status
         """,
         (

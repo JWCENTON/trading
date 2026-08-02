@@ -14,6 +14,10 @@ from common.financial_truth_calculator import (
     resolve_fee_asset_role,
     source_fingerprint,
 )
+from common.inventory_quantity import (
+    ExitInventoryClassification,
+    ExitInventoryStatus,
+)
 from common.financial_truth_repository import normalize_optional_asset
 from common.financial_truth_identity import (
     AccountIdentityCache,
@@ -105,6 +109,28 @@ def test_complete_execution_evidence_is_complete():
     assert result.financial_truth_status == "COMPLETE"
     assert result.authoritative_gross_pnl == Decimal("10")
     assert result.authoritative_net_pnl == Decimal("9.80")
+
+
+def test_canonical_terminal_classification_completes_tiny_over_exit():
+    entry = fill(
+        "1", "ENTRY", "1", "2", fee_qty="0.001", fee_asset="BTC",
+        authoritative_fee="0.002", step="0.000001",
+    )
+    exit_fill = fill(
+        "2", "EXIT", "0.99900001", "3", fee_qty="0.01",
+        fee_asset="USDC", authoritative_fee="0.01", step="0.000001",
+    )
+    classification = ExitInventoryClassification(
+        ExitInventoryStatus.FULLY_EXECUTED_CLOSE,
+        Decimal("0"), Decimal("0"), Decimal("0"), None,
+    )
+    result = calculate_financial_truth(
+        position_id=1, position_status="CLOSED", fills=(entry, exit_fill),
+        inventory_classification=classification,
+    )
+    assert result.financial_truth_status == "COMPLETE"
+    assert result.remaining_inventory_qty == 0
+    assert "EXIT_QUANTITY_EXCEEDS_ENTRY" not in str(result.failure_detail)
 
 
 def test_open_position_with_complete_execution_is_lifecycle_conflict():

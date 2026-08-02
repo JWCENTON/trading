@@ -9,6 +9,10 @@ import json
 from typing import Iterable
 
 from common.exchange_symbols import resolve_canonical_instrument
+from common.inventory_quantity import (
+    ExitInventoryClassification,
+    ExitInventoryStatus,
+)
 
 
 CALCULATION_VERSION = "FINANCIAL_TRUTH_CALCULATION_V2"
@@ -213,9 +217,28 @@ def calculate_financial_truth(
     estimated_fees_usdc: Decimal | None = None,
     estimated_net_pnl: Decimal | None = None,
     position_symbol: str | None = None,
+    inventory_classification: ExitInventoryClassification | None = None,
 ) -> FinancialTruthCalculation:
     evidence = tuple(fills)
     fingerprint = source_fingerprint(evidence)
+    if inventory_classification is not None:
+        inventory_payload = {
+            "fill_fingerprint": fingerprint,
+            "status": inventory_classification.status.value,
+            "remaining_inventory_qty": _json_value(
+                inventory_classification.remaining_inventory_qty
+            ),
+            "executable_inventory_qty": _json_value(
+                inventory_classification.executable_inventory_qty
+            ),
+            "dust_qty": _json_value(inventory_classification.dust_qty),
+            "terminal_reason": inventory_classification.terminal_reason,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                inventory_payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
     if not evidence:
         return FinancialTruthCalculation(
             position_id, position_status, "UNKNOWN",
@@ -294,10 +317,22 @@ def calculate_financial_truth(
     net_entry = gross_entry - entry_base_fee
     net_exit_reduction = gross_exit + exit_base_fee
     gross_remaining = gross_entry - gross_exit
-    remaining_inventory = net_entry - net_exit_reduction
-    quantity_conflict = min(
-        net_entry, gross_remaining, remaining_inventory
-    ) < 0
+    raw_remaining_inventory = net_entry - net_exit_reduction
+    canonical_terminal = bool(
+        inventory_classification is not None
+        and inventory_classification.status in {
+            ExitInventoryStatus.FULLY_EXECUTED_CLOSE,
+            ExitInventoryStatus.TERMINAL_DUST_CLOSE,
+        }
+    )
+    remaining_inventory = (
+        inventory_classification.remaining_inventory_qty
+        if inventory_classification is not None
+        else raw_remaining_inventory
+    )
+    quantity_conflict = min(net_entry, gross_remaining) < 0 or (
+        raw_remaining_inventory < 0 and not canonical_terminal
+    )
     lifecycle_conflict = (
         bool(exits) and str(position_status).upper() != "CLOSED"
     )
@@ -395,7 +430,7 @@ def calculate_financial_truth(
     if len(steps) > 1:
         return failed("INSTRUMENT_METADATA_CONFLICT", "step size snapshots differ")
     tolerance = next(iter(steps)) if steps else None
-    inventory_complete = remaining_inventory == 0 or (
+    inventory_complete = canonical_terminal or remaining_inventory == 0 or (
         tolerance is not None and remaining_inventory <= tolerance
     )
     if not inventory_complete:
