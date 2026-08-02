@@ -1,0 +1,26 @@
+{
+  "proof_version": "LEGACY_FILL_EQUIVALENCE_PROOF_V1",
+  "environment": "LIVE",
+  "deployment_id": "vps-live",
+  "database": "trading_live",
+  "proofs": [
+    {
+      "ingestion_id": 41,
+      "position_id": 3096,
+      "exchange_order_id": "3759648872868290560",
+      "exchange_trade_id": "1171224",
+      "canonical_local_fill_id": 16123888,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "b215ec32a05577b0253c688408e725a916ced3312549d334acf3d275bdfbe14e"
+    },
+    {
+      "ingestion_id": 47,
+      "position_id": 3094,
+      "exchange_order_id": "3758376674027315200",
+      "exchange_trade_id": "1167757",
+      "canonical_local_fill_id": 15451809,
+      "correction_revision": 2,
+      "latest_observed_fingerprint": "b53cc728a17371a15594d01261203e2ce0a5dcd5d93be7a86943f082b264e90c"
+    }
+  ]
+}

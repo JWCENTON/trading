@@ -28,15 +28,53 @@ REPAIR_IMPACT = "NONE"
 CREATED_BY = "legacy-fill-equivalence-proof-v1"
 APPLY_ENABLE_ENV = "LEGACY_FILL_EQUIVALENCE_PROOF_APPLY_ENABLED"
 EXPECTED_ENVIRONMENT = "LIVE"
-EXPECTED_DEPLOYMENT = "local-live"
 EXPECTED_DATABASE = "trading_live"
 EXPECTED_EXCHANGE = "OKX"
 EXPECTED_ORCHESTRATOR_ROLE = "PROCESS_SUPERVISOR"
-EXPECTED_INGESTION_IDS = frozenset({8, 10, 12, 14, 16, 18, 19, 20})
-EXPECTED_POSITION_IDS = frozenset({3079, 3081, 3082, 3084, 3085})
-FORBIDDEN_INGESTION_IDS = frozenset({22, 23, 24, 25})
-FORBIDDEN_DB_ORDER_IDS = frozenset({3758, 3760, 3762})
-FORBIDDEN_EXCHANGE_ORDER_IDS = frozenset({"3789163681263689728"})
+LOCAL_LIVE_DEPLOYMENT = "local-live"
+VPS_LIVE_DEPLOYMENT = "vps-live"
+SUPPORTED_DEPLOYMENTS = frozenset({
+    LOCAL_LIVE_DEPLOYMENT,
+    VPS_LIVE_DEPLOYMENT,
+})
+EXPECTED_INGESTION_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({8, 10, 12, 14, 16, 18, 19, 20}),
+    VPS_LIVE_DEPLOYMENT: frozenset({41, 47}),
+}
+EXPECTED_POSITION_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({3079, 3081, 3082, 3084, 3085}),
+    VPS_LIVE_DEPLOYMENT: frozenset({3094, 3096}),
+}
+FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({22, 23, 24, 25}),
+    VPS_LIVE_DEPLOYMENT: frozenset(),
+}
+FORBIDDEN_DB_ORDER_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({3758, 3760, 3762}),
+    VPS_LIVE_DEPLOYMENT: frozenset(),
+}
+FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({"3789163681263689728"}),
+    VPS_LIVE_DEPLOYMENT: frozenset(),
+}
+
+# Backward-compatible names for the original LOCAL LIVE cohort. They remain
+# intentionally local-only; deployment-aware code uses the mappings above.
+EXPECTED_INGESTION_IDS = EXPECTED_INGESTION_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
+EXPECTED_POSITION_IDS = EXPECTED_POSITION_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
+FORBIDDEN_INGESTION_IDS = FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
+FORBIDDEN_DB_ORDER_IDS = FORBIDDEN_DB_ORDER_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
+FORBIDDEN_EXCHANGE_ORDER_IDS = FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
 
 
 def _rows(cur) -> list[dict[str, Any]]:
@@ -159,23 +197,46 @@ class ProofManifest:
         )
         if manifest.environment != EXPECTED_ENVIRONMENT:
             raise RuntimeError("ENVIRONMENT_IDENTITY_MISMATCH")
-        if manifest.deployment_id != EXPECTED_DEPLOYMENT:
-            raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
         if manifest.database != EXPECTED_DATABASE:
             raise RuntimeError("DATABASE_IDENTITY_MISMATCH")
-        if {row.ingestion_id for row in manifest.proofs} != EXPECTED_INGESTION_IDS:
-            raise RuntimeError("UNEXPECTED_PROOF_COHORT")
-        if {row.position_id for row in manifest.proofs} != EXPECTED_POSITION_IDS:
-            raise RuntimeError("UNEXPECTED_PROOF_COHORT")
-        if len(rows) != len(EXPECTED_INGESTION_IDS):
-            raise RuntimeError("UNEXPECTED_PROOF_COHORT")
-        if any(
-            row.ingestion_id in FORBIDDEN_INGESTION_IDS
-            or row.exchange_order_id in FORBIDDEN_EXCHANGE_ORDER_IDS
-            for row in rows
-        ):
-            raise RuntimeError("QUARANTINED_UNATTRIBUTABLE_INCIDENT")
+        validate_manifest_cohort(manifest)
         return manifest
+
+
+def validate_manifest_cohort(manifest: ProofManifest) -> None:
+    if manifest.environment != EXPECTED_ENVIRONMENT:
+        raise RuntimeError("ENVIRONMENT_IDENTITY_MISMATCH")
+    if manifest.database != EXPECTED_DATABASE:
+        raise RuntimeError("DATABASE_IDENTITY_MISMATCH")
+    deployment_id = str(manifest.deployment_id)
+    if deployment_id not in SUPPORTED_DEPLOYMENTS:
+        raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
+    expected_ingestion_ids = EXPECTED_INGESTION_IDS_BY_DEPLOYMENT[
+        deployment_id
+    ]
+    expected_position_ids = EXPECTED_POSITION_IDS_BY_DEPLOYMENT[deployment_id]
+    if (
+        {row.ingestion_id for row in manifest.proofs}
+        != expected_ingestion_ids
+        or {row.position_id for row in manifest.proofs}
+        != expected_position_ids
+        or len(manifest.proofs) != len(expected_ingestion_ids)
+    ):
+        raise RuntimeError("UNEXPECTED_PROOF_COHORT")
+    if any(row.correction_revision != 2 for row in manifest.proofs):
+        raise RuntimeError("CORRECTION_REVISION_INVALID")
+    forbidden_ingestion_ids = FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT[
+        deployment_id
+    ]
+    forbidden_exchange_order_ids = (
+        FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT[deployment_id]
+    )
+    if any(
+        row.ingestion_id in forbidden_ingestion_ids
+        or row.exchange_order_id in forbidden_exchange_order_ids
+        for row in manifest.proofs
+    ):
+        raise RuntimeError("QUARANTINED_UNATTRIBUTABLE_INCIDENT")
 
 
 @dataclass(frozen=True)
@@ -350,6 +411,20 @@ class LegacyFillEquivalenceProofService:
         self.manifest = manifest
         self.expected_git_sha = str(expected_git_sha)
         self.expected_database = str(expected_database)
+        validate_manifest_cohort(manifest)
+        self.deployment_id = manifest.deployment_id
+        self.expected_ingestion_ids = EXPECTED_INGESTION_IDS_BY_DEPLOYMENT[
+            self.deployment_id
+        ]
+        self.expected_position_ids = EXPECTED_POSITION_IDS_BY_DEPLOYMENT[
+            self.deployment_id
+        ]
+        self.forbidden_ingestion_ids = (
+            FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT[self.deployment_id]
+        )
+        self.forbidden_db_order_ids = (
+            FORBIDDEN_DB_ORDER_IDS_BY_DEPLOYMENT[self.deployment_id]
+        )
         self._manifest = {row.ingestion_id: row for row in manifest.proofs}
         if not re.fullmatch(r"[0-9a-f]{40}", self.expected_git_sha):
             raise RuntimeError("EXPECTED_GIT_SHA_INVALID")
@@ -360,7 +435,7 @@ class LegacyFillEquivalenceProofService:
             raise RuntimeError("EXCHANGE_IDENTITY_MISMATCH")
         if identity.trading_mode.upper() != EXPECTED_ENVIRONMENT:
             raise RuntimeError("TRADING_MODE_IDENTITY_MISMATCH")
-        if identity.deployment_id != EXPECTED_DEPLOYMENT:
+        if identity.deployment_id != self.deployment_id:
             raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
         if identity.git_sha != self.expected_git_sha:
             raise RuntimeError("GIT_SHA_IDENTITY_MISMATCH")
@@ -399,7 +474,7 @@ class LegacyFillEquivalenceProofService:
             " OR position.exit_order_id=state.order_id "
             "WHERE position.id=ANY(%s) AND state.correction_revision>0 "
             "ORDER BY state.ingestion_id",
-            (list(EXPECTED_POSITION_IDS),),
+            (list(self.expected_position_ids),),
         )
         actual = {(int(row[0]), int(row[1])) for row in cur.fetchall()}
         expected = {(row.ingestion_id, row.position_id) for row in self.manifest.proofs}
@@ -407,15 +482,16 @@ class LegacyFillEquivalenceProofService:
             raise RuntimeError("UNEXPECTED_PROOF_COHORT")
         cur.execute(
             "SELECT count(*) FROM exchange_fill_ingestion_state_v2 "
-            "WHERE ingestion_id=ANY(%s)", (list(FORBIDDEN_INGESTION_IDS),),
+            "WHERE ingestion_id=ANY(%s)",
+            (list(self.forbidden_ingestion_ids),),
         )
-        if int(cur.fetchone()[0]) != len(FORBIDDEN_INGESTION_IDS):
+        if int(cur.fetchone()[0]) != len(self.forbidden_ingestion_ids):
             raise RuntimeError("QUARANTINED_INCIDENT_EVIDENCE_DRIFT")
         cur.execute(
             "SELECT count(*) FROM binance_orders WHERE id=ANY(%s)",
-            (list(FORBIDDEN_DB_ORDER_IDS),),
+            (list(self.forbidden_db_order_ids),),
         )
-        if int(cur.fetchone()[0]) != len(FORBIDDEN_DB_ORDER_IDS):
+        if int(cur.fetchone()[0]) != len(self.forbidden_db_order_ids):
             raise RuntimeError("QUARANTINED_INCIDENT_EVIDENCE_DRIFT")
 
     def _load_record(self, cur, manifest: ManifestProof, *, lock: bool) -> dict[str, Any]:
@@ -486,7 +562,7 @@ class LegacyFillEquivalenceProofService:
             cur,
             {
                 "environment": EXPECTED_ENVIRONMENT,
-                "deployment_id": EXPECTED_DEPLOYMENT,
+                "deployment_id": self.deployment_id,
                 "order_id": record["order_id"],
             },
         )
@@ -584,7 +660,7 @@ class LegacyFillEquivalenceProofService:
         identity_payload = {
             "proof_version": PROOF_VERSION,
             "environment": EXPECTED_ENVIRONMENT,
-            "deployment_id": EXPECTED_DEPLOYMENT,
+            "deployment_id": self.deployment_id,
             "source": str(record["source"]),
             "account_identity_key": str(record["account_identity_key"]),
             "symbol": str(record["symbol"]),
@@ -693,16 +769,18 @@ class LegacyFillEquivalenceProofService:
             connection.rollback()
             if self.exchange.place_order_calls or self.exchange.cancel_order_calls:
                 raise RuntimeError("EXCHANGE_MUTATION_DETECTED")
-            if {row.ingestion_id for row in candidates} != EXPECTED_INGESTION_IDS:
+            if (
+                {row.ingestion_id for row in candidates}
+                != self.expected_ingestion_ids
+            ):
                 raise RuntimeError("UNEXPECTED_PROOF_COHORT")
             return ProofPlan(tuple(candidates), schema_status, retrieved_at)
         finally:
             connection.close()
 
-    @staticmethod
-    def _base_identity(candidate: ProofCandidate) -> tuple[Any, ...]:
+    def _base_identity(self, candidate: ProofCandidate) -> tuple[Any, ...]:
         return (
-            EXPECTED_ENVIRONMENT, EXPECTED_DEPLOYMENT, candidate.source,
+            EXPECTED_ENVIRONMENT, self.deployment_id, candidate.source,
             candidate.account_identity_key, candidate.symbol,
             candidate.exchange_trade_id, candidate.correction_revision, PROOF_VERSION,
         )
@@ -721,7 +799,7 @@ class LegacyFillEquivalenceProofService:
             raise RuntimeError("APPLY_FLAG_REQUIRED")
         if environment != EXPECTED_ENVIRONMENT:
             raise RuntimeError("APPLY_ENVIRONMENT_GATE_FAILED")
-        if deployment_id != EXPECTED_DEPLOYMENT:
+        if deployment_id != self.deployment_id:
             raise RuntimeError("APPLY_DEPLOYMENT_GATE_FAILED")
         if database != EXPECTED_DATABASE:
             raise RuntimeError("APPLY_DATABASE_GATE_FAILED")
@@ -760,10 +838,12 @@ class LegacyFillEquivalenceProofService:
                 cur.execute(
                     "SELECT count(*) FROM legacy_fill_equivalence_proof_v1 "
                     "WHERE ingestion_id=ANY(%s)",
-                    (list(EXPECTED_INGESTION_IDS),),
+                    (list(self.expected_ingestion_ids),),
                 )
                 existing_count = int(cur.fetchone()[0])
-                if existing_count not in (0, len(EXPECTED_INGESTION_IDS)):
+                if existing_count not in (
+                    0, len(self.expected_ingestion_ids),
+                ):
                     raise RuntimeError("PARTIAL_PROOF_COHORT")
                 inserted = 0
                 proof_ids = []
@@ -801,7 +881,8 @@ class LegacyFillEquivalenceProofService:
                         "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
                         "%s,%s,%s,%s,%s::jsonb,%s,%s,%s) RETURNING proof_id",
                         (
-                            PROOF_VERSION, EXPECTED_ENVIRONMENT, EXPECTED_DEPLOYMENT,
+                            PROOF_VERSION, EXPECTED_ENVIRONMENT,
+                            self.deployment_id,
                             candidate.source, candidate.account_identity_key,
                             candidate.symbol, candidate.exchange_trade_id,
                             candidate.ingestion_id, candidate.correction_revision,
@@ -826,7 +907,7 @@ class LegacyFillEquivalenceProofService:
                     "WHERE proof_id=ANY(%s) ORDER BY proof_id", (proof_ids,),
                 )
                 statuses = cur.fetchall()
-                if len(statuses) != len(EXPECTED_INGESTION_IDS) or any(
+                if len(statuses) != len(self.expected_ingestion_ids) or any(
                     str(row[1]) != "VALID" for row in statuses
                 ):
                     raise RuntimeError("EQUIVALENCE_PROOF_POSTCONDITION_FAILED")
@@ -834,9 +915,9 @@ class LegacyFillEquivalenceProofService:
             if self.exchange.place_order_calls or self.exchange.cancel_order_calls:
                 raise RuntimeError("EXCHANGE_MUTATION_DETECTED")
             return {
-                "proofs": len(EXPECTED_INGESTION_IDS),
+                "proofs": len(self.expected_ingestion_ids),
                 "inserted": inserted,
-                "idempotent_noop": len(EXPECTED_INGESTION_IDS) - inserted,
+                "idempotent_noop": len(self.expected_ingestion_ids) - inserted,
                 "status": "VALID",
             }
         except Exception:

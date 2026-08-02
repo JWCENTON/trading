@@ -27,10 +27,19 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = (
     ROOT / "db/migrations/20260802_legacy_fill_equivalence_proof_v1.sql"
 ).read_text(encoding="utf-8")
+MIGRATION_V2 = (
+    ROOT / "db/migrations/"
+    "20260802_legacy_fill_equivalence_proof_deployment_cohorts_v2.sql"
+).read_text(encoding="utf-8")
 GIT_SHA = "7" * 40
 MAPPING = {
     8: 3084, 10: 3079, 12: 3082, 14: 3081,
     16: 3085, 18: 3085, 19: 3085, 20: 3085,
+}
+VPS_MAPPING = {41: 3096, 47: 3094}
+VPS_IDENTITIES = {
+    41: ("3759648872868290560", "1171224", 16123888),
+    47: ("3758376674027315200", "1167757", 15451809),
 }
 
 
@@ -130,20 +139,33 @@ def _scalar(pg, sql, params=()):
         connection.close()
 
 
-def _seed(pg):
+def _seed(
+    pg, *, deployment_id="local-live", mapping=MAPPING, identities=None,
+):
     connection = pg.connect()
     evidence = {}
     proofs = []
     try:
         with connection.cursor() as cur:
             cur.execute(BASE_SCHEMA)
+            cur.execute(
+                "UPDATE runtime_contract_adoption_v2 SET deployment_id=%s",
+                (deployment_id,),
+            )
             cur.executemany(
                 "INSERT INTO bot_control VALUES(%s,FALSE)",
                 [(index,) for index in range(1, 33)],
             )
             orders_by_position = {}
-            for position_id in sorted(set(MAPPING.values())):
-                order_id = f"order-{position_id}"
+            for position_id in sorted(set(mapping.values())):
+                order_id = (
+                    next(
+                        identities[ingestion_id][0]
+                        for ingestion_id, linked_position_id in mapping.items()
+                        if linked_position_id == position_id
+                    )
+                    if identities is not None else f"order-{position_id}"
+                )
                 orders_by_position[position_id] = order_id
                 cur.execute(
                     "INSERT INTO positions VALUES(%s,%s,%s,%s,NULL,NULL)",
@@ -155,10 +177,16 @@ def _seed(pg):
                     (5000 + position_id, order_id, position_id),
                 )
                 evidence[order_id] = []
-            for ingestion_id, position_id in sorted(MAPPING.items()):
+            for ingestion_id, position_id in sorted(mapping.items()):
                 order_id = orders_by_position[position_id]
-                trade_id = str(900000 + ingestion_id)
-                fill_id = 1000 + ingestion_id
+                trade_id = (
+                    identities[ingestion_id][1]
+                    if identities is not None else str(900000 + ingestion_id)
+                )
+                fill_id = (
+                    identities[ingestion_id][2]
+                    if identities is not None else 1000 + ingestion_id
+                )
                 quantity = Decimal("0.01") + Decimal(ingestion_id) / Decimal("100000")
                 price = Decimal("100") + Decimal(ingestion_id)
                 fee = quantity * Decimal("0.0035")
@@ -211,7 +239,7 @@ def _seed(pg):
     finally:
         connection.close()
     return evidence, ProofManifest(
-        "LIVE", "local-live", pg.database,
+        "LIVE", deployment_id, pg.database,
         tuple(sorted(proofs, key=lambda item: item.ingestion_id)),
     )
 
@@ -219,7 +247,10 @@ def _seed(pg):
 def _service(pg, exchange, manifest):
     return LegacyFillEquivalenceProofService(
         pg.connect, exchange,
-        RuntimeIdentity("OKX", "LIVE", "local-live", GIT_SHA, "PROCESS_SUPERVISOR"),
+        RuntimeIdentity(
+            "OKX", "LIVE", manifest.deployment_id, GIT_SHA,
+            "PROCESS_SUPERVISOR",
+        ),
         manifest, expected_git_sha=GIT_SHA, expected_database=pg.database,
     )
 
@@ -298,6 +329,20 @@ def test_postgres_atomic_append_only_equivalence_contract(
     assert second == {
         "proofs": 8, "inserted": 0, "idempotent_noop": 8, "status": "VALID",
     }
+    _execute(pg, MIGRATION_V2)
+    _execute(pg, MIGRATION_V2)
+    constraint_definition = _scalar(
+        pg,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conrelid='legacy_fill_equivalence_proof_v1'::regclass "
+        "AND conname='ck_legacy_fill_equivalence_contract_v1'",
+    )
+    assert "local-live" in constraint_definition
+    assert "vps-live" in constraint_definition
+    assert _scalar(
+        pg, "SELECT count(*) FROM v_legacy_fill_equivalence_proof_status_v1 "
+        "WHERE deployment_id='local-live' AND proof_status='VALID'",
+    ) == 8
 
     for statement in (
         "UPDATE legacy_fill_equivalence_proof_v1 SET repair_impact='NONE'",
@@ -357,6 +402,57 @@ def test_postgres_atomic_append_only_equivalence_contract(
     exchange.evidence["order-3084"][0]["fee_quantity"] = "999"
     with pytest.raises(RuntimeError, match="EQUIVALENCE_PROOF_CONFLICT"):
         service.plan()
+    assert exchange.place_order_calls == exchange.cancel_order_calls == 0
+
+
+def test_postgres_v2_supports_only_the_closed_vps_live_cohort(
+    disposable_postgres_v16, monkeypatch,
+):
+    database = "waltrade_baseline_test_fill_equivalence_vps_v2"
+    disposable_postgres_v16.create_database(database)
+    pg = replace(disposable_postgres_v16, database=database)
+    monkeypatch.setattr(proof_module, "EXPECTED_DATABASE", database)
+    evidence, manifest = _seed(
+        pg, deployment_id="vps-live", mapping=VPS_MAPPING,
+        identities=VPS_IDENTITIES,
+    )
+    exchange = FakeExchange(evidence)
+    service = _service(pg, exchange, manifest)
+
+    assert service.plan().schema_status == "MISSING"
+    _execute(pg, MIGRATION)
+    _execute(pg, MIGRATION_V2)
+    _execute(pg, MIGRATION_V2)
+    assert service.plan().summary() == {
+        "proof_candidates": 2, "equivalence_exact": 2,
+        "repair_impact_NONE": 2, "blocked": 0, "unexpected": 0,
+        "OKX_mutations": 0, "DB_mutations": 0,
+    }
+
+    monkeypatch.setenv(APPLY_ENABLE_ENV, "1")
+    with pytest.raises(RuntimeError, match="APPLY_DEPLOYMENT_GATE_FAILED"):
+        service.apply(
+            apply_requested=True, environment="LIVE",
+            deployment_id="local-live", database=database,
+            manifest_path="proof-manifest.json",
+        )
+    result = service.apply(
+        apply_requested=True, environment="LIVE", deployment_id="vps-live",
+        database=database, manifest_path="proof-manifest.json",
+    )
+    assert result == {
+        "proofs": 2, "inserted": 2, "idempotent_noop": 0,
+        "status": "VALID",
+    }
+    assert _scalar(
+        pg, "SELECT count(*) FROM v_legacy_fill_equivalence_proof_status_v1 "
+        "WHERE deployment_id='vps-live' AND proof_status='VALID'",
+    ) == 2
+    assert _scalar(
+        pg, "SELECT array_agg(ingestion_id ORDER BY ingestion_id) "
+        "FROM legacy_fill_equivalence_proof_v1 "
+        "WHERE deployment_id='vps-live'",
+    ) == [41, 47]
     assert exchange.place_order_calls == exchange.cancel_order_calls == 0
 
 

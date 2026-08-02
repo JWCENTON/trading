@@ -16,11 +16,11 @@ from common.db import get_db_conn
 from common.legacy_fill_equivalence_proof import (
     DockerRuntimeIdentityProbe,
     EXPECTED_DATABASE,
-    EXPECTED_DEPLOYMENT,
     EXPECTED_ENVIRONMENT,
     LegacyFillEquivalenceProofService,
     OkxReadOnlyEvidenceClient,
     ProofManifest,
+    SUPPORTED_DEPLOYMENTS,
     render_plan,
 )
 
@@ -53,7 +53,7 @@ def database_container_ip(name: str) -> str:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Append-only LOCAL LIVE legacy fill equivalence proof V1",
+        description="Append-only LIVE legacy fill equivalence proof V1",
     )
     result.add_argument("--apply", action="store_true")
     result.add_argument("--environment")
@@ -74,14 +74,19 @@ def main(argv=None) -> int:
         raise RuntimeError("EXPLICIT_APPLY_IDENTITY_GATES_REQUIRED")
     if args.environment not in (None, EXPECTED_ENVIRONMENT):
         raise RuntimeError("ENVIRONMENT_IDENTITY_MISMATCH")
-    if args.deployment_id not in (None, EXPECTED_DEPLOYMENT):
+    if (
+        args.deployment_id is not None
+        and args.deployment_id not in SUPPORTED_DEPLOYMENTS
+    ):
+        raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
+    manifest_path = Path(args.manifest).resolve()
+    manifest = ProofManifest.load(manifest_path)
+    if args.deployment_id not in (None, manifest.deployment_id):
         raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
     load_env_file(Path(args.env_file).resolve())
     os.environ["DB_HOST"] = database_container_ip(args.db_container)
     os.environ["DB_PORT"] = "5432"
     os.environ["DB_NAME"] = args.database
-    manifest_path = Path(args.manifest).resolve()
-    manifest = ProofManifest.load(manifest_path)
     runtime = DockerRuntimeIdentityProbe().read(repository=ROOT)
     service = LegacyFillEquivalenceProofService(
         get_db_conn, OkxReadOnlyEvidenceClient(), runtime, manifest,
