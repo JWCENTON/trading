@@ -49,15 +49,97 @@ PLANNER_VERSION = CONTRACT_VERSION + "_PLANNER"
 WRITER_VERSION = CONTRACT_VERSION + "_WRITER"
 APPLY_ENABLE_ENV = "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_APPLY_ENABLED"
 EXPECTED_ENVIRONMENT = "LIVE"
-EXPECTED_DEPLOYMENT = "local-live"
 EXPECTED_DATABASE = "trading_live"
 EXPECTED_EXCHANGE = "OKX"
 EXPECTED_ORCHESTRATOR_ROLE = "PROCESS_SUPERVISOR"
 EXPECTED_AUTOMATION_AUTHORITY = "automation_runner"
-ALLOWED_POSITION_IDS = frozenset({3079, 3080, 3081, 3082, 3083, 3084, 3085})
-FORBIDDEN_DB_ORDER_ROW_IDS = frozenset({3758, 3760, 3762})
-FORBIDDEN_INGESTION_IDS = frozenset({22, 23, 24, 25})
-FORBIDDEN_EXCHANGE_ORDER_IDS = frozenset({"3789163681263689728"})
+LOCAL_LIVE_DEPLOYMENT = "local-live"
+VPS_LIVE_DEPLOYMENT = "vps-live"
+SUPPORTED_DEPLOYMENTS = frozenset({
+    LOCAL_LIVE_DEPLOYMENT,
+    VPS_LIVE_DEPLOYMENT,
+})
+EXPECTED_DEPLOYMENT = LOCAL_LIVE_DEPLOYMENT
+POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: {
+        3079: ("3749848403589767168", "3749879237797519360"),
+        3080: ("3751751866456252416", "3751792625159020544"),
+        3081: ("3758376872065933312", "3758406016808034304"),
+        3082: ("3759628252160237568", "3759690367218786304"),
+        3083: ("3759654231880540160", "3759715272391958528"),
+        3084: ("3762009375217590272", "3762201774820728832"),
+        3085: ("3785263640706850816", "3785324726516752384"),
+    },
+    VPS_LIVE_DEPLOYMENT: {
+        3092: ("3751478428604506112", "3751586284192342017"),
+        3094: ("3758376674027315200", "3758437411173113856"),
+        3096: ("3759648872868290560", "3759681423553011712"),
+    },
+}
+ALLOWED_POSITION_IDS_BY_DEPLOYMENT = {
+    deployment_id: frozenset(identities)
+    for deployment_id, identities in POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT.items()
+}
+FORBIDDEN_DB_ORDER_ROW_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({3758, 3760, 3762}),
+    VPS_LIVE_DEPLOYMENT: frozenset(),
+}
+FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({22, 23, 24, 25}),
+    VPS_LIVE_DEPLOYMENT: frozenset(),
+}
+FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({"3789163681263689728"}),
+    VPS_LIVE_DEPLOYMENT: frozenset(),
+}
+REQUIRED_VALID_PROOF_INGESTION_IDS_BY_DEPLOYMENT = {
+    LOCAL_LIVE_DEPLOYMENT: frozenset({8, 10, 12, 14, 16, 18, 19, 20}),
+    VPS_LIVE_DEPLOYMENT: frozenset({41, 47}),
+}
+VPS_EXPECTED_POSITION_EVIDENCE = {
+    3092: {
+        "gross_entry_executed_qty": Decimal("0.26701"),
+        "entry_base_fee_qty": Decimal("0.000934535"),
+        "net_entry_inventory_qty": Decimal("0.266075465"),
+        "cumulative_exit_executed_qty": Decimal("0.26607"),
+        "remaining_inventory_qty": Decimal("0.000005465"),
+        "classification": "TERMINAL_DUST_CLOSE",
+        "trust_source": "CANONICAL_OKX_DIRECT_EVIDENCE",
+        "proof_ingestion_ids": frozenset(),
+    },
+    3094: {
+        "gross_entry_executed_qty": Decimal("0.010634"),
+        "entry_base_fee_qty": Decimal("0.000037219"),
+        "net_entry_inventory_qty": Decimal("0.010596781"),
+        "cumulative_exit_executed_qty": Decimal("0.010596"),
+        "remaining_inventory_qty": Decimal("0.000000781"),
+        "classification": "TERMINAL_DUST_CLOSE",
+        "trust_source": "LEGACY_EQUIVALENCE_PROOF",
+        "proof_ingestion_ids": frozenset({47}),
+    },
+    3096: {
+        "gross_entry_executed_qty": Decimal("0.010575"),
+        "entry_base_fee_qty": Decimal("0.0000370125"),
+        "net_entry_inventory_qty": Decimal("0.0105379875"),
+        "cumulative_exit_executed_qty": Decimal("0.010538"),
+        "remaining_inventory_qty": Decimal("0"),
+        "classification": "FULLY_EXECUTED_CLOSE",
+        "trust_source": "LEGACY_EQUIVALENCE_PROOF",
+        "proof_ingestion_ids": frozenset({41}),
+    },
+}
+
+# Backward-compatible names preserve the original LOCAL LIVE profile contract.
+ALLOWED_POSITION_IDS = ALLOWED_POSITION_IDS_BY_DEPLOYMENT[LOCAL_LIVE_DEPLOYMENT]
+FORBIDDEN_DB_ORDER_ROW_IDS = FORBIDDEN_DB_ORDER_ROW_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
+FORBIDDEN_INGESTION_IDS = FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
+FORBIDDEN_EXCHANGE_ORDER_IDS = FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT[
+    LOCAL_LIVE_DEPLOYMENT
+]
 POSITION_UPDATE_ALLOWLIST = frozenset({
     "inventory_evidence_status",
     "gross_entry_executed_qty",
@@ -149,7 +231,8 @@ def _one(cur) -> dict[str, Any] | None:
 
 
 def resolve_correction_trust(
-    cur, ingestion_rows: Iterable[Mapping[str, Any]],
+    cur, ingestion_rows: Iterable[Mapping[str, Any]], *,
+    deployment_id: str | None = None,
 ) -> tuple[str, dict[int, dict[str, Any]]]:
     rows = tuple(ingestion_rows)
     if not rows:
@@ -182,15 +265,22 @@ def resolve_correction_trust(
     if cur.fetchone()[0] is None:
         raise RuntimeError("BLOCKED_BY_MISSING_EQUIVALENCE_PROOF")
     ids = [int(row["ingestion_id"]) for row in equivalence_required]
-    cur.execute(
+    deployment_predicate = ""
+    parameters: tuple[Any, ...] = (ids,)
+    if deployment_id is not None:
+        deployment_predicate = " AND deployment_id=%s"
+        parameters = (ids, deployment_id)
+    proof_query = (
         "SELECT ingestion_id,position_id,proof_version,proof_type,"
         "equivalence_state,proof_status,exchange_order_id,exchange_trade_id,"
         "canonical_local_fill_id,latest_observed_fingerprint,"
         "canonical_fill_fingerprint,okx_truth_fingerprint,"
         "fill_mutation_required,repair_impact,idempotency_key "
         "FROM v_legacy_fill_equivalence_proof_status_v1 "
-        "WHERE ingestion_id=ANY(%s) ORDER BY ingestion_id", (ids,),
+        "WHERE ingestion_id=ANY(%s)" + deployment_predicate
+        + " ORDER BY ingestion_id"
     )
+    cur.execute(proof_query, parameters)
     proofs = {int(row["ingestion_id"]): row for row in _rows(cur)}
     if set(proofs) != set(ids):
         raise RuntimeError("BLOCKED_BY_MISSING_EQUIVALENCE_PROOF")
@@ -312,20 +402,32 @@ class RepairManifest:
         )
         if manifest.environment != EXPECTED_ENVIRONMENT:
             raise RuntimeError("ENVIRONMENT_IDENTITY_MISMATCH")
-        if manifest.deployment_id != EXPECTED_DEPLOYMENT:
+        if manifest.deployment_id not in SUPPORTED_DEPLOYMENTS:
             raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
-        if {item.position_id for item in manifest.positions} != ALLOWED_POSITION_IDS:
+        expected_orders = POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT[
+            manifest.deployment_id
+        ]
+        if {item.position_id for item in manifest.positions} != set(expected_orders):
             raise RuntimeError("COHORT_IDENTITY_MISMATCH")
         if len({item.entry_order_id for item in manifest.positions}) != len(rows):
             raise RuntimeError("DUPLICATE_ENTRY_ORDER_IDENTITY")
         if len({item.exit_order_id for item in manifest.positions}) != len(rows):
             raise RuntimeError("DUPLICATE_EXIT_ORDER_IDENTITY")
+        forbidden_exchange_order_ids = (
+            FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT[manifest.deployment_id]
+        )
         if any(
-            order_id in FORBIDDEN_EXCHANGE_ORDER_IDS
+            order_id in forbidden_exchange_order_ids
             for item in rows
             for order_id in (item.entry_order_id, item.exit_order_id)
         ):
             raise RuntimeError("FORBIDDEN_INCIDENT_IDENTITY")
+        actual_orders = {
+            item.position_id: (item.entry_order_id, item.exit_order_id)
+            for item in manifest.positions
+        }
+        if actual_orders != expected_orders:
+            raise RuntimeError("COHORT_IDENTITY_MISMATCH")
         return manifest
 
 
@@ -568,6 +670,24 @@ class BoundedResidualRepairService:
         self.exchange = exchange
         self.runtime_identity = runtime_identity
         self.manifest = manifest
+        if manifest.deployment_id not in SUPPORTED_DEPLOYMENTS:
+            raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
+        self.deployment_id = manifest.deployment_id
+        self.allowed_position_ids = ALLOWED_POSITION_IDS_BY_DEPLOYMENT[
+            self.deployment_id
+        ]
+        self.forbidden_db_order_row_ids = (
+            FORBIDDEN_DB_ORDER_ROW_IDS_BY_DEPLOYMENT[self.deployment_id]
+        )
+        self.forbidden_ingestion_ids = (
+            FORBIDDEN_INGESTION_IDS_BY_DEPLOYMENT[self.deployment_id]
+        )
+        self.forbidden_exchange_order_ids = (
+            FORBIDDEN_EXCHANGE_ORDER_IDS_BY_DEPLOYMENT[self.deployment_id]
+        )
+        self.required_proof_ingestion_ids = (
+            REQUIRED_VALID_PROOF_INGESTION_IDS_BY_DEPLOYMENT[self.deployment_id]
+        )
         self.expected_git_sha = str(expected_git_sha)
         self.expected_database = str(expected_database)
         self._manifest_by_id = {
@@ -582,7 +702,7 @@ class BoundedResidualRepairService:
             raise RuntimeError("EXCHANGE_IDENTITY_MISMATCH")
         if identity.trading_mode.upper() != EXPECTED_ENVIRONMENT:
             raise RuntimeError("TRADING_MODE_IDENTITY_MISMATCH")
-        if identity.deployment_id != EXPECTED_DEPLOYMENT:
+        if identity.deployment_id != self.deployment_id:
             raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
         if identity.git_sha != self.expected_git_sha:
             raise RuntimeError("GIT_SHA_IDENTITY_MISMATCH")
@@ -629,15 +749,14 @@ class BoundedResidualRepairService:
                 raise RuntimeError("ORCHESTRATOR_HEARTBEAT_UNHEALTHY")
             cur.execute("SELECT id FROM positions WHERE status='OPEN' ORDER BY id")
             open_ids = {int(row[0]) for row in cur.fetchall()}
-            unexpected = open_ids - ALLOWED_POSITION_IDS
+            unexpected = open_ids - self.allowed_position_ids
             if unexpected:
                 raise RuntimeError(
                     "UNEXPECTED_OPEN_COHORT:" + ",".join(map(str, sorted(unexpected)))
                 )
         return panic_enabled
 
-    @staticmethod
-    def _repair_state(cur, position_id: int, fingerprint: str) -> str:
+    def _repair_state(self, cur, position_id: int, fingerprint: str) -> str:
         cur.execute("SELECT status FROM positions WHERE id=%s", (position_id,))
         row = cur.fetchone()
         if row is None:
@@ -659,7 +778,7 @@ class BoundedResidualRepairService:
             cur.execute(f"SELECT count(*) FROM {table} WHERE {predicate}", (value,))
             counts.append(int(cur.fetchone()[0]))
         source_identity = (
-            f"LIVE:{EXPECTED_DEPLOYMENT}:{EXPECTED_DATABASE}:position:{position_id}"
+            f"LIVE:{self.deployment_id}:{EXPECTED_DATABASE}:position:{position_id}"
         )
         cur.execute(
             "SELECT count(*) FROM legacy_repair_provenance_v1 "
@@ -800,7 +919,10 @@ class BoundedResidualRepairService:
             orders = _rows(cur)
             if len(orders) != 2 or {str(row["order_id"]) for row in orders} != set(order_ids):
                 raise RuntimeError("ORDER_EVIDENCE_NOT_EXACT")
-            if any(int(row["id"]) in FORBIDDEN_DB_ORDER_ROW_IDS for row in orders):
+            if any(
+                int(row["id"]) in self.forbidden_db_order_row_ids
+                for row in orders
+            ):
                 raise RuntimeError("FORBIDDEN_INCIDENT_IDENTITY")
             if any(str(row["exchange_source"]).lower() != "okx" for row in orders):
                 raise RuntimeError("ORDER_EXCHANGE_IDENTITY_MISMATCH")
@@ -837,7 +959,10 @@ class BoundedResidualRepairService:
                 (order_ids,),
             )
             ingestion = _rows(cur)
-            if any(int(row["ingestion_id"]) in FORBIDDEN_INGESTION_IDS for row in ingestion):
+            if any(
+                int(row["ingestion_id"]) in self.forbidden_ingestion_ids
+                for row in ingestion
+            ):
                 raise RuntimeError("FORBIDDEN_INCIDENT_IDENTITY")
             cur.execute(
                 "SELECT ingestion_id,source,account_identity_key,symbol,order_id,"
@@ -850,7 +975,7 @@ class BoundedResidualRepairService:
             )
             correction_ingestion = _rows(cur)
             correction_trust_source, equivalence_proofs = resolve_correction_trust(
-                cur, correction_ingestion,
+                cur, correction_ingestion, deployment_id=self.deployment_id,
             )
             learning_snapshot = self._learning_snapshot(cur, position_id)
 
@@ -979,6 +1104,38 @@ class BoundedResidualRepairService:
             ExitInventoryStatus.TERMINAL_DUST_CLOSE,
         }:
             raise RuntimeError("TERMINAL_CLASSIFICATION_REQUIRED")
+        if self.deployment_id == VPS_LIVE_DEPLOYMENT:
+            expected = VPS_EXPECTED_POSITION_EVIDENCE[position_id]
+            actual_inventory = {
+                "gross_entry_executed_qty": inventory.gross_entry_executed_qty,
+                "entry_base_fee_qty": inventory.entry_base_fee_qty,
+                "net_entry_inventory_qty": inventory.net_entry_inventory_qty,
+                "cumulative_exit_executed_qty": (
+                    inventory.cumulative_exit_executed_qty
+                ),
+                "remaining_inventory_qty": (
+                    classification.remaining_inventory_qty
+                ),
+            }
+            if any(
+                actual_inventory[field] != expected[field]
+                for field in actual_inventory
+            ):
+                raise RuntimeError(
+                    f"VPS_PROFILE_INVENTORY_MISMATCH:{position_id}"
+                )
+            if classification.status.value != expected["classification"]:
+                raise RuntimeError(
+                    f"VPS_PROFILE_CLASSIFICATION_MISMATCH:{position_id}"
+                )
+            if correction_trust_source != expected["trust_source"]:
+                raise RuntimeError(
+                    f"VPS_PROFILE_TRUST_SOURCE_MISMATCH:{position_id}"
+                )
+            if frozenset(equivalence_proofs) != expected["proof_ingestion_ids"]:
+                raise RuntimeError(
+                    f"VPS_PROFILE_PROOF_COHORT_MISMATCH:{position_id}"
+                )
 
         base_asset = str(instrument["base_asset"]).upper()
         quote_asset = str(instrument["quote_asset"]).upper()
@@ -1007,7 +1164,7 @@ class BoundedResidualRepairService:
                 authoritative_fee_usdc=fee.valued_fee_usdc,
                 estimated_fee_usdc=None, event_time=row["event_time"],
                 source_authority="EXCHANGE_EXECUTION", source_exchange="okx",
-                source_environment="live", source_deployment_id=EXPECTED_DEPLOYMENT,
+                source_environment="live", source_deployment_id=self.deployment_id,
                 account_identity_fingerprint=account_fingerprint,
                 instrument_metadata_fingerprint=str(instrument["metadata_fingerprint"]),
                 step_size=lot_size, base_asset=base_asset, quote_asset=quote_asset,
@@ -1046,7 +1203,7 @@ class BoundedResidualRepairService:
         fingerprint_payload = {
             "contract_version": CONTRACT_VERSION,
             "environment": EXPECTED_ENVIRONMENT,
-            "deployment_id": EXPECTED_DEPLOYMENT,
+            "deployment_id": self.deployment_id,
             "database": EXPECTED_DATABASE,
             "position_before": position,
             "orders": stable_orders,
@@ -1067,9 +1224,9 @@ class BoundedResidualRepairService:
             "planned_mutations": PLANNED_MUTATIONS,
             "position_update_allowlist": sorted(POSITION_UPDATE_ALLOWLIST),
             "forbidden_incident": {
-                "db_order_rows": sorted(FORBIDDEN_DB_ORDER_ROW_IDS),
-                "ingestion_ids": sorted(FORBIDDEN_INGESTION_IDS),
-                "exchange_orders": sorted(FORBIDDEN_EXCHANGE_ORDER_IDS),
+                "db_order_rows": sorted(self.forbidden_db_order_row_ids),
+                "ingestion_ids": sorted(self.forbidden_ingestion_ids),
+                "exchange_orders": sorted(self.forbidden_exchange_order_ids),
             },
         }
         fingerprint_payload = _json_safe(fingerprint_payload)
@@ -1104,10 +1261,18 @@ class BoundedResidualRepairService:
                         "SELECT count(*),"
                         "count(*) FILTER (WHERE proof_status='VALID'),"
                         "count(*) FILTER (WHERE proof_status<>'VALID') "
-                        "FROM v_legacy_fill_equivalence_proof_status_v1"
+                        "FROM v_legacy_fill_equivalence_proof_status_v1 "
+                        "WHERE deployment_id=%s AND ingestion_id=ANY(%s)",
+                        (
+                            self.deployment_id,
+                            list(self.required_proof_ingestion_ids),
+                        ),
                     )
                     total, valid, invalid = cur.fetchone()
-                    if (int(total), int(valid), int(invalid)) != (8, 8, 0):
+                    expected = len(self.required_proof_ingestion_ids)
+                    if (int(total), int(valid), int(invalid)) != (
+                        expected, expected, 0,
+                    ):
                         raise RuntimeError("CANDIDATE_PROOF_GATE_FAILED")
             plans = []
             already = []
@@ -1166,7 +1331,7 @@ class BoundedResidualRepairService:
             raise RuntimeError("APPLY_FLAG_REQUIRED")
         if environment != EXPECTED_ENVIRONMENT:
             raise RuntimeError("APPLY_ENVIRONMENT_GATE_FAILED")
-        if deployment_id != EXPECTED_DEPLOYMENT:
+        if deployment_id != self.deployment_id:
             raise RuntimeError("APPLY_DEPLOYMENT_GATE_FAILED")
         if not str(manifest_path):
             raise RuntimeError("APPLY_MANIFEST_GATE_FAILED")
@@ -1206,7 +1371,7 @@ class BoundedResidualRepairService:
                         stage_hook(planned.position_id, "locked")
                     exclusion_id = LearningOutcomeExclusionRepository.insert(
                         cur, environment=EXPECTED_ENVIRONMENT,
-                        deployment_id=EXPECTED_DEPLOYMENT,
+                        deployment_id=self.deployment_id,
                         position_id=locked.position_id,
                         semantic_fingerprint_v2=locked.semantic_fingerprint,
                         git_sha=self.expected_git_sha,
@@ -1247,7 +1412,7 @@ class BoundedResidualRepairService:
                         cur, locked.financial_truth,
                         invocation_type=CONTRACT_VERSION,
                         invocation_identity=(
-                            f"LIVE:{EXPECTED_DEPLOYMENT}:{locked.position_id}:"
+                            f"LIVE:{self.deployment_id}:{locked.position_id}:"
                             f"{locked.semantic_fingerprint}"
                         ),
                     )
@@ -1257,7 +1422,7 @@ class BoundedResidualRepairService:
                         stage_hook(planned.position_id, "financial_truth")
                     now = datetime.now(timezone.utc)
                     invocation = (
-                        f"LIVE:{EXPECTED_DEPLOYMENT}:{locked.position_id}:"
+                        f"LIVE:{self.deployment_id}:{locked.position_id}:"
                         f"{locked.semantic_fingerprint}"
                     )
                     LegacyRepairAuditRepository.append(cur, {
@@ -1287,7 +1452,7 @@ class BoundedResidualRepairService:
                         "error_code": None, "error_detail": None,
                     })
                     source_identity = (
-                        f"LIVE:{EXPECTED_DEPLOYMENT}:{EXPECTED_DATABASE}:"
+                        f"LIVE:{self.deployment_id}:{EXPECTED_DATABASE}:"
                         f"position:{locked.position_id}"
                     )
                     LegacyProvenanceRepository.record(cur, {
@@ -1303,7 +1468,7 @@ class BoundedResidualRepairService:
                         },
                         "deployment_provenance": {
                             "environment": EXPECTED_ENVIRONMENT,
-                            "deployment_id": EXPECTED_DEPLOYMENT,
+                            "deployment_id": self.deployment_id,
                             "database": EXPECTED_DATABASE,
                             "git_sha": self.expected_git_sha,
                         },
@@ -1381,7 +1546,10 @@ def render_manifest_candidate(
     *,
     generated_from_git_revision: str,
     generated_at: datetime | None = None,
+    deployment_id: str = EXPECTED_DEPLOYMENT,
 ) -> str:
+    if deployment_id not in SUPPORTED_DEPLOYMENTS:
+        raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
     generated_at = generated_at or datetime.now(timezone.utc)
     manifest = {
         "contract_version": CONTRACT_VERSION,
@@ -1391,7 +1559,7 @@ def render_manifest_candidate(
         "fingerprint_contract_version": FINGERPRINT_CONTRACT_VERSION,
         "proof_contract_version": PROOF_CONTRACT_VERSION,
         "environment": EXPECTED_ENVIRONMENT,
-        "deployment_id": EXPECTED_DEPLOYMENT,
+        "deployment_id": deployment_id,
         "positions": [
             {
                 "position_id": item.position_id,

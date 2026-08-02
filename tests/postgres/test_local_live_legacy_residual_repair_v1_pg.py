@@ -8,6 +8,15 @@ import psycopg2
 import pytest
 
 import common.local_live_legacy_residual_repair as repair_module
+from common.financial_truth_calculator import (
+    ARITHMETIC_CONTRACT_VERSION,
+    CALCULATION_VERSION,
+    PRECISION_CONTRACT_VERSION,
+)
+from common.legacy_fill_equivalence_proof import (
+    canonical_fingerprint,
+    fill_semantic_payload,
+)
 from common.local_live_legacy_residual_repair import (
     ALLOWED_POSITION_IDS,
     APPLY_ENABLE_ENV,
@@ -15,6 +24,7 @@ from common.local_live_legacy_residual_repair import (
     ManifestPosition,
     RepairManifest,
     RuntimeIdentity,
+    VPS_EXPECTED_POSITION_EVIDENCE,
     is_position_learning_eligible,
 )
 from tests.postgres.database_baseline_fixture import disposable_postgres_v16
@@ -29,6 +39,20 @@ CASES = {
     3083: ("SOLUSDC", "0.25921", "0.000907235", "0.25831", "0.00001", "0.01"),
     3084: ("BTCUSDC", "0.00030191", "0.000001056685", "0.00030085", "0.00000001", "0.0001"),
     3085: ("SOLUSDC", "0.26924", "0.000942340", "0.26829", "0.00001", "0.01"),
+}
+VPS_CASES = {
+    3092: (
+        "SOLUSDC", "0.26701", "0.000934535", "0.26607",
+        "3751478428604506112", "3751586284192342017",
+    ),
+    3094: (
+        "ETHUSDC", "0.010634", "0.000037219", "0.010596",
+        "3758376674027315200", "3758437411173113856",
+    ),
+    3096: (
+        "ETHUSDC", "0.010575", "0.0000370125", "0.010538",
+        "3759648872868290560", "3759681423553011712",
+    ),
 }
 
 
@@ -350,6 +374,243 @@ def _scalar(pg, sql, params=()):
         connection.close()
 
 
+def _seed_vps_profile(connection):
+    now = datetime(2026, 8, 2, tzinfo=timezone.utc)
+    exchange_evidence = {}
+    entry_fill_ids = {3092: 9101, 3094: 15451809, 3096: 16123888}
+    proof_ingestion_ids = {3094: 47, 3096: 41}
+    with connection.cursor() as cur:
+        cur.execute(SCHEMA)
+        cur.executemany(
+            "INSERT INTO bot_control VALUES(%s,false)",
+            [(index,) for index in range(1, 33)],
+        )
+        cur.execute("INSERT INTO panic_state VALUES(true,false)")
+        cur.execute(
+            "INSERT INTO automation_kv VALUES("
+            "'orc_v5_apply_mode','automation_runner')"
+        )
+        cur.execute(
+            "INSERT INTO worker_heartbeats VALUES("
+            "'bot-runner-orchestrator','LIVE','healthy','{}')"
+        )
+        cur.execute(
+            "CREATE TABLE v_legacy_fill_equivalence_proof_status_v1("
+            "ingestion_id BIGINT,position_id BIGINT,proof_version TEXT,"
+            "proof_type TEXT,equivalence_state TEXT,proof_status TEXT,"
+            "exchange_order_id TEXT,exchange_trade_id TEXT,"
+            "canonical_local_fill_id BIGINT,latest_observed_fingerprint TEXT,"
+            "canonical_fill_fingerprint TEXT,okx_truth_fingerprint TEXT,"
+            "fill_mutation_required BOOLEAN,repair_impact TEXT,"
+            "idempotency_key TEXT,deployment_id TEXT)"
+        )
+        next_order_row = 8100
+        next_exit_fill_id = 9200
+        for offset, (position_id, values) in enumerate(sorted(VPS_CASES.items())):
+            symbol, gross, base_fee, exit_qty, entry_order, exit_order = values
+            entry_price = Decimal("100") + offset
+            exit_price = entry_price + Decimal("2")
+            entry_time = now + timedelta(minutes=offset * 10)
+            exit_time = entry_time + timedelta(minutes=5)
+            cur.execute(
+                "INSERT INTO positions("
+                "id,symbol,strategy,interval,status,side,qty,entry_price,"
+                "entry_time,entry_order_id,exit_order_id) "
+                "VALUES(%s,%s,'TREND','1m','OPEN','LONG',%s,%s,%s,%s,%s)",
+                (
+                    position_id, symbol, Decimal(gross), entry_price,
+                    entry_time, entry_order, exit_order,
+                ),
+            )
+            for is_exit, order_id, side, qty, price in (
+                (False, entry_order, "BUY", Decimal(gross), entry_price),
+                (True, exit_order, "SELL", Decimal(exit_qty), exit_price),
+            ):
+                next_order_row += 1
+                if is_exit:
+                    next_exit_fill_id += 1
+                    fill_id = next_exit_fill_id
+                else:
+                    fill_id = entry_fill_ids[position_id]
+                trade_id = (
+                    "1167757" if position_id == 3094 and not is_exit
+                    else "1171224" if position_id == 3096 and not is_exit
+                    else f"vps-trade-{position_id}-{'exit' if is_exit else 'entry'}"
+                )
+                fee_qty = Decimal("0.01") if is_exit else Decimal(base_fee)
+                fee_asset = "USDC" if is_exit else symbol[:-4]
+                fee_usdc = fee_qty if is_exit else fee_qty * price
+                event_time = exit_time if is_exit else entry_time
+                notional = qty * price
+                cur.execute(
+                    "INSERT INTO binance_orders VALUES("
+                    "%s,%s,%s,%s,%s,%s,'FILLED',%s,%s,'TREND','1m',%s,%s,"
+                    "true,'okx','APPLIED',%s,%s,1,%s,0,'APPLIED')",
+                    (
+                        next_order_row, entry_time, symbol, side,
+                        f"client-{order_id}", order_id, position_id, is_exit,
+                        "EXIT" if is_exit else "ENTRY", qty, position_id,
+                        exit_time, qty,
+                    ),
+                )
+                cur.execute(
+                    "INSERT INTO binance_order_fills VALUES("
+                    "%s,'okx',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        fill_id, order_id, symbol, side,
+                        "EXIT" if is_exit else "ENTRY", qty, price,
+                        notional, fee_qty, fee_asset, fee_usdc, event_time,
+                        trade_id,
+                    ),
+                )
+                exchange_row = {
+                    "trade_id": trade_id, "order_id": order_id, "side": side,
+                    "quantity": str(qty), "price": str(price),
+                    "fee_quantity": str(fee_qty), "fee_asset": fee_asset,
+                    "event_time_ms": str(int(event_time.timestamp() * 1000)),
+                }
+                exchange_evidence[order_id] = (exchange_row,)
+
+                if position_id != 3092:
+                    ingestion_id = (
+                        proof_ingestion_ids[position_id]
+                        if not is_exit else proof_ingestion_ids[position_id] + 1
+                    )
+                    source_fingerprint = (
+                        "a" * 64 if position_id == 3094 else "b" * 64
+                    )
+                    if is_exit:
+                        cur.execute(
+                            "INSERT INTO exchange_fill_ingestion_state_v2("
+                            "ingestion_id,symbol,order_id,trade_id,"
+                            "correction_revision,source_fingerprint,"
+                            "applied_fingerprint,applied_at,application_status,"
+                            "adoption_id,contract_generation,local_fill_id) "
+                            "VALUES(%s,%s,%s,%s,0,%s,%s,now(),'APPLIED',1,1,%s)",
+                            (
+                                ingestion_id, symbol, order_id, trade_id,
+                                source_fingerprint, source_fingerprint, fill_id,
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT INTO exchange_fill_ingestion_state_v2("
+                            "ingestion_id,symbol,order_id,trade_id,"
+                            "correction_revision,source_fingerprint,"
+                            "application_status,local_fill_id) "
+                            "VALUES(%s,%s,%s,%s,2,%s,'CORRECTION_PENDING',%s)",
+                            (
+                                ingestion_id, symbol, order_id, trade_id,
+                                source_fingerprint, fill_id,
+                            ),
+                        )
+                        semantic = fill_semantic_payload(
+                            source="okx", account_identity_key="1",
+                            symbol=symbol, trade_id=trade_id,
+                            order_id=order_id, side=side, quantity=qty,
+                            price=price, fee_quantity=fee_qty,
+                            fee_currency=fee_asset, event_time_ms=event_time,
+                            canonical_local_fill_id=fill_id,
+                        )
+                        fingerprint = canonical_fingerprint(semantic)
+                        cur.execute(
+                            "INSERT INTO v_legacy_fill_equivalence_proof_status_v1 "
+                            "VALUES(%s,%s,'LEGACY_FILL_EQUIVALENCE_PROOF_V1',"
+                            "'LEGACY_CANONICAL_OKX_EQUIVALENCE','PROVEN','VALID',"
+                            "%s,%s,%s,%s,%s,%s,false,'NONE',%s,'vps-live')",
+                            (
+                                ingestion_id, position_id, order_id, trade_id,
+                                fill_id, source_fingerprint, fingerprint,
+                                fingerprint, f"{ingestion_id:064x}",
+                            ),
+                        )
+            cur.execute(
+                "INSERT INTO learning_feature_warehouse_v1 "
+                "VALUES(%s,%s,'OPEN_OR_INCOMPLETE')",
+                (f"decision-{position_id}", position_id),
+            )
+            cur.execute(
+                "INSERT INTO decision_replay_v1 "
+                "VALUES(%s,%s,'REPLAY_OPEN_OR_INCOMPLETE')",
+                (f"decision-{position_id}", position_id),
+            )
+    connection.commit()
+    return exchange_evidence
+
+
+def _vps_manifest():
+    return RepairManifest("LIVE", "vps-live", tuple(
+        ManifestPosition(
+            position_id, values[4], values[5], "0" * 64,
+        )
+        for position_id, values in sorted(VPS_CASES.items())
+    ))
+
+
+def _vps_service(pg, exchange):
+    return BoundedResidualRepairService(
+        pg.connect, exchange,
+        RuntimeIdentity("OKX", "LIVE", "vps-live", GIT_SHA, "PROCESS_SUPERVISOR"),
+        _vps_manifest(), expected_git_sha=GIT_SHA, expected_database=pg.database,
+    )
+
+
+def test_vps_live_profile_read_only_candidate_contract(
+    disposable_postgres_v16, monkeypatch,
+):
+    database = "waltrade_baseline_test_residual_writer_vps_profile_v1"
+    disposable_postgres_v16.create_database(database)
+    pg = replace(disposable_postgres_v16, database=database)
+    monkeypatch.setattr(repair_module, "EXPECTED_DATABASE", pg.database)
+    connection = pg.connect()
+    try:
+        evidence = _seed_vps_profile(connection)
+    finally:
+        connection.close()
+    exchange = FakeExchange(evidence)
+
+    plan = _vps_service(pg, exchange).generate_manifest_candidate()
+    assert plan.summary() == {
+        "positions_planned": 3, "phantom_closes": 1,
+        "terminal_dust_closes": 2, "expected_db_mutations": 21,
+        "okx_mutations": 0, "blocked_rows": 0,
+        "already_repaired_rows": 0,
+    }
+    assert {item.position_id for item in plan.positions} == {3092, 3094, 3096}
+    for item in plan.positions:
+        expected = VPS_EXPECTED_POSITION_EVIDENCE[item.position_id]
+        assert item.inventory.gross_entry_executed_qty == expected[
+            "gross_entry_executed_qty"
+        ]
+        assert item.inventory.entry_base_fee_qty == expected[
+            "entry_base_fee_qty"
+        ]
+        assert item.inventory.net_entry_inventory_qty == expected[
+            "net_entry_inventory_qty"
+        ]
+        assert item.inventory.cumulative_exit_executed_qty == expected[
+            "cumulative_exit_executed_qty"
+        ]
+        assert item.classification.remaining_inventory_qty == expected[
+            "remaining_inventory_qty"
+        ]
+        assert item.classification.status.value == expected["classification"]
+        assert item.correction_trust_source == expected["trust_source"]
+        assert item.financial_truth.calculation_version == CALCULATION_VERSION
+        assert (
+            item.financial_truth.arithmetic_contract_version
+            == ARITHMETIC_CONTRACT_VERSION
+        )
+        assert (
+            item.financial_truth.precision_contract_version
+            == PRECISION_CONTRACT_VERSION
+        )
+    assert _scalar(pg, "SELECT count(*) FROM positions WHERE status='CLOSED'") == 0
+    assert _scalar(pg, "SELECT count(*) FROM canonical_financial_truth_v1") == 0
+    assert _scalar(pg, "SELECT count(*) FROM learning_outcome_exclusion_v1") == 0
+    assert exchange.place_order_calls == exchange.cancel_order_calls == 0
+
+
 def _eligibility_test_database(disposable_postgres_v16, database):
     disposable_postgres_v16.create_database(database)
     pg = replace(disposable_postgres_v16, database=database)
@@ -481,10 +742,14 @@ def test_disposable_pg_bounded_writer_contract(disposable_postgres_v16, monkeypa
     exchange = FakeExchange(evidence)
     _execute(
         pg,
-        "CREATE TABLE candidate_proof_gate(proof_status TEXT NOT NULL);"
-        "INSERT INTO candidate_proof_gate SELECT 'VALID' FROM generate_series(1,8);"
+        "CREATE TABLE candidate_proof_gate("
+        "ingestion_id BIGINT,deployment_id TEXT,proof_status TEXT NOT NULL);"
+        "INSERT INTO candidate_proof_gate "
+        "SELECT value,'local-live','VALID' FROM unnest("
+        "ARRAY[8,10,12,14,16,18,19,20]::BIGINT[]) value;"
         "CREATE VIEW v_legacy_fill_equivalence_proof_status_v1 AS "
-        "SELECT proof_status FROM candidate_proof_gate",
+        "SELECT ingestion_id,deployment_id,proof_status "
+        "FROM candidate_proof_gate",
     )
     provisional = _service(
         pg, exchange, _manifest(),

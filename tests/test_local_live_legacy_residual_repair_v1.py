@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -25,17 +26,21 @@ from common.local_live_legacy_residual_repair import (
     MANIFEST_VERSION,
     ManifestPosition,
     PLACEHOLDER_FINGERPRINT,
+    POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT,
     POSITION_UPDATE_ALLOWLIST,
     PROOF_CONTRACT_VERSION,
     RepairManifest,
     RunPlan,
     RuntimeIdentity,
+    SUPPORTED_DEPLOYMENTS,
+    VPS_EXPECTED_POSITION_EVIDENCE,
+    VPS_LIVE_DEPLOYMENT,
     render_manifest_candidate,
     resolve_correction_trust,
     stable_equivalence_proof_evidence,
 )
 from common.legacy_recovery import semantic_repair_fingerprint
-from tools.local_live_legacy_residual_repair import parser
+from tools.local_live_legacy_residual_repair import main as cli_main, parser
 
 
 EXPECTED = {
@@ -92,11 +97,34 @@ def _manifest_payload():
         "positions": [
             {
                 "position_id": position_id,
-                "entry_order_id": f"entry-{position_id}",
-                "exit_order_id": f"exit-{position_id}",
+                "entry_order_id": order_ids[0],
+                "exit_order_id": order_ids[1],
                 "semantic_fingerprint": "0" * 64,
             }
-            for position_id in sorted(ALLOWED_POSITION_IDS)
+            for position_id, order_ids in sorted(
+                POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT["local-live"].items()
+            )
+        ],
+    }
+
+
+def _vps_manifest_payload():
+    return {
+        "contract_version": "LOCAL_LIVE_LEGACY_RESIDUAL_REPAIR_V1",
+        "environment": "LIVE",
+        "deployment_id": VPS_LIVE_DEPLOYMENT,
+        "positions": [
+            {
+                "position_id": position_id,
+                "entry_order_id": order_ids[0],
+                "exit_order_id": order_ids[1],
+                "semantic_fingerprint": PLACEHOLDER_FINGERPRINT,
+            }
+            for position_id, order_ids in sorted(
+                POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT[
+                    VPS_LIVE_DEPLOYMENT
+                ].items()
+            )
         ],
     }
 
@@ -137,6 +165,87 @@ def test_normal_manifest_rejects_placeholder_and_candidate_loader_is_explicit(
     }
 
 
+def test_vps_candidate_manifest_is_exact_and_fail_closed(tmp_path):
+    repository_manifest = (
+        Path(__file__).resolve().parents[1]
+        / "config/vps_live_legacy_residual_repair_v1_candidate.json"
+    )
+    with pytest.raises(RuntimeError, match="MANIFEST_FINGERPRINT_PLACEHOLDER"):
+        RepairManifest.load(repository_manifest)
+    candidate = RepairManifest.load(repository_manifest, allow_placeholders=True)
+    assert candidate.deployment_id == VPS_LIVE_DEPLOYMENT
+    assert {
+        row.position_id: (row.entry_order_id, row.exit_order_id)
+        for row in candidate.positions
+    } == POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT[VPS_LIVE_DEPLOYMENT]
+
+    path = tmp_path / "manifest.json"
+    unknown = _vps_manifest_payload()
+    unknown["deployment_id"] = "unknown-live"
+    path.write_text(json.dumps(unknown), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="DEPLOYMENT_IDENTITY_MISMATCH"):
+        RepairManifest.load(path, allow_placeholders=True)
+
+    mixed = _vps_manifest_payload()
+    mixed["positions"][0] = _manifest_payload()["positions"][0]
+    path.write_text(json.dumps(mixed), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="COHORT_IDENTITY_MISMATCH"):
+        RepairManifest.load(path, allow_placeholders=True)
+
+    additional = _vps_manifest_payload()
+    additional["positions"].append({
+        "position_id": 9999,
+        "entry_order_id": "unexpected-entry",
+        "exit_order_id": "unexpected-exit",
+        "semantic_fingerprint": PLACEHOLDER_FINGERPRINT,
+    })
+    path.write_text(json.dumps(additional), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="COHORT_IDENTITY_MISMATCH"):
+        RepairManifest.load(path, allow_placeholders=True)
+
+
+def test_vps_inventory_profile_uses_existing_canonical_contracts():
+    expected = {
+        3092: ("SOLUSDC", "0.26701", "0.000934535", "0.26607", "0.00001", "0.01"),
+        3094: ("ETHUSDC", "0.010634", "0.000037219", "0.010596", "0.000001", "0.001"),
+        3096: ("ETHUSDC", "0.010575", "0.0000370125", "0.010538", "0.000001", "0.001"),
+    }
+    for position_id, values in expected.items():
+        symbol, gross, fee, exit_qty, lot, minimum = values
+        inventory = project_inventory_from_execution_evidence(
+            symbol=symbol,
+            entry_fills=[fill(gross, fee, symbol[:-4])],
+            exit_fills=[fill(exit_qty, "0.01", "USDC")],
+        )
+        classification = classify_exit_inventory(
+            previous_remaining_qty=inventory.net_entry_inventory_qty,
+            cumulative_exit_inventory_reduction_qty=(
+                inventory.exit_inventory_reduction_qty
+            ),
+            previous_cumulative_exit_inventory_reduction_qty=0,
+            inventory=inventory,
+            limits=InstrumentExecutionLimits(
+                Decimal(lot), Decimal(minimum), Decimal("0"), None, True,
+            ),
+            tolerance=Decimal(lot),
+        )
+        profile = VPS_EXPECTED_POSITION_EVIDENCE[position_id]
+        assert inventory.gross_entry_executed_qty == profile[
+            "gross_entry_executed_qty"
+        ]
+        assert inventory.entry_base_fee_qty == profile["entry_base_fee_qty"]
+        assert inventory.net_entry_inventory_qty == profile[
+            "net_entry_inventory_qty"
+        ]
+        assert inventory.cumulative_exit_executed_qty == profile[
+            "cumulative_exit_executed_qty"
+        ]
+        assert classification.remaining_inventory_qty == profile[
+            "remaining_inventory_qty"
+        ]
+        assert classification.status.value == profile["classification"]
+
+
 def test_manifest_rejects_missing_fingerprint_and_loads_closed_metadata(tmp_path):
     payload = _closed_manifest_payload()
     del payload["positions"][0]["semantic_fingerprint"]
@@ -161,6 +270,16 @@ def test_candidate_mode_cannot_combine_with_apply():
             "--apply", "--emit-manifest-candidate", "--manifest", "x",
             "--expected-git-sha", "1" * 40,
             "--expected-database", "trading_live",
+        ])
+
+
+def test_cli_rejects_unknown_deployment_before_manifest_or_runtime_io():
+    with pytest.raises(RuntimeError, match="DEPLOYMENT_IDENTITY_MISMATCH"):
+        cli_main([
+            "--manifest", "does-not-exist.json",
+            "--expected-git-sha", "1" * 40,
+            "--expected-database", "trading_live",
+            "--deployment-id", "unknown-live",
         ])
 
 
@@ -249,6 +368,16 @@ def test_candidate_renderer_does_not_write_manifest(tmp_path):
     )
     assert json.loads(output)["candidate_manifest"]["generated_at"].endswith("+00:00")
     assert manifest_path.read_text(encoding="utf-8") == "unchanged\n"
+    vps_output = render_manifest_candidate(
+        RunPlan((), (), (), False),
+        generated_from_git_revision="1" * 40,
+        generated_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        deployment_id=VPS_LIVE_DEPLOYMENT,
+    )
+    assert json.loads(vps_output)["candidate_manifest"]["deployment_id"] == (
+        VPS_LIVE_DEPLOYMENT
+    )
+    assert SUPPORTED_DEPLOYMENTS == {"local-live", "vps-live"}
 
 
 def test_position_allowlist_excludes_all_economic_identity_fields():

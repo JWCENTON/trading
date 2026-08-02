@@ -17,10 +17,10 @@ from common.local_live_legacy_residual_repair import (
     BoundedResidualRepairService,
     DockerRuntimeIdentityProbe,
     EXPECTED_DATABASE,
-    EXPECTED_DEPLOYMENT,
     EXPECTED_ENVIRONMENT,
     OkxReadOnlyEvidenceClient,
     RepairManifest,
+    SUPPORTED_DEPLOYMENTS,
     render_manifest_candidate,
     render_plan,
 )
@@ -54,7 +54,7 @@ def database_container_ip(name: str) -> str:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        description="Bounded LOCAL LIVE legacy residual repair V1",
+        description="Bounded LIVE legacy residual repair V1",
     )
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
@@ -71,15 +71,22 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
+    if (
+        args.deployment_id is not None
+        and args.deployment_id not in SUPPORTED_DEPLOYMENTS
+    ):
+        raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
+    manifest_path = Path(args.manifest).resolve()
+    manifest = RepairManifest.load(
+        manifest_path, allow_placeholders=args.emit_manifest_candidate,
+    )
+    if args.deployment_id not in (None, manifest.deployment_id):
+        raise RuntimeError("DEPLOYMENT_IDENTITY_MISMATCH")
     env_path = Path(args.env_file).resolve()
     load_env_file(env_path)
     os.environ["DB_HOST"] = database_container_ip(args.db_container)
     os.environ["DB_PORT"] = "5432"
     os.environ["DB_NAME"] = args.expected_database
-    manifest_path = Path(args.manifest).resolve()
-    manifest = RepairManifest.load(
-        manifest_path, allow_placeholders=args.emit_manifest_candidate,
-    )
     runtime = DockerRuntimeIdentityProbe().read(repository=ROOT)
     service = BoundedResidualRepairService(
         get_db_conn, OkxReadOnlyEvidenceClient(), runtime, manifest,
@@ -89,13 +96,14 @@ def main(argv=None) -> int:
     if args.emit_manifest_candidate:
         if args.environment != EXPECTED_ENVIRONMENT:
             raise RuntimeError("CANDIDATE_ENVIRONMENT_GATE_FAILED")
-        if args.deployment_id != EXPECTED_DEPLOYMENT:
+        if args.deployment_id != manifest.deployment_id:
             raise RuntimeError("CANDIDATE_DEPLOYMENT_GATE_FAILED")
         if args.expected_database != EXPECTED_DATABASE:
             raise RuntimeError("CANDIDATE_DATABASE_GATE_FAILED")
         print(render_manifest_candidate(
             service.generate_manifest_candidate(),
             generated_from_git_revision=args.expected_git_sha,
+            deployment_id=manifest.deployment_id,
         ), end="")
         return 0
     if not args.apply:
