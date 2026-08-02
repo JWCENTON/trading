@@ -533,7 +533,18 @@ class SupertrendHarness:
     def strategy_cycle(self, latest, prev):
         start = (len(self.events), len(self.attempts), len(self.mutations), len(self.operation_log))
         self.strategy_cycle_invocations += 1
-        final_decision = self.module.run_strategy(latest, prev)
+        final_decision = self.module.run_strategy(
+            latest,
+            prev,
+            freshness_context=self.module.CandleProcessingContext(
+                state=self.module.FreshnessState.READY,
+                checkpoint_before=prev[0],
+                latest_closed_candle_open_time=latest[0],
+                backlog_size=1,
+                reason="TEST_LATEST_CANDLE_CONTIGUOUS",
+                resume_source="TEST_FIXTURE",
+            ),
+        )
         e, a, mu, log = start
         return SimpleNamespace(
             events=tuple(self.events[e:]), attempts=tuple(self.attempts[a:]),

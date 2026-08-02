@@ -86,6 +86,31 @@ def run_real_outer_cycle(
         module, "lifecycle_heartbeat",
         lambda status, **_meta: operations.append(f"lifecycle:{status}"),
     )
+
+    def process_checkpoint_resume():
+        current = module.get_last_closed_candle()
+        previous = module.get_prev_closed_candle()
+        if current is None or previous is None:
+            return
+        if module.LAST_PROCESSED_OPEN_TIME == current[0]:
+            return
+        module.run_strategy(
+            current,
+            previous,
+            freshness_context=module.CandleProcessingContext(
+                state=module.FreshnessState.READY,
+                checkpoint_before=module.LAST_PROCESSED_OPEN_TIME,
+                latest_closed_candle_open_time=current[0],
+                backlog_size=1,
+                reason="TEST_LATEST_CANDLE_CONTIGUOUS",
+                resume_source="TEST_CHARACTERIZATION",
+            ),
+        )
+        module.LAST_PROCESSED_OPEN_TIME = current[0]
+
+    monkeypatch.setattr(
+        module, "process_supertrend_candle_resume", process_checkpoint_resume,
+    )
     original_progress = module.IndicatorProgressHeartbeat
     ticks = iter(range(1, 100))
 

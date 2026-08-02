@@ -52,6 +52,14 @@ from common.supertrend_terminal_outcome import (
     persist_exit_intent,
     reconcile_terminal_compatibility_outcome,
 )
+from common.supertrend_candle_checkpoint import (
+    CandleProcessingContext,
+    CheckpointIdentity,
+    FreshnessState,
+    PostgresCheckpointStore,
+    interval_duration,
+    process_resume_workset,
+)
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.simulated_execution_evidence import (
     create_simulated_order_cursor,
@@ -1921,6 +1929,115 @@ def get_prev_closed_candle():
     conn.close()
     return row
 
+
+def _checkpoint_identity() -> CheckpointIdentity:
+    deployment_id = (
+        os.environ.get("DEPLOYMENT_ID")
+        or os.environ.get("WALTRADE_DEPLOYMENT_ID")
+        or ""
+    )
+    return CheckpointIdentity(
+        environment=str(cfg.trading_mode).lower(),
+        deployment_id=deployment_id,
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        strategy=STRATEGY_NAME,
+    )
+
+
+def get_resume_candle_pairs(checkpoint_before, latest_closed):
+    """Return ordered closed-candle/current-previous pairs after checkpoint."""
+    if latest_closed is None:
+        return []
+    latest_open_time = latest_closed[0]
+    if checkpoint_before is None:
+        return [(latest_closed, get_prev_closed_candle())]
+
+    with read_only_db_conn(get_db_conn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH ordered AS (
+                  SELECT
+                    open_time,close,ema_21,rsi_14,atr_14,supertrend,
+                    supertrend_direction,
+                    lag(open_time) OVER (ORDER BY open_time) AS prev_open_time,
+                    lag(close) OVER (ORDER BY open_time) AS prev_close,
+                    lag(ema_21) OVER (ORDER BY open_time) AS prev_ema_21,
+                    lag(rsi_14) OVER (ORDER BY open_time) AS prev_rsi_14,
+                    lag(atr_14) OVER (ORDER BY open_time) AS prev_atr_14,
+                    lag(supertrend) OVER (ORDER BY open_time) AS prev_supertrend,
+                    lag(supertrend_direction) OVER (ORDER BY open_time)
+                      AS prev_supertrend_direction
+                  FROM candles
+                  WHERE symbol=%s AND interval=%s AND open_time<=%s
+                )
+                SELECT
+                  open_time,close,ema_21,rsi_14,atr_14,supertrend,
+                  supertrend_direction,
+                  prev_open_time,prev_close,prev_ema_21,prev_rsi_14,prev_atr_14,
+                  prev_supertrend,prev_supertrend_direction
+                FROM ordered
+                WHERE open_time>%s
+                ORDER BY open_time
+                """,
+                (SYMBOL, INTERVAL, latest_open_time, checkpoint_before),
+            )
+            rows = cur.fetchall()
+    return [(tuple(row[:7]), tuple(row[7:])) for row in rows]
+
+
+def _validate_resume_candle_pair(latest, prev) -> None:
+    if latest is None or prev is None or len(latest) != 7 or len(prev) != 7:
+        raise RuntimeError("SUPERTREND_CANDLE_EVIDENCE_INCOMPLETE")
+    if any(value is None for value in latest) or any(value is None for value in prev):
+        raise RuntimeError("SUPERTREND_CANDLE_EVIDENCE_INCOMPLETE")
+    if _as_aware_utc(prev[0]) + interval_duration(INTERVAL) != _as_aware_utc(latest[0]):
+        raise RuntimeError("SUPERTREND_PREVIOUS_CANDLE_SEQUENCE_MISMATCH")
+
+
+def process_supertrend_candle_resume():
+    """Process the canonical persistent SUPERTREND candle workset once."""
+    global LAST_PROCESSED_OPEN_TIME
+    store = PostgresCheckpointStore(get_db_conn, _checkpoint_identity())
+    snapshot = store.load()
+    checkpoint_before = (
+        snapshot.last_processed_candle_open_time if snapshot is not None else None
+    )
+    latest_closed = get_last_closed_candle()
+    pairs = get_resume_candle_pairs(checkpoint_before, latest_closed)
+
+    def processor(pair, freshness_context):
+        latest, prev = pair
+        _validate_resume_candle_pair(latest, prev)
+        run_strategy(
+            latest, prev, freshness_context=freshness_context,
+        )
+
+    result = process_resume_workset(
+        store=store,
+        interval=INTERVAL,
+        latest_closed_candle_open_time=(
+            latest_closed[0] if latest_closed is not None else None
+        ),
+        work_items=pairs,
+        open_time_of=lambda pair: pair[0][0],
+        processor=processor,
+    )
+    LAST_PROCESSED_OPEN_TIME = result.checkpoint_after
+    logging.info(
+        "SUPERTREND freshness state=%s checkpoint_before=%s checkpoint_after=%s "
+        "latest_closed=%s backlog_size=%s reason=%s resume_source=%s",
+        result.assessment.state.value,
+        result.assessment.checkpoint_before,
+        result.checkpoint_after,
+        result.assessment.latest_closed_candle_open_time,
+        result.assessment.backlog_size,
+        result.assessment.reason,
+        result.assessment.resume_source,
+    )
+    return result
+
 # =========================
 # Strategy Logic (SPOT LONG-only)
 # =========================
@@ -1930,7 +2047,9 @@ def _as_aware_utc(value):
     return value
 
 
-def _supertrend_evaluation_context(open_time, evaluation_started_at, snap=None):
+def _supertrend_evaluation_context(
+    open_time, evaluation_started_at, snap=None, freshness_context=None,
+):
     cfg_effective = snap["cfg_effective"] if snap is not None else cfg
     bc = snap["bc"] if snap is not None else None
     return EvaluationContext(
@@ -1948,7 +2067,17 @@ def _supertrend_evaluation_context(open_time, evaluation_started_at, snap=None):
             bool(snap["allowed_orders_entry"]) if snap is not None else None
         ),
         paper_mode=cfg_effective.trading_mode != "LIVE",
-        context={"contract_version": "FINAL_DECISION_V1"},
+        context={
+            "contract_version": "FINAL_DECISION_V1",
+            "candle_freshness_state": (
+                freshness_context.state.value
+                if freshness_context is not None else FreshnessState.UNKNOWN.value
+            ),
+            "candle_freshness_reason": (
+                freshness_context.reason if freshness_context is not None
+                else "FRESHNESS_CONTEXT_UNAVAILABLE"
+            ),
+        },
     )
 
 
@@ -2103,7 +2232,7 @@ def _close_supertrend_exit(
     }
 
 
-def _run_strategy(latest, prev):
+def _run_strategy(latest, prev, *, freshness_context=None):
     """
     Entry (LONG-only SPOT):
       - signal: SuperTrend flip -1 -> +1
@@ -2156,7 +2285,8 @@ def _run_strategy(latest, prev):
         snap = get_runtime_snapshot(price=price, open_time=open_time)
         bc = snap["bc"]
         evaluation = _supertrend_evaluation_context(
-            open_time, evaluation_started_at, snap=snap
+            open_time, evaluation_started_at, snap=snap,
+            freshness_context=freshness_context,
         )
         # Telemetry baseline per candle: zawsze zapisujemy gate status (tak jak TREND)
         emit_regime_gate_event(
@@ -2676,6 +2806,54 @@ def _run_strategy(latest, prev):
         # =========================
         # ENTRY gates (no position)
         # =========================
+        freshness_state = (
+            freshness_context.state
+            if freshness_context is not None else FreshnessState.UNKNOWN
+        )
+        if freshness_state is not FreshnessState.READY:
+            freshness_reason = f"SUPERTREND_FRESHNESS_{freshness_state.value}"
+            freshness_details = {
+                "freshness_state": freshness_state.value,
+                "freshness_reason": (
+                    freshness_context.reason if freshness_context is not None
+                    else "FRESHNESS_CONTEXT_UNAVAILABLE"
+                ),
+                "checkpoint_before": (
+                    freshness_context.checkpoint_before.isoformat()
+                    if freshness_context is not None
+                    and freshness_context.checkpoint_before is not None else None
+                ),
+                "latest_closed_candle": (
+                    freshness_context.latest_closed_candle_open_time.isoformat()
+                    if freshness_context is not None else None
+                ),
+                "backlog_size": (
+                    freshness_context.backlog_size
+                    if freshness_context is not None else None
+                ),
+                "resume_source": (
+                    freshness_context.resume_source
+                    if freshness_context is not None else "UNKNOWN"
+                ),
+                "entry_only": True,
+            }
+            emit_strategy_event(
+                event_type="BLOCKED",
+                decision="BUY",
+                reason=freshness_reason,
+                price=price,
+                candle_open_time=open_time,
+                info=freshness_details,
+            )
+            return FinalDecision.entry_suppressed(
+                evaluation, DecisionReason.UNKNOWN,
+                DecisionSubtype.READINESS_BLOCKED,
+                finished_at=datetime.now(timezone.utc),
+                reference_price=Decimal(str(price)),
+                reason_text=freshness_reason,
+                details=freshness_details,
+            )
+
         if not bc.enabled:
             emit_strategy_event(
                 event_type="BLOCKED",
@@ -3001,18 +3179,18 @@ def _run_strategy(latest, prev):
         )
 
 
-def run_strategy(latest, prev):
+def run_strategy(latest, prev, *, freshness_context=None):
     return finalize_decision_observation(
-        _run_strategy(latest, prev), source_service="bot-supertrend",
+        _run_strategy(latest, prev, freshness_context=freshness_context),
+        source_service="bot-supertrend",
     )
 
 
-LAST_PROCESSED_OPEN_TIME = None
+LAST_PROCESSED_OPEN_TIME = None  # compatibility telemetry; never a dedupe authority
 # =========================
 # Main Loop
 # =========================
 def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
-    global LAST_PROCESSED_OPEN_TIME
     # --- Exchange fills ingest (LIVE ONLY) ---
     # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
     if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
@@ -3041,15 +3219,7 @@ def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
     rows = fetch_klines()
     save_klines(rows)
     update_indicators(progress_callback=progress_callback)
-    latest = get_last_closed_candle()
-    prev = get_prev_closed_candle()
-    if latest and prev:
-        open_time = latest[0]
-        if LAST_PROCESSED_OPEN_TIME != open_time:
-            LAST_PROCESSED_OPEN_TIME = open_time
-            run_strategy(latest, prev)
-        else:
-            logging.info("SUPERTREND: no new candle yet (%s) -> skip strategy.", str(open_time))
+    process_supertrend_candle_resume()
     return last_ingest_ts
 
 

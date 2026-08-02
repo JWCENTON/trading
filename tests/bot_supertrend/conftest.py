@@ -14,6 +14,8 @@ from tests.bot_supertrend.fixtures import SupertrendHarness
 @pytest.fixture
 def supertrend(monkeypatch):
     monkeypatch.setenv("TRADING_MODE", "PAPER")
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
+    monkeypatch.setenv("WALTRADE_DEPLOYMENT_ID", "local-paper")
     name = "waltrade_bot_supertrend_stateful"
     sys.modules.pop(name, None)
     source = Path(__file__).resolve().parents[2] / "bot_supertrend" / "main.py"
