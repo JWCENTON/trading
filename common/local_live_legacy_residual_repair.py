@@ -465,6 +465,11 @@ class RuntimeIdentity:
     orchestrator_role: str
 
 
+@dataclass(frozen=True)
+class AccountIdentityContext:
+    fingerprint: str
+
+
 class DockerRuntimeIdentityProbe:
     """Read-only LOCAL LIVE identity probe. It never prints container env."""
 
@@ -718,6 +723,12 @@ class BoundedResidualRepairService:
         if self.expected_database != EXPECTED_DATABASE:
             raise RuntimeError("EXPECTED_DATABASE_IDENTITY_MISMATCH")
 
+    def _account_identity_preflight(self) -> AccountIdentityContext:
+        fingerprint = str(self.exchange.account_fingerprint()).strip()
+        if not fingerprint:
+            raise RuntimeError("ACCOUNT_IDENTITY_PREFLIGHT_FAILED")
+        return AccountIdentityContext(fingerprint)
+
     @staticmethod
     def _begin_read_only(connection) -> None:
         connection.rollback()
@@ -884,6 +895,7 @@ class BoundedResidualRepairService:
         connection,
         manifest_row: ManifestPosition,
         *,
+        account_identity_context: AccountIdentityContext,
         enforce_fingerprint: bool,
         lock: bool = False,
     ) -> PositionPlan | str:
@@ -986,7 +998,7 @@ class BoundedResidualRepairService:
             )
             learning_snapshot = self._learning_snapshot(cur, position_id)
 
-        account_fingerprint = self.exchange.account_fingerprint()
+        account_fingerprint = account_identity_context.fingerprint
         instrument = dict(self.exchange.instrument(str(position["symbol"])))
         lot_size = _decimal(instrument["lot_size"])
         min_size = _decimal(instrument["min_size"])
@@ -1252,9 +1264,9 @@ class BoundedResidualRepairService:
         )
 
     def _plan(
-        self, *, enforce_fingerprints: bool, require_complete_proofs: bool,
+        self, *, account_identity_context: AccountIdentityContext,
+        enforce_fingerprints: bool, require_complete_proofs: bool,
     ) -> RunPlan:
-        self._runtime_gates()
         pending = self.exchange.pending_spot_orders()
         if pending:
             raise RuntimeError("OKX_PENDING_SPOT_ORDERS")
@@ -1286,6 +1298,7 @@ class BoundedResidualRepairService:
             for manifest_row in self.manifest.positions:
                 item = self._position_plan(
                     connection, manifest_row,
+                    account_identity_context=account_identity_context,
                     enforce_fingerprint=enforce_fingerprints,
                 )
                 if item == "ALREADY_REPAIRED":
@@ -1300,7 +1313,10 @@ class BoundedResidualRepairService:
             connection.close()
 
     def plan(self) -> RunPlan:
+        self._runtime_gates()
+        account_identity_context = self._account_identity_preflight()
         return self._plan(
+            account_identity_context=account_identity_context,
             enforce_fingerprints=True, require_complete_proofs=False,
         )
 
@@ -1310,7 +1326,10 @@ class BoundedResidualRepairService:
         }
         if fingerprints != {PLACEHOLDER_FINGERPRINT}:
             raise RuntimeError("CANDIDATE_REQUIRES_ALL_PLACEHOLDERS")
+        self._runtime_gates()
+        account_identity_context = self._account_identity_preflight()
         return self._plan(
+            account_identity_context=account_identity_context,
             enforce_fingerprints=False, require_complete_proofs=True,
         )
 
@@ -1344,7 +1363,12 @@ class BoundedResidualRepairService:
             raise RuntimeError("APPLY_MANIFEST_GATE_FAILED")
         if os.environ.get(APPLY_ENABLE_ENV) != "1":
             raise RuntimeError("APPLY_ENV_FLAG_DISABLED")
-        initial = self.plan()
+        self._runtime_gates()
+        account_identity_context = self._account_identity_preflight()
+        initial = self._plan(
+            account_identity_context=account_identity_context,
+            enforce_fingerprints=True, require_complete_proofs=False,
+        )
         results = [
             {"position_id": position_id, "status": "ALREADY_REPAIRED", "writes": 0}
             for position_id in initial.already_repaired
@@ -1365,6 +1389,7 @@ class BoundedResidualRepairService:
                         raise RuntimeError("OKX_PENDING_SPOT_ORDERS")
                     locked = self._position_plan(
                         connection, self._manifest_by_id[planned.position_id],
+                        account_identity_context=account_identity_context,
                         enforce_fingerprint=True, lock=True,
                     )
                     if locked == "ALREADY_REPAIRED":

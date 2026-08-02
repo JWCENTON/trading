@@ -532,6 +532,108 @@ class NoExchange:
         raise AssertionError("exchange must not be reached before identity gates")
 
 
+class AccountProbeExchange:
+    place_order_calls = 0
+    cancel_order_calls = 0
+
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.account_fingerprint_calls = 0
+
+    def account_fingerprint(self):
+        self.account_fingerprint_calls += 1
+        if self.fail:
+            raise RuntimeError("HTTP 429")
+        return "immutable-account-identity"
+
+    def pending_spot_orders(self):
+        return ()
+
+
+class ProbeConnection:
+    def rollback(self):
+        pass
+
+    def set_session(self, **_kwargs):
+        pass
+
+    def close(self):
+        pass
+
+
+class ProbeConnectionFactory:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return ProbeConnection()
+
+
+class AccountContextProbeService(BoundedResidualRepairService):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.account_identity_contexts = []
+
+    def _database_safety(self, _connection):
+        return False
+
+    def _position_plan(
+        self, _connection, manifest_row, *, account_identity_context,
+        enforce_fingerprint, lock=False,
+    ):
+        assert enforce_fingerprint is True
+        assert lock is False
+        self.account_identity_contexts.append(account_identity_context)
+        return "ALREADY_REPAIRED"
+
+
+def _account_context_probe_service(exchange, connection_factory):
+    positions = tuple(
+        ManifestPosition(
+            position_id, order_ids[0], order_ids[1], "1" * 64,
+        )
+        for position_id, order_ids in sorted(
+            POSITION_ORDER_IDENTITIES_BY_DEPLOYMENT[VPS_LIVE_DEPLOYMENT].items()
+        )
+    )
+    return AccountContextProbeService(
+        connection_factory, exchange,
+        RuntimeIdentity(
+            "OKX", "LIVE", VPS_LIVE_DEPLOYMENT, "1" * 40,
+            "PROCESS_SUPERVISOR",
+        ),
+        RepairManifest("LIVE", VPS_LIVE_DEPLOYMENT, positions),
+        expected_git_sha="1" * 40, expected_database=EXPECTED_DATABASE,
+    )
+
+
+def test_account_identity_preflight_is_once_per_entire_writer_cohort():
+    exchange = AccountProbeExchange()
+    connection_factory = ProbeConnectionFactory()
+    service = _account_context_probe_service(exchange, connection_factory)
+
+    plan = service.plan()
+
+    assert plan.already_repaired == (3092, 3094, 3096)
+    assert exchange.account_fingerprint_calls == 1
+    assert connection_factory.calls == 1
+    assert len(service.account_identity_contexts) == 3
+    assert len({id(context) for context in service.account_identity_contexts}) == 1
+    assert service.account_identity_contexts[0].fingerprint == (
+        "immutable-account-identity"
+    )
+
+    failing_exchange = AccountProbeExchange(fail=True)
+    unused_connection_factory = ProbeConnectionFactory()
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        _account_context_probe_service(
+            failing_exchange, unused_connection_factory,
+        ).plan()
+    assert failing_exchange.account_fingerprint_calls == 1
+    assert unused_connection_factory.calls == 0
+
+
 def service_for_gate(runtime):
     manifest = RepairManifest(
         "LIVE", "local-live",

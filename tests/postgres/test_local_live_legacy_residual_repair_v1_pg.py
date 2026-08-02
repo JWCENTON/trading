@@ -215,11 +215,13 @@ class FakeExchange:
         self.evidence = evidence
         self.pending = ()
         self.drop_trade_for = None
+        self.account_fingerprint_calls = 0
 
     def pending_spot_orders(self):
         return tuple(self.pending)
 
     def account_fingerprint(self):
+        self.account_fingerprint_calls += 1
         return "account-identity-v1"
 
     def order(self, symbol, order_id):
@@ -370,6 +372,78 @@ def _scalar(pg, sql, params=()):
         with connection.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchone()[0]
+    finally:
+        connection.close()
+
+
+def _mark_vps_positions_already_repaired(pg, fingerprints, position_ids):
+    connection = pg.connect()
+    try:
+        with connection.cursor() as cur:
+            for position_id in position_ids:
+                fingerprint = fingerprints[position_id]
+                cur.execute(
+                    "UPDATE positions SET status='CLOSED',exit_time=now() "
+                    "WHERE id=%s",
+                    (position_id,),
+                )
+                cur.execute(
+                    "INSERT INTO canonical_financial_truth_v1("
+                    "position_id,financial_truth_status,source_order_ids,"
+                    "source_fill_ids,authoritative_evidence) "
+                    "VALUES(%s,'COMPLETE','[]','[]','{}')",
+                    (position_id,),
+                )
+                cur.execute(
+                    "INSERT INTO canonical_financial_truth_audit_v1("
+                    "position_id,new_status,new_fingerprint,previous_values,"
+                    "new_values,reason,writer_version,invocation_type) "
+                    "VALUES(%s,'COMPLETE',%s,'{}','{}','test','test','test')",
+                    (position_id, fingerprint),
+                )
+                cur.execute(
+                    "INSERT INTO position_lifecycle_events_c2_2("
+                    "position_id,order_id,mutation_kind,mutation_high_water,payload) "
+                    "SELECT id,exit_order_id,'POSITION_CLOSED',1,"
+                    "jsonb_build_object('semantic_fingerprint',%s) "
+                    "FROM positions WHERE id=%s",
+                    (fingerprint, position_id),
+                )
+                cur.execute(
+                    "INSERT INTO learning_outcome_exclusion_v1("
+                    "environment,deployment_id,position_id,exclusion_reason,"
+                    "source_type,semantic_fingerprint_v2,created_by,git_sha) "
+                    "VALUES('LIVE','vps-live',%s,'LEGACY_REPAIR',"
+                    "'LEGACY_POSITION_REPAIR',%s,'test',%s)",
+                    (position_id, fingerprint, GIT_SHA),
+                )
+                cur.execute(
+                    "INSERT INTO legacy_repair_audit_v1("
+                    "incident_type,incident_identity,operation_type,planner_version,"
+                    "writer_version,semantic_fingerprint_before,"
+                    "semantic_fingerprint_expected,semantic_fingerprint_after,"
+                    "plan_status,execution_status,invocation_identity,requested_at,"
+                    "actor_source,blocking_reasons,eligible_actions,executed_actions,"
+                    "expected_changes,actual_changes,post_state_invariants) "
+                    "VALUES('LEGACY_POSITION',%s,'TEST','TEST','TEST',%s,%s,%s,"
+                    "'ELIGIBLE','APPLIED',%s,now(),'TEST','[]','[]','[]','[]','[]','[]')",
+                    (
+                        str(position_id), fingerprint, fingerprint, fingerprint,
+                        f"test-vps-repaired-{position_id}",
+                    ),
+                )
+                cur.execute(
+                    "INSERT INTO legacy_repair_provenance_v1("
+                    "evidence_source,source_identity,source_fingerprint,"
+                    "account_provenance,deployment_provenance,fee_evidence,"
+                    "valuation_evidence,immutable_payload,observed_at) "
+                    "VALUES('LEGACY_POSITION_REPAIR',%s,%s,'{}','{}','{}','{}','{}',now())",
+                    (
+                        f"LIVE:vps-live:{pg.database}:position:{position_id}",
+                        fingerprint,
+                    ),
+                )
+        connection.commit()
     finally:
         connection.close()
 
@@ -625,18 +699,32 @@ def test_vps_live_profile_read_only_candidate_contract(
             item.financial_truth.precision_contract_version
             == PRECISION_CONTRACT_VERSION
         )
-    fingerprints = {
+    valid_fingerprints = {
         item.position_id: item.semantic_fingerprint for item in plan.positions
     }
     assert len(_vps_service(
-        pg, exchange, _vps_manifest(fingerprints),
+        pg, exchange, _vps_manifest(valid_fingerprints),
     ).plan().positions) == 3
-    fingerprints[3092] = "f" * 64
+    mismatched_fingerprints = dict(valid_fingerprints)
+    mismatched_fingerprints[3092] = "f" * 64
     with pytest.raises(RuntimeError, match="SEMANTIC_FINGERPRINT_DRIFT:3092"):
-        _vps_service(pg, exchange, _vps_manifest(fingerprints)).plan()
+        _vps_service(
+            pg, exchange, _vps_manifest(mismatched_fingerprints),
+        ).plan()
     assert _scalar(pg, "SELECT count(*) FROM positions WHERE status='CLOSED'") == 0
     assert _scalar(pg, "SELECT count(*) FROM canonical_financial_truth_v1") == 0
     assert _scalar(pg, "SELECT count(*) FROM learning_outcome_exclusion_v1") == 0
+    _mark_vps_positions_already_repaired(
+        pg, valid_fingerprints, (3092, 3094),
+    )
+    partial_exchange = FakeExchange(evidence)
+    partial_plan = _vps_service(
+        pg, partial_exchange, _vps_manifest(valid_fingerprints),
+    ).plan()
+    assert partial_plan.already_repaired == (3092, 3094)
+    assert [item.position_id for item in partial_plan.positions] == [3096]
+    assert partial_exchange.account_fingerprint_calls == 1
+    assert _scalar(pg, "SELECT count(*) FROM positions WHERE status='CLOSED'") == 2
     assert exchange.place_order_calls == exchange.cancel_order_calls == 0
 
 
