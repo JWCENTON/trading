@@ -29,10 +29,11 @@ services:
       context: .
       dockerfile: services/bot_runner/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       FINAL_DECISION_PRODUCER_AUDIT_LEDGER_ENABLED: ${FINAL_DECISION_PRODUCER_AUDIT_LEDGER_ENABLED:-0}
       SUPERTREND_READY_CADENCE_SECONDS_V1: ${SUPERTREND_READY_CADENCE_SECONDS_V1:-60}
       SUPERTREND_CATCHUP_CADENCE_SECONDS_V1: ${SUPERTREND_CATCHUP_CADENCE_SECONDS_V1:-5}
@@ -72,9 +73,12 @@ services:
     build:
       context: .
       dockerfile: services/bot_runner_orchestrator/Dockerfile
+      args:
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       ORC_POLL_SECONDS: 10
       ORC_ACTIONS_ENABLED: ${ORC_ACTIONS_ENABLED:-false}
       BOT_VERSION: 2026-02-26_a__paper

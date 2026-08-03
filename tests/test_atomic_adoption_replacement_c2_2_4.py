@@ -413,4 +413,7 @@ def test_api_image_build_contract_carries_immutable_revision():
     assert "ARG GIT_SHA" in dockerfile
     assert "org.opencontainers.image.revision=\"${GIT_SHA}\"" in dockerfile
     assert "ENV GIT_SHA=\"${GIT_SHA}\"" in dockerfile
-    assert "GIT_SHA: ${GIT_SHA}" in api_section
+    assert (
+        "GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}"
+        in api_section
+    )

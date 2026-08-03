@@ -26,7 +26,7 @@ services:
       context: .
       dockerfile: api/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -39,6 +39,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       INTERNAL_API_BASE: ${INTERNAL_API_BASE}
       AI_TUNE_INTERVAL_MINUTES: ${AI_TUNE_INTERVAL_MINUTES}
       AI_AUTO_APPLY: ${AI_AUTO_APPLY}
@@ -61,7 +62,7 @@ services:
       dockerfile: Dockerfile
       args:
         BUILD_MODE: ${IMAGE_BUILD_MODE:-development}
-        GIT_SHA: ${GIT_SHA:-DEV-UNKNOWN}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
         BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-DEV-UNKNOWN}
     restart: always
     logging:
@@ -72,6 +73,7 @@ services:
     depends_on:
       - api
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       VITE_API_BASE_URL: ${VITE_API_BASE_URL}
       VITE_API_BASE_URL_LIVE: ${VITE_API_BASE_URL_LIVE}
       VITE_API_BASE_URL_PAPER: ${VITE_API_BASE_URL_PAPER}
@@ -87,6 +89,8 @@ services:
     build:
       context: .
       dockerfile: regime_worker/Dockerfile
+      args:
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -99,6 +103,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       QUOTE_ASSET: ${QUOTE_ASSET}
       REGIME_SYMBOLS: ${REGIME_SYMBOLS}
       REGIME_INTERVALS: ${REGIME_INTERVALS}
@@ -116,6 +121,8 @@ services:
     build:
       context: .
       dockerfile: market_data_worker/Dockerfile
+      args:
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -128,6 +135,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
@@ -148,7 +156,7 @@ services:
       context: .
       dockerfile: automation_runner/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -157,6 +165,8 @@ services:
         max-file: "${LOG_MAX_FILE:-5}"
     depends_on:
       - db
+    environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
 
   bot-rsi-btc:
     profiles: ["bots"]
@@ -164,7 +174,7 @@ services:
       context: .
       dockerfile: bot/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -177,6 +187,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       TRADING_MODE: ${TRADING_MODE}
       LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
       QUOTE_ASSET: ${QUOTE_ASSET}
@@ -192,7 +203,7 @@ services:
       context: .
       dockerfile: bot_trend/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -205,6 +216,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       TRADING_MODE: ${TRADING_MODE}
       LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
       QUOTE_ASSET: ${QUOTE_ASSET}
@@ -220,7 +232,7 @@ services:
       context: .
       dockerfile: bot_bbrange/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -233,6 +245,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       TRADING_MODE: ${TRADING_MODE}
       LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
       QUOTE_ASSET: ${QUOTE_ASSET}
@@ -248,7 +261,7 @@ services:
       context: .
       dockerfile: bot_supertrend/Dockerfile
       args:
-        GIT_SHA: ${GIT_SHA}
+        GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
     restart: always
     logging:
       driver: "json-file"
@@ -261,6 +274,7 @@ services:
     env_file:
       - ${ENV_FILE}
     environment:
+      GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}
       TRADING_MODE: ${TRADING_MODE}
       LIVE_ORDERS_ENABLED: ${LIVE_ORDERS_ENABLED}
       QUOTE_ASSET: ${QUOTE_ASSET}

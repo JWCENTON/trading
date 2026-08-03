@@ -46,7 +46,10 @@ def test_writer_metadata_is_build_immutable_and_new_runs_receive_it():
         COMPOSE.index("  automation-runner:"):
         COMPOSE.index("  bot-rsi-btc:")
     ]
-    assert "GIT_SHA: ${GIT_SHA}" in automation_build
+    assert (
+        "GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}"
+        in automation_build
+    )
     committed_insert = AUTOMATION[
         AUTOMATION.index("def run_orc_cycle"):
         AUTOMATION.index("def run_orc_candidate_context_refresh")

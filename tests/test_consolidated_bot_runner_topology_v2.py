@@ -76,8 +76,11 @@ def test_live_and_paper_compose_pass_exact_sha_without_fallback():
     for override in (LIVE_OVERRIDE, PAPER_OVERRIDE):
         section = _service_section(override, "bot-runner")
         assert "dockerfile: services/bot_runner/Dockerfile" in section
-        assert "GIT_SHA: ${GIT_SHA}" in section
-        assert "GIT_SHA:-" not in section
+        assert (
+            "GIT_SHA: ${REVISION:?set REVISION to the canonical full git SHA}"
+            in section
+        )
+        assert "GIT_SHA: ${GIT_SHA}" not in section
 
 
 def test_launcher_uses_all_and_only_four_existing_strategy_modules():
