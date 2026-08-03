@@ -32,14 +32,17 @@ class MemoryStore:
     def load(self):
         return self.snapshot
 
-    def last_event_reason(self):
+    def last_event_evidence(self):
         if not self.events:
             return None
         event = self.events[-1]
         if event[0] == "OBSERVED":
-            return event[1].reason
+            return (
+                event[1].reason,
+                event[1].latest_closed_candle_open_time,
+            )
         if event[0] == "STALLED":
-            return event[2]
+            return event[2], event[3]
         return None
 
     def observe(self, assessment):
@@ -89,7 +92,9 @@ class MemoryStore:
                 backlog_size=backlog_size, reason=reason,
                 resume_source=resume_source,
             )
-        self.events.append(("STALLED", expected_before, reason))
+        self.events.append(
+            ("STALLED", expected_before, reason, latest_closed_candle_open_time)
+        )
 
 
 def _run(store, *, latest, work, processor):
@@ -167,6 +172,44 @@ def test_pending_dependent_evidence_catches_up_without_advancing_then_becomes_re
     assert store.snapshot.state is FreshnessState.READY
 
 
+def test_new_frozen_target_does_not_inherit_pending_state_from_older_target():
+    store = MemoryStore(T0)
+    t1 = T0 + timedelta(minutes=1)
+    t2 = T0 + timedelta(minutes=2)
+
+    def pending(*_args):
+        raise CandleEvidencePending("indicator evidence pending")
+
+    first = _run(store, latest=t1, work=[t1], processor=pending)
+    assert first.assessment.state is FreshnessState.CATCHING_UP
+
+    next_cycle = _run(store, latest=t2, work=[t1, t2], processor=pending)
+    assert next_cycle.assessment.state is FreshnessState.CATCHING_UP
+    assert next_cycle.assessment.reason == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
+    assert next_cycle.checkpoint_after == T0
+
+
+def test_next_cycle_processes_new_frozen_backlog_and_catches_up():
+    store = MemoryStore(T0)
+    t1 = T0 + timedelta(minutes=1)
+    t2 = T0 + timedelta(minutes=2)
+    processed = []
+
+    first = _run(
+        store, latest=t1, work=[t1],
+        processor=lambda item, _context: processed.append(item),
+    )
+    assert first.checkpoint_after == t1
+
+    second = _run(
+        store, latest=t2, work=[t2],
+        processor=lambda item, _context: processed.append(item),
+    )
+    assert second.checkpoint_after == t2
+    assert store.snapshot.state is FreshnessState.READY
+    assert processed == [t1, t2]
+
+
 def test_repeated_pending_evidence_without_progress_becomes_stalled():
     store = MemoryStore(T0)
     t1 = T0 + timedelta(minutes=1)
@@ -183,7 +226,7 @@ def test_repeated_pending_evidence_without_progress_becomes_stalled():
     assert store.snapshot.last_processed_candle_open_time == T0
     assert store.snapshot.state is FreshnessState.STALLED
     assert store.events[-1] == (
-        "STALLED", T0, "CANDLE_DEPENDENT_EVIDENCE_NO_PROGRESS",
+        "STALLED", T0, "CANDLE_DEPENDENT_EVIDENCE_NO_PROGRESS", t1,
     )
 
 
@@ -217,7 +260,10 @@ def test_pending_evidence_blocks_strategy_and_preserves_checkpoint(
     previous = (T0, 100.0, 99.0, 50.0, 1.0, 99.5, 1)
     strategy_calls = []
     monkeypatch.setattr(supertrend, "PostgresCheckpointStore", lambda *_a: store)
-    monkeypatch.setattr(supertrend, "get_last_closed_candle", lambda: pending_latest)
+    monkeypatch.setattr(
+        supertrend, "get_last_closed_candle",
+        lambda target: pending_latest if target == latest[0] else None,
+    )
     monkeypatch.setattr(
         supertrend, "get_resume_candle_pairs",
         lambda *_a: [(pending_latest, previous)],
@@ -226,12 +272,41 @@ def test_pending_evidence_blocks_strategy_and_preserves_checkpoint(
         supertrend, "run_strategy", lambda *_a, **_k: strategy_calls.append(True),
     )
 
-    result = supertrend.process_supertrend_candle_resume()
+    result = supertrend.process_supertrend_candle_resume(latest[0])
     assert result.assessment.state is FreshnessState.CATCHING_UP
     assert result.assessment.reason == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
     assert result.checkpoint_after == T0
     assert store.snapshot.last_processed_candle_open_time == T0
     assert strategy_calls == []
+
+
+def test_loop_passes_snapshot_frozen_target_to_resume(supertrend, monkeypatch):
+    frozen_target = T0 + timedelta(minutes=1)
+    newer_candle = T0 + timedelta(minutes=2)
+    observed_market = {"latest": frozen_target}
+    resume_targets = []
+
+    monkeypatch.setattr(supertrend, "exchange_mytrades_enabled", lambda: False)
+    monkeypatch.setattr(supertrend, "load_runtime_params", lambda: None)
+    monkeypatch.setattr(supertrend, "fetch_klines", lambda: [frozen_target])
+    monkeypatch.setattr(
+        supertrend, "save_klines",
+        lambda _rows: None,
+    )
+
+    def finish_snapshot_indicators(*, progress_callback=None):
+        assert progress_callback is None
+        assert observed_market["latest"] == frozen_target
+        observed_market["latest"] = newer_candle
+        return frozen_target
+
+    monkeypatch.setattr(supertrend, "update_indicators", finish_snapshot_indicators)
+    monkeypatch.setattr(
+        supertrend, "process_supertrend_candle_resume", resume_targets.append,
+    )
+
+    supertrend.run_loop_iteration(object(), 0.0)
+    assert resume_targets == [frozen_target]
 
 
 def test_five_minute_ready_regression():

@@ -1790,8 +1790,15 @@ def update_indicators(
     total_rows = len(df)
     report_progress("LOAD_HISTORY", total_rows, total_rows)
 
+    cycle_target_candle_open_time = None
+    if total_rows >= 2:
+        target_value = df.iloc[-2]["open_time"]
+        if hasattr(target_value, "to_pydatetime"):
+            target_value = target_value.to_pydatetime()
+        cycle_target_candle_open_time = _as_aware_utc(target_value)
+
     if df.empty or len(df) < max(EMA_PERIOD, RSI_PERIOD, ATR_PERIOD) + 5:
-        return
+        return cycle_target_candle_open_time
 
     close = df["close"].astype(float)
     high = df["high"].astype(float)
@@ -1892,39 +1899,70 @@ def update_indicators(
         conn.commit()
         report_progress("PERSIST_LATEST", len(data), len(data))
 
-def get_last_closed_candle():
+    return cycle_target_candle_open_time
+
+
+def get_last_closed_candle(cycle_target_candle_open_time=None):
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT open_time, close, ema_21, rsi_14, atr_14, supertrend, supertrend_direction
-        FROM candles
-        WHERE symbol=%s AND interval=%s
-        ORDER BY open_time DESC
-        OFFSET 1
-        LIMIT 1
-        """,
-        (SYMBOL, INTERVAL),
-    )
+    if cycle_target_candle_open_time is None:
+        cur.execute(
+            """
+            SELECT open_time, close, ema_21, rsi_14, atr_14, supertrend,
+                   supertrend_direction
+            FROM candles
+            WHERE symbol=%s AND interval=%s
+            ORDER BY open_time DESC
+            OFFSET 1
+            LIMIT 1
+            """,
+            (SYMBOL, INTERVAL),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT open_time, close, ema_21, rsi_14, atr_14, supertrend,
+                   supertrend_direction
+            FROM candles
+            WHERE symbol=%s AND interval=%s AND open_time=%s
+            LIMIT 1
+            """,
+            (SYMBOL, INTERVAL, cycle_target_candle_open_time),
+        )
     row = cur.fetchone()
     cur.close()
     conn.close()
     return row
 
-def get_prev_closed_candle():
+
+def get_prev_closed_candle(cycle_target_candle_open_time=None):
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT open_time, close, ema_21, rsi_14, atr_14, supertrend, supertrend_direction
-        FROM candles
-        WHERE symbol=%s AND interval=%s
-        ORDER BY open_time DESC
-        OFFSET 2
-        LIMIT 1
-        """,
-        (SYMBOL, INTERVAL),
-    )
+    if cycle_target_candle_open_time is None:
+        cur.execute(
+            """
+            SELECT open_time, close, ema_21, rsi_14, atr_14, supertrend,
+                   supertrend_direction
+            FROM candles
+            WHERE symbol=%s AND interval=%s
+            ORDER BY open_time DESC
+            OFFSET 2
+            LIMIT 1
+            """,
+            (SYMBOL, INTERVAL),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT open_time, close, ema_21, rsi_14, atr_14, supertrend,
+                   supertrend_direction
+            FROM candles
+            WHERE symbol=%s AND interval=%s AND open_time<%s
+            ORDER BY open_time DESC
+            LIMIT 1
+            """,
+            (SYMBOL, INTERVAL, cycle_target_candle_open_time),
+        )
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -1952,7 +1990,7 @@ def get_resume_candle_pairs(checkpoint_before, latest_closed):
         return []
     latest_open_time = latest_closed[0]
     if checkpoint_before is None:
-        return [(latest_closed, get_prev_closed_candle())]
+        return [(latest_closed, get_prev_closed_candle(latest_open_time))]
 
     with read_only_db_conn(get_db_conn) as conn:
         with conn.cursor() as cur:
@@ -2019,7 +2057,7 @@ def _validate_resume_candle_pair(latest, prev) -> None:
         )
 
 
-def process_supertrend_candle_resume():
+def process_supertrend_candle_resume(cycle_target_candle_open_time=None):
     """Process the canonical persistent SUPERTREND candle workset once."""
     global LAST_PROCESSED_OPEN_TIME
     store = PostgresCheckpointStore(get_db_conn, _checkpoint_identity())
@@ -2027,7 +2065,11 @@ def process_supertrend_candle_resume():
     checkpoint_before = (
         snapshot.last_processed_candle_open_time if snapshot is not None else None
     )
-    latest_closed = get_last_closed_candle()
+    latest_closed = (
+        get_last_closed_candle(cycle_target_candle_open_time)
+        if cycle_target_candle_open_time is not None
+        else None
+    )
     pairs = get_resume_candle_pairs(checkpoint_before, latest_closed)
 
     def processor(pair, freshness_context):
@@ -2050,11 +2092,13 @@ def process_supertrend_candle_resume():
     LAST_PROCESSED_OPEN_TIME = result.checkpoint_after
     logging.info(
         "SUPERTREND freshness state=%s checkpoint_before=%s checkpoint_after=%s "
-        "latest_closed=%s backlog_size=%s reason=%s resume_source=%s",
+        "latest_closed=%s cycle_target=%s backlog_size=%s reason=%s "
+        "resume_source=%s",
         result.assessment.state.value,
         result.assessment.checkpoint_before,
         result.checkpoint_after,
         result.assessment.latest_closed_candle_open_time,
+        cycle_target_candle_open_time,
         result.assessment.backlog_size,
         result.assessment.reason,
         result.assessment.resume_source,
@@ -3241,8 +3285,10 @@ def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
     load_runtime_params()
     rows = fetch_klines()
     save_klines(rows)
-    update_indicators(progress_callback=progress_callback)
-    process_supertrend_candle_resume()
+    cycle_target_candle_open_time = update_indicators(
+        progress_callback=progress_callback,
+    )
+    process_supertrend_candle_resume(cycle_target_candle_open_time)
     return last_ingest_ts
 
 

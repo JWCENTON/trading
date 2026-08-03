@@ -73,8 +73,14 @@ def run_real_outer_cycle(
     monkeypatch.setattr(module, "load_runtime_params", lambda: operations.append("runtime_params"))
     monkeypatch.setattr(module, "fetch_klines", lambda: operations.append("fetch_klines") or [])
     monkeypatch.setattr(module, "save_klines", lambda rows: operations.append("save_klines"))
-    monkeypatch.setattr(module, "get_last_closed_candle", lambda: operations.append("read_latest") or latest)
-    monkeypatch.setattr(module, "get_prev_closed_candle", lambda: operations.append("read_prev") or prev)
+    monkeypatch.setattr(
+        module, "get_last_closed_candle",
+        lambda _target=None: operations.append("read_latest") or latest,
+    )
+    monkeypatch.setattr(
+        module, "get_prev_closed_candle",
+        lambda _target=None: operations.append("read_prev") or prev,
+    )
     if strategy_marker:
         monkeypatch.setattr(module, "run_strategy", lambda *_a: operations.append("run_strategy"))
     if harness is None:
@@ -87,9 +93,9 @@ def run_real_outer_cycle(
         lambda status, **_meta: operations.append(f"lifecycle:{status}"),
     )
 
-    def process_checkpoint_resume():
-        current = module.get_last_closed_candle()
-        previous = module.get_prev_closed_candle()
+    def process_checkpoint_resume(cycle_target_candle_open_time=None):
+        current = module.get_last_closed_candle(cycle_target_candle_open_time)
+        previous = module.get_prev_closed_candle(cycle_target_candle_open_time)
         if current is None or previous is None:
             return
         if module.LAST_PROCESSED_OPEN_TIME == current[0]:

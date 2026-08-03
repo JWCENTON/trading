@@ -73,19 +73,19 @@ def _run_update(monkeypatch, module, frame, callback=None):
         "read_sql_query",
         lambda *_args, **_kwargs: frame.copy(deep=True),
     )
-    module.update_indicators(progress_callback=callback)
-    return conn.cursor_obj.rows
+    target = module.update_indicators(progress_callback=callback)
+    return conn.cursor_obj.rows, target
 
 
 def test_none_callback_is_not_required(monkeypatch, module):
-    rows = _run_update(monkeypatch, module, _fixture_frame(), callback=None)
+    rows, _target = _run_update(monkeypatch, module, _fixture_frame(), callback=None)
     assert len(rows) == 50
 
 
 def test_callback_receives_phases_and_is_not_called_per_row(monkeypatch, module):
     calls = []
     frame = _fixture_frame(120)
-    rows = _run_update(
+    rows, _target = _run_update(
         monkeypatch,
         module,
         frame,
@@ -104,9 +104,11 @@ def test_indicator_outputs_are_identical_with_and_without_callback(
     monkeypatch, module
 ):
     frame = _fixture_frame(180)
-    baseline = _run_update(monkeypatch, module, frame, callback=None)
+    baseline, baseline_target = _run_update(
+        monkeypatch, module, frame, callback=None,
+    )
     calls = []
-    with_progress = _run_update(
+    with_progress, progress_target = _run_update(
         monkeypatch,
         module,
         frame,
@@ -117,6 +119,15 @@ def test_indicator_outputs_are_identical_with_and_without_callback(
     assert [row[-1] for row in with_progress] == [row[-1] for row in baseline]
     assert len(with_progress) == len(baseline) == 50
     assert calls
+    assert progress_target == baseline_target
+
+
+def test_indicator_snapshot_freezes_second_last_candle_as_cycle_target(
+    monkeypatch, module,
+):
+    frame = _fixture_frame(80)
+    _rows, target = _run_update(monkeypatch, module, frame)
+    assert target == frame.iloc[-2]["open_time"].to_pydatetime()
 
 
 def test_progress_heartbeat_is_time_gated_and_tracks_real_growth(

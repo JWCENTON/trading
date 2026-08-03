@@ -190,7 +190,7 @@ def assess_freshness(
 
 class CheckpointStore(Protocol):
     def load(self) -> CheckpointSnapshot | None: ...
-    def last_event_reason(self) -> str | None: ...
+    def last_event_evidence(self) -> tuple[str, datetime | None] | None: ...
     def observe(self, assessment: FreshnessAssessment) -> None: ...
     def advance(
         self, *, expected_before: datetime | None, processed_open_time: datetime,
@@ -227,9 +227,14 @@ def process_resume_workset(
         latest_closed_candle_open_time=latest_closed_candle_open_time,
         candidate_open_times=open_times,
     )
+    previous_event = store.last_event_evidence()
     previous_evidence_pending = (
         assessment.state is FreshnessState.CATCHING_UP
-        and store.last_event_reason() == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
+        and previous_event
+        == (
+            "CANDLE_DEPENDENT_EVIDENCE_PENDING",
+            assessment.latest_closed_candle_open_time,
+        )
     )
     store.observe(assessment)
     if assessment.state in {FreshnessState.READY, FreshnessState.STALLED}:
@@ -374,13 +379,13 @@ class PostgresCheckpointStore:
             finally:
                 conn.close()
 
-    def last_event_reason(self) -> str | None:
+    def last_event_evidence(self) -> tuple[str, datetime | None] | None:
         conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT reason
+                    SELECT reason,latest_closed_candle_open_time
                     FROM public.supertrend_candle_checkpoint_event_v1
                     WHERE environment=%s AND deployment_id=%s AND symbol=%s
                       AND "interval"=%s AND strategy=%s
@@ -390,7 +395,9 @@ class PostgresCheckpointStore:
                     self._identity_params,
                 )
                 row = cur.fetchone()
-                return str(row[0]) if row is not None else None
+                if row is None:
+                    return None
+                return str(row[0]), _utc(row[1])
         finally:
             try:
                 conn.rollback()
