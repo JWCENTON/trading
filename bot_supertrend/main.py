@@ -119,6 +119,9 @@ SUPERTREND_CATCHUP_CADENCE_SECONDS_V1 = float(
 SUPERTREND_ERROR_CADENCE_SECONDS_V1 = float(
     os.environ.get("SUPERTREND_ERROR_CADENCE_SECONDS_V1", "60")
 )
+SUPERTREND_PENDING_EVIDENCE_CADENCE_SECONDS_V1 = float(
+    os.environ.get("SUPERTREND_PENDING_EVIDENCE_CADENCE_SECONDS_V1", "60")
+)
 
 
 def get_exchange_client():
@@ -3396,13 +3399,19 @@ def run_strategy(latest, prev, *, freshness_context=None):
 
 LAST_PROCESSED_OPEN_TIME = None  # compatibility telemetry; never a dedupe authority
 LAST_CYCLE_FRESHNESS_STATE = FreshnessState.UNKNOWN
+LAST_CYCLE_FRESHNESS_REASON = "UNKNOWN"
 LAST_CYCLE_HAD_ERROR = False
 
 
-def cycle_cadence_seconds(state, *, had_error=False):
+def cycle_cadence_seconds(state, *, reason=None, had_error=False):
     """Return the explicit V1 cadence; only healthy catch-up uses the short path."""
     if had_error:
         value = SUPERTREND_ERROR_CADENCE_SECONDS_V1
+    elif (
+        state is FreshnessState.CATCHING_UP
+        and reason == "CANDLE_DEPENDENT_EVIDENCE_PENDING"
+    ):
+        value = SUPERTREND_PENDING_EVIDENCE_CADENCE_SECONDS_V1
     elif state is FreshnessState.CATCHING_UP:
         value = SUPERTREND_CATCHUP_CADENCE_SECONDS_V1
     else:
@@ -3416,7 +3425,7 @@ def cycle_cadence_seconds(state, *, had_error=False):
 # Main Loop
 # =========================
 def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
-    global LAST_CYCLE_FRESHNESS_STATE
+    global LAST_CYCLE_FRESHNESS_STATE, LAST_CYCLE_FRESHNESS_REASON
     # --- Exchange fills ingest (LIVE ONLY) ---
     # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
     if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
@@ -3450,12 +3459,14 @@ def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
     resume_result = process_supertrend_candle_resume(cycle_target_candle_open_time)
     if resume_result is not None:
         LAST_CYCLE_FRESHNESS_STATE = resume_result.assessment.state
+        LAST_CYCLE_FRESHNESS_REASON = resume_result.assessment.reason
     return last_ingest_ts
 
 
 def run_loop_cycle(runtime_client, last_ingest_ts):
     """Run one real worker iteration and record progress only at its boundaries."""
-    global LAST_CYCLE_FRESHNESS_STATE, LAST_CYCLE_HAD_ERROR
+    global LAST_CYCLE_FRESHNESS_STATE, LAST_CYCLE_FRESHNESS_REASON
+    global LAST_CYCLE_HAD_ERROR
     loop_start = time.perf_counter()
     cycle_started_at = datetime.now(timezone.utc).isoformat()
     lifecycle_heartbeat("RUNNING", cycle_started_at=cycle_started_at)
@@ -3474,6 +3485,7 @@ def run_loop_cycle(runtime_client, last_ingest_ts):
         error = exc
         LAST_CYCLE_HAD_ERROR = True
         LAST_CYCLE_FRESHNESS_STATE = FreshnessState.UNKNOWN
+        LAST_CYCLE_FRESHNESS_REASON = "CYCLE_ERROR"
         logging.exception("SUPERTREND loop error")
         emit_strategy_event(
             event_type="ERROR",
@@ -3512,11 +3524,13 @@ def main_loop():
         last_ingest_ts = run_loop_cycle(runtime_client, last_ingest_ts)
         sleep_seconds = cycle_cadence_seconds(
             LAST_CYCLE_FRESHNESS_STATE,
+            reason=LAST_CYCLE_FRESHNESS_REASON,
             had_error=LAST_CYCLE_HAD_ERROR,
         )
         logging.info(
-            "SUPERTREND_CADENCE_V1|state=%s|sleep_seconds=%.3f",
+            "SUPERTREND_CADENCE_V1|state=%s|reason=%s|sleep_seconds=%.3f",
             LAST_CYCLE_FRESHNESS_STATE.value,
+            LAST_CYCLE_FRESHNESS_REASON,
             sleep_seconds,
         )
         time.sleep(sleep_seconds)

@@ -315,8 +315,15 @@ def test_catching_up_uses_short_bounded_cadence_and_errors_back_off(
     monkeypatch.setattr(supertrend, "SUPERTREND_READY_CADENCE_SECONDS_V1", 60.0)
     monkeypatch.setattr(supertrend, "SUPERTREND_CATCHUP_CADENCE_SECONDS_V1", 5.0)
     monkeypatch.setattr(supertrend, "SUPERTREND_ERROR_CADENCE_SECONDS_V1", 60.0)
+    monkeypatch.setattr(
+        supertrend, "SUPERTREND_PENDING_EVIDENCE_CADENCE_SECONDS_V1", 60.0,
+    )
     assert supertrend.cycle_cadence_seconds(FreshnessState.READY) == 60.0
     assert supertrend.cycle_cadence_seconds(FreshnessState.CATCHING_UP) == 5.0
+    assert supertrend.cycle_cadence_seconds(
+        FreshnessState.CATCHING_UP,
+        reason="CANDLE_DEPENDENT_EVIDENCE_PENDING",
+    ) == 60.0
     assert supertrend.cycle_cadence_seconds(
         FreshnessState.CATCHING_UP, had_error=True,
     ) == 60.0
