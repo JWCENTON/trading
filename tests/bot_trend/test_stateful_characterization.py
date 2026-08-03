@@ -200,7 +200,7 @@ def test_paper_natural_exit_uses_canonical_persistence_once_on_retry(
     )
     arguments = dict(
         side="SELL", price=99.0, qty_btc=0.1,
-        reason="TREND STOP_LOSS_LONG",
+        reason="TREND PAPER_EXIT",
         candle_open_time=trend_rows()[0][2], is_exit=True,
         cfg_used=config, allow_live_orders=False, allow_meta={}, pos_id=77,
     )
@@ -215,7 +215,7 @@ def test_paper_natural_exit_uses_canonical_persistence_once_on_retry(
     assert len(evidence_calls) == 1
     assert evidence_calls[0]["simulated_order_id"] == 501
     assert evidence_calls[0]["position_id"] == 77
-    assert evidence_calls[0]["exit_reason"] == "TREND STOP_LOSS_LONG"
+    assert evidence_calls[0]["exit_reason"] == "TREND PAPER_EXIT"
     assert evidence_calls[0]["require_terminal_close"] is True
     assert sum(event["event_type"] == "POSITION_CLOSED" for event in events) == 1
 

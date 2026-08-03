@@ -69,6 +69,12 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
 
     def record(*_args, **kwargs):
         evidence.append(dict(kwargs))
+        if (
+            strategy in {"RSI", "TREND", "BBRANGE"}
+            and kwargs.get("require_terminal_close")
+        ):
+            assert state["position_id"] == 77
+            state["position_id"] = None
         return True
 
     def open_position(*_args, **_kwargs):
@@ -112,12 +118,14 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
         def apply_rsi(*, is_exit, **_kwargs):
             position_id = state["position_id"]
             if is_exit:
-                close_position()
+                action = "EXIT_PENDING_CANONICAL_PERSISTENCE"
             else:
                 position_id = open_position()
+                action = "ENTRY_OPENED"
             return {
                 "ok": True, "blocked_reason": None, "pos_id": position_id,
                 "client_order_id": None,
+                "paper_pos_action": action,
             }
 
         monkeypatch.setattr(module, "ssot_apply_positions_paper", apply_rsi)
@@ -125,8 +133,7 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
         def apply_trend(*, is_exit, **_kwargs):
             position_id = state["position_id"]
             if is_exit:
-                close_position()
-                action = "EXIT_CLOSED"
+                action = "EXIT_PENDING_CANONICAL_PERSISTENCE"
             else:
                 position_id = open_position()
                 action = "ENTRY_OPENED"
@@ -178,7 +185,8 @@ def test_four_strategy_exit_result_requires_successful_close(
     events = []
     monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 601)
     monkeypatch.setattr(
-        module, "record_simulated_fill_evidence", lambda *_args, **_kwargs: True
+        module, "record_simulated_fill_evidence",
+        lambda *_args, **_kwargs: close_result,
     )
     monkeypatch.setattr(module, "get_exchange_client", lambda: object())
     monkeypatch.setattr(
@@ -204,22 +212,19 @@ def test_four_strategy_exit_result_requires_successful_close(
             module,
             "ssot_apply_positions_paper",
             lambda **_kwargs: {
-                "ok": close_result,
-                "blocked_reason": None if close_result else "POSITION_CLOSE_FAILED",
+                "ok": True,
+                "blocked_reason": None,
                 "pos_id": 77,
                 "client_order_id": None,
+                "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
             },
         )
     elif strategy == "TREND":
         def apply_trend(**_kwargs):
-            closed = close()
             return {
-                "paper_pos_action": (
-                    "EXIT_CLOSED" if closed
-                    else "EXIT_POSITION_CLOSE_FAILED"
-                ),
+                "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
                 "paper_pos_id": 77,
-                "position_close_succeeded": closed,
+                "position_close_succeeded": None,
             }
 
         monkeypatch.setattr(
@@ -259,11 +264,16 @@ def test_four_strategy_exit_result_requires_successful_close(
             "CLOSED" in event["event_type"] for event in events
         )
         assert sum(
-            event["event_type"] in {"POSITION_CLOSE_FAILED", "BLOCKED"}
+            event["event_type"] in {
+                "POSITION_CLOSE_FAILED", "BLOCKED", "ERROR"
+            }
             and event["reason"] == "POSITION_CLOSE_FAILED"
             for event in events
         ) == 1
-    assert len(close_calls) <= 1
+    if strategy in {"RSI", "TREND", "BBRANGE"}:
+        assert close_calls == []
+    else:
+        assert len(close_calls) <= 1
 
 
 @pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))
@@ -274,21 +284,41 @@ def test_four_strategy_close_exception_never_reports_success(
     monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 701)
     monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
     monkeypatch.setattr(module, "get_exchange_client", lambda: object())
+    error = RuntimeError("close unavailable")
     monkeypatch.setattr(
-        module, "record_simulated_fill_evidence", lambda *_args, **_kwargs: True
+        module,
+        "record_simulated_fill_evidence",
+        (
+            (lambda *_args, **_kwargs: (_ for _ in ()).throw(error))
+            if strategy in {"RSI", "TREND", "BBRANGE"}
+            else (lambda *_args, **_kwargs: True)
+        ),
     )
     monkeypatch.setattr(
         module, "get_open_position", lambda: (77, "LONG", 0.1, 100.0, NOW)
     )
 
-    error = RuntimeError("close unavailable")
-    if strategy in {"RSI", "TREND"}:
-        apply_name = "ssot_apply_positions_paper"
+    if strategy == "RSI":
         monkeypatch.setattr(
-            module, apply_name,
-            lambda **_kwargs: (_ for _ in ()).throw(error),
+            module,
+            "ssot_apply_positions_paper",
+            lambda **_kwargs: {
+                "ok": True, "blocked_reason": None, "pos_id": 77,
+                "client_order_id": None,
+                "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
+            },
         )
-    else:
+    elif strategy == "TREND":
+        monkeypatch.setattr(
+            module,
+            "ssot_apply_positions_paper",
+            lambda **_kwargs: {
+                "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
+                "paper_pos_id": 77,
+                "position_close_succeeded": None,
+            },
+        )
+    elif strategy == "SUPERTREND":
         monkeypatch.setattr(
             module, "close_position",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
@@ -305,11 +335,6 @@ def test_four_strategy_close_exception_never_reports_success(
     )
     if strategy in {"TREND", "BBRANGE"}:
         kwargs.update(rsi_14=50.0, ema_21=100.0)
-
-    if strategy in {"RSI", "TREND"}:
-        with pytest.raises(RuntimeError, match="close unavailable"):
-            module.execute_and_record(**kwargs)
-        return
 
     result = module.execute_and_record(**kwargs)
     if strategy == "SUPERTREND":

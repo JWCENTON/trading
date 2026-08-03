@@ -84,7 +84,8 @@ CREATE TABLE position_lifecycle_events_c2_2 (
 
 
 def _insert_order(
-    conn, *, position_id: int, is_exit: bool, strategy: str = "BBRANGE"
+    conn, *, position_id: int, is_exit: bool, strategy: str = "BBRANGE",
+    exit_reason: str | None = None,
 ) -> int:
     price = Decimal("99") if is_exit else Decimal("100")
     with conn.cursor() as cur:
@@ -99,7 +100,7 @@ def _insert_order(
                 strategy,
                 "SELL" if is_exit else "BUY",
                 price,
-                f"{strategy} STOP LOSS LONG" if is_exit else f"{strategy} ENTRY",
+                exit_reason if is_exit else f"{strategy} ENTRY",
                 is_exit,
             ),
         )
@@ -111,7 +112,7 @@ def _insert_order(
 
 def _record(
     connect, *, order_id: int, position_id: int, is_exit: bool,
-    strategy: str = "BBRANGE",
+    strategy: str = "BBRANGE", exit_reason: str | None = None,
 ):
     return record_simulated_fill_evidence(
         connect,
@@ -120,14 +121,21 @@ def _record(
         position_id=position_id,
         environment="paper",
         deployment_id="local-paper",
-        exit_reason=f"{strategy} STOP LOSS LONG" if is_exit else None,
+        exit_reason=exit_reason if is_exit else None,
         require_terminal_close=is_exit,
     )
 
 
-@pytest.mark.parametrize("strategy", ["BBRANGE", "TREND"])
+@pytest.mark.parametrize(
+    ("strategy", "exit_reason"),
+    [
+        pytest.param("BBRANGE", "BBRANGE PROFIT_LOCK", id="bbrange-profit-lock"),
+        pytest.param("TREND", "TREND PAPER_EXIT", id="trend-paper-exit"),
+        pytest.param("RSI", "RSI SOFT_EXIT", id="rsi-soft-exit"),
+    ],
+)
 def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
-    disposable_postgres_v16, monkeypatch, strategy
+    disposable_postgres_v16, monkeypatch, strategy, exit_reason
 ):
     database = f"waltrade_baseline_test_bbrange_{uuid.uuid4().hex[:10]}"
     disposable_postgres_v16.create_database(database)
@@ -192,11 +200,12 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
             strategy=strategy,
         ) is True
         exit_order = _insert_order(
-            conn, position_id=77, is_exit=True, strategy=strategy
+            conn, position_id=77, is_exit=True, strategy=strategy,
+            exit_reason=exit_reason,
         )
         assert _record(
             connect, order_id=exit_order, position_id=77, is_exit=True,
-            strategy=strategy,
+            strategy=strategy, exit_reason=exit_reason,
         ) is True
 
         with conn.cursor() as cur:
@@ -204,7 +213,7 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
                 "SELECT status,exit_price,exit_reason FROM positions WHERE id=77"
             )
             assert cur.fetchone() == (
-                "CLOSED", Decimal("99"), f"{strategy} STOP LOSS LONG",
+                "CLOSED", Decimal("99"), exit_reason,
             )
             cur.execute(
                 """
@@ -213,6 +222,14 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
                 """
             )
             assert cur.fetchall() == [("ENTRY",), ("EXIT",)]
+            cur.execute(
+                """
+                SELECT count(*) FROM simulated_orders
+                WHERE strategy=%s AND is_exit=true
+                """,
+                (strategy,),
+            )
+            assert cur.fetchone() == (1,)
             cur.execute(
                 """
                 SELECT mutation_kind FROM position_lifecycle_events_c2_2
@@ -269,7 +286,8 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
             strategy=strategy,
         ) is True
         rollback_exit = _insert_order(
-            conn, position_id=78, is_exit=True, strategy=strategy
+            conn, position_id=78, is_exit=True, strategy=strategy,
+            exit_reason=exit_reason,
         )
         with conn.cursor() as cur:
             cur.execute(
@@ -293,6 +311,7 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
             _record(
                 connect, order_id=rollback_exit,
                 position_id=78, is_exit=True, strategy=strategy,
+                exit_reason=exit_reason,
             )
 
         with conn.cursor() as cur:

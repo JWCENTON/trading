@@ -348,6 +348,122 @@ def test_open_position_soft_exit(harness):
     assert_isolated(observed)
 
 
+def test_paper_soft_exit_uses_canonical_persistence_once_on_retry(
+    rsi, monkeypatch
+):
+    events = []
+    evidence_calls = []
+    inserted_results = iter((501, False))
+    monkeypatch.setattr(
+        rsi, "insert_simulated_order", lambda **_kwargs: next(inserted_results)
+    )
+    monkeypatch.setattr(
+        rsi,
+        "ssot_apply_positions_paper",
+        lambda **_kwargs: {
+            "ok": True,
+            "blocked_reason": None,
+            "pos_id": 77,
+            "client_order_id": "paper-exit",
+            "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
+            "position_close_succeeded": None,
+        },
+    )
+    monkeypatch.setattr(
+        rsi,
+        "close_position",
+        lambda **_kwargs: pytest.fail("legacy PAPER close must not run"),
+    )
+    monkeypatch.setattr(rsi, "get_db_conn", lambda: object())
+    monkeypatch.setattr(rsi, "get_exchange_client", lambda: StrictFakeExchange())
+
+    def persist(*_args, **kwargs):
+        evidence_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(rsi, "record_simulated_fill_evidence", persist)
+    monkeypatch.setattr(
+        rsi, "emit_strategy_event", lambda **payload: events.append(payload)
+    )
+    config = runtime_snapshot()["cfg_effective"]
+    config.symbol = rsi.SYMBOL
+    config.interval = rsi.INTERVAL
+    arguments = dict(
+        exit_side="SELL", price=101.0, qty_btc=0.1,
+        reason_text="RSI SOFT_EXIT LONG",
+        candle_open_time=candle()[0], cfg_used=config,
+        allow_live_orders=False, allow_meta={}, exit_kind="RSI_SOFT_EXIT",
+    )
+
+    result = rsi.execute_exit_safe(**arguments)
+    retry = rsi.execute_exit_safe(**arguments)
+
+    assert result["ledger_ok"] is True
+    assert result["position_close_succeeded"] is True
+    assert result["resp"]["paper_pos_action"] == "EXIT_CLOSED"
+    assert retry["ledger_ok"] is False
+    assert len(evidence_calls) == 1
+    assert evidence_calls[0]["simulated_order_id"] == 501
+    assert evidence_calls[0]["position_id"] == 77
+    assert evidence_calls[0]["exit_reason"] == "RSI SOFT_EXIT LONG"
+    assert evidence_calls[0]["require_terminal_close"] is True
+    assert sum(event["event_type"] == "POSITION_CLOSED" for event in events) == 1
+
+
+def test_paper_exit_identity_helper_never_closes_position(rsi, monkeypatch):
+    operations = []
+
+    class Cursor:
+        def close(self):
+            operations.append("cursor:close")
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            operations.append("connection:commit")
+
+        def rollback(self):
+            operations.append("connection:rollback")
+
+        def close(self):
+            operations.append("connection:close")
+
+    monkeypatch.setattr(rsi, "get_db_conn", lambda: Connection())
+    monkeypatch.setattr(
+        rsi, "paper_position_mutation_allowed_cursor", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        rsi,
+        "attach_exit_order_id_with_conn",
+        lambda *_a, **_k: operations.append("exit_identity:attach"),
+    )
+    monkeypatch.setattr(rsi, "make_client_order_id", lambda *_a, **_k: "paper-exit")
+    monkeypatch.setattr(
+        rsi,
+        "close_position",
+        lambda **_kwargs: pytest.fail("legacy PAPER close must not run"),
+    )
+    config = runtime_snapshot()["cfg_effective"]
+    config.symbol = rsi.SYMBOL
+    config.interval = rsi.INTERVAL
+
+    result = rsi.ssot_apply_positions_paper(
+        side="SELL", price=101.0, qty_btc=0.1,
+        candle_open_time=candle()[0], is_exit=True, cfg_used=config,
+        reason_text="RSI SOFT_EXIT LONG", expected_position_id=77,
+    )
+
+    assert result["ok"] is True
+    assert result["paper_pos_action"] == "EXIT_PENDING_CANONICAL_PERSISTENCE"
+    assert result["position_close_succeeded"] is None
+    assert operations == [
+        "exit_identity:attach", "connection:commit", "cursor:close",
+        "connection:close",
+    ]
+
+
 def test_open_position_time_exit_uses_fake_clock(harness):
     harness.time_exit_enabled = True
     harness.open_long(age_minutes=31)

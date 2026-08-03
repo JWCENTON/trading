@@ -427,31 +427,7 @@ def _execute_and_record_after_paper_exit_preflight(
             expected_position_id=paper_position_id,
         )
 
-        if paper_res.get("ok") and is_exit:
-            emit_strategy_event(
-                event_type="POSITION_CLOSED",
-                decision=side,
-                reason=str(reason or "PAPER_EXIT"),
-                price=float(price),
-                candle_open_time=candle_open_time,
-                info={
-                    "position_id": int(paper_res["pos_id"]),
-                    "simulated_order_id": (
-                        int(inserted)
-                        if isinstance(inserted, int)
-                        and not isinstance(inserted, bool)
-                        else None
-                    ),
-                    "symbol": cfg_used.symbol,
-                    "interval": cfg_used.interval,
-                    "strategy": STRATEGY_NAME,
-                    "exit_reason": str(reason or "PAPER_EXIT"),
-                    "exit_price": float(price),
-                    "quantity": float(qty_btc),
-                    "timestamp": candle_open_time,
-                },
-            )
-
+        evidence_persisted = None
         if (
             paper_res.get("ok")
             and paper_res.get("pos_id")
@@ -459,7 +435,7 @@ def _execute_and_record_after_paper_exit_preflight(
             and not isinstance(inserted, bool)
         ):
             try:
-                record_simulated_fill_evidence(
+                evidence_persisted = record_simulated_fill_evidence(
                     get_db_conn,
                     client=get_exchange_client(),
                     simulated_order_id=int(inserted),
@@ -469,10 +445,52 @@ def _execute_and_record_after_paper_exit_preflight(
                         "DEPLOYMENT_ID",
                         os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
                     ),
+                    exit_reason=str(reason or "PAPER_EXIT") if is_exit else None,
+                    require_terminal_close=bool(is_exit),
                 )
             except Exception:
                 logging.exception(
                     "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable"
+                )
+                if is_exit:
+                    paper_res = {
+                        **paper_res,
+                        "ok": False,
+                        "blocked_reason": "POSITION_CLOSE_FAILED",
+                        "position_close_succeeded": False,
+                    }
+
+        if is_exit and paper_res.get("ok"):
+            if not evidence_persisted:
+                paper_res = {
+                    **paper_res,
+                    "ok": False,
+                    "blocked_reason": "POSITION_CLOSE_FAILED",
+                    "position_close_succeeded": False,
+                }
+            else:
+                paper_res = {
+                    **paper_res,
+                    "paper_pos_action": "EXIT_CLOSED",
+                    "position_close_succeeded": True,
+                }
+                emit_strategy_event(
+                    event_type="POSITION_CLOSED",
+                    decision=side,
+                    reason=str(reason or "PAPER_EXIT"),
+                    price=float(price),
+                    candle_open_time=candle_open_time,
+                    info={
+                        "position_id": int(paper_res["pos_id"]),
+                        "simulated_order_id": int(inserted),
+                        "symbol": cfg_used.symbol,
+                        "interval": cfg_used.interval,
+                        "strategy": STRATEGY_NAME,
+                        "exit_reason": str(reason or "PAPER_EXIT"),
+                        "exit_price": float(price),
+                        "quantity": float(qty_btc),
+                        "timestamp": candle_open_time,
+                    },
                 )
 
         if not paper_res.get("ok", False):
@@ -497,7 +515,10 @@ def _execute_and_record_after_paper_exit_preflight(
                 "paper_executed": False,
                 "blocked_reason": paper_res.get("blocked_reason") or "PAPER_POSITIONS_FAILED",
                 "client_order_id": paper_res.get("client_order_id"),
-                "resp": None,
+                "resp": paper_res,
+                "position_close_succeeded": (
+                    False if is_exit else None
+                ),
             }
 
         return {
@@ -508,7 +529,8 @@ def _execute_and_record_after_paper_exit_preflight(
             "paper_executed": True,
             "blocked_reason": None,
             "client_order_id": paper_res.get("client_order_id"),
-            "resp": None,
+            "resp": paper_res,
+            "position_close_succeeded": True if is_exit else None,
         }
 
     # 3) LIVE AFTER ledger reservation
@@ -1811,7 +1833,8 @@ def ssot_apply_positions_paper(
         cfg_used.symbol, STRATEGY_NAME, cfg_used.interval, side, candle_open_time, pos_id=int(pos_id), tag="X"
     )
 
-    # 1) attach exit_client_order_id (order_id remains NULL in PAPER)
+    # Resolve/attach the PAPER exit identity only. The canonical simulated-fill
+    # writer owns inventory mutation, lifecycle, Financial Truth, and CLOSED.
     conn_exec = get_db_conn()
     cur_exec = conn_exec.cursor()
     try:
@@ -1830,65 +1853,28 @@ def ssot_apply_positions_paper(
                 "client_order_id": client_order_id,
             }
         attach_exit_order_id_with_conn(cur_exec, int(pos_id), None, client_order_id)
-
-        # 2) close position (this is the hard-truth close for PAPER)
-        cur_exec.execute(
-            """
-            SELECT side, entry_price, entry_time
-            FROM positions
-            WHERE id=%s AND status='OPEN'
-            """,
-            (int(pos_id),),
-        )
-        paper_pos_row = cur_exec.fetchone()
-
-        enriched_reason = str(reason_text or "PAPER_EXIT")
-        if paper_pos_row:
-            pos_side, pos_entry_price, pos_entry_time = paper_pos_row
-            enriched_reason = build_exit_reason_context(
-                base_reason=str(reason_text or "PAPER_EXIT"),
-                strategy=STRATEGY_NAME,
-                symbol=cfg_used.symbol,
-                interval=cfg_used.interval,
-                side=pos_side,
-                entry_price=pos_entry_price,
-                exit_price=price,
-                entry_time=pos_entry_time,
-                asof_time=candle_open_time,
-                profit_lock_config=PROFIT_LOCK_CONFIG,
-            )
-
-        cur_exec.execute(
-            """
-            UPDATE positions
-            SET status='CLOSED',
-                exit_price=%s,
-                exit_time=now(),
-                exit_reason=%s
-            WHERE id=%s AND status='OPEN'
-            RETURNING id
-            """,
-            (float(price), enriched_reason, int(pos_id)),
-        )
-        closed = cur_exec.fetchone() is not None
-        if not closed:
-            conn_exec.rollback()
-            return {
-                "ok": False,
-                "blocked_reason": "POSITION_CLOSE_FAILED",
-                "pos_id": int(pos_id),
-                "client_order_id": client_order_id,
-            }
         conn_exec.commit()
     except Exception:
         conn_exec.rollback()
-        logging.exception("PAPER: close position failed pos_id=%s", pos_id)
-        return {"ok": False, "blocked_reason": "PAPER_CLOSE_FAILED", "pos_id": int(pos_id), "client_order_id": client_order_id}
+        logging.exception("PAPER: exit identity attach failed pos_id=%s", pos_id)
+        return {
+            "ok": False,
+            "blocked_reason": "PAPER_EXIT_IDENTITY_FAILED",
+            "pos_id": int(pos_id),
+            "client_order_id": client_order_id,
+        }
     finally:
         cur_exec.close()
         conn_exec.close()
 
-    return {"ok": True, "blocked_reason": None, "pos_id": int(pos_id), "client_order_id": client_order_id}
+    return {
+        "ok": True,
+        "blocked_reason": None,
+        "pos_id": int(pos_id),
+        "client_order_id": client_order_id,
+        "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
+        "position_close_succeeded": None,
+    }
 
 
 def seed_default_params_from_env(conn):
