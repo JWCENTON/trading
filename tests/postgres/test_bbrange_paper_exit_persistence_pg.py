@@ -83,20 +83,23 @@ CREATE TABLE position_lifecycle_events_c2_2 (
 """
 
 
-def _insert_order(conn, *, position_id: int, is_exit: bool) -> int:
+def _insert_order(
+    conn, *, position_id: int, is_exit: bool, strategy: str = "BBRANGE"
+) -> int:
     price = Decimal("99") if is_exit else Decimal("100")
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO simulated_orders(
               symbol,interval,strategy,side,price,quantity_btc,reason,is_exit
-            ) VALUES ('BTCUSDC','1m','BBRANGE',%s,%s,0.1,%s,%s)
+            ) VALUES ('BTCUSDC','1m',%s,%s,%s,0.1,%s,%s)
             RETURNING id
             """,
             (
+                strategy,
                 "SELL" if is_exit else "BUY",
                 price,
-                "BBRANGE STOP LOSS LONG" if is_exit else "BBRANGE ENTRY",
+                f"{strategy} STOP LOSS LONG" if is_exit else f"{strategy} ENTRY",
                 is_exit,
             ),
         )
@@ -106,7 +109,10 @@ def _insert_order(conn, *, position_id: int, is_exit: bool) -> int:
     return order_id
 
 
-def _record(connect, *, order_id: int, position_id: int, is_exit: bool):
+def _record(
+    connect, *, order_id: int, position_id: int, is_exit: bool,
+    strategy: str = "BBRANGE",
+):
     return record_simulated_fill_evidence(
         connect,
         client=object(),
@@ -114,13 +120,14 @@ def _record(connect, *, order_id: int, position_id: int, is_exit: bool):
         position_id=position_id,
         environment="paper",
         deployment_id="local-paper",
-        exit_reason="BBRANGE STOP LOSS LONG" if is_exit else None,
+        exit_reason=f"{strategy} STOP LOSS LONG" if is_exit else None,
         require_terminal_close=is_exit,
     )
 
 
-def test_bbrange_exit_fill_lifecycle_ft_and_failure_rollback(
-    disposable_postgres_v16, monkeypatch
+@pytest.mark.parametrize("strategy", ["BBRANGE", "TREND"])
+def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
+    disposable_postgres_v16, monkeypatch, strategy
 ):
     database = f"waltrade_baseline_test_bbrange_{uuid.uuid4().hex[:10]}"
     disposable_postgres_v16.create_database(database)
@@ -167,23 +174,29 @@ def test_bbrange_exit_fill_lifecycle_ft_and_failure_rollback(
                   id,symbol,strategy,interval,status,side,qty,entry_price,
                   entry_time,inventory_contract_adoption_id,
                   inventory_contract_generation
-                ) VALUES (%s,'BTCUSDC','BBRANGE','1m','OPEN','LONG',0.1,100,
+                ) VALUES (%s,'BTCUSDC',%s,'1m','OPEN','LONG',0.1,100,
                           %s,41,7)
                 """,
                 [
-                    (77, datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)),
-                    (78, datetime(2026, 8, 2, 12, 1, tzinfo=timezone.utc)),
+                    (77, strategy, datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)),
+                    (78, strategy, datetime(2026, 8, 2, 12, 1, tzinfo=timezone.utc)),
                 ],
             )
         conn.commit()
 
-        entry_order = _insert_order(conn, position_id=77, is_exit=False)
+        entry_order = _insert_order(
+            conn, position_id=77, is_exit=False, strategy=strategy
+        )
         assert _record(
-            connect, order_id=entry_order, position_id=77, is_exit=False
+            connect, order_id=entry_order, position_id=77, is_exit=False,
+            strategy=strategy,
         ) is True
-        exit_order = _insert_order(conn, position_id=77, is_exit=True)
+        exit_order = _insert_order(
+            conn, position_id=77, is_exit=True, strategy=strategy
+        )
         assert _record(
-            connect, order_id=exit_order, position_id=77, is_exit=True
+            connect, order_id=exit_order, position_id=77, is_exit=True,
+            strategy=strategy,
         ) is True
 
         with conn.cursor() as cur:
@@ -191,7 +204,7 @@ def test_bbrange_exit_fill_lifecycle_ft_and_failure_rollback(
                 "SELECT status,exit_price,exit_reason FROM positions WHERE id=77"
             )
             assert cur.fetchone() == (
-                "CLOSED", Decimal("99"), "BBRANGE STOP LOSS LONG",
+                "CLOSED", Decimal("99"), f"{strategy} STOP LOSS LONG",
             )
             cur.execute(
                 """
@@ -227,7 +240,14 @@ def test_bbrange_exit_fill_lifecycle_ft_and_failure_rollback(
         assert outcome.calculation_version == "FINANCIAL_TRUTH_CALCULATION_V3"
         assert outcome.entry_fill_count == 1
         assert outcome.exit_fill_count == 1
+        assert outcome.authoritative_fees_usdc is not None
+        assert outcome.authoritative_fees_usdc > 0
         assert outcome.authoritative_net_pnl is not None
+        assert (
+            "WIN" if outcome.authoritative_net_pnl > 0
+            else "LOSS" if outcome.authoritative_net_pnl < 0
+            else "FLAT"
+        ) in {"WIN", "LOSS"}
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -241,11 +261,16 @@ def test_bbrange_exit_fill_lifecycle_ft_and_failure_rollback(
             assert calculation_version == "FINANCIAL_TRUTH_CALCULATION_V3"
             assert net_pnl is not None
 
-        rollback_entry = _insert_order(conn, position_id=78, is_exit=False)
+        rollback_entry = _insert_order(
+            conn, position_id=78, is_exit=False, strategy=strategy
+        )
         assert _record(
-            connect, order_id=rollback_entry, position_id=78, is_exit=False
+            connect, order_id=rollback_entry, position_id=78, is_exit=False,
+            strategy=strategy,
         ) is True
-        rollback_exit = _insert_order(conn, position_id=78, is_exit=True)
+        rollback_exit = _insert_order(
+            conn, position_id=78, is_exit=True, strategy=strategy
+        )
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -267,7 +292,7 @@ def test_bbrange_exit_fill_lifecycle_ft_and_failure_rollback(
         with pytest.raises(psycopg2.Error, match="synthetic lifecycle failure"):
             _record(
                 connect, order_id=rollback_exit,
-                position_id=78, is_exit=True,
+                position_id=78, is_exit=True, strategy=strategy,
             )
 
         with conn.cursor() as cur:

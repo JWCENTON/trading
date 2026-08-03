@@ -3133,6 +3133,7 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
             legacy_compatible_count=0,
             legacy_compatible_coverage_pct=0.0,
             quality_breakdown={"LIVE_EXCHANGE_BALANCES": 1},
+            rollout_impact_counts={},
             quote_asset=QUOTE_ASSET,
             assets=assets,
             asset_values_usdc=asset_values_usdc,

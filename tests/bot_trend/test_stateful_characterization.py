@@ -168,6 +168,98 @@ def test_paper_entry_and_live_boundaries(harness):
     assert filled.execution_attempts[0].side == "BUY"
 
 
+def test_paper_natural_exit_uses_canonical_persistence_once_on_retry(
+    trend, monkeypatch
+):
+    events = []
+    evidence_calls = []
+    inserted_results = iter((501, False))
+
+    monkeypatch.setattr(
+        trend, "insert_simulated_order", lambda **_kwargs: next(inserted_results)
+    )
+    monkeypatch.setattr(
+        trend,
+        "close_position",
+        lambda **_kwargs: pytest.fail("legacy PAPER close must not run"),
+    )
+    monkeypatch.setattr(trend, "get_db_conn", lambda: object())
+    monkeypatch.setattr(trend, "get_exchange_client", lambda: StrictFakeExchange())
+
+    def persist(*_args, **kwargs):
+        evidence_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(trend, "record_simulated_fill_evidence", persist)
+    monkeypatch.setattr(
+        trend, "emit_strategy_event", lambda **payload: events.append(payload)
+    )
+    config = SimpleNamespace(
+        symbol="BTCUSDC", interval="1m", trading_mode="PAPER",
+        live_orders_enabled=False, quote_asset="USDC",
+    )
+    arguments = dict(
+        side="SELL", price=99.0, qty_btc=0.1,
+        reason="TREND STOP_LOSS_LONG",
+        candle_open_time=trend_rows()[0][2], is_exit=True,
+        cfg_used=config, allow_live_orders=False, allow_meta={}, pos_id=77,
+    )
+
+    result = trend.execute_and_record(**arguments)
+    retry = trend.execute_and_record(**arguments)
+
+    assert result["ledger_ok"] is True
+    assert result["position_close_succeeded"] is True
+    assert result["resp"]["paper_pos_action"] == "EXIT_CLOSED"
+    assert retry["ledger_ok"] is False
+    assert len(evidence_calls) == 1
+    assert evidence_calls[0]["simulated_order_id"] == 501
+    assert evidence_calls[0]["position_id"] == 77
+    assert evidence_calls[0]["exit_reason"] == "TREND STOP_LOSS_LONG"
+    assert evidence_calls[0]["require_terminal_close"] is True
+    assert sum(event["event_type"] == "POSITION_CLOSED" for event in events) == 1
+
+
+def test_paper_exit_fill_persistence_failure_is_fail_closed(
+    trend, monkeypatch
+):
+    events = []
+    monkeypatch.setattr(trend, "insert_simulated_order", lambda **_kwargs: 502)
+    monkeypatch.setattr(
+        trend,
+        "close_position",
+        lambda **_kwargs: pytest.fail("legacy PAPER close must not run"),
+    )
+    monkeypatch.setattr(trend, "get_db_conn", lambda: object())
+    monkeypatch.setattr(trend, "get_exchange_client", lambda: StrictFakeExchange())
+    monkeypatch.setattr(
+        trend,
+        "record_simulated_fill_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic fill persistence failure")
+        ),
+    )
+    monkeypatch.setattr(
+        trend, "emit_strategy_event", lambda **payload: events.append(payload)
+    )
+
+    result = trend.execute_and_record(
+        side="SELL", price=99.0, qty_btc=0.1,
+        reason="TREND STOP_LOSS_LONG",
+        candle_open_time=trend_rows()[0][2], is_exit=True,
+        cfg_used=SimpleNamespace(
+            symbol="BTCUSDC", interval="1m", trading_mode="PAPER",
+            live_orders_enabled=False, quote_asset="USDC",
+        ),
+        allow_live_orders=False, allow_meta={}, pos_id=77,
+    )
+
+    assert result["ledger_ok"] is False
+    assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
+    assert result["position_close_succeeded"] is False
+    assert not any(event["event_type"] == "POSITION_CLOSED" for event in events)
+
+
 def run_live_entry_boundary(
     trend, monkeypatch, place_result, *, ledger_ok=True, open_failure=False
 ):

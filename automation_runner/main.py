@@ -2840,6 +2840,19 @@ def run_strategy_regime_stats_refresh(conn):
     conn.commit()
     logging.info("strategy_regime_stats_refresh: done")
 
+
+def run_independent_refresh_job(conn, job, failure_message: str):
+    """Run one refresh without leaking its failed transaction to the next."""
+    try:
+        job(conn)
+    except Exception:
+        logging.exception(failure_message)
+        try:
+            conn.rollback()
+        except Exception:
+            logging.exception("%s; rollback failed", failure_message)
+            raise
+
 def ensure_ui_notifications_table(cur):
     cur.execute(
         """
@@ -3511,24 +3524,21 @@ def main():
 
             run_daily_report(conn)
 
-            try:
-                run_strategy_regime_stats_refresh(conn)
-            except Exception:
-                logging.exception("strategy_regime_stats_refresh failed")
-
-            try:
-                run_market_regime_confidence_refresh(conn)
-            except Exception:
-                logging.exception("market_regime_confidence_refresh failed")
-
-            try:
-                run_market_memory_events_refresh(conn)
-            except Exception:
-                logging.exception("market_memory_events_refresh failed")
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
+            run_independent_refresh_job(
+                conn,
+                run_strategy_regime_stats_refresh,
+                "strategy_regime_stats_refresh failed",
+            )
+            run_independent_refresh_job(
+                conn,
+                run_market_regime_confidence_refresh,
+                "market_regime_confidence_refresh failed",
+            )
+            run_independent_refresh_job(
+                conn,
+                run_market_memory_events_refresh,
+                "market_memory_events_refresh failed",
+            )
 
             try:
                 run_market_memory_clusters_refresh(conn)

@@ -1300,7 +1300,8 @@ def ssot_apply_positions_paper(
     """
     PAPER SSOT:
     - ENTRY -> open_position()
-    - EXIT  -> close_position()
+    - EXIT  -> resolve position identity; the canonical simulated-fill writer
+               owns inventory mutation, Financial Truth, and lifecycle close.
     Zwraca meta do diagnostyki.
     """
     side_u = str(side).upper()
@@ -1327,16 +1328,10 @@ def ssot_apply_positions_paper(
     )
     if position_id is None:
         return {"paper_pos_action": "EXIT_SKIPPED_NO_OPEN", "paper_pos_id": None}
-    closed = close_position(
-        exit_price=float(price), reason="PAPER_EXIT", open_time=candle_open_time,
-        expected_position_id=position_id,
-    )
     return {
-        "paper_pos_action": (
-            "EXIT_CLOSED" if closed else "EXIT_POSITION_CLOSE_FAILED"
-        ),
+        "paper_pos_action": "EXIT_PENDING_CANONICAL_PERSISTENCE",
         "paper_pos_id": position_id,
-        "position_close_succeeded": bool(closed),
+        "position_close_succeeded": None,
     }
 
 
@@ -1461,13 +1456,14 @@ def _execute_and_record_after_paper_exit_preflight(
             is_exit=bool(is_exit),
             expected_position_id=paper_position_id,
         )
+        evidence_persisted = None
         if (
             meta.get("paper_pos_id")
             and isinstance(inserted, int)
             and not isinstance(inserted, bool)
         ):
             try:
-                record_simulated_fill_evidence(
+                evidence_persisted = record_simulated_fill_evidence(
                     get_db_conn,
                     client=get_exchange_client(),
                     simulated_order_id=int(inserted),
@@ -1477,10 +1473,53 @@ def _execute_and_record_after_paper_exit_preflight(
                         "DEPLOYMENT_ID",
                         os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
                     ),
+                    exit_reason=str(reason) if is_exit else None,
+                    require_terminal_close=bool(is_exit),
                 )
             except Exception:
                 logging.exception(
                     "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable"
+                )
+                if is_exit:
+                    meta = {
+                        **meta,
+                        "paper_pos_action": "EXIT_POSITION_CLOSE_FAILED",
+                        "position_close_succeeded": False,
+                    }
+
+        if (
+            is_exit
+            and meta.get("paper_pos_action")
+                == "EXIT_PENDING_CANONICAL_PERSISTENCE"
+        ):
+            if not evidence_persisted:
+                meta = {
+                    **meta,
+                    "paper_pos_action": "EXIT_POSITION_CLOSE_FAILED",
+                    "position_close_succeeded": False,
+                }
+            else:
+                meta = {
+                    **meta,
+                    "paper_pos_action": "EXIT_CLOSED",
+                    "position_close_succeeded": True,
+                }
+                emit_strategy_event(
+                    event_type="POSITION_CLOSED",
+                    decision=side,
+                    reason=str(reason),
+                    price=float(price),
+                    candle_open_time=candle_open_time,
+                    info={
+                        "position_id": int(meta["paper_pos_id"]),
+                        "simulated_order_id": int(inserted),
+                        "symbol": cfg_used.symbol,
+                        "interval": cfg_used.interval,
+                        "strategy": STRATEGY_NAME,
+                        "exit_reason": str(reason),
+                        "exit_price": float(price),
+                        "quantity": float(qty_btc),
+                    },
                 )
 
         emit_strategy_event(
