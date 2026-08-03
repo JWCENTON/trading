@@ -61,6 +61,12 @@ from common.supertrend_candle_checkpoint import (
     interval_duration,
     process_resume_workset,
 )
+from common.supertrend_incremental_indicators import (
+    IndicatorParameters,
+    IndicatorState,
+    calculate_full_history,
+    calculate_incremental,
+)
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.simulated_execution_evidence import (
     create_simulated_order_cursor,
@@ -104,6 +110,15 @@ _exchange_client = None
 INDICATOR_PROGRESS_INTERVAL_S = 90.0
 INDICATOR_PROGRESS_ROW_STEP = 5000
 IndicatorProgressCallback = Callable[[str, int, int], None]
+SUPERTREND_READY_CADENCE_SECONDS_V1 = float(
+    os.environ.get("SUPERTREND_READY_CADENCE_SECONDS_V1", "60")
+)
+SUPERTREND_CATCHUP_CADENCE_SECONDS_V1 = float(
+    os.environ.get("SUPERTREND_CATCHUP_CADENCE_SECONDS_V1", "5")
+)
+SUPERTREND_ERROR_CADENCE_SECONDS_V1 = float(
+    os.environ.get("SUPERTREND_ERROR_CADENCE_SECONDS_V1", "60")
+)
 
 
 def get_exchange_client():
@@ -1758,12 +1773,203 @@ def save_klines(rows):
     cur.close()
     conn.close()
 
+def _indicator_parameters():
+    return IndicatorParameters(
+        ema_period=EMA_PERIOD,
+        rsi_period=RSI_PERIOD,
+        atr_period=ATR_PERIOD,
+        supertrend_multiplier=ST_MULTIPLIER,
+    )
+
+
+def _load_incremental_indicator_input(parameters):
+    identity = _checkpoint_identity()
+    state = None
+    checkpoint_before = None
+    with read_only_db_conn(get_db_conn) as read_conn:
+        cur = read_conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT last_calculated_candle_open_time,last_close,ema_value,
+                       atr_value,final_upper_band,final_lower_band,
+                       supertrend_direction,parameter_fingerprint
+                FROM public.supertrend_indicator_state_v1
+                WHERE environment=%s AND deployment_id=%s AND symbol=%s
+                  AND "interval"=%s AND strategy='SUPERTREND'
+                """,
+                (
+                    identity.environment, identity.deployment_id,
+                    identity.symbol, identity.interval,
+                ),
+            )
+            state_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT last_processed_candle_open_time
+                FROM public.supertrend_candle_checkpoint_v1
+                WHERE environment=%s AND deployment_id=%s AND symbol=%s
+                  AND "interval"=%s AND strategy='SUPERTREND'
+                """,
+                (
+                    identity.environment, identity.deployment_id,
+                    identity.symbol, identity.interval,
+                ),
+            )
+            checkpoint_row = cur.fetchone()
+            checkpoint_before = checkpoint_row[0] if checkpoint_row else None
+        finally:
+            cur.close()
+
+        if state_row is not None:
+            candidate = IndicatorState(*state_row)
+            if candidate.parameter_fingerprint == parameters.fingerprint:
+                candidate.validate(parameters)
+                state = candidate
+            else:
+                logging.warning(
+                    "SUPERTREND indicator parameter fingerprint changed; "
+                    "performing one full bootstrap old=%s new=%s",
+                    candidate.parameter_fingerprint,
+                    parameters.fingerprint,
+                )
+
+        if state is None:
+            source = pd.read_sql_query(
+                """
+                SELECT id,open_time,open,high,low,close
+                FROM candles
+                WHERE symbol=%s AND interval=%s
+                ORDER BY open_time
+                """,
+                read_conn,
+                params=(SYMBOL, INTERVAL),
+            )
+            return state, source, checkpoint_before
+
+        source = pd.read_sql_query(
+            """
+            WITH warm AS (
+              SELECT id,open_time,open,high,low,close,'WARM'::text AS input_kind
+              FROM candles
+              WHERE symbol=%s AND interval=%s AND open_time<=%s
+              ORDER BY open_time DESC
+              LIMIT %s
+            ), incremental AS (
+              SELECT id,open_time,open,high,low,close,'NEW'::text AS input_kind
+              FROM candles
+              WHERE symbol=%s AND interval=%s AND open_time>%s
+            )
+            SELECT * FROM (
+              SELECT * FROM warm
+              UNION ALL
+              SELECT * FROM incremental
+            ) AS indicator_input
+            ORDER BY open_time
+            """,
+            read_conn,
+            params=(
+                SYMBOL, INTERVAL, state.last_calculated_candle_open_time,
+                RSI_PERIOD, SYMBOL, INTERVAL,
+                state.last_calculated_candle_open_time,
+            ),
+        )
+        if (
+            not source.empty
+            and (source["input_kind"] == "WARM").sum() < RSI_PERIOD
+            and (source["input_kind"] == "NEW").any()
+        ):
+            logging.warning(
+                "SUPERTREND incremental RSI warm state incomplete; "
+                "performing one full bootstrap"
+            )
+            state = None
+            source = pd.read_sql_query(
+                """
+                SELECT id,open_time,open,high,low,close
+                FROM candles
+                WHERE symbol=%s AND interval=%s
+                ORDER BY open_time
+                """,
+                read_conn,
+                params=(SYMBOL, INTERVAL),
+            )
+        return state, source, checkpoint_before
+
+
+def _indicator_rows_to_persist(calculation, checkpoint_before):
+    rows = calculation.rows
+    if calculation.mode == "FULL_BOOTSTRAP":
+        if checkpoint_before is None:
+            return rows.tail(50)
+        floor = _as_aware_utc(checkpoint_before) - interval_duration(INTERVAL)
+        return rows[rows["open_time"] >= floor]
+    return rows
+
+
+def _persist_indicator_calculation(calculation, checkpoint_before):
+    identity = _checkpoint_identity()
+    selected = _indicator_rows_to_persist(calculation, checkpoint_before)
+    update_sql = """
+        UPDATE candles
+        SET ema_21=%s,rsi_14=%s,atr_14=%s,supertrend=%s,
+            supertrend_direction=%s
+        WHERE id=%s
+    """
+    update_rows = [
+        (
+            float(row["ema_21"]) if pd.notna(row["ema_21"]) else None,
+            float(row["rsi_14"]) if pd.notna(row["rsi_14"]) else None,
+            float(row["atr_14"]) if pd.notna(row["atr_14"]) else None,
+            float(row["supertrend"]) if pd.notna(row["supertrend"]) else None,
+            int(row["supertrend_direction"])
+            if pd.notna(row["supertrend_direction"]) else None,
+            int(row["id"]),
+        )
+        for _, row in selected.iterrows()
+    ]
+    state = calculation.state
+    with db_write_conn(get_db_conn) as (conn, cur):
+        if update_rows:
+            cur.executemany(update_sql, update_rows)
+        cur.execute(
+            """
+            INSERT INTO public.supertrend_indicator_state_v1(
+              environment,deployment_id,symbol,"interval",strategy,
+              last_calculated_candle_open_time,last_close,ema_value,atr_value,
+              final_upper_band,final_lower_band,supertrend_direction,
+              parameter_fingerprint
+            ) VALUES(%s,%s,%s,%s,'SUPERTREND',%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT(environment,deployment_id,symbol,"interval",strategy)
+            DO UPDATE SET
+              last_calculated_candle_open_time=EXCLUDED.last_calculated_candle_open_time,
+              last_close=EXCLUDED.last_close,
+              ema_value=EXCLUDED.ema_value,
+              atr_value=EXCLUDED.atr_value,
+              final_upper_band=EXCLUDED.final_upper_band,
+              final_lower_band=EXCLUDED.final_lower_band,
+              supertrend_direction=EXCLUDED.supertrend_direction,
+              parameter_fingerprint=EXCLUDED.parameter_fingerprint,
+              updated_at=clock_timestamp()
+            WHERE supertrend_indicator_state_v1.last_calculated_candle_open_time
+                  <= EXCLUDED.last_calculated_candle_open_time
+            """,
+            (
+                identity.environment, identity.deployment_id, identity.symbol,
+                identity.interval, state.last_calculated_candle_open_time,
+                state.last_close, state.ema_value, state.atr_value,
+                state.final_upper_band, state.final_lower_band,
+                state.supertrend_direction, state.parameter_fingerprint,
+            ),
+        )
+        conn.commit()
+    return len(update_rows)
+
+
 def update_indicators(
     progress_callback: IndicatorProgressCallback | None = None,
 ):
-    """
-    Computes EMA, RSI, ATR and SuperTrend over full series, updates last ~50 candles.
-    """
+    """Persist exact SUPERTREND evidence using a restart-safe incremental state."""
     progress_failed = False
 
     def report_progress(phase: str, processed_rows: int, total_rows: int):
@@ -1776,129 +1982,64 @@ def update_indicators(
             progress_failed = True
             logging.exception("SUPERTREND indicator progress callback failed")
 
-    with read_only_db_conn(get_db_conn) as read_conn:
-        df = pd.read_sql_query(
-            """
-            SELECT id, open_time, open, high, low, close
-            FROM candles
-            WHERE symbol = %s AND interval = %s
-            ORDER BY open_time
-            """,
-            read_conn,
-            params=(SYMBOL, INTERVAL),
-        )
-    total_rows = len(df)
-    report_progress("LOAD_HISTORY", total_rows, total_rows)
+    parameters = _indicator_parameters()
+    state, source, checkpoint_before = _load_incremental_indicator_input(parameters)
+    total_input_rows = len(source)
+    report_progress("LOAD_HISTORY", total_input_rows, total_input_rows)
 
     cycle_target_candle_open_time = None
-    if total_rows >= 2:
-        target_value = df.iloc[-2]["open_time"]
+    if total_input_rows >= 2:
+        target_value = source.iloc[-2]["open_time"]
         if hasattr(target_value, "to_pydatetime"):
             target_value = target_value.to_pydatetime()
         cycle_target_candle_open_time = _as_aware_utc(target_value)
 
-    if df.empty or len(df) < max(EMA_PERIOD, RSI_PERIOD, ATR_PERIOD) + 5:
-        return cycle_target_candle_open_time
-
-    close = df["close"].astype(float)
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-
-    # EMA
-    df["ema_21"] = close.ewm(span=EMA_PERIOD, adjust=False).mean()
-    report_progress("EMA", total_rows, total_rows)
-
-    # RSI
-    delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
-    roll_up = gain.rolling(window=RSI_PERIOD).mean()
-    roll_down = loss.rolling(window=RSI_PERIOD).mean()
-    rs = roll_up / roll_down
-    df["rsi_14"] = 100.0 - (100.0 / (1.0 + rs))
-    report_progress("RSI", total_rows, total_rows)
-
-    # ATR (EWMA of TR)
-    prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df["atr_14"] = tr.ewm(span=ATR_PERIOD, adjust=False).mean()
-    report_progress("ATR", total_rows, total_rows)
-
-    # SuperTrend
-    hl2 = (high + low) / 2.0
-    basic_ub = hl2 + ST_MULTIPLIER * df["atr_14"]
-    basic_lb = hl2 - ST_MULTIPLIER * df["atr_14"]
-
-    final_ub = pd.Series(index=df.index, dtype=float)
-    final_lb = pd.Series(index=df.index, dtype=float)
-    st_dir = pd.Series(index=df.index, dtype=int)
-    st_val = pd.Series(index=df.index, dtype=float)
-
-    final_ub.iloc[0] = float(basic_ub.iloc[0])
-    final_lb.iloc[0] = float(basic_lb.iloc[0])
-    st_dir.iloc[0] = 1
-    st_val.iloc[0] = float(final_lb.iloc[0])
-
-    for i in range(1, len(df)):
-        c_prev = float(close.iloc[i - 1])
-
-        bu = float(basic_ub.iloc[i])
-        bl = float(basic_lb.iloc[i])
-
-        fu_prev = float(final_ub.iloc[i - 1])
-        fl_prev = float(final_lb.iloc[i - 1])
-
-        final_ub.iloc[i] = bu if (bu < fu_prev) or (c_prev > fu_prev) else fu_prev
-        final_lb.iloc[i] = bl if (bl > fl_prev) or (c_prev < fl_prev) else fl_prev
-
-        c_now = float(close.iloc[i])
-        if c_now > float(final_ub.iloc[i - 1]):
-            st_dir.iloc[i] = 1
-        elif c_now < float(final_lb.iloc[i - 1]):
-            st_dir.iloc[i] = -1
-        else:
-            st_dir.iloc[i] = int(st_dir.iloc[i - 1])
-
-        st_val.iloc[i] = float(final_lb.iloc[i]) if int(st_dir.iloc[i]) == 1 else float(final_ub.iloc[i])
-        if i % INDICATOR_PROGRESS_ROW_STEP == 0:
-            report_progress("SUPERTREND_LOOP", i, total_rows)
-
-    report_progress("SUPERTREND_LOOP", total_rows, total_rows)
-
-    df["supertrend_direction"] = st_dir
-    df["supertrend"] = st_val
-
-    last = df.tail(50)
-
-    sql = """
-        UPDATE candles
-        SET ema_21 = %s,
-            rsi_14 = %s,
-            atr_14 = %s,
-            supertrend = %s,
-            supertrend_direction = %s
-        WHERE id = %s;
-    """
-    data = [
-        (
-            float(row["ema_21"]) if pd.notna(row["ema_21"]) else None,
-            float(row["rsi_14"]) if pd.notna(row["rsi_14"]) else None,
-            float(row["atr_14"]) if pd.notna(row["atr_14"]) else None,
-            float(row["supertrend"]) if pd.notna(row["supertrend"]) else None,
-            int(row["supertrend_direction"]) if pd.notna(row["supertrend_direction"]) else None,
-            int(row["id"]),
+    if state is None:
+        if source.empty or len(source) < max(EMA_PERIOD, RSI_PERIOD, ATR_PERIOD) + 5:
+            return cycle_target_candle_open_time
+        calculation = calculate_full_history(
+            source,
+            parameters,
+            progress_callback=report_progress,
+            progress_row_step=INDICATOR_PROGRESS_ROW_STEP,
         )
-        for _, row in last.iterrows()
-    ]
-    report_progress("PERSIST_LATEST", 0, len(data))
-    with db_write_conn(get_db_conn) as (conn, cur):
-        cur.executemany(sql, data)
-        conn.commit()
-        report_progress("PERSIST_LATEST", len(data), len(data))
+    else:
+        warm = source[source["input_kind"] == "WARM"]
+        new_rows = source[source["input_kind"] == "NEW"].drop(
+            columns=["input_kind"]
+        )
+        if new_rows.empty:
+            logging.info(
+                "SUPERTREND_INDICATOR_RUNTIME|mode=INCREMENTAL_NOOP|"
+                "history_rows=0|warm_rows=%d|incremental_rows=0|"
+                "high_water_before=%s|high_water_after=%s",
+                len(warm), state.last_calculated_candle_open_time,
+                state.last_calculated_candle_open_time,
+            )
+            return cycle_target_candle_open_time
+        calculation = calculate_incremental(
+            new_rows,
+            warm["close"],
+            state,
+            parameters,
+            progress_callback=report_progress,
+            progress_row_step=INDICATOR_PROGRESS_ROW_STEP,
+        )
 
+    selected_count = len(_indicator_rows_to_persist(calculation, checkpoint_before))
+    report_progress("PERSIST_LATEST", 0, selected_count)
+    persisted_count = _persist_indicator_calculation(calculation, checkpoint_before)
+    report_progress("PERSIST_LATEST", persisted_count, selected_count)
+    logging.info(
+        "SUPERTREND_INDICATOR_RUNTIME|mode=%s|history_rows=%d|warm_rows=%d|"
+        "incremental_rows=%d|persisted_rows=%d|high_water_after=%s",
+        calculation.mode,
+        calculation.history_rows_processed,
+        calculation.warm_rows_loaded,
+        calculation.incremental_rows_processed,
+        persisted_count,
+        calculation.state.last_calculated_candle_open_time,
+    )
     return cycle_target_candle_open_time
 
 
@@ -3254,10 +3395,28 @@ def run_strategy(latest, prev, *, freshness_context=None):
 
 
 LAST_PROCESSED_OPEN_TIME = None  # compatibility telemetry; never a dedupe authority
+LAST_CYCLE_FRESHNESS_STATE = FreshnessState.UNKNOWN
+LAST_CYCLE_HAD_ERROR = False
+
+
+def cycle_cadence_seconds(state, *, had_error=False):
+    """Return the explicit V1 cadence; only healthy catch-up uses the short path."""
+    if had_error:
+        value = SUPERTREND_ERROR_CADENCE_SECONDS_V1
+    elif state is FreshnessState.CATCHING_UP:
+        value = SUPERTREND_CATCHUP_CADENCE_SECONDS_V1
+    else:
+        value = SUPERTREND_READY_CADENCE_SECONDS_V1
+    if not 1.0 <= float(value) <= 3600.0:
+        raise RuntimeError("SUPERTREND_CADENCE_V1_OUT_OF_RANGE")
+    return float(value)
+
+
 # =========================
 # Main Loop
 # =========================
 def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
+    global LAST_CYCLE_FRESHNESS_STATE
     # --- Exchange fills ingest (LIVE ONLY) ---
     # co 60s: pobierz exchange trades i zasil fills table + wyceń fee w USDC przez BNBUSDC candles
     if exchange_mytrades_enabled() and (time.time() - last_ingest_ts >= 60):
@@ -3288,12 +3447,15 @@ def run_loop_iteration(runtime_client, last_ingest_ts, progress_callback=None):
     cycle_target_candle_open_time = update_indicators(
         progress_callback=progress_callback,
     )
-    process_supertrend_candle_resume(cycle_target_candle_open_time)
+    resume_result = process_supertrend_candle_resume(cycle_target_candle_open_time)
+    if resume_result is not None:
+        LAST_CYCLE_FRESHNESS_STATE = resume_result.assessment.state
     return last_ingest_ts
 
 
 def run_loop_cycle(runtime_client, last_ingest_ts):
     """Run one real worker iteration and record progress only at its boundaries."""
+    global LAST_CYCLE_FRESHNESS_STATE, LAST_CYCLE_HAD_ERROR
     loop_start = time.perf_counter()
     cycle_started_at = datetime.now(timezone.utc).isoformat()
     lifecycle_heartbeat("RUNNING", cycle_started_at=cycle_started_at)
@@ -3301,6 +3463,7 @@ def run_loop_cycle(runtime_client, last_ingest_ts):
         cycle_started_at=cycle_started_at,
     )
     error = None
+    LAST_CYCLE_HAD_ERROR = False
     try:
         last_ingest_ts = run_loop_iteration(
             runtime_client,
@@ -3309,6 +3472,8 @@ def run_loop_cycle(runtime_client, last_ingest_ts):
         )
     except Exception as exc:
         error = exc
+        LAST_CYCLE_HAD_ERROR = True
+        LAST_CYCLE_FRESHNESS_STATE = FreshnessState.UNKNOWN
         logging.exception("SUPERTREND loop error")
         emit_strategy_event(
             event_type="ERROR",
@@ -3345,7 +3510,16 @@ def main_loop():
 
     while True:
         last_ingest_ts = run_loop_cycle(runtime_client, last_ingest_ts)
-        time.sleep(60)
+        sleep_seconds = cycle_cadence_seconds(
+            LAST_CYCLE_FRESHNESS_STATE,
+            had_error=LAST_CYCLE_HAD_ERROR,
+        )
+        logging.info(
+            "SUPERTREND_CADENCE_V1|state=%s|sleep_seconds=%.3f",
+            LAST_CYCLE_FRESHNESS_STATE.value,
+            sleep_seconds,
+        )
+        time.sleep(sleep_seconds)
 
 if __name__ == "__main__":
     logging.info(

@@ -35,6 +35,13 @@ class RecordingCursor:
         if self.execute_error:
             raise self.execute_error
 
+    def execute(self, sql, _params=None):
+        self.events.append(f"{self.role}_state_execute")
+        self.state_sql = sql
+
+    def fetchone(self):
+        return None
+
     def close(self):
         self.events.append(f"{self.role}_cursor_close")
         if self.close_error:
@@ -159,6 +166,8 @@ def _load_strategy(monkeypatch, strategy_dir):
         "DAILY_MAX_LOSS_PCT": "0",
         "DISABLE_HOURS": "",
         "ADAPTIVE_EARLY_CUT_SHADOW_ENABLED": "0",
+        "DEPLOYMENT_ID": "local-paper",
+        "WALTRADE_DEPLOYMENT_ID": "local-paper",
     }
     for key, value in safe_env.items():
         monkeypatch.setenv(key, value)
@@ -686,7 +695,7 @@ def test_all_strategy_indicator_paths_close_read_before_calculate_and_write(
         for event in events
         if not event.endswith("_cursor_close")
     ]
-    assert core == [
+    expected_core = [
         "read_open",
         "read_set_readonly",
         "read_query",
@@ -698,6 +707,10 @@ def test_all_strategy_indicator_paths_close_read_before_calculate_and_write(
         "writer_commit",
         "writer_close",
     ]
+    if strategy_dir == "bot_supertrend":
+        expected_core[2:2] = ["read_state_execute", "read_state_execute"]
+        expected_core.insert(expected_core.index("writer_commit"), "writer_state_execute")
+    assert core == expected_core
     assert opened == [read_conn, writer_conn]
     assert read_conn.commits == 0
     assert writer_conn.commits == 1

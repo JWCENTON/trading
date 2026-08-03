@@ -9,6 +9,7 @@ import pytest
 @pytest.fixture
 def module(monkeypatch):
     monkeypatch.setenv("TRADING_MODE", "PAPER")
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
     return importlib.import_module("bot_supertrend.main")
 
 
@@ -38,6 +39,12 @@ class _Cursor:
     def executemany(self, sql, rows):
         self.sql = sql
         self.rows = list(rows)
+
+    def execute(self, sql, _params=None):
+        self.state_sql = sql
+
+    def fetchone(self):
+        return None
 
     def close(self):
         pass

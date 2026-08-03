@@ -33,6 +33,12 @@ def run_real_outer_cycle(
             if writer_failure:
                 raise RuntimeError("writer failed")
 
+        def execute(self, _sql, _params=None):
+            operations.append(f"{self.role}_state_execute")
+
+        def fetchone(self):
+            return None
+
         def close(self):
             operations.append(f"{self.role}_cursor_close")
 

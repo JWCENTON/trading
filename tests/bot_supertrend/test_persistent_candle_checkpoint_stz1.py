@@ -309,6 +309,26 @@ def test_loop_passes_snapshot_frozen_target_to_resume(supertrend, monkeypatch):
     assert resume_targets == [frozen_target]
 
 
+def test_catching_up_uses_short_bounded_cadence_and_errors_back_off(
+    supertrend, monkeypatch,
+):
+    monkeypatch.setattr(supertrend, "SUPERTREND_READY_CADENCE_SECONDS_V1", 60.0)
+    monkeypatch.setattr(supertrend, "SUPERTREND_CATCHUP_CADENCE_SECONDS_V1", 5.0)
+    monkeypatch.setattr(supertrend, "SUPERTREND_ERROR_CADENCE_SECONDS_V1", 60.0)
+    assert supertrend.cycle_cadence_seconds(FreshnessState.READY) == 60.0
+    assert supertrend.cycle_cadence_seconds(FreshnessState.CATCHING_UP) == 5.0
+    assert supertrend.cycle_cadence_seconds(
+        FreshnessState.CATCHING_UP, had_error=True,
+    ) == 60.0
+    assert supertrend.cycle_cadence_seconds(FreshnessState.STALLED) == 60.0
+
+
+def test_invalid_cadence_fails_closed(supertrend, monkeypatch):
+    monkeypatch.setattr(supertrend, "SUPERTREND_CATCHUP_CADENCE_SECONDS_V1", 0.0)
+    with pytest.raises(RuntimeError, match="SUPERTREND_CADENCE_V1_OUT_OF_RANGE"):
+        supertrend.cycle_cadence_seconds(FreshnessState.CATCHING_UP)
+
+
 def test_five_minute_ready_regression():
     store = MemoryStore(T0)
     t5 = T0 + timedelta(minutes=5)
