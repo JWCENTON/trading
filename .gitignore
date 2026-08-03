@@ -217,6 +217,10 @@ postgres-data/
 **/postgres-data/
 db_live_data/
 
+# Local task evidence and database backup archives
+/audit_artifacts/
+/db_backups/
+
 # Backups / dumps
 backup/
 backups/
