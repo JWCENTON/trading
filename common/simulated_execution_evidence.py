@@ -16,6 +16,8 @@ from common.contract_adoption import (
     require_runtime_git_revision,
 )
 from common.financial_truth_identity import IDENTITY_VERSION
+from common.financial_truth_repository import ExecutionEvidenceContext
+from common.financial_truth_writer import FinancialTruthReconciler
 from common.inventory_lifecycle import apply_inventory_lifecycle_mutation
 from common.inventory_quantity import (
     InstrumentExecutionLimits,
@@ -722,10 +724,14 @@ def record_simulated_fill_evidence(
     position_id: int,
     environment: str,
     deployment_id: str,
+    exit_reason: str | None = None,
+    require_terminal_close: bool = False,
 ) -> bool:
-    """Persist additive evidence after an existing PAPER lifecycle action."""
+    """Atomically persist one PAPER fill and its inventory lifecycle mutation."""
     if str(environment).lower() != "paper":
         return False
+    if require_terminal_close and exit_reason is None:
+        raise ValueError("TERMINAL_CLOSE_EXIT_REASON_REQUIRED")
     conn = connection_factory()
     try:
         with conn:
@@ -733,7 +739,7 @@ def record_simulated_fill_evidence(
                 cur.execute(
                     """
                     SELECT symbol,side,price,quantity_btc,is_exit,created_at,
-                           "interval",strategy
+                           "interval",strategy,reason
                     FROM simulated_orders WHERE id=%s
                     """,
                     (int(simulated_order_id),),
@@ -743,7 +749,7 @@ def record_simulated_fill_evidence(
                     return False
                 (
                     symbol, side, price, qty, is_exit, execution_at,
-                    interval, strategy,
+                    interval, strategy, order_reason,
                 ) = order
                 cur.execute(
                     """
@@ -981,7 +987,7 @@ def record_simulated_fill_evidence(
                         Decimal(str(step)), Decimal(str(min_qty)),
                         Decimal(str(min_notional)), fill_price, True,
                     )
-                apply_inventory_lifecycle_mutation(
+                mutation = apply_inventory_lifecycle_mutation(
                     cur,
                     position_id=int(position_id),
                     order_id=(
@@ -996,7 +1002,35 @@ def record_simulated_fill_evidence(
                     exit_price=latest_exit_price,
                     exit_time=latest_exit_time,
                     execution_source="PAPER_SIMULATED",
+                    exit_reason=(
+                        str(exit_reason or order_reason)
+                        if is_exit else None
+                    ),
                 )
+                if (
+                    require_terminal_close
+                    and (not is_exit or mutation.position_status != "CLOSED")
+                ):
+                    raise RuntimeError(
+                        "SIMULATED_EXIT_TERMINAL_CLOSE_NOT_COMMITTED"
+                    )
+                if require_terminal_close:
+                    FinancialTruthReconciler(
+                        connection_factory
+                    ).reconcile_in_transaction(
+                        int(position_id),
+                        connection=conn,
+                        cursor=cur,
+                        evidence_context=ExecutionEvidenceContext(
+                            environment=str(environment),
+                            exchange=None,
+                            deployment_id=str(deployment_id),
+                        ),
+                        invocation_identity=(
+                            "PAPER_SIMULATED_EXIT:"
+                            + str(int(simulated_order_id))
+                        ),
+                    )
                 return fill_inserted
     finally:
         conn.close()

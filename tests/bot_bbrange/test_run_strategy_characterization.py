@@ -436,9 +436,16 @@ def exit_evaluation(module):
     )
 
 
-def test_paper_close_exception_fails_closed(bbrange, monkeypatch):
+def test_paper_exit_fill_persistence_exception_fails_closed(
+    bbrange, monkeypatch, caplog
+):
     events = []
-    monkeypatch.setattr(bbrange, "insert_simulated_order", lambda **_kwargs: 501)
+    state = {"order": False, "position": "OPEN"}
+
+    def insert(**_kwargs):
+        state["order"] = True
+        return 501
+
     monkeypatch.setattr(
         bbrange, "get_open_position",
         lambda: (77, "LONG", 0.1, 100.0, candle()[0]),
@@ -446,9 +453,16 @@ def test_paper_close_exception_fails_closed(bbrange, monkeypatch):
     monkeypatch.setattr(
         bbrange, "close_position",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("db unavailable")
+            AssertionError("legacy close must not own PAPER exit")
         ),
     )
+    monkeypatch.setattr(
+        bbrange, "record_simulated_fill_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fill persistence unavailable")
+        ),
+    )
+    monkeypatch.setattr(bbrange, "insert_simulated_order", insert)
     monkeypatch.setattr(
         bbrange, "emit_strategy_event",
         lambda **event: events.append(event),
@@ -470,6 +484,8 @@ def test_paper_close_exception_fails_closed(bbrange, monkeypatch):
     assert result["position_close_succeeded"] is False
     assert result["blocked_reason"] == "POSITION_CLOSE_FAILED"
     assert decision.action != "EXIT"
+    assert state == {"order": True, "position": "OPEN"}
+    assert "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable" not in caplog.text
     assert not any(
         event["event_type"] == "PAPER_POSITION_CLOSED" for event in events
     )
@@ -478,30 +494,53 @@ def test_paper_close_exception_fails_closed(bbrange, monkeypatch):
     assert failure["info"]["simulated_order_id"] == 501
 
 
-@pytest.mark.parametrize("closed_ok", [True, False])
-def test_paper_close_event_type_matches_mutation(
-    bbrange, monkeypatch, closed_ok
+def test_paper_exit_canonical_persistence_owns_close(
+    bbrange, monkeypatch, caplog
 ):
     events = []
-    monkeypatch.setattr(bbrange, "insert_simulated_order", lambda **_kwargs: 501)
+    operations = []
+    state = {
+        "exit_fill": False,
+        "position": "OPEN",
+        "lifecycle": False,
+        "ft_outcome": "UNRESOLVED",
+    }
+
+    def insert(**_kwargs):
+        operations.append("simulated_exit_order")
+        return 501
+
+    monkeypatch.setattr(bbrange, "insert_simulated_order", insert)
     monkeypatch.setattr(
         bbrange, "get_open_position",
         lambda: (77, "LONG", 0.1, 100.0, candle()[0]),
     )
-
-    def close(*_args, **_kwargs):
-        if closed_ok:
-            bbrange.emit_strategy_event(
-                event_type="POSITION_CLOSED", decision=None,
-                reason="test-close", price=101.0,
-                candle_open_time=candle()[0], info={"position_id": 77},
-            )
-        return closed_ok
-
-    monkeypatch.setattr(bbrange, "close_position", close)
     monkeypatch.setattr(
-        bbrange, "record_simulated_fill_evidence",
-        lambda *_args, **_kwargs: True,
+        bbrange, "close_position",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy close must not own PAPER exit")
+        ),
+    )
+
+    def persist(*_args, **kwargs):
+        operations.extend([
+            "simulated_exit_fill", "inventory_lifecycle", "ft_outcome",
+            "position_closed",
+        ])
+        assert kwargs["position_id"] == 77
+        assert kwargs["simulated_order_id"] == 501
+        assert kwargs["exit_reason"] == "test-close"
+        assert kwargs["require_terminal_close"] is True
+        state.update({
+            "exit_fill": True,
+            "position": "CLOSED",
+            "lifecycle": True,
+            "ft_outcome": "RESOLVED",
+        })
+        return True
+
+    monkeypatch.setattr(
+        bbrange, "record_simulated_fill_evidence", persist,
     )
     monkeypatch.setattr(bbrange, "get_exchange_client", lambda: object())
     monkeypatch.setattr(
@@ -515,6 +554,16 @@ def test_paper_close_event_type_matches_mutation(
         rsi_14=50.0, ema_21=100.0,
     )
 
+    assert operations == [
+        "simulated_exit_order", "simulated_exit_fill",
+        "inventory_lifecycle", "ft_outcome", "position_closed",
+    ]
+    assert state == {
+        "exit_fill": True,
+        "position": "CLOSED",
+        "lifecycle": True,
+        "ft_outcome": "RESOLVED",
+    }
     closed = [
         event for event in events if "CLOSED" in event["event_type"]
     ]
@@ -522,10 +571,11 @@ def test_paper_close_event_type_matches_mutation(
         event for event in events
         if event["event_type"] == "POSITION_CLOSE_FAILED"
     ]
-    assert len(closed) == (1 if closed_ok else 0)
-    assert len(failed) == (0 if closed_ok else 1)
-    assert result["ledger_ok"] is closed_ok
-    assert result["position_close_succeeded"] is closed_ok
+    assert len(closed) == 1
+    assert failed == []
+    assert result["ledger_ok"] is True
+    assert result["position_close_succeeded"] is True
+    assert "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable" not in caplog.text
 
 
 @pytest.mark.parametrize("position_id", [44, None])

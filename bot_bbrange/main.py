@@ -904,49 +904,15 @@ def _execute_and_record_after_paper_exit_preflight(
                     )
                 else:
                     evidence_position_id = int(paper_position_id)
-                closed_ok = close_position(
-                    price, reason, candle_open_time,
-                    expected_position_id=evidence_position_id,
-                )
-                if not closed_ok:
-                    emit_strategy_event(
-                        event_type="POSITION_CLOSE_FAILED",
-                        decision=side,
-                        reason="POSITION_CLOSE_FAILED",
-                        price=price,
-                        candle_open_time=candle_open_time,
-                        info={
-                            "position_id": evidence_position_id,
-                            "simulated_order_id": inserted,
-                            "symbol": cfg_used.symbol,
-                            "interval": cfg_used.interval,
-                            "strategy": STRATEGY_NAME,
-                            "qty_btc": float(qty_btc),
-                            "exit_reason": reason,
-                        },
-                    )
-                    logging.error(
-                        "POSITION_CLOSE_FAILED strategy=%s position_id=%s "
-                        "simulated_order_id=%s exit_reason=%s symbol=%s interval=%s",
-                        STRATEGY_NAME, evidence_position_id, inserted, reason,
-                        cfg_used.symbol, cfg_used.interval,
-                    )
-                    return {
-                        "ledger_ok": False,
-                        "live_attempted": False,
-                        "live_ok": False,
-                        "blocked_reason": "POSITION_CLOSE_FAILED",
-                        "client_order_id": None,
-                        "resp": None,
-                        "position_close_succeeded": False,
-                    }
+                if evidence_position_id is None:
+                    raise RuntimeError("PAPER_EXIT_POSITION_NOT_FOUND")
             if (
                 evidence_position_id
                 and isinstance(inserted, int)
                 and not isinstance(inserted, bool)
             ):
                 try:
-                    record_simulated_fill_evidence(
+                    evidence_persisted = record_simulated_fill_evidence(
                         get_db_conn,
                         client=get_exchange_client(),
                         simulated_order_id=int(inserted),
@@ -958,10 +924,36 @@ def _execute_and_record_after_paper_exit_preflight(
                                 "WALTRADE_DEPLOYMENT_ID", "local-paper"
                             ),
                         ),
+                        exit_reason=str(reason) if is_exit else None,
+                        require_terminal_close=bool(is_exit),
                     )
                 except Exception:
+                    if is_exit:
+                        raise
                     logging.exception(
                         "FINANCIAL_TRUTH_EVIDENCE|paper persistence unavailable"
+                    )
+                if is_exit:
+                    if not evidence_persisted:
+                        raise RuntimeError(
+                            "PAPER_EXIT_EVIDENCE_NOT_PERSISTED"
+                        )
+                    emit_strategy_event(
+                        event_type="POSITION_CLOSED",
+                        decision=side,
+                        reason=str(reason),
+                        price=float(price),
+                        candle_open_time=candle_open_time,
+                        info={
+                            "position_id": int(evidence_position_id),
+                            "simulated_order_id": int(inserted),
+                            "symbol": cfg_used.symbol,
+                            "interval": cfg_used.interval,
+                            "strategy": STRATEGY_NAME,
+                            "exit_reason": str(reason),
+                            "exit_price": float(price),
+                            "quantity": float(qty_btc),
+                        },
                     )
         except Exception as e:
             logging.exception("BBRANGE PAPER positions lifecycle failed is_exit=%s", bool(is_exit))

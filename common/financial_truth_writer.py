@@ -56,6 +56,56 @@ class FinancialTruthReconciler:
         self.connection_factory = connection_factory
         self.sources = FinancialTruthSourceRepository(connection_factory)
 
+    def reconcile_in_transaction(
+        self,
+        position_id: int,
+        *,
+        connection,
+        cursor,
+        evidence_context: ExecutionEvidenceContext,
+        invocation_identity: str,
+    ):
+        """Write COMPLETE PAPER truth inside the caller-owned transaction."""
+        if not isinstance(evidence_context, ExecutionEvidenceContext):
+            raise TypeError("EXECUTION_EVIDENCE_CONTEXT_REQUIRED")
+        if evidence_context.environment != "paper":
+            raise RuntimeError("RUNTIME_FINANCIAL_TRUTH_PAPER_ONLY")
+        position, fills, source_issue = self.sources.read_position_and_fills(
+            position_id,
+            context=evidence_context,
+            connection=connection,
+        )
+        if source_issue is not None:
+            raise RuntimeError(f"FINANCIAL_TRUTH_SOURCE_{source_issue.value}")
+        calculation = calculate_financial_truth(
+            position_id=position[0],
+            position_status=position[1],
+            fills=fills,
+            estimated_gross_pnl=position[2],
+            estimated_fees_usdc=position[3],
+            estimated_net_pnl=position[4],
+            position_symbol=position[5] if len(position) > 5 else None,
+        )
+        if calculation.financial_truth_status != "COMPLETE":
+            raise RuntimeError(
+                "FINANCIAL_TRUTH_NOT_COMPLETE:"
+                + str(
+                    calculation.failure_detail
+                    or calculation.failure_code
+                    or calculation.financial_truth_status
+                )
+            )
+        CanonicalFinancialTruthWriteRepository.lock_position(
+            cursor, position_id
+        )
+        written = CanonicalFinancialTruthWriteRepository.write(
+            cursor,
+            calculation,
+            invocation_type="RUNTIME_PAPER_EXIT",
+            invocation_identity=invocation_identity,
+        )
+        return {"calculation": calculation, "written": written}
+
     def reconcile(
         self,
         position_id: int,
