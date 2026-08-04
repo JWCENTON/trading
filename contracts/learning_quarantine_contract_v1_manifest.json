@@ -1,0 +1,73 @@
+{
+  "contract_version": "FINANCIAL_TRUTH_LEARNING_QUARANTINE_CONTRACT_V1",
+  "manifest_version": "1",
+  "normalization_version": "POSTGRES_CATALOG_CANONICAL_JSON_V1",
+  "source_migrations": [
+    "db/migrations/20260804_learning_quarantine_vocabulary_v1.sql",
+    "db/migrations/20260804_learning_quarantine_resolution_v1.sql",
+    "db/migrations/20260804_learning_ft_eligibility_v1.sql",
+    "db/migrations/20260804_learning_canonical_universe_ft_quarantine_v1.sql"
+  ],
+  "objects": [
+    {"object_type":"table","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":null},
+    {"object_type":"table","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":null},
+
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"exclusion_id"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"environment"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"deployment_id"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"position_id"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"exclusion_reason"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"source_type"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"semantic_fingerprint_v2"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"created_at"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"created_by"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"git_sha"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"source_reference"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_v1","subidentity":"detail_json"},
+
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"resolution_id"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"exclusion_id"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"resolution_action"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"reason"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"source_type"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"source_reference"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"created_at"},
+    {"object_type":"column","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1","subidentity":"created_by"},
+
+    {"object_type":"constraint","schema":"public","object_name":"learning_outcome_exclusion_v1_pkey","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"ux_learning_outcome_exclusion_v1_identity","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"fk_learning_outcome_exclusion_v1_position","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"ck_learning_outcome_exclusion_v1_contract","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1_pkey","subidentity":"learning_outcome_exclusion_resolution_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"fk_learning_outcome_exclusion_resolution_v1_exclusion","subidentity":"learning_outcome_exclusion_resolution_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"ux_learning_outcome_exclusion_resolution_v1_revoke","subidentity":"learning_outcome_exclusion_resolution_v1"},
+    {"object_type":"constraint","schema":"public","object_name":"ck_learning_outcome_exclusion_resolution_v1_contract","subidentity":"learning_outcome_exclusion_resolution_v1"},
+
+    {"object_type":"index","schema":"public","object_name":"learning_outcome_exclusion_v1_pkey","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"index","schema":"public","object_name":"ux_learning_outcome_exclusion_v1_identity","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"index","schema":"public","object_name":"ix_learning_outcome_exclusion_v1_position","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"index","schema":"public","object_name":"learning_outcome_exclusion_resolution_v1_pkey","subidentity":"learning_outcome_exclusion_resolution_v1"},
+    {"object_type":"index","schema":"public","object_name":"ux_learning_outcome_exclusion_resolution_v1_revoke","subidentity":"learning_outcome_exclusion_resolution_v1"},
+    {"object_type":"index","schema":"public","object_name":"ix_learning_exclusion_resolution_exclusion_v1","subidentity":"learning_outcome_exclusion_resolution_v1"},
+
+    {"object_type":"trigger","schema":"public","object_name":"trg_learning_outcome_exclusion_v1_append_only","subidentity":"learning_outcome_exclusion_v1"},
+    {"object_type":"trigger","schema":"public","object_name":"trg_learning_exclusion_resolution_v1_append_only","subidentity":"learning_outcome_exclusion_resolution_v1"},
+
+    {"object_type":"function","schema":"public","object_name":"learning_outcome_is_excluded_v1","subidentity":"bigint"},
+    {"object_type":"function","schema":"public","object_name":"learning_outcome_is_eligible_v1","subidentity":"bigint"},
+    {"object_type":"function","schema":"public","object_name":"learning_artifact_is_eligible_v1","subidentity":"bigint"},
+    {"object_type":"function","schema":"public","object_name":"learning_canonical_evidence_universe_pre_ft_quarantine_v1","subidentity":"text, timestamp with time zone, timestamp with time zone, timestamp with time zone"},
+    {"object_type":"function","schema":"public","object_name":"learning_canonical_evidence_universe_live_v1","subidentity":"text, timestamp with time zone, timestamp with time zone, timestamp with time zone"},
+
+    {"object_type":"view","schema":"public","object_name":"v_learning_active_outcome_exclusions_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_closed_positions_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_exit_trace_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_exit_trace_v2","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_exit_trace_v3","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_shadow_recommendations_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_feature_warehouse_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_decision_replay_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_decision_registry_v1","subidentity":null},
+    {"object_type":"view","schema":"public","object_name":"v_learning_eligible_decision_outcomes_v1","subidentity":null}
+  ]
+}
