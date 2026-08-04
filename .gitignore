@@ -323,4 +323,5 @@ exit_trace_incremental_audit_*.txt
 !db/migrations/20260804_learning_ft_eligibility_v1.sql
 !db/migrations/20260804_learning_canonical_universe_ft_quarantine_v1.sql
 !db/migrations/20260804_learning_frozen_source_snapshot_v2_2_generation_scoped_projection.sql
+!db/migrations/20260804_learning_canonical_financial_payload_v1.sql
 db_live_data/
