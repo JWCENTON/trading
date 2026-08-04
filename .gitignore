@@ -317,4 +317,8 @@ exit_trace_incremental_audit_*.txt
 *full_backup*.sql
 *_schema_*.sql
 !db/migrations/20260801_schema_migration_ledger_v1_baseline.sql
+!db/migrations/20260804_learning_quarantine_vocabulary_v1.sql
+!db/migrations/20260804_learning_quarantine_resolution_v1.sql
+!db/migrations/20260804_learning_ft_eligibility_v1.sql
+!db/migrations/20260804_learning_canonical_universe_ft_quarantine_v1.sql
 db_live_data/
