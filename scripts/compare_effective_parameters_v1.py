@@ -12,17 +12,21 @@ try:
     from scripts.export_effective_parameters_v1 import (
         CONTRACT_VERSION,
         canonical_sha256,
+        lineage_sha256,
         record_identity,
     )
 except ModuleNotFoundError:  # Direct execution: python scripts/compare_....py
     from export_effective_parameters_v1 import (  # type: ignore[no-redef]
         CONTRACT_VERSION,
         canonical_sha256,
+        lineage_sha256,
         record_identity,
     )
 
 
-PASS_CLASSES = {"MATCH", "ALLOWED_DIFFERENCE"}
+PASS_CLASSES = {
+    "MATCH", "ALLOWED_VALUE_DIFFERENCE", "LINEAGE_DIFFERENCE_INFORMATIONAL",
+}
 
 
 class ComparisonContractError(RuntimeError):
@@ -39,8 +43,15 @@ def _index(document: dict[str, Any]) -> dict[tuple[str, ...], dict[str, Any]]:
         raise ComparisonContractError("unsupported parameter export contract")
     if document.get("record_count") != len(document.get("records", [])):
         raise ComparisonContractError("record_count mismatch")
-    if document.get("canonical_sha256") != canonical_sha256(document):
-        raise ComparisonContractError("canonical_sha256 mismatch")
+    if document.get("effective_canonical_sha256") != canonical_sha256(document):
+        raise ComparisonContractError("effective_canonical_sha256 mismatch")
+    if document.get("lineage_sha256") != lineage_sha256(document):
+        raise ComparisonContractError("lineage_sha256 mismatch")
+    consumed = sum(bool(record.get("consumed")) for record in document["records"])
+    if document.get("consumed_parameter_count") != consumed:
+        raise ComparisonContractError("consumed_parameter_count mismatch")
+    if document.get("non_consumed_parameter_count") != len(document["records"]) - consumed:
+        raise ComparisonContractError("non_consumed_parameter_count mismatch")
     result = {}
     for record in document["records"]:
         identity = record_identity(record)
@@ -85,25 +96,39 @@ def compare_documents(
         left = local_rows.get(identity)
         right = vps_rows.get(identity)
         if left is None:
-            classification = "EXTRA_RECORD"
-            detail = "record exists only in VPS export"
+            if right.get("consumed") is False:
+                continue
+            classification = "EXTRA_CONSUMED_PARAMETER"
+            detail = "consumed record exists only in VPS export"
         elif right is None:
-            classification = "MISSING_RECORD"
-            detail = "record is missing from VPS export"
+            if left.get("consumed") is False:
+                continue
+            classification = "MISSING_CONSUMED_PARAMETER"
+            detail = "consumed record is missing from VPS export"
         else:
-            provenance_fields = (
-                "value_type", "source_layer", "source_identity", "source_priority",
-                "runtime_service", "runtime_child_identity",
+            lineage_difference = (
+                left.get("lineage_metadata") != right.get("lineage_metadata")
             )
-            changed_provenance = [
-                field for field in provenance_fields if left.get(field) != right.get(field)
-            ]
-            if changed_provenance:
-                classification = "SOURCE_PROVENANCE_DRIFT"
-                detail = ",".join(changed_provenance)
+            if left.get("value_type") != right.get("value_type"):
+                classification = "UNEXPECTED_DIFFERENCE"
+                detail = "value_type"
+            elif left.get("source_layer") != right.get("source_layer"):
+                classification = "SOURCE_LAYER_DRIFT"
+                detail = "source_layer"
+            elif left.get("source_priority") != right.get("source_priority"):
+                classification = "SOURCE_PRIORITY_DRIFT"
+                detail = "source_priority"
+            elif any(left.get(field) != right.get(field) for field in (
+                "runtime_service", "runtime_child_identity", "consumed",
+            )):
+                classification = "RUNTIME_CONSUMER_DRIFT"
+                detail = "runtime_service,runtime_child_identity,consumed"
             elif left.get("effective_value") == right.get("effective_value"):
-                classification = "MATCH"
-                detail = None
+                classification = (
+                    "LINEAGE_DIFFERENCE_INFORMATIONAL"
+                    if lineage_difference else "MATCH"
+                )
+                detail = "lineage_metadata" if lineage_difference else None
             else:
                 exception = allowed.get(identity)
                 is_paper = local.get("environment") == "PAPER" and vps.get("environment") == "PAPER"
@@ -117,10 +142,10 @@ def compare_documents(
                     and exception.get("blocking") is False
                     and exception.get("LIVE_impact") is False
                 ):
-                    classification = "ALLOWED_DIFFERENCE"
+                    classification = "ALLOWED_VALUE_DIFFERENCE"
                     detail = exception["decision"]
                 else:
-                    classification = "UNEXPECTED_DIFFERENCE"
+                    classification = "EFFECTIVE_VALUE_DRIFT"
                     detail = "effective_value"
         findings.append({
             "classification": classification,
@@ -128,6 +153,10 @@ def compare_documents(
             "local_value": None if left is None else left.get("effective_value"),
             "vps_value": None if right is None else right.get("effective_value"),
             "detail": detail,
+            "lineage_difference": (
+                False if left is None or right is None
+                else left.get("lineage_metadata") != right.get("lineage_metadata")
+            ),
         })
 
     counts: dict[str, int] = {}

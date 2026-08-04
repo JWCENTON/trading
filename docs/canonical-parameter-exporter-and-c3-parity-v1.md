@@ -1,4 +1,4 @@
-# Canonical parameter exporter and C3 parity V1
+# Canonical parameter exporter and C3 parity V1.1
 
 ## Existing exporter RCA
 
@@ -37,10 +37,44 @@ hostnames, database hostnames or container metadata.
 
 NUMERIC values are canonical decimal strings. Records are sorted by environment,
 strategy, symbol, interval and parameter name. JSON is UTF-8, LF-terminated,
-key-sorted and compact. The SHA-256 semantic projection includes effective value,
-value type, source layer/identity/priority, slot identity and runtime consumer.
-It excludes generated/source timestamps, deployment ID, Git/OCI metadata and all
-host execution context.
+key-sorted and compact.
+
+V1.1 logically separates the flat effective contract fields from the nested
+`lineage_metadata` audit block. `effective_canonical_sha256` includes effective
+value, value type, source layer/priority, slot identity, consumed status,
+environment/mode and runtime consumer. It excludes source identity, history
+source/presence, timestamps, deployment ID, Git/OCI metadata and host context.
+`lineage_sha256` separately fingerprints source identity, history presence/source
+and source update timestamp for audit use only.
+
+Parameter parity before C3 concerns the current effective runtime contract.
+Historical provenance parity is not required. Historical writer labels such as
+`MANUAL` versus `PARAMETER_PARITY_REPAIR_V1`, current-row versus matching-history
+resolution and differing timestamps are retained but informational.
+
+## Runtime consumption discovery
+
+For every known strategy slot, a missing `MIN_NOTIONAL_BUFFER_PCT` DB row is
+exported as consumed `CODE_DEFAULT` with value `0.05` and source priority 10.
+This reflects the active default in each strategy process without creating a DB
+row. An existing DB row remains `STRATEGY_PARAMS_DB` with priority 100.
+
+SUPERTREND execution uses `LIVE_TARGET_NOTIONAL`, not `ORDER_NOTIONAL_USDC`.
+An existing SUPERTREND `ORDER_NOTIONAL_USDC` row remains visible for audit with
+`consumed=false`; absence of that non-consumed record on another host does not
+become a missing-consumed failure. Other strategies keep it consumed.
+
+## Comparator policy
+
+Exit code zero permits only `MATCH`, `ALLOWED_VALUE_DIFFERENCE` and
+`LINEAGE_DIFFERENCE_INFORMATIONAL`. Blocking classes are
+`EFFECTIVE_VALUE_DRIFT`, `SOURCE_LAYER_DRIFT`, `SOURCE_PRIORITY_DRIFT`,
+`RUNTIME_CONSUMER_DRIFT`, `MISSING_CONSUMED_PARAMETER`,
+`EXTRA_CONSUMED_PARAMETER` and `UNEXPECTED_DIFFERENCE`.
+
+The 15 PAPER-only manifest entries remain exact value exceptions. A simultaneous
+lineage difference is reported in finding metadata but does not prevent
+`ALLOWED_VALUE_DIFFERENCE`.
 
 ## Export commands
 
@@ -122,6 +156,7 @@ python3 scripts/compare_effective_parameters_v1.py \
   --output audit_artifacts/parameter_parity/live-comparison.json
 ```
 
-Exit code zero means every record is `MATCH` or an exact manifest-authorized
-`ALLOWED_DIFFERENCE`. Missing, extra, unknown value or source-provenance drift is
+Exit code zero means every record is `MATCH`, exact manifest-authorized
+`ALLOWED_VALUE_DIFFERENCE`, or `LINEAGE_DIFFERENCE_INFORMATIONAL`. Effective
+value/layer/priority/consumer drift and missing or extra consumed parameters are
 non-zero. These commands perform no VPS writes and do not compare PAPER to LIVE.

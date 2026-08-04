@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-CONTRACT_VERSION = "WALTRADE_PARAMETER_EXPORT_V1"
+CONTRACT_VERSION = "WALTRADE_PARAMETER_EXPORT_V1_1"
 RECORD_SORT_FIELDS = (
     "environment", "strategy", "symbol", "interval", "parameter_name",
 )
@@ -31,10 +31,10 @@ FINGERPRINT_FIELDS = (
     "effective_value",
     "value_type",
     "source_layer",
-    "source_identity",
     "source_priority",
     "runtime_service",
     "runtime_child_identity",
+    "consumed",
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -122,6 +122,63 @@ def canonical_sha256(document: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json_bytes(canonical_payload(document))).hexdigest()
 
 
+def lineage_payload(document: dict[str, Any]) -> dict[str, Any]:
+    records = sorted(
+        (
+            {
+                "strategy": record["strategy"],
+                "symbol": record["symbol"],
+                "interval": record["interval"],
+                "parameter_name": record["parameter_name"],
+                "lineage_metadata": record["lineage_metadata"],
+            }
+            for record in document["records"]
+        ),
+        key=lambda record: tuple(str(record[field]) for field in RECORD_ID_FIELDS),
+    )
+    return {"contract_version": document["contract_version"], "records": records}
+
+
+def lineage_sha256(document: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_json_bytes(lineage_payload(document))).hexdigest()
+
+
+def discover_runtime_defaults(
+    raw_rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add active code defaults absent from DB without inventing DB provenance."""
+    rows = [dict(row) for row in raw_rows]
+    slots = {
+        (str(row["strategy"]), str(row["symbol"]), str(row["interval"]))
+        for row in rows
+    }
+    identities = {
+        (
+            str(row["strategy"]), str(row["symbol"]), str(row["interval"]),
+            str(row["parameter_name"]),
+        )
+        for row in rows
+    }
+    for strategy, symbol, interval in sorted(slots):
+        identity = (strategy, symbol, interval, "MIN_NOTIONAL_BUFFER_PCT")
+        if strategy in ("RSI", "TREND", "SUPERTREND", "BBRANGE") and identity not in identities:
+            rows.append({
+                "row_id": None,
+                "strategy": strategy,
+                "symbol": symbol,
+                "interval": interval,
+                "parameter_name": "MIN_NOTIONAL_BUFFER_PCT",
+                "effective_value": "0.05",
+                "source_updated_at": None,
+                "history_source": None,
+                "source_layer": "CODE_DEFAULT",
+                "source_priority": 10,
+                "source_identity": "code_default:MIN_NOTIONAL_BUFFER_PCT",
+                "consumed": True,
+            })
+    return rows
+
+
 def build_document(
     raw_rows: Sequence[dict[str, Any]],
     *,
@@ -154,20 +211,22 @@ def build_document(
     for raw in raw_rows:
         required = (
             "strategy", "symbol", "interval", "parameter_name",
-            "effective_value", "source_updated_at",
+            "effective_value",
         )
         if any(raw.get(field) is None for field in required):
             raise ExportContractError(f"incomplete source row: {raw!r}")
         history_source = raw.get("history_source")
-        source_identity = (
+        source_identity = raw.get("source_identity") or (
             f"strategy_params_history:{history_source}"
-            if history_source
-            else "strategy_params:current_row"
+            if history_source else "strategy_params:current_row"
         )
         strategy = str(raw["strategy"])
         symbol = str(raw["symbol"])
         interval = str(raw["interval"])
         parameter_name = str(raw["parameter_name"])
+        consumed = bool(raw.get("consumed", not (
+            strategy == "SUPERTREND" and parameter_name == "ORDER_NOTIONAL_USDC"
+        )))
         record = {
             "contract_version": CONTRACT_VERSION,
             "deployment_id": deployment_id,
@@ -179,12 +238,17 @@ def build_document(
             "parameter_name": parameter_name,
             "effective_value": canonical_decimal(str(raw["effective_value"])),
             "value_type": "DECIMAL",
-            "source_layer": "STRATEGY_PARAMS_DB",
-            "source_identity": source_identity,
-            "source_priority": 100,
-            "source_updated_at": str(raw["source_updated_at"]),
+            "source_layer": str(raw.get("source_layer", "STRATEGY_PARAMS_DB")),
+            "source_priority": int(raw.get("source_priority", 100)),
             "runtime_service": "bot-runner",
             "runtime_child_identity": f"{strategy}:{symbol}:{interval}",
+            "consumed": consumed,
+            "lineage_metadata": {
+                "source_identity": str(source_identity),
+                "source_updated_at": raw.get("source_updated_at"),
+                "history_source": history_source,
+                "history_row_present": history_source is not None,
+            },
         }
         identity = record_identity(record)
         if identity in identities:
@@ -203,10 +267,14 @@ def build_document(
         "environment": environment,
         "mode": mode,
         "record_count": len(records),
-        "canonical_sha256": "",
+        "consumed_parameter_count": sum(record["consumed"] for record in records),
+        "non_consumed_parameter_count": sum(not record["consumed"] for record in records),
+        "effective_canonical_sha256": "",
+        "lineage_sha256": "",
         "records": records,
     }
-    document["canonical_sha256"] = canonical_sha256(document)
+    document["effective_canonical_sha256"] = canonical_sha256(document)
+    document["lineage_sha256"] = lineage_sha256(document)
     return document
 
 
@@ -276,7 +344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     generated_at = args.generated_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     document = build_document(
-        read_rows(args),
+        discover_runtime_defaults(read_rows(args)),
         deployment_id=args.deployment_id,
         environment=args.environment,
         mode=args.mode,
@@ -291,7 +359,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps({
         "output": str(output),
         "record_count": document["record_count"],
-        "canonical_sha256": document["canonical_sha256"],
+        "consumed_parameter_count": document["consumed_parameter_count"],
+        "non_consumed_parameter_count": document["non_consumed_parameter_count"],
+        "effective_canonical_sha256": document["effective_canonical_sha256"],
+        "lineage_sha256": document["lineage_sha256"],
     }, sort_keys=True))
     return 0
 

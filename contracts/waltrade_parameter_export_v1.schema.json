@@ -1,24 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://waltrade.example/contracts/waltrade_parameter_export_v1.schema.json",
-  "title": "WALTRADE_PARAMETER_EXPORT_V1",
+  "title": "WALTRADE_PARAMETER_EXPORT_V1_1",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "contract_version",
-    "generated_at",
-    "git_sha",
-    "runtime_git_sha",
-    "oci_revision",
-    "deployment_id",
-    "environment",
-    "mode",
-    "record_count",
-    "canonical_sha256",
-    "records"
+    "contract_version", "generated_at", "git_sha", "runtime_git_sha",
+    "oci_revision", "deployment_id", "environment", "mode", "record_count",
+    "consumed_parameter_count", "non_consumed_parameter_count",
+    "effective_canonical_sha256", "lineage_sha256", "records"
   ],
   "properties": {
-    "contract_version": {"const": "WALTRADE_PARAMETER_EXPORT_V1"},
+    "contract_version": {"const": "WALTRADE_PARAMETER_EXPORT_V1_1"},
     "generated_at": {"type": "string", "format": "date-time"},
     "git_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
     "runtime_git_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
@@ -27,36 +20,38 @@
     "environment": {"enum": ["PAPER", "LIVE"]},
     "mode": {"enum": ["PAPER", "LIVE"]},
     "record_count": {"type": "integer", "minimum": 0},
-    "canonical_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "records": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/parameterRecord"}
-    }
+    "consumed_parameter_count": {"type": "integer", "minimum": 0},
+    "non_consumed_parameter_count": {"type": "integer", "minimum": 0},
+    "effective_canonical_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "lineage_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/parameterRecord"}}
   },
   "$defs": {
+    "lineageMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_identity", "source_updated_at", "history_source",
+        "history_row_present"
+      ],
+      "properties": {
+        "source_identity": {"type": "string", "minLength": 1},
+        "source_updated_at": {"type": ["string", "null"], "format": "date-time"},
+        "history_source": {"type": ["string", "null"]},
+        "history_row_present": {"type": "boolean"}
+      }
+    },
     "parameterRecord": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "contract_version",
-        "deployment_id",
-        "environment",
-        "mode",
-        "strategy",
-        "symbol",
-        "interval",
-        "parameter_name",
-        "effective_value",
-        "value_type",
-        "source_layer",
-        "source_identity",
-        "source_priority",
-        "source_updated_at",
-        "runtime_service",
-        "runtime_child_identity"
+        "contract_version", "deployment_id", "environment", "mode", "strategy",
+        "symbol", "interval", "parameter_name", "effective_value", "value_type",
+        "source_layer", "source_priority", "runtime_service",
+        "runtime_child_identity", "consumed", "lineage_metadata"
       ],
       "properties": {
-        "contract_version": {"const": "WALTRADE_PARAMETER_EXPORT_V1"},
+        "contract_version": {"const": "WALTRADE_PARAMETER_EXPORT_V1_1"},
         "deployment_id": {"type": "string", "minLength": 1},
         "environment": {"enum": ["PAPER", "LIVE"]},
         "mode": {"enum": ["PAPER", "LIVE"]},
@@ -67,11 +62,11 @@
         "effective_value": {"type": ["string", "number", "boolean", "null"]},
         "value_type": {"enum": ["DECIMAL", "INTEGER", "BOOLEAN", "STRING", "NULL"]},
         "source_layer": {"type": "string", "minLength": 1},
-        "source_identity": {"type": "string", "minLength": 1},
         "source_priority": {"type": "integer"},
-        "source_updated_at": {"type": ["string", "null"], "format": "date-time"},
         "runtime_service": {"type": "string", "minLength": 1},
-        "runtime_child_identity": {"type": "string", "minLength": 1}
+        "runtime_child_identity": {"type": "string", "minLength": 1},
+        "consumed": {"type": "boolean"},
+        "lineage_metadata": {"$ref": "#/$defs/lineageMetadata"}
       }
     }
   }
