@@ -268,6 +268,21 @@ def test_forward_entry_retry_failure_and_full_outcome_continuity(continuity_db):
         cur.execute("SELECT decision_id FROM simulated_orders WHERE id=%s",(order_id,))
         assert cur.fetchone()[0] == decision_id
 
+        exit_order_id = create_simulated_order_cursor(
+            cur,symbol="BTCUSDC",interval="1m",strategy="BBRANGE",side="SELL",
+            price=Decimal("101"),quantity=Decimal("0.01"),reason="TEST_EXIT",
+            candle_open_time=datetime(2026,8,5,7,2,tzinfo=timezone.utc),
+            is_exit=True,
+        )
+        assert isinstance(exit_order_id,int) and not isinstance(exit_order_id,bool)
+        cur.execute(
+            "INSERT INTO simulated_execution_fills_v1("
+            "simulated_order_id,position_id,order_purpose,side,symbol,environment,deployment_id) "
+            "VALUES(%s,%s,'EXIT','SELL','BTCUSDC','paper','local-paper') RETURNING decision_id",
+            (exit_order_id,position_id),
+        )
+        assert cur.fetchone()[0] is None
+
         cur.execute(
             "UPDATE positions SET status='CLOSED',exit_time=now(),exit_reason='TEST_EXIT',"
             "gross_pnl_usdc=1,fees_usdc=0.1,net_pnl_usdc=0.9 WHERE id=%s",
@@ -311,9 +326,9 @@ def test_forward_entry_retry_failure_and_full_outcome_continuity(continuity_db):
     continuity_db.rollback()
     with continuity_db.cursor() as cur:
         cur.execute("SELECT count(*) FROM simulated_orders")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 2
         cur.execute("SELECT count(*) FROM simulated_execution_fills_v1")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 2
         cur.execute("SELECT count(*) FROM positions")
         assert cur.fetchone()[0] == 1
         cur.execute(
