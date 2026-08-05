@@ -35,6 +35,16 @@ from common.exchange_fill_change_control import (
 )
 from common.exchange_identity import normalize_exchange_source
 from common.flags import trading_mode
+from common.financial_truth_calculator import calculate_financial_truth
+from common.financial_truth_repository import (
+    CanonicalFinancialTruthWriteRepository,
+    ExecutionEvidenceContext,
+    FinancialTruthSourceRepository,
+)
+from common.inventory_quantity import (
+    ExitInventoryClassification,
+    ExitInventoryStatus,
+)
 
 
 LEI1C_MIGRATION_ID = "20260731_live_entry_fill_attribution_v1.sql"
@@ -594,6 +604,185 @@ def reconcile_okx_exit_fills(
             ),
         )
         return int(cur.rowcount or 0)
+
+
+def reconcile_live_terminal_financial_truth(
+    conn,
+    *,
+    changed_order_ids: Iterable[str],
+    environment: str,
+    deployment_id: str,
+    source: str,
+) -> int:
+    """
+    Write canonical Financial Truth for terminal LIVE positions whose exit fills
+    were reconciled in the caller-owned transaction.
+
+    OPEN/PARTIAL positions are ignored. A terminal position without COMPLETE
+    canonical evidence fails the caller transaction closed.
+    """
+    normalized_environment = str(environment or "").strip().lower()
+    normalized_deployment = str(deployment_id or "").strip()
+    normalized_source = str(source or "").strip().lower()
+    order_ids = sorted({str(value) for value in changed_order_ids if str(value)})
+
+    if normalized_source != "okx" or not order_ids:
+        return 0
+    if normalized_environment != "live":
+        raise RuntimeError("LIVE_FINANCIAL_TRUTH_ENVIRONMENT_INVALID")
+    if not normalized_deployment:
+        raise RuntimeError("LIVE_FINANCIAL_TRUTH_DEPLOYMENT_REQUIRED")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              p.id,
+              p.remaining_inventory_qty,
+              p.terminal_dust_qty,
+              p.terminal_reason,
+              p.inventory_evidence_status
+            FROM positions p
+            WHERE p.status='CLOSED'
+              AND EXISTS (
+                SELECT 1
+                FROM binance_orders bo
+                WHERE (
+                  bo.position_id=p.id
+                  OR bo.reconciled_position_id=p.id
+                )
+                  AND bo.order_id=ANY(%s)
+                  AND bo.order_purpose='EXIT'
+                  AND lower(COALESCE(bo.exchange_source,''))=%s
+              )
+            ORDER BY p.id
+            FOR UPDATE OF p
+            """,
+            (order_ids, normalized_source),
+        )
+        terminal_rows = list(cur.fetchall())
+
+    if not terminal_rows:
+        return 0
+
+    context = ExecutionEvidenceContext(
+        environment=normalized_environment,
+        exchange=normalized_source.upper(),
+        deployment_id=normalized_deployment,
+    )
+    source_repository = FinancialTruthSourceRepository(lambda: conn)
+    written_count = 0
+
+    for (
+        position_id,
+        remaining_inventory_qty,
+        terminal_dust_qty,
+        terminal_reason,
+        inventory_evidence_status,
+    ) in terminal_rows:
+        position_id = int(position_id)
+
+        if str(inventory_evidence_status or "") != "COMPLETE":
+            raise RuntimeError(
+                "LIVE_FINANCIAL_TRUTH_INVENTORY_EVIDENCE_INCOMPLETE:"
+                + str(position_id)
+            )
+
+        remaining = Decimal(str(remaining_inventory_qty or 0))
+        dust = Decimal(str(terminal_dust_qty or 0))
+
+        if remaining < 0:
+            raise RuntimeError(
+                "LIVE_FINANCIAL_TRUTH_NEGATIVE_CANONICAL_REMAINING:"
+                + str(position_id)
+            )
+
+        if remaining == 0:
+            inventory_classification = ExitInventoryClassification(
+                ExitInventoryStatus.FULLY_EXECUTED_CLOSE,
+                Decimal("0"),
+                Decimal("0"),
+                Decimal("0"),
+                None,
+            )
+        else:
+            if dust != remaining:
+                raise RuntimeError(
+                    "LIVE_FINANCIAL_TRUTH_TERMINAL_DUST_CONFLICT:"
+                    + str(position_id)
+                )
+            inventory_classification = ExitInventoryClassification(
+                ExitInventoryStatus.TERMINAL_DUST_CLOSE,
+                remaining,
+                Decimal("0"),
+                remaining,
+                str(terminal_reason or "TERMINAL_DUST"),
+            )
+
+        with conn.cursor() as cur:
+            CanonicalFinancialTruthWriteRepository.lock_position(
+                cur, position_id
+            )
+            position, fills, source_issue = (
+                source_repository.read_position_and_fills(
+                    position_id,
+                    context=context,
+                    connection=conn,
+                )
+            )
+            if source_issue is not None:
+                raise RuntimeError(
+                    "LIVE_FINANCIAL_TRUTH_SOURCE_"
+                    + str(source_issue.value)
+                )
+
+            financial_truth = calculate_financial_truth(
+                position_id=position[0],
+                position_status=position[1],
+                fills=fills,
+                estimated_gross_pnl=position[2],
+                estimated_fees_usdc=position[3],
+                estimated_net_pnl=position[4],
+                position_symbol=position[5],
+                inventory_classification=inventory_classification,
+            )
+            if financial_truth.financial_truth_status != "COMPLETE":
+                raise RuntimeError(
+                    "LIVE_FINANCIAL_TRUTH_NOT_COMPLETE:"
+                    + str(
+                        financial_truth.failure_detail
+                        or financial_truth.failure_code
+                        or financial_truth.financial_truth_status
+                    )
+                )
+
+            written = CanonicalFinancialTruthWriteRepository.write(
+                cur,
+                financial_truth,
+                invocation_type="RUNTIME_LIVE_EXIT",
+                invocation_identity=(
+                    f"LIVE:{normalized_deployment}:"
+                    f"{position_id}:{financial_truth.source_fingerprint}"
+                ),
+            )
+            written_count += int(bool(written))
+
+            cur.execute(
+                """
+                SELECT financial_truth_status
+                FROM canonical_financial_truth_v1
+                WHERE position_id=%s
+                """,
+                (position_id,),
+            )
+            if cur.fetchone() != ("COMPLETE",):
+                raise RuntimeError(
+                    "LIVE_FINANCIAL_TRUTH_POSTCONDITION_FAILED:"
+                    + str(position_id)
+                )
+
+    return written_count
+
 
 
 def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str = "binance") -> Dict[str, Any]:
@@ -1211,21 +1400,38 @@ def ingest_my_trades(
                     source,
                 )
 
+        live_ft_written = 0
         if min_event_time_ms_seen is not None:
             try:
+                runtime_environment = os.getenv("ENVIRONMENT") or os.getenv(
+                    "TRADING_MODE", ""
+                )
+                runtime_deployment = (
+                    os.getenv("DEPLOYMENT_ID")
+                    or os.getenv("WALTRADE_DEPLOYMENT_ID")
+                    or ""
+                )
                 reconciled_exits = reconcile_okx_exit_fills(
                     conn,
                     source=source,
                     since_ms=min_event_time_ms_seen,
                     changed_order_ids=changed_exit_order_ids,
-                    environment=os.getenv("ENVIRONMENT"),
-                    deployment_id=(
-                        os.getenv("DEPLOYMENT_ID")
-                        or os.getenv("WALTRADE_DEPLOYMENT_ID")
-                    ),
+                    environment=runtime_environment,
+                    deployment_id=runtime_deployment,
+                )
+                live_ft_written = reconcile_live_terminal_financial_truth(
+                    conn,
+                    changed_order_ids=changed_exit_order_ids,
+                    environment=runtime_environment,
+                    deployment_id=runtime_deployment,
+                    source=source,
                 )
             except Exception:
-                logging.exception("EXCHANGE_INGEST|exit fill reconciliation failed source=%s", source)
+                logging.exception(
+                    "LIVE_FINANCIAL_TRUTH_RECONCILIATION_FAILED|source=%s",
+                    source,
+                )
+                raise
 
         with conn.cursor() as cur:
             for change in accepted_changes:
@@ -1233,7 +1439,15 @@ def ingest_my_trades(
         conn.commit()
 
     if reconciled_exits:
-        logging.warning("EXCHANGE_INGEST|reconciled %s OKX exit fill(s) into positions SSOT", reconciled_exits)
+        logging.warning(
+            "EXCHANGE_INGEST|reconciled %s OKX exit fill(s) into positions SSOT",
+            reconciled_exits,
+        )
+    if live_ft_written:
+        logging.warning(
+            "EXCHANGE_INGEST|canonical LIVE Financial Truth written=%s",
+            live_ft_written,
+        )
     if reconciled_entries:
         logging.warning(
             "EXCHANGE_INGEST|reconciled %s entry fill aggregate(s) into positions SSOT",
