@@ -97,10 +97,10 @@ def verify_saved_plan(
     summary = saved_plan.get("summary") or {}
 
     required_summary = {
-        "positions_planned": 55,
-        "ft_complete": 55,
+        "positions_planned": 12,
+        "ft_complete": 12,
         "exclusions_to_insert": 0,
-        "existing_exclusions_to_keep": 55,
+        "existing_exclusions_to_keep": 12,
         "db_writes": 0,
         "okx_calls": 0,
     }
@@ -114,7 +114,7 @@ def verify_saved_plan(
 
     rows = saved_plan.get("positions") or []
 
-    if len(rows) != 55:
+    if len(rows) != 12:
         raise RuntimeError(
             f"PLAN_ROW_COUNT_INVALID:{len(rows)}"
         )
@@ -306,11 +306,11 @@ def verify_artifact_counts(cur):
     }
 
     expected = {
-        "ft_rows": 55,
-        "ft_audit_rows": 55,
-        "exclusion_rows": 55,
-        "repair_audit_rows": 55,
-        "provenance_rows": 55,
+        "ft_rows": 12,
+        "ft_audit_rows": 12,
+        "exclusion_rows": 12,
+        "repair_audit_rows": 12,
+        "provenance_rows": 12,
     }
 
     if actual != expected:
@@ -804,7 +804,7 @@ def rollback_proof(
                 "positions_proved": len(proof_rows),
                 "in_transaction_counts": counts,
                 "transaction_committed": bool(commit),
-                "db_persistent_writes": 220 if commit else 0,
+                "db_persistent_writes": 48 if commit else 0,
                 "okx_calls": 0,
             }
 
@@ -881,7 +881,7 @@ def main() -> int:
         )
     )
 
-    if result["positions_proved"] != 55:
+    if result["positions_proved"] != 12:
         raise RuntimeError(
             "ROLLBACK_PROOF_POSITION_COUNT_INVALID"
         )
@@ -891,7 +891,7 @@ def main() -> int:
             raise RuntimeError(
                 "APPLY_TRANSACTION_NOT_COMMITTED"
             )
-        if result["db_persistent_writes"] != 220:
+        if result["db_persistent_writes"] != 48:
             raise RuntimeError(
                 "APPLY_PERSISTENT_WRITE_COUNT_INVALID"
             )

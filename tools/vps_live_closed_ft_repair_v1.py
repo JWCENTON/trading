@@ -34,10 +34,10 @@ PLANNER_VERSION = CONTRACT_VERSION + "_PLANNER"
 ENVIRONMENT = "LIVE"
 DEPLOYMENT_ID = "vps-live"
 DATABASE = "trading_live"
-POSITION_IDS = (3051, 3052, 3053, 3054, 3055, 3056, 3057, 3058, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3070, 3071, 3072, 3073, 3074, 3075, 3076, 3077, 3078, 3079, 3080, 3081, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3093, 3095, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108)
+POSITION_IDS = (3053, 3054, 3056, 3057, 3058, 3070, 3071, 3072, 3073, 3079, 3080, 3081)
 
 EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS = frozenset((3053, 3054, 3056, 3058, 3070, 3071, 3072, 3073, 3079, 3080, 3081))
-EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS = frozenset((3051, 3052, 3055, 3057, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3074, 3075, 3076, 3077, 3078, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3093, 3095, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108))
+EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS = frozenset((3057,))
 EXPECTED_EXISTING_EXCLUSION_IDS = (
     EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS
     | EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS
@@ -809,13 +809,13 @@ def build_plan(connection, git_sha: str) -> dict[str, Any]:
         "okx_calls": 0,
     }
 
-    if summary["positions_planned"] != 55:
+    if summary["positions_planned"] != 12:
         raise RuntimeError("PLAN_POSITION_COUNT_INVALID")
-    if summary["ft_complete"] != 55:
+    if summary["ft_complete"] != 12:
         raise RuntimeError("PLAN_FT_COMPLETE_COUNT_INVALID")
     if summary["exclusions_to_insert"] != 0:
         raise RuntimeError("PLAN_EXCLUSION_INSERT_COUNT_INVALID")
-    if summary["existing_exclusions_to_keep"] != 55:
+    if summary["existing_exclusions_to_keep"] != 12:
         raise RuntimeError("PLAN_EXISTING_EXCLUSION_COUNT_INVALID")
 
     return json_safe({
