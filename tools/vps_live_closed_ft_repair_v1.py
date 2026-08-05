@@ -36,7 +36,12 @@ DEPLOYMENT_ID = "vps-live"
 DATABASE = "trading_live"
 POSITION_IDS = (3051, 3052, 3053, 3054, 3055, 3056, 3057, 3058, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3070, 3071, 3072, 3073, 3074, 3075, 3076, 3077, 3078, 3079, 3080, 3081, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3093, 3095, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108)
 
-EXPECTED_EXISTING_EXCLUSION_IDS = frozenset(POSITION_IDS)
+EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS = frozenset((3053, 3054, 3056, 3058, 3070, 3071, 3072, 3073, 3079, 3080, 3081))
+EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS = frozenset((3051, 3052, 3055, 3057, 3059, 3060, 3061, 3062, 3063, 3064, 3065, 3066, 3067, 3068, 3069, 3074, 3075, 3076, 3077, 3078, 3082, 3083, 3084, 3085, 3086, 3087, 3088, 3089, 3090, 3091, 3093, 3095, 3097, 3098, 3099, 3100, 3101, 3102, 3103, 3104, 3105, 3106, 3107, 3108))
+EXPECTED_EXISTING_EXCLUSION_IDS = (
+    EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS
+    | EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS
+)
 
 EXPECTED_MUTATIONS = (
     "canonical_financial_truth_v1:INSERT",
@@ -399,13 +404,36 @@ def read_existing_state(cur, position_id: int) -> dict[str, Any]:
 
     if exclusions:
         exclusion = exclusions[0]
-        if (
-            exclusion["exclusion_reason"] != "LEGACY_REPAIR"
-            or exclusion["source_type"] != "LEGACY_POSITION_REPAIR"
-        ):
-            raise RuntimeError(
-                f"EXISTING_EXCLUSION_CONTRACT_CONFLICT:{position_id}"
+
+        if position_id in EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS:
+            expected_contract = (
+                "EVIDENCE_PROVENANCE_INCOMPLETE",
+                "FINANCIAL_TRUTH_CONTAINMENT",
+                "VPS_LIVE_RECENT_UNRESOLVED_FT_AUDIT_20260804",
             )
+        elif position_id in EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS:
+            expected_contract = (
+                "INVENTORY_ACCOUNT_MISMATCH",
+                "INVENTORY_OWNERSHIP_AUDIT",
+                "VPS_LIVE_RECENT_UNRESOLVED_FT_AUDIT_20260804",
+            )
+        else:
+            raise RuntimeError(
+                f"EXCLUSION_POSITION_CLASSIFICATION_MISSING:{position_id}"
+            )
+
+        actual_contract = (
+            exclusion["exclusion_reason"],
+            exclusion["source_type"],
+            exclusion["source_reference"],
+        )
+
+        if actual_contract != expected_contract:
+            raise RuntimeError(
+                f"EXISTING_EXCLUSION_CONTRACT_CONFLICT:"
+                f"{position_id}:{actual_contract}:{expected_contract}"
+            )
+
         exclusion_action = "KEEP_EXISTING"
     else:
         exclusion = None

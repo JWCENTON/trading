@@ -26,6 +26,8 @@ from tools.vps_live_closed_ft_repair_v1 import (
     DATABASE,
     DEPLOYMENT_ID,
     ENVIRONMENT,
+    EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS,
+    EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS,
     EXPECTED_MUTATIONS,
     FORBIDDEN_MUTATIONS,
     PLANNER_VERSION,
@@ -156,7 +158,8 @@ def insert_or_keep_exclusion(
         """
         SELECT
           exclusion_reason,
-          source_type
+          source_type,
+          source_reference
         FROM learning_outcome_exclusion_v1
         WHERE exclusion_id=%s
         """,
@@ -164,13 +167,27 @@ def insert_or_keep_exclusion(
     )
     row = cur.fetchone()
 
-    if row != (
-        "LEGACY_REPAIR",
-        "LEGACY_POSITION_REPAIR",
-    ):
+    if position_id in EXPECTED_EVIDENCE_PROVENANCE_EXCLUSION_IDS:
+        expected_contract = (
+            "EVIDENCE_PROVENANCE_INCOMPLETE",
+            "FINANCIAL_TRUTH_CONTAINMENT",
+            "VPS_LIVE_RECENT_UNRESOLVED_FT_AUDIT_20260804",
+        )
+    elif position_id in EXPECTED_INVENTORY_MISMATCH_EXCLUSION_IDS:
+        expected_contract = (
+            "INVENTORY_ACCOUNT_MISMATCH",
+            "INVENTORY_OWNERSHIP_AUDIT",
+            "VPS_LIVE_RECENT_UNRESOLVED_FT_AUDIT_20260804",
+        )
+    else:
+        raise RuntimeError(
+            f"EXCLUSION_POSITION_CLASSIFICATION_MISSING:{position_id}"
+        )
+
+    if row != expected_contract:
         raise RuntimeError(
             f"EXISTING_EXCLUSION_CONTRACT_INVALID:"
-            f"{position_id}:{row}"
+            f"{position_id}:{row}:{expected_contract}"
         )
 
     return exclusion_id, "KEEP_EXISTING"
