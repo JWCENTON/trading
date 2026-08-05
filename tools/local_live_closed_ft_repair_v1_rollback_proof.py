@@ -310,6 +310,7 @@ def rollback_proof(
     *,
     saved_plan: dict[str, Any],
     git_sha: str,
+    commit: bool = False,
 ) -> dict[str, Any]:
     saved_by_id = verify_saved_plan(
         saved_plan,
@@ -778,13 +779,16 @@ def rollback_proof(
                     f"{row['plan_fingerprint']}"
                 )
 
-            connection.rollback()
+            if commit:
+                connection.commit()
+            else:
+                connection.rollback()
 
             return {
                 "positions_proved": len(proof_rows),
                 "in_transaction_counts": counts,
-                "transaction_committed": False,
-                "db_persistent_writes": 0,
+                "transaction_committed": bool(commit),
+                "db_persistent_writes": 64 if commit else 0,
                 "okx_calls": 0,
             }
 
@@ -802,6 +806,14 @@ def main() -> int:
     parser.add_argument(
         "--git-sha",
         required=True,
+    )
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "Commit the verified repair transaction. "
+            "Without this flag the transaction is rolled back."
+        ),
     )
     args = parser.parse_args()
 
@@ -840,6 +852,7 @@ def main() -> int:
             connection,
             saved_plan=saved_plan,
             git_sha=args.git_sha,
+            commit=args.commit,
         )
     finally:
         connection.close()
@@ -857,15 +870,32 @@ def main() -> int:
             "ROLLBACK_PROOF_POSITION_COUNT_INVALID"
         )
 
-    if result["transaction_committed"]:
-        raise RuntimeError(
-            "ROLLBACK_PROOF_COMMIT_DETECTED"
+    if args.commit:
+        if not result["transaction_committed"]:
+            raise RuntimeError(
+                "APPLY_TRANSACTION_NOT_COMMITTED"
+            )
+        if result["db_persistent_writes"] != 64:
+            raise RuntimeError(
+                "APPLY_PERSISTENT_WRITE_COUNT_INVALID"
+            )
+        print(
+            "LOCAL_LIVE_CLOSED_FT_REPAIR_"
+            "APPLY_PASS"
         )
-
-    print(
-        "LOCAL_LIVE_CLOSED_FT_REPAIR_"
-        "ROLLBACK_PROOF_PASS"
-    )
+    else:
+        if result["transaction_committed"]:
+            raise RuntimeError(
+                "ROLLBACK_PROOF_COMMIT_DETECTED"
+            )
+        if result["db_persistent_writes"] != 0:
+            raise RuntimeError(
+                "ROLLBACK_PERSISTENT_WRITE_DETECTED"
+            )
+        print(
+            "LOCAL_LIVE_CLOSED_FT_REPAIR_"
+            "ROLLBACK_PROOF_PASS"
+        )
 
     return 0
 
