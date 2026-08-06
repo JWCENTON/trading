@@ -172,7 +172,10 @@ def _trend_evaluation_context(open_time, evaluation_started_at, snap=None):
     cfg_effective = snap["cfg_effective"] if snap is not None else cfg
     bc = snap["bc"] if snap is not None else None
     return EvaluationContext(
-        deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        deployment_id=os.environ.get(
+            "DEPLOYMENT_ID",
+            os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        ),
         environment=DB_NAME,
         symbol=SYMBOL,
         interval=INTERVAL,

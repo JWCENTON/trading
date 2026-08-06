@@ -1660,7 +1660,10 @@ def _bbrange_evaluation_context(open_time, evaluation_started_at, snap=None):
     if candle_time.tzinfo is None or candle_time.utcoffset() is None:
         candle_time = candle_time.replace(tzinfo=timezone.utc)
     return EvaluationContext(
-        deployment_id=os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        deployment_id=os.environ.get(
+            "DEPLOYMENT_ID",
+            os.environ.get("WALTRADE_DEPLOYMENT_ID", "UNKNOWN"),
+        ),
         environment=DB_NAME, symbol=SYMBOL, interval=INTERVAL,
         strategy=STRATEGY_NAME, candle_open_time=candle_time,
         evaluation_started_at=evaluation_started_at,
