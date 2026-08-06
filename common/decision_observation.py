@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -51,6 +52,13 @@ class IdempotencyConflict(ValueError):
 
 
 def _json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
     if isinstance(value, Decimal):
         return format(value, "f")
     if isinstance(value, datetime):

@@ -151,3 +151,59 @@ def test_migration_does_not_mutate_trading_state():
         "INSERT INTO SIMULATED_ORDERS",
     ):
         assert statement not in upper
+
+
+def test_paper_simulation_nested_details_are_causally_serializable():
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from common.decision_contract import (
+        DecisionReason,
+        EvaluationContext,
+        FinalDecision,
+    )
+    from common.decision_observation import event_from_final_decision
+
+    now = datetime.now(timezone.utc)
+
+    ctx = EvaluationContext(
+        deployment_id="local-paper",
+        environment="trading_paper",
+        symbol="ETHUSDC",
+        interval="1m",
+        strategy="BBRANGE",
+        candle_open_time=now,
+        evaluation_started_at=now,
+        engine_name="BBRANGE",
+        paper_mode=True,
+        context={"contract_version": "FINAL_DECISION_V1"},
+    )
+
+    decision = FinalDecision.paper_simulation(
+        ctx,
+        DecisionReason.SSOT_EXECUTE_AND_RECORD,
+        finished_at=now,
+        reference_price=Decimal("1912.11"),
+        side="BUY",
+        details={
+            "legacy_result": {
+                "ledger_ok": True,
+                "live_ok": True,
+                "blocked_reason": None,
+            }
+        },
+    )
+
+    event = event_from_final_decision(
+        decision,
+        event_id="nested-details-event",
+        decision_key="nested-details-decision",
+        source_service="bot-bbrange",
+        source_instance="test",
+    )
+
+    assert event.decision_kind == "TRADE"
+    assert event.execution_eligible is True
+    assert event.action == "SIMULATE"
+    assert event.direction == "BUY"
+    assert event.decision_payload_hash
