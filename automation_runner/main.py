@@ -2235,6 +2235,7 @@ def run_shadow_learning_pipeline_refresh(conn):
             "refresh_learning_feedback_shadow_recommendations_v1",
             "refresh_learning_feature_warehouse_v1",
             "refresh_decision_replay_v1",
+            "reconcile_forward_causal_artifacts_v1_3",
         ]
 
         cur.execute(
@@ -2271,6 +2272,13 @@ def run_shadow_learning_pipeline_refresh(conn):
 
         cur.execute("SELECT refresh_decision_replay_v1(%s);", (lookback_hours,))
         stats["decision_replay"] = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT reconcile_forward_causal_artifacts_v1_3("
+            "now() - make_interval(hours => %s));",
+            (lookback_hours,),
+        )
+        stats["causal_reconciliation"] = cur.fetchone()[0]
 
         stats["lookback_hours"] = lookback_hours
 
