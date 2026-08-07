@@ -52,6 +52,8 @@ BEGIN
           AND d.decision_timestamp >= p_since
         ORDER BY d.decision_timestamp, d.decision_id
     LOOP
+
+        -- Replay is a single canonical position-linked projection.
         UPDATE public.decision_replay_v1
            SET recommendation_id =
                    v_registry.recommendation_id,
@@ -73,24 +75,35 @@ BEGIN
                    v_registry.legacy_decision_key
          WHERE environment = v_registry.environment
            AND position_id = v_registry.position_id
-           AND causal_linkage_status =
-               'LEGACY_NOT_ATTRIBUTABLE'
            AND (
                deployment_id = 'legacy-unknown'
                OR deployment_id =
                   v_registry.runtime_deployment_id
+           )
+           AND (
+               recommendation_id IS DISTINCT FROM
+                   v_registry.recommendation_id
+               OR activation_id IS DISTINCT FROM
+                   v_registry.activation_id
+               OR causal_linkage_status IS DISTINCT FROM
+                   v_registry.causal_linkage_status
+               OR observation_decision_key IS DISTINCT FROM
+                   v_registry.legacy_decision_key
            );
 
         GET DIAGNOSTICS v_rows = ROW_COUNT;
         v_replay_updates := v_replay_updates + v_rows;
 
+
+        -- Select the canonical warehouse projection using the existing
+        -- Learning canonical-row ordering. Do not restrict selection to
+        -- LEGACY_NOT_ATTRIBUTABLE: an earlier reconciliation may already
+        -- have attributed the canonical row.
         SELECT id
           INTO v_warehouse_id
           FROM public.learning_feature_warehouse_v1
          WHERE environment = v_registry.environment
            AND position_id = v_registry.position_id
-           AND causal_linkage_status =
-               'LEGACY_NOT_ATTRIBUTABLE'
            AND (
                deployment_id = 'legacy-unknown'
                OR deployment_id =
@@ -105,6 +118,33 @@ BEGIN
          LIMIT 1;
 
         IF v_warehouse_id IS NOT NULL THEN
+
+            -- At most one warehouse projection may own this causal
+            -- observation identity. If lifecycle progression changes the
+            -- canonical row, release the identity from the previous holder
+            -- before assigning it to the new canonical projection.
+            UPDATE public.learning_feature_warehouse_v1
+               SET recommendation_id = NULL,
+                   recommendation_version = NULL,
+                   activation_id = NULL,
+                   experiment_id = NULL,
+                   experiment_arm = NULL,
+                   baseline_policy_version = NULL,
+                   candidate_policy_version = NULL,
+                   causal_linkage_status =
+                       'LEGACY_NOT_ATTRIBUTABLE',
+                   observation_decision_key = NULL
+             WHERE environment = v_registry.environment
+               AND position_id = v_registry.position_id
+               AND id <> v_warehouse_id
+               AND observation_decision_key =
+                   v_registry.legacy_decision_key
+               AND (
+                   deployment_id = 'legacy-unknown'
+                   OR deployment_id =
+                      v_registry.runtime_deployment_id
+               );
+
             UPDATE public.learning_feature_warehouse_v1
                SET recommendation_id =
                        v_registry.recommendation_id,
@@ -124,7 +164,17 @@ BEGIN
                        v_registry.causal_linkage_status,
                    observation_decision_key =
                        v_registry.legacy_decision_key
-             WHERE id = v_warehouse_id;
+             WHERE id = v_warehouse_id
+               AND (
+                   recommendation_id IS DISTINCT FROM
+                       v_registry.recommendation_id
+                   OR activation_id IS DISTINCT FROM
+                       v_registry.activation_id
+                   OR causal_linkage_status IS DISTINCT FROM
+                       v_registry.causal_linkage_status
+                   OR observation_decision_key IS DISTINCT FROM
+                       v_registry.legacy_decision_key
+               );
 
             GET DIAGNOSTICS v_rows = ROW_COUNT;
             v_warehouse_updates :=
@@ -140,5 +190,6 @@ BEGIN
     );
 END;
 $function$;
+
 
 COMMIT;

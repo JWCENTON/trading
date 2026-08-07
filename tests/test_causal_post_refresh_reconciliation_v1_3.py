@@ -42,3 +42,20 @@ def test_reconciliation_uses_canonical_warehouse_selection():
         and "net_pnl_usdc IS NOT NULL" in MIGRATION
     )
     assert "LIMIT 1" in MIGRATION
+
+
+def test_reconciliation_is_idempotency_guarded():
+    assert "recommendation_id IS DISTINCT FROM" in MIGRATION
+    assert "observation_decision_key IS DISTINCT FROM" in MIGRATION
+
+    # Canonical warehouse selection must not be restricted only to
+    # LEGACY_NOT_ATTRIBUTABLE rows, otherwise a second run can select an older
+    # snapshot and collide with the existing causal observation identity.
+    canonical = MIGRATION[
+        MIGRATION.index("SELECT id"):
+        MIGRATION.index("IF v_warehouse_id IS NOT NULL")
+    ]
+    assert "causal_linkage_status = 'LEGACY_NOT_ATTRIBUTABLE'" not in canonical
+
+    assert "id <> v_warehouse_id" in MIGRATION
+    assert "observation_decision_key =" in MIGRATION
