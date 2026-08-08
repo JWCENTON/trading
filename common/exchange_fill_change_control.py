@@ -34,6 +34,7 @@ class FillApplicationClassification(str, Enum):
 
 class InventoryRowGeneration(str, Enum):
     FORWARD_C2_2 = "FORWARD_C2_2"
+    FORWARD_C2_2_PENDING_ENTRY = "FORWARD_C2_2_PENDING_ENTRY"
     EXISTING_PROJECTED_C2_2 = "EXISTING_PROJECTED_C2_2"
     LEGACY_UNPROJECTED = "LEGACY_UNPROJECTED"
     LEGACY_RECONSTRUCTION_APPROVED = "LEGACY_RECONSTRUCTION_APPROVED"
@@ -92,6 +93,7 @@ class RegisteredFillChange:
         }
         return evidence_accepted and self.row_generation in {
             InventoryRowGeneration.FORWARD_C2_2,
+            InventoryRowGeneration.FORWARD_C2_2_PENDING_ENTRY,
             InventoryRowGeneration.EXISTING_PROJECTED_C2_2,
         }
 
@@ -377,7 +379,176 @@ def classify_authoritative_change(
     return FillMutationDecision.AUTHORITATIVE_CORRECTION
 
 
-def _resolve_row_generation(cur, row: Mapping[str, Any]):
+def _okx_wire_client_order_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = "".join(char for char in str(value) if char.isalnum())[:32]
+    return normalized or None
+
+
+def _resolve_pending_entry_generation(
+    cur,
+    row: Mapping[str, Any],
+    *,
+    account_identity_key: str | None,
+):
+    """Resolve the first delayed fill from an exact baseline pending order.
+
+    This is deliberately narrower than the normal position-owned generation
+    resolver.  It only bootstraps fresh LOCAL LIVE OKX BUY evidence whose
+    deterministic wire CID proves ownership by one accepted pending entry
+    order.  Previously observed evidence is excluded so deploying this code
+    cannot replay an historical ``OBSERVED_NOT_APPLIED`` cohort.
+    """
+    source = str(row.get("source") or "").strip().lower()
+    environment = str(row.get("environment") or "").strip().lower()
+    deployment_id = str(row.get("deployment_id") or "").strip()
+    side = str(row.get("side") or "").strip().upper()
+    symbol = str(row.get("symbol") or "").strip().upper()
+    order_id = str(row.get("order_id") or "").strip()
+    trade_id = str(row.get("trade_id") or "").strip()
+    wire_cid = _okx_wire_client_order_id(row.get("client_order_id"))
+    account_identity_status = str(
+        row.get("account_identity_status") or ""
+    ).strip().upper()
+    try:
+        event_time_ms = int(row.get("event_time_ms") or 0)
+    except (TypeError, ValueError):
+        return None, None, None
+    if not all((
+        source == "okx",
+        environment == "live",
+        deployment_id == "local-live",
+        side == "BUY",
+        symbol,
+        order_id,
+        trade_id,
+        wire_cid,
+        account_identity_key,
+        row.get("account_identity_id") is not None,
+        account_identity_status == "VERIFIED",
+        event_time_ms > 0,
+    )):
+        return None, None, None
+
+    cur.execute(
+        """
+        /* fill-change:pending-entry-bootstrap-v1 */
+        SELECT 'FORWARD_C2_2_PENDING_ENTRY',
+               adoption.adoption_id,adoption.generation
+        FROM binance_orders bo
+        JOIN runtime_contract_adoption_v2 adoption
+          ON adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+         AND adoption.status='ACTIVE'
+         AND adoption.environment=%s
+         AND adoption.deployment_id=%s
+        WHERE lower(COALESCE(bo.exchange_source,''))='okx'
+          AND bo.symbol=%s
+          AND bo.order_id=%s
+          AND upper(bo.side)='BUY'
+          AND upper(COALESCE(bo.order_purpose,''))='ENTRY'
+          AND COALESCE(bo.is_exit,false) IS FALSE
+          AND bo.order_accepted IS TRUE
+          AND upper(COALESCE(bo.status,'')) IN (
+            'NEW','ACCEPTED','PARTIALLY_FILLED'
+          )
+          AND bo.position_id IS NULL
+          AND bo.reconciled_position_id IS NULL
+          AND bo.strategy IS NOT NULL AND btrim(bo.strategy)<>''
+          AND bo."interval" IS NOT NULL AND btrim(bo."interval")<>''
+          AND bo.requested_qty IS NOT NULL AND bo.requested_qty>0
+          AND bo.client_order_id LIKE (
+            'ORC-L-' || bo.symbol || '-' || upper(left(bo.strategy,4))
+            || '-' || lower(bo."interval") || '-E-%%'
+          )
+          AND bo.client_order_id ~ '-E-[0-9a-f]{6,8}$'
+          AND left(regexp_replace(
+            bo.client_order_id,'[^A-Za-z0-9]','','g'
+          ),32)=%s
+          AND COALESCE(bo.raw->>'orderId','')=bo.order_id
+          AND COALESCE(bo.raw->>'clientOrderId','')=%s
+          AND upper(COALESCE(bo.raw->>'status','')) IN (
+            'NEW','ACCEPTED','PARTIALLY_FILLED'
+          )
+          AND COALESCE(NULLIF(bo.raw->>'executedQty','')::numeric,0)=0
+          AND EXISTS (
+            SELECT 1 FROM strategy_events event
+            WHERE event.event_type='LIVE_ORDER_SENT'
+              AND event.symbol=bo.symbol
+              AND event.strategy=bo.strategy
+              AND event."interval"=bo."interval"
+              AND event.info->'resp'->>'orderId'=bo.order_id
+              AND event.info->>'client_order_id'=bo.client_order_id
+              AND event.info->'resp'->>'clientOrderId'=%s
+              AND lower(COALESCE(event.info->>'exchange_source',''))='okx'
+              AND COALESCE(NULLIF(
+                event.info->>'order_accepted',''
+              )::boolean,false) IS TRUE
+              AND COALESCE(NULLIF(
+                event.info->>'is_exit',''
+              )::boolean,false) IS FALSE
+              AND upper(COALESCE(event.info->>'order_purpose',''))='ENTRY'
+              AND upper(COALESCE(event.info->>'status','')) IN (
+                'NEW','ACCEPTED','PARTIALLY_FILLED'
+              )
+              AND COALESCE(NULLIF(
+                event.info->>'executed_qty',''
+              )::numeric,0)=0
+          )
+          AND bo.created_at>=adoption.adopted_at
+          AND bo.created_at<=to_timestamp(%s/1000.0)
+          AND to_timestamp(%s/1000.0)<=bo.created_at+interval '7 days'
+          AND to_timestamp(%s/1000.0)>=clock_timestamp()-interval '7 days'
+          AND NOT EXISTS (
+            SELECT 1 FROM positions p
+            WHERE p.entry_order_id=bo.order_id
+               OR p.exit_order_id=bo.order_id
+               OR p.id=bo.position_id
+               OR p.id=bo.reconciled_position_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM binance_order_fills f
+            WHERE lower(f.source)='okx' AND f.trade_id::text=%s
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM exchange_fill_ingestion_state_v2 state
+            WHERE state.source='okx'
+              AND state.account_identity_key=%s
+              AND state.symbol=%s AND state.trade_id=%s
+          )
+        ORDER BY bo.id
+        LIMIT 1
+        """,
+        (
+            environment,
+            deployment_id,
+            symbol,
+            order_id,
+            wire_cid,
+            wire_cid,
+            wire_cid,
+            event_time_ms,
+            event_time_ms,
+            event_time_ms,
+            trade_id,
+            str(account_identity_key),
+            symbol,
+            trade_id,
+        ),
+    )
+    result = cur.fetchone()
+    if result is None:
+        return None, None, None
+    classification, adoption_id, generation = result
+    return classification, int(adoption_id), int(generation)
+
+
+def _resolve_row_generation(
+    cur,
+    row: Mapping[str, Any],
+    *,
+    account_identity_key: str | None = None,
+):
     cur.execute(
         """
         SELECT
@@ -429,7 +600,9 @@ def _resolve_row_generation(cur, row: Mapping[str, Any]):
     )
     result = cur.fetchone()
     if result is None:
-        return None, None, None
+        return _resolve_pending_entry_generation(
+            cur, row, account_identity_key=account_identity_key
+        )
     classification, adoption_id, generation = result
     if classification == "ADOPTION_NOT_ACTIVE":
         return classification, None, None
@@ -454,7 +627,9 @@ def register_fill_change(
         row, account_identity_key=account_identity_key
     )
     row_classification, adoption_id, contract_generation = (
-        _resolve_row_generation(cur, row)
+        _resolve_row_generation(
+            cur, row, account_identity_key=account_identity_key
+        )
     )
     row_generation = (
         InventoryRowGeneration(row_classification)

@@ -7,6 +7,8 @@ import pytest
 from common.exchange_fill_change_control import (
     FillApplicationClassification,
     FillMutationDecision,
+    InventoryRowGeneration,
+    _resolve_pending_entry_generation,
     authoritative_fill_fingerprint,
     classify_fill_application_state,
     mark_fill_change_applied,
@@ -205,13 +207,16 @@ def fill(
     price="10",
     fee="0.01",
     fee_asset="USDC",
+    side="SELL",
+    client_order_id=None,
 ):
     return {
         "source": "okx",
         "symbol": symbol,
         "trade_id": str(trade_id),
         "order_id": str(order_id),
-        "side": "SELL",
+        "side": side,
+        "client_order_id": client_order_id,
         "executed_qty": qty,
         "avg_price": price,
         "commission_amount": fee,
@@ -219,7 +224,76 @@ def fill(
         "event_time_ms": 1785313867843,
         "environment": "live",
         "deployment_id": "local-live",
+        "account_identity_id": 1,
+        "account_identity_status": "VERIFIED",
     }
+
+
+class PendingBootstrapCursor(LedgerCursor):
+    def execute(self, query, params=()):
+        sql = " ".join(query.split())
+        if "fill-change:pending-entry-bootstrap-v1" in sql:
+            self.result = (
+                "FORWARD_C2_2_PENDING_ENTRY",
+                1,
+                1,
+            )
+            self.rowcount = 1
+            return
+        super().execute(query, params)
+
+
+def test_exact_pending_entry_generation_permits_first_canonical_mutation():
+    cur = PendingBootstrapCursor()
+    row = fill(
+        "delayed-entry-1",
+        "delayed-order-1",
+        side="BUY",
+        client_order_id="ORCLBNBUSDCTREN1mEabcdef12",
+    )
+    cur.resolutions[row["order_id"]] = None
+
+    change = register_fill_change(
+        cur, row, account_identity_key="1"
+    )
+
+    assert change.row_generation is (
+        InventoryRowGeneration.FORWARD_C2_2_PENDING_ENTRY
+    )
+    assert change.decision is FillMutationDecision.NEW_AUTHORITATIVE_EVIDENCE
+    assert change.permits_mutation is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source", "binance"),
+        ("environment", "paper"),
+        ("deployment_id", "other-live"),
+        ("side", "SELL"),
+        ("client_order_id", None),
+        ("account_identity_id", None),
+        ("account_identity_status", "MISSING"),
+    ),
+)
+def test_pending_entry_generation_fails_closed_before_database_lookup(
+    field, value
+):
+    row = fill(
+        "not-eligible",
+        "not-eligible-order",
+        side="BUY",
+        client_order_id="ORCLBNBUSDCTREN1mEabcdef12",
+    )
+    row[field] = value
+
+    class NoSqlCursor:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("ineligible evidence must not query bootstrap")
+
+    assert _resolve_pending_entry_generation(
+        NoSqlCursor(), row, account_identity_key="1"
+    ) == (None, None, None)
 
 
 def old_fill_tuple(row):
