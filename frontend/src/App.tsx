@@ -12,6 +12,7 @@ import {
   getApiKeyStatus,
   submitApiKeySafetyConfirmation,
   getUiAccount,
+  getUiEquity,
   getUiAdvancedSummary,
   getUserSettings,
   getUiHealth,
@@ -34,6 +35,7 @@ import {
   type SecuritySummary,
   type ApiKeyStatusResponse,
   type UiAccountSummary,
+  type UiEquityHistoryResponse,
   type UiEnvironment,
   type UiHealthResponse,
   type UiLiveSummary,
@@ -74,6 +76,7 @@ function App() {
   const [environment] = useState<UiEnvironment>(() => detectEnvironmentFromHost());
   const [summary, setSummary] = useState<UiLiveSummary | null>(null);
   const [account, setAccount] = useState<UiAccountSummary | null>(null);
+  const [equity, setEquity] = useState<UiEquityHistoryResponse | null>(null);
   const [trading24h, setTrading24h] = useState<UiTrading24hSummary | null>(null);
   const [openPositions, setOpenPositions] = useState<UiOpenPosition[]>([]);
   const [recentClosed, setRecentClosed] = useState<UiRecentClosedPosition[]>([]);
@@ -237,9 +240,10 @@ function App() {
     setError(null);
     setLoading(true);
     try {
-      const [summaryRes, accountRes, trading24hRes, openRes, closedRes, settingsRes] = await Promise.all([
+      const [summaryRes, accountRes, equityRes, trading24hRes, openRes, closedRes, settingsRes] = await Promise.all([
         getUiLiveSummary(),
         getUiAccount(),
+        getUiEquity(),
         getUiTrading24h(),
         getUiOpenPositions(),
         getUiRecentClosed(10),
@@ -248,6 +252,7 @@ function App() {
 
       setSummary(summaryRes);
       setAccount(accountRes);
+      setEquity(equityRes);
       setTrading24h(trading24hRes);
       setOpenPositions(openRes.items);
       setRecentClosed(closedRes.items);
@@ -792,7 +797,7 @@ function App() {
           <div className="live-home-stack live-home-stack--client-first">
             <div className="live-priority-grid">
               <div className="live-priority-main">
-                <AccountSnapshotPanel account={account} />
+                <AccountSnapshotPanel account={account} equity={equity} />
               </div>
               <div className="live-priority-side">
                 <Trading24hPanel trading24h={trading24h} />

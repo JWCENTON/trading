@@ -8,6 +8,7 @@ import hashlib
 import uuid
 from functools import wraps
 from datetime import datetime, timezone, date
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlparse
 from common.reconcile_positions import reconcile_positions
@@ -42,6 +43,7 @@ from common.orc_apply_ledger import (
 from common.learning_evidence_context import (
     set_learning_evidence_transaction_context,
 )
+from common.equity_curve import collect_current_equity, upsert_daily_snapshot
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -2054,6 +2056,53 @@ def run_daily_report(conn):
     logging.info("daily_report: done")
 
 
+def run_daily_equity_snapshot(conn):
+    """Capture one forward-only equity observation at the existing UTC cadence."""
+    if os.getenv("EQUITY_SNAPSHOT_ENABLED", "1") != "1":
+        return
+    target = os.getenv(
+        "EQUITY_SNAPSHOT_HHMM_UTC",
+        os.getenv("DAILY_REPORT_HHMM_UTC", "0020"),
+    )
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if now_utc_hhmm() < target:
+        return
+    deployment_id = os.getenv("DEPLOYMENT_ID", "").strip().lower()
+    if deployment_id not in {
+        "local-paper", "local-live", "vps-paper", "vps-live"
+    }:
+        raise RuntimeError("EQUITY_SNAPSHOT_DEPLOYMENT_ID_INVALID")
+
+    with conn.cursor() as cur:
+        last = q1(
+            cur,
+            "SELECT value FROM automation_kv WHERE key='equity_snapshot_last_run';",
+        )
+        if last == today:
+            return
+        observation = collect_current_equity(
+            cur,
+            trading_mode=cfg.trading_mode,
+            exchange_client=client,
+            quote_asset=os.getenv("QUOTE_ASSET", "USDC").upper(),
+            paper_start_usdc=Decimal(
+                os.getenv("PAPER_START_USDT", "1000")
+            ),
+        )
+        snapshot_id = upsert_daily_snapshot(
+            cur,
+            deployment_id=deployment_id,
+            trading_mode=cfg.trading_mode,
+            observation=observation,
+        )
+        upsert_kv(cur, "equity_snapshot_last_run", today)
+    conn.commit()
+    logging.info(
+        "equity_snapshot: captured id=%s deployment=%s evidence=%s",
+        snapshot_id, deployment_id, observation.evidence_status,
+    )
+
+
 
 
 
@@ -3531,6 +3580,15 @@ def main():
                 logging.exception("causal_observation_consumer failed")
 
             run_daily_report(conn)
+
+            try:
+                run_daily_equity_snapshot(conn)
+            except Exception:
+                logging.exception("equity_snapshot failed")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
             run_independent_refresh_job(
                 conn,

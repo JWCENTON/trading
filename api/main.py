@@ -4,9 +4,10 @@ from common.closed_outcome_read_model import (
     fetch_closed_outcomes,
 )
 from common.paper_account_read_model import reconstruct_paper_account
+from common.equity_curve import fetch_equity_history
 import os
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from typing import List, Optional, Dict
 
@@ -401,6 +402,43 @@ class UIAccountSummary(BaseModel):
     assets: Dict[str, float]
     asset_values_usdc: Dict[str, float]
     updated_at: datetime
+
+
+class UIEquityHistoryItem(BaseModel):
+    snapshot_date: date
+    account_total_value_usdc: float
+    external_manual_value_usdc: Optional[float]
+    waltrade_managed_equity_usdc: Optional[float]
+    available_usdc: float
+    bot_inventory_value_usdc: float
+    realized_net_pnl_usdc: Optional[float]
+    unrealized_pnl_usdc: Optional[float]
+    fees_usdc: Optional[float]
+    open_positions: int
+    evidence_status: str
+    source_timestamp: datetime
+
+
+class UIEquityMetrics(BaseModel):
+    current_waltrade_equity: Optional[float]
+    current_account_total: Optional[float]
+    change_7d_abs: Optional[float]
+    change_7d_pct: Optional[float]
+    change_30d_abs: Optional[float]
+    change_30d_pct: Optional[float]
+    month_open_equity: Optional[float]
+    month_change_abs: Optional[float]
+    month_change_pct: Optional[float]
+    peak_equity: Optional[float]
+    drawdown_from_peak_pct: Optional[float]
+
+
+class UIEquityHistoryResponse(BaseModel):
+    deployment_id: str
+    trading_mode: str
+    range: str
+    metrics: UIEquityMetrics
+    items: List[UIEquityHistoryItem]
 
 
 class UITrading24hSummary(BaseModel):
@@ -3244,6 +3282,36 @@ def ui_account_summary(user: CurrentUser = Depends(require_auth)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ui/account failed in PAPER mode: {e}")
+
+
+@app.get("/ui/equity", response_model=UIEquityHistoryResponse)
+def ui_equity_history(
+    range: str = Query("ALL", pattern="^(7D|30D|ALL)$"),
+    user: CurrentUser = Depends(require_auth),
+):
+    deployment_id = os.getenv("DEPLOYMENT_ID", "").strip().lower()
+    if not deployment_id:
+        raise HTTPException(status_code=503, detail="DEPLOYMENT_ID is not configured")
+    try:
+        with db_cursor() as (_conn, cur):
+            items, metrics = fetch_equity_history(
+                cur, deployment_id=deployment_id
+            )
+        days = {"7D": 7, "30D": 30}.get(range)
+        if days is not None:
+            cutoff = datetime.now(timezone.utc).date() - timedelta(days=days)
+            items = [item for item in items if item["snapshot_date"] >= cutoff]
+        return UIEquityHistoryResponse(
+            deployment_id=deployment_id,
+            trading_mode=TRADING_MODE,
+            range=range,
+            metrics=metrics,
+            items=items,
+        )
+    except UndefinedTable:
+        raise HTTPException(status_code=503, detail="Equity snapshot schema not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ui/equity failed: {e}")
 
 
 @app.get("/ui/trading-24h", response_model=UITrading24hSummary)

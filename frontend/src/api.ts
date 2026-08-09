@@ -595,6 +595,41 @@ export interface UiAccountSummary {
   updated_at: string;
 }
 
+export interface UiEquityHistoryItem {
+  snapshot_date: string;
+  account_total_value_usdc: number;
+  external_manual_value_usdc: number | null;
+  waltrade_managed_equity_usdc: number | null;
+  available_usdc: number;
+  bot_inventory_value_usdc: number;
+  realized_net_pnl_usdc: number | null;
+  unrealized_pnl_usdc: number | null;
+  fees_usdc: number | null;
+  open_positions: number;
+  evidence_status: "COMPLETE" | "INCOMPLETE";
+  source_timestamp: string;
+}
+
+export interface UiEquityHistoryResponse {
+  deployment_id: string;
+  trading_mode: "PAPER" | "LIVE";
+  range: "7D" | "30D" | "ALL";
+  metrics: {
+    current_waltrade_equity: number | null;
+    current_account_total: number | null;
+    change_7d_abs: number | null;
+    change_7d_pct: number | null;
+    change_30d_abs: number | null;
+    change_30d_pct: number | null;
+    month_open_equity: number | null;
+    month_change_abs: number | null;
+    month_change_pct: number | null;
+    peak_equity: number | null;
+    drawdown_from_peak_pct: number | null;
+  };
+  items: UiEquityHistoryItem[];
+}
+
 export interface UiTrading24hSummary {
   closed_pnl_24h: number;
   trades_24h: number;
@@ -821,6 +856,10 @@ export async function getUiLiveSummary() {
 
 export async function getUiAccount() {
   return (await getApi().get<UiAccountSummary>("/ui/account")).data;
+}
+
+export async function getUiEquity() {
+  return (await getApi().get<UiEquityHistoryResponse>("/ui/equity", { params: { range: "ALL" } })).data;
 }
 
 export async function getUiTrading24h() {
