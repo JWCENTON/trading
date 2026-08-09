@@ -145,6 +145,16 @@ def test_daily_snapshot_upsert_is_idempotent_by_contract() -> None:
     assert first == second == 7
 
 
+def test_incomplete_snapshot_may_retain_proven_external_value() -> None:
+    observation = EquityObservation(
+        Decimal("100"), Decimal("0"), None, Decimal("100"), Decimal("0"),
+        None, None, None, 0, "INCOMPLETE",
+        datetime(2026, 8, 9, tzinfo=timezone.utc),
+    )
+    assert observation.external_manual_value_usdc == Decimal("0")
+    assert observation.waltrade_managed_equity_usdc is None
+
+
 def test_api_scheduler_and_schema_contracts_are_wired() -> None:
     api = (ROOT / "api/main.py").read_text()
     scheduler = (ROOT / "automation_runner/main.py").read_text()

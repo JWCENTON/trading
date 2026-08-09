@@ -298,7 +298,7 @@ def collect_current_equity(
         )
         inventory_value = _decimal(paper_inventory_value)
         return EquityObservation(
-            total or ZERO, ZERO if complete else None, managed,
+            total or ZERO, ZERO, managed,
             (total or ZERO) - inventory_value, inventory_value,
             stats["net_pnl"], unrealized_decimal, stats["fees"],
             int(open_positions), evidence, observed_at,
