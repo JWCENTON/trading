@@ -2085,6 +2085,7 @@ def run_daily_equity_snapshot(conn):
             trading_mode=cfg.trading_mode,
             exchange_client=client,
             quote_asset=os.getenv("QUOTE_ASSET", "USDC").upper(),
+            deployment_id=deployment_id,
             paper_start_usdc=Decimal(
                 os.getenv("PAPER_START_USDT", "1000")
             ),

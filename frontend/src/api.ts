@@ -626,6 +626,10 @@ export interface UiEquityHistoryResponse {
     month_change_pct: number | null;
     peak_equity: number | null;
     drawdown_from_peak_pct: number | null;
+    baseline_date: string | null;
+    baseline_equity: number | null;
+    since_baseline_abs: number | null;
+    since_baseline_pct: number | null;
   };
   items: UiEquityHistoryItem[];
 }

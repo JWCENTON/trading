@@ -52,6 +52,10 @@ def test_7d_30d_month_peak_and_drawdown_metrics() -> None:
     assert metrics["month_change_pct"] == Decimal("10")
     assert metrics["peak_equity"] == Decimal("120")
     assert metrics["drawdown_from_peak_pct"] == Decimal("-8.333333333333333333333333333")
+    assert metrics["baseline_date"] == date(2026, 7, 10)
+    assert metrics["baseline_equity"] == Decimal("80")
+    assert metrics["since_baseline_abs"] == Decimal("30")
+    assert metrics["since_baseline_pct"] == Decimal("37.500")
 
 
 def test_empty_and_short_history_are_insufficient() -> None:
@@ -60,6 +64,17 @@ def test_empty_and_short_history_are_insufficient() -> None:
     assert metrics["change_7d_abs"] is None
     assert metrics["change_30d_pct"] is None
     assert metrics["month_change_abs"] == Decimal("0")
+
+
+def test_baseline_ignores_incomplete_snapshots() -> None:
+    metrics = calculate_equity_metrics([
+        point("2026-08-01", None),
+        point("2026-08-02", "90"),
+        point("2026-08-03", "99"),
+    ])
+    assert metrics["baseline_date"] == date(2026, 8, 2)
+    assert metrics["baseline_equity"] == Decimal("90")
+    assert metrics["since_baseline_abs"] == Decimal("9")
 
 
 class SequencedCursor:
@@ -76,6 +91,7 @@ class SequencedCursor:
 
 def test_manual_btc_price_moves_total_but_is_subtracted_from_managed() -> None:
     cur = SequencedCursor([
+        [],
         [("BTCUSDC", Decimal("0.1"), True)],
         [("BTCUSDC", "BUY", {
             "executed_qty": "0.5", "fee_quantity": "0",
@@ -102,6 +118,7 @@ def test_unattributed_below_minimum_inventory_is_canonical_dust() -> None:
     cur = SequencedCursor([
         [],
         [],
+        [],
         [("BTCUSDC", Decimal("0.00000001"), Decimal("0.00001"), Decimal("1"))],
     ])
     external, bot_value, complete = _ownership_projection(
@@ -113,6 +130,35 @@ def test_unattributed_below_minimum_inventory_is_canonical_dust() -> None:
     assert complete is True
     assert external == Decimal("0")
     assert bot_value == Decimal("0")
+
+
+def test_account_level_external_btc_is_valued_at_current_price() -> None:
+    quantity = Decimal("0.00271641596")
+    cur = SequencedCursor([
+        [({
+            "contract_version": "ACCOUNT_INVENTORY_OWNERSHIP_V1",
+            "asset": "BTC",
+            "ownership": "EXTERNAL_OR_MANUAL",
+            "quantity": str(quantity),
+            "quantity_basis": "AUTHORITATIVE_EVIDENCE",
+            "evidence_status": "COMPLETE",
+            "unresolved_quantity": "0",
+        }, {"deployment_id": "vps-live"})],
+        [],
+        [],
+        [("BTCUSDC", Decimal("0.00000001"), Decimal("0.00001"), Decimal("1"))],
+    ])
+    prices = {"BTC": Decimal("65000"), "ETH": Decimal("0"), "BNB": Decimal("0"), "SOL": Decimal("0")}
+    external, _, complete = _ownership_projection(
+        cur,
+        {"BTC": quantity, "ETH": Decimal("0"), "BNB": Decimal("0"), "SOL": Decimal("0")},
+        prices,
+        "USDC",
+        deployment_id="vps-live",
+    )
+    assert complete is True
+    assert external == quantity * prices["BTC"]
+    assert "175." not in (ROOT / "common/equity_curve.py").read_text()
 
 
 class UpsertCursor:

@@ -105,6 +105,7 @@ export function AccountSnapshotPanel({ account, equity }: AccountSnapshotPanelPr
           <span><small>30D</small><strong>{formatChange(equity?.metrics.change_30d_abs, equity?.metrics.change_30d_pct)}</strong></span>
           <span><small>This Month</small><strong>{formatChange(equity?.metrics.month_change_abs, equity?.metrics.month_change_pct)}</strong></span>
           <span><small>Current Drawdown</small><strong>{equity?.metrics.drawdown_from_peak_pct == null ? "—" : `${equity.metrics.drawdown_from_peak_pct.toFixed(2)}%`}</strong></span>
+          <span><small>Since Baseline</small><strong>{formatChange(equity?.metrics.since_baseline_abs, equity?.metrics.since_baseline_pct)}</strong><small>{equity?.metrics.baseline_date ?? "No complete baseline"}</small></span>
         </div>
         <div className="equity-chart" aria-label="WalTrade Equity over time">
           <span className="status-label">WalTrade Equity over time</span>

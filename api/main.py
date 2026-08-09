@@ -431,6 +431,10 @@ class UIEquityMetrics(BaseModel):
     month_change_pct: Optional[float]
     peak_equity: Optional[float]
     drawdown_from_peak_pct: Optional[float]
+    baseline_date: Optional[date]
+    baseline_equity: Optional[float]
+    since_baseline_abs: Optional[float]
+    since_baseline_pct: Optional[float]
 
 
 class UIEquityHistoryResponse(BaseModel):

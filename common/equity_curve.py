@@ -75,6 +75,10 @@ def calculate_equity_metrics(points: Iterable[EquityPoint]) -> dict[str, Any]:
             "month_change_pct": None,
             "peak_equity": None,
             "drawdown_from_peak_pct": None,
+            "baseline_date": None,
+            "baseline_equity": None,
+            "since_baseline_abs": None,
+            "since_baseline_pct": None,
         }
 
     latest = ordered[-1]
@@ -101,6 +105,18 @@ def calculate_equity_metrics(points: Iterable[EquityPoint]) -> dict[str, Any]:
     seven = _change(current, baseline(7))
     thirty = _change(current, baseline(30))
     month = _change(current, month_open)
+    baseline_point = next(
+        (
+            point for point in ordered
+            if point.waltrade_managed_equity_usdc is not None
+        ),
+        None,
+    )
+    baseline_equity = (
+        baseline_point.waltrade_managed_equity_usdc
+        if baseline_point is not None else None
+    )
+    since_baseline = _change(current, baseline_equity)
     complete_values = [
         point.waltrade_managed_equity_usdc
         for point in ordered
@@ -123,6 +139,12 @@ def calculate_equity_metrics(points: Iterable[EquityPoint]) -> dict[str, Any]:
         "month_change_pct": month["pct"],
         "peak_equity": peak,
         "drawdown_from_peak_pct": drawdown,
+        "baseline_date": (
+            baseline_point.snapshot_date if baseline_point is not None else None
+        ),
+        "baseline_equity": baseline_equity,
+        "since_baseline_abs": since_baseline["abs"],
+        "since_baseline_pct": since_baseline["pct"],
     }
 
 
@@ -145,7 +167,70 @@ def _exchange_balances(client: Any, quote_asset: str) -> tuple[dict[str, Decimal
     return quantities, prices, observed_at
 
 
-def _ownership_projection(cur: Any, quantities: Mapping[str, Decimal], prices: Mapping[str, Decimal], quote_asset: str) -> tuple[Decimal | None, Decimal, bool]:
+def _account_ownership_provenance(
+    cur: Any, *, deployment_id: str
+) -> tuple[dict[str, Decimal], bool]:
+    cur.execute(
+        """
+        SELECT immutable_payload, deployment_provenance
+        FROM legacy_repair_provenance_v1
+        WHERE evidence_source='ACCOUNT_INVENTORY_OWNERSHIP'
+          AND immutable_payload->>'contract_version'=
+              'ACCOUNT_INVENTORY_OWNERSHIP_V1'
+          AND deployment_provenance->>'deployment_id'=%s
+        ORDER BY provenance_id
+        """,
+        (deployment_id,),
+    )
+    by_asset: dict[str, list[Decimal]] = {}
+    complete = True
+    for payload, deployment in cur.fetchall():
+        payload = payload or {}
+        deployment = deployment or {}
+        asset = str(payload.get("asset") or "").upper()
+        try:
+            unresolved_quantity = _decimal(
+                payload.get("unresolved_quantity")
+            )
+            quantity = _decimal(payload.get("quantity"))
+        except (ValueError, ArithmeticError):
+            complete = False
+            continue
+        valid = (
+            asset in TRACKED_BASE_ASSETS
+            and payload.get("ownership") == "EXTERNAL_OR_MANUAL"
+            and payload.get("quantity_basis") == "AUTHORITATIVE_EVIDENCE"
+            and payload.get("evidence_status") == "COMPLETE"
+            and unresolved_quantity == ZERO
+            and payload.get("quantity") not in (None, "")
+            and quantity >= ZERO
+            and str(deployment.get("deployment_id") or "").lower()
+                == deployment_id
+            and "value_usdc" not in payload
+        )
+        if not valid:
+            complete = False
+            continue
+        by_asset.setdefault(asset, []).append(quantity)
+    if any(len(values) != 1 for values in by_asset.values()):
+        complete = False
+    return (
+        {asset: values[0] for asset, values in by_asset.items() if len(values) == 1},
+        complete,
+    )
+
+
+def _ownership_projection(
+    cur: Any,
+    quantities: Mapping[str, Decimal],
+    prices: Mapping[str, Decimal],
+    quote_asset: str,
+    *,
+    deployment_id: str = "local-live",
+) -> tuple[Decimal | None, Decimal, bool]:
+    account_external_qty, account_provenance_complete = (
+        _account_ownership_provenance(cur, deployment_id=deployment_id)
+    )
     cur.execute(
         """
         SELECT symbol,
@@ -202,10 +287,16 @@ def _ownership_projection(cur: Any, quantities: Mapping[str, Decimal], prices: M
     }
     external_value = ZERO
     bot_value = ZERO
-    complete = inventory_complete and external_complete
+    complete = (
+        inventory_complete
+        and external_complete
+        and account_provenance_complete
+    )
     for asset in TRACKED_BASE_ASSETS:
         bot = bot_qty.get(asset, ZERO)
-        external = external_qty.get(asset, ZERO)
+        external = account_external_qty.get(
+            asset, external_qty.get(asset, ZERO)
+        )
         step, min_qty, min_notional = limits.get(
             asset,
             (Decimal("0.000000000001"), ZERO, ZERO),
@@ -246,6 +337,7 @@ def collect_current_equity(
     exchange_client: Any,
     quote_asset: str = "USDC",
     paper_start_usdc: Decimal = Decimal("1000"),
+    deployment_id: str = "local-paper",
 ) -> EquityObservation:
     mode = trading_mode.upper()
     window_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -307,7 +399,7 @@ def collect_current_equity(
     quantities, prices, observed_at = _exchange_balances(exchange_client, quote_asset)
     total = sum((quantities[asset] * prices[asset] for asset in quantities), ZERO)
     external, bot_inventory, ownership_complete = _ownership_projection(
-        cur, quantities, prices, quote_asset
+        cur, quantities, prices, quote_asset, deployment_id=deployment_id
     )
     managed, evidence = subtract_external_manual(
         total, external, ownership_complete=ownership_complete
