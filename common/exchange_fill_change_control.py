@@ -429,6 +429,7 @@ def _resolve_pending_entry_generation(
         wire_cid,
         account_identity_key,
         row.get("account_identity_id") is not None,
+        str(row.get("account_identity_id")) == str(account_identity_key),
         account_identity_status == "VERIFIED",
         event_time_ms > 0,
     )):
@@ -503,7 +504,8 @@ def _resolve_pending_entry_generation(
               )::numeric,0)=0
           )
           AND bo.created_at>=adoption.adopted_at
-          AND bo.created_at<=to_timestamp(%s/1000.0)
+          AND to_timestamp(%s/1000.0)>=adoption.adopted_at
+          AND bo.created_at<=to_timestamp(%s/1000.0)+interval '7 days'
           AND to_timestamp(%s/1000.0)<=bo.created_at+interval '7 days'
           AND to_timestamp(%s/1000.0)>=clock_timestamp()-interval '7 days'
           AND NOT EXISTS (
@@ -544,6 +546,7 @@ def _resolve_pending_entry_generation(
             wire_cid,
             wire_cid,
             wire_cid,
+            event_time_ms,
             event_time_ms,
             event_time_ms,
             event_time_ms,

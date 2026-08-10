@@ -170,17 +170,18 @@ def _database(disposable_postgres_v16, purpose: str):
 
 
 def _active_adoption(
-    cur, *, adopted_at: datetime, deployment_id: str = "local-live"
+    cur, *, adopted_at: datetime, deployment_id: str = "local-live",
+    generation: int = 1,
 ):
     cur.execute(
         """
         INSERT INTO runtime_contract_adoption_v2(
           contract_name,environment,deployment_id,generation,status,adopted_at
         ) VALUES (
-          'FEE_AWARE_INVENTORY_C2_2','live',%s,1,'ACTIVE',%s
+          'FEE_AWARE_INVENTORY_C2_2','live',%s,%s,'ACTIVE',%s
         ) RETURNING adoption_id
         """,
-        (deployment_id, adopted_at),
+        (deployment_id, generation, adopted_at),
     )
     return int(cur.fetchone()[0])
 
@@ -496,6 +497,121 @@ def test_delayed_entry_bootstrap_fails_closed_before_database_lookup(
 
 
 @pytest.mark.parametrize(
+    "case",
+    (
+        "different-order-id",
+        "different-account",
+        "wrong-symbol",
+        "missing-live-order-sent",
+        "old-unrelated-fill",
+        "conflicting-position-ownership",
+        "conflicting-canonical-fill",
+    ),
+)
+def test_delayed_entry_bootstrap_causal_guards_remain_fail_closed(
+    disposable_postgres_v16, case
+):
+    conn = _database(
+        disposable_postgres_v16, f"causal_guard_{case.replace('-', '_')}"
+    )
+    now_ms = (int(time.time() * 1000) // 1000) * 1000
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+    event_time = (
+        now - timedelta(days=8) if case == "old-unrelated-fill" else now
+    )
+    order_time = (
+        now if case == "old-unrelated-fill"
+        else event_time + timedelta(milliseconds=96)
+    )
+    order_id = "causal-order-1"
+    trade_id = "causal-trade-1"
+    local_cid = "ORC-L-BTCUSDC-RSI-1m-E-abcdef12"
+    wire_cid = local_cid.replace("-", "")
+    row = _fill_row(
+        trade_id=trade_id,
+        order_id=order_id,
+        client_order_id=wire_cid,
+        side="BUY",
+        event_time=event_time,
+        qty="0.00030817",
+        price="60000.00",
+        fee="0.000001078595",
+        fee_asset="BTC",
+        deployment_id="vps-live",
+        symbol="BTCUSDC",
+    )
+    if case == "different-order-id":
+        row["order_id"] = "another-exchange-order"
+    elif case == "different-account":
+        row["account_identity_id"] = 2
+    elif case == "wrong-symbol":
+        row["symbol"] = "ETHUSDC"
+
+    try:
+        with conn.cursor() as cur:
+            _active_adoption(
+                cur,
+                adopted_at=event_time - timedelta(minutes=1),
+                deployment_id="vps-live",
+                generation=3,
+            )
+            cur.execute(
+                """
+                INSERT INTO binance_orders(
+                  created_at,symbol,side,order_type,client_order_id,order_id,
+                  status,raw,position_id,is_exit,strategy,"interval",
+                  order_purpose,requested_qty,order_accepted,exchange_source
+                ) VALUES (
+                  %s,'BTCUSDC','BUY','MARKET',%s,%s,'NEW',%s::jsonb,NULL,
+                  false,'RSI','1m','ENTRY',0.00030817,true,'okx'
+                )
+                """,
+                (
+                    order_time,
+                    local_cid,
+                    order_id,
+                    json.dumps({
+                        "orderId": order_id,
+                        "clientOrderId": wire_cid,
+                        "status": "NEW",
+                        "executedQty": "0",
+                    }),
+                ),
+            )
+            if case != "missing-live-order-sent":
+                _insert_live_order_event(
+                    cur,
+                    created_at=order_time,
+                    order_id=order_id,
+                    local_cid=local_cid,
+                    wire_cid=wire_cid,
+                    symbol="BTCUSDC",
+                    strategy="RSI",
+                )
+            if case == "conflicting-position-ownership":
+                cur.execute(
+                    """
+                    INSERT INTO positions(
+                      symbol,strategy,"interval",status,side,qty,entry_price,
+                      entry_time,entry_order_id
+                    ) VALUES (
+                      'BTCUSDC','RSI','1m','OPEN','LONG',0.1,60000,%s,%s
+                    )
+                    """,
+                    (event_time, order_id),
+                )
+            if case == "conflicting-canonical-fill":
+                _insert_canonical_fill(cur, row)
+
+            assert _resolve_pending_entry_generation(
+                cur, row, account_identity_key="1"
+            ) == (None, None, None)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+@pytest.mark.parametrize(
     ("processing_order", "batch_mode", "preobserved"),
     (
         (("A", "B"), False, False),
@@ -566,10 +682,11 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
 
     try:
         with conn.cursor() as cur:
-            _active_adoption(
+            adoption_id = _active_adoption(
                 cur,
                 adopted_at=base_time - timedelta(minutes=5),
                 deployment_id="vps-live",
+                generation=3,
             )
             for incident in incidents.values():
                 wire_cid = incident["cid"].replace("-", "")
@@ -587,7 +704,7 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
                     """,
                     (
                         incident["local_order_id"],
-                        incident["event_time"] - timedelta(seconds=3),
+                        incident["event_time"] + timedelta(milliseconds=96),
                         incident["cid"],
                         incident["order_id"],
                         json.dumps({
@@ -601,7 +718,7 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
                 )
                 _insert_live_order_event(
                     cur,
-                    created_at=incident["event_time"] - timedelta(seconds=3),
+                    created_at=incident["event_time"] + timedelta(milliseconds=96),
                     order_id=incident["order_id"],
                     local_cid=incident["cid"],
                     wire_cid=wire_cid,
@@ -677,6 +794,15 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
             )
             cur.execute(
                 """
+                SELECT inventory_contract_adoption_id,
+                       inventory_contract_generation
+                FROM positions WHERE id=%s
+                """,
+                (position_id,),
+            )
+            assert cur.fetchone() == (adoption_id, 3)
+            cur.execute(
+                """
                 SELECT order_id,reconciled_position_id
                 FROM binance_orders WHERE id IN (3825,3826) ORDER BY id
                 """
@@ -717,7 +843,7 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
                   AND applied_at IS NOT NULL
                   AND local_fill_id IS NOT NULL
                   AND adoption_id IS NOT NULL
-                  AND contract_generation=1
+                  AND contract_generation=3
                 """
             )
             assert cur.fetchone()[0] == 2
