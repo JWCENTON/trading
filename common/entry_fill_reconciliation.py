@@ -618,7 +618,6 @@ def converge_partial_applied_recovery_link(cur, *, ingestion_id: int) -> bool:
           AND fill.account_identity_id=bo.account_identity_id
           AND upper(COALESCE(fill.account_identity_status,''))='VERIFIED'
           AND state.account_identity_key=bo.account_identity_id::text
-          AND position.status='OPEN'
           AND position.entry_order_id=bo.order_id
           AND position.symbol=bo.symbol
           AND position.strategy=bo.strategy
@@ -631,9 +630,34 @@ def converge_partial_applied_recovery_link(cur, *, ingestion_id: int) -> bool:
                 OR conflict.exit_order_id=bo.order_id
               )
           )
-          AND NOT EXISTS (
-            SELECT 1 FROM canonical_financial_truth_v1 consumed
-            WHERE consumed.source_fill_ids ? ('exchange:' || fill.id::text)
+          AND (
+            (
+              position.status='OPEN'
+              AND NOT EXISTS (
+                SELECT 1 FROM canonical_financial_truth_v1 consumed
+                WHERE consumed.source_fill_ids ?
+                    ('exchange:' || fill.id::text)
+              )
+            )
+            OR
+            (
+              position.status='CLOSED'
+              AND position.exit_order_id IS NOT NULL
+              AND position.exit_time IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM canonical_financial_truth_v1 same_position_ft
+                WHERE same_position_ft.position_id=position.id
+                  AND same_position_ft.financial_truth_status='COMPLETE'
+                  AND same_position_ft.source_fill_ids ?
+                      ('exchange:' || fill.id::text)
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM canonical_financial_truth_v1 conflicting_ft
+                WHERE conflicting_ft.position_id<>position.id
+                  AND conflicting_ft.source_fill_ids ?
+                      ('exchange:' || fill.id::text)
+              )
+            )
           )
           AND adoption.adoption_id=state.adoption_id
           AND adoption.generation=state.contract_generation

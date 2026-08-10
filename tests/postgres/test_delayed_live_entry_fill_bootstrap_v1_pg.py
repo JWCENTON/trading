@@ -1259,6 +1259,7 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
             assert cur.fetchone()[0] == 3
             cur.execute("SELECT count(*) FROM positions")
             assert cur.fetchone()[0] == 2
+
             cur.execute(
                 """
                 SELECT count(*)
@@ -1407,6 +1408,236 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
                 3,
                 "NO_CHANGE",
             )
+
+            # Production-style terminal state for the recovered B position.
+            b_exit_order_id = "3823000000000000000"
+            b_exit_trade_id = "4430000"
+            b_exit_time = now
+            b_terminal_dust = Decimal("0.000000000920")
+            b_exit_qty = incidents["B"]["net"] - b_terminal_dust
+            cur.execute(
+                """
+                INSERT INTO binance_orders(
+                  created_at,symbol,side,order_type,client_order_id,order_id,
+                  status,raw,position_id,is_exit,strategy,"interval",
+                  order_purpose,requested_qty,order_accepted,exchange_source,
+                  reconciled_position_id,account_identity_id,
+                  account_identity_status
+                ) VALUES (
+                  %s,'BTCUSDC','SELL','MARKET','exit-b',%s,'FILLED','{}',%s,
+                  true,'RSI','1m','EXIT',%s,true,'okx',%s,1,'VERIFIED'
+                )
+                """,
+                (
+                    b_exit_time,
+                    b_exit_order_id,
+                    position_b,
+                    b_exit_qty,
+                    position_b,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO binance_order_fills(
+                  source,trade_id,order_id,symbol,side,role,executed_qty,
+                  avg_price,quote_notional_usdc,commission_amount,
+                  commission_asset,commission_usdc,event_time,raw,
+                  account_identity_id,account_identity_status
+                ) VALUES (
+                  'okx',%s,%s,'BTCUSDC','SELL','TAKER',%s,119000,
+                  %s,0.01,'USDC',0.01,%s,'{}',1,'VERIFIED'
+                ) RETURNING id
+                """,
+                (
+                    b_exit_trade_id,
+                    b_exit_order_id,
+                    b_exit_qty,
+                    b_exit_qty * Decimal("119000"),
+                    b_exit_time,
+                ),
+            )
+            b_exit_fill_id = int(cur.fetchone()[0])
+            cur.execute(
+                """
+                UPDATE positions SET
+                  status='CLOSED',exit_order_id=%s,exit_price=119000,
+                  exit_time=%s,exit_reason='TERMINAL_DUST',qty=%s,
+                  cumulative_exit_executed_qty=%s,
+                  exit_inventory_reduction_qty=%s,
+                  remaining_inventory_qty=%s
+                WHERE id=%s
+                """,
+                (
+                    b_exit_order_id,
+                    b_exit_time,
+                    b_terminal_dust,
+                    b_exit_qty,
+                    b_exit_qty,
+                    b_terminal_dust,
+                    position_b,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO canonical_financial_truth_v1(
+                  position_id,financial_truth_status,executed_entry_qty,
+                  executed_exit_qty,remaining_qty,
+                  authoritative_entry_fees_usdc,
+                  authoritative_exit_fees_usdc,authoritative_gross_pnl,
+                  authoritative_net_pnl,authoritative_source,
+                  authoritative_evidence,source_fill_ids
+                ) VALUES (
+                  %s,'COMPLETE',0.00030888,%s,%s,0.1297296,0.01,
+                  -0.30,-0.4397296,'EXCHANGE_EXECUTION',%s::jsonb,%s::jsonb
+                )
+                """,
+                (
+                    position_b,
+                    b_exit_qty,
+                    b_terminal_dust,
+                    json.dumps({"provenance": "B_TERMINAL_COMPLETE"}),
+                    json.dumps([
+                        f"exchange:{incidents['B']['fill_id']}",
+                        f"exchange:{b_exit_fill_id}",
+                    ]),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO canonical_financial_truth_audit_v1(
+                  position_id,new_fingerprint,new_values
+                ) VALUES (%s,'b-ft-fingerprint',%s::jsonb)
+                """,
+                (position_b, json.dumps({"status": "COMPLETE"})),
+            )
+            cur.execute(
+                """
+                INSERT INTO position_lifecycle_events_c2_2(
+                  position_id,mutation_kind,evidence
+                ) VALUES (%s,'POSITION_CLOSED_TERMINAL_DUST',%s::jsonb)
+                """,
+                (position_b, json.dumps({"exit_fill_id": b_exit_fill_id})),
+            )
+            cur.execute(
+                """
+                SELECT p.*,ft.*,audit.*,lifecycle.*
+                FROM positions p
+                JOIN canonical_financial_truth_v1 ft ON ft.position_id=p.id
+                JOIN canonical_financial_truth_audit_v1 audit
+                  ON audit.position_id=p.id
+                JOIN position_lifecycle_events_c2_2 lifecycle
+                  ON lifecycle.position_id=p.id
+                WHERE p.id=%s
+                """,
+                (position_b,),
+            )
+            immutable_b_before = cur.fetchone()
+            cur.execute(
+                """
+                UPDATE exchange_fill_ingestion_state_v2
+                SET linked_position_id=NULL
+                WHERE trade_id='4414544'
+                """
+            )
+
+        closed_replays = []
+        for _ in range(3):
+            with conn.cursor() as cur:
+                replay = register_fill_change(
+                    cur, row_for("B"), account_identity_key="1"
+                )
+                closed_replays.append(
+                    converge_partial_applied_recovery_link(
+                        cur, ingestion_id=replay.ingestion_id
+                    )
+                )
+        assert closed_replays == [True, False, False]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.*,ft.*,audit.*,lifecycle.*
+                FROM positions p
+                JOIN canonical_financial_truth_v1 ft ON ft.position_id=p.id
+                JOIN canonical_financial_truth_audit_v1 audit
+                  ON audit.position_id=p.id
+                JOIN position_lifecycle_events_c2_2 lifecycle
+                  ON lifecycle.position_id=p.id
+                WHERE p.id=%s
+                """,
+                (position_b,),
+            )
+            assert cur.fetchone() == immutable_b_before
+            cur.execute(
+                """
+                SELECT application_status,local_fill_id,linked_position_id,
+                       last_decision,adoption_id,contract_generation
+                FROM exchange_fill_ingestion_state_v2
+                WHERE trade_id='4414544'
+                """
+            )
+            assert cur.fetchone() == (
+                "TRUE_DUPLICATE_APPLIED",
+                incidents["B"]["fill_id"],
+                position_b,
+                "NO_CHANGE",
+                adoption_id,
+                3,
+            )
+            cur.execute("SELECT count(*) FROM binance_order_fills")
+            assert cur.fetchone()[0] == 4
+            cur.execute("SELECT count(*) FROM positions")
+            assert cur.fetchone()[0] == 2
+
+            closed_negative_sql = {
+                "ft-points-to-another-fill": (
+                    "UPDATE exchange_fill_ingestion_state_v2 SET "
+                    "linked_position_id=NULL WHERE trade_id='4414544'; "
+                    "UPDATE canonical_financial_truth_v1 SET source_fill_ids="
+                    f"'[\"exchange:{b_exit_fill_id}\"]'::jsonb "
+                    f"WHERE position_id={position_b}"
+                ),
+                "fill-consumed-by-another-position": (
+                    "UPDATE exchange_fill_ingestion_state_v2 SET "
+                    "linked_position_id=NULL WHERE trade_id='4414544'; "
+                    "UPDATE canonical_financial_truth_v1 SET source_fill_ids="
+                    f"'[\"exchange:{incidents['A']['fill_id']}\","
+                    f"\"exchange:{exit_fill_id}\","
+                    f"\"exchange:{incidents['B']['fill_id']}\"]'::jsonb "
+                    f"WHERE position_id={position_a}"
+                ),
+                "order-points-to-another-position": (
+                    "UPDATE exchange_fill_ingestion_state_v2 SET "
+                    "linked_position_id=NULL WHERE trade_id='4414544'; "
+                    "UPDATE binance_orders SET reconciled_position_id="
+                    f"{position_a} WHERE id=3826"
+                ),
+                "wrong-local-fill": (
+                    "UPDATE exchange_fill_ingestion_state_v2 SET "
+                    f"linked_position_id=NULL,local_fill_id="
+                    f"{incidents['A']['fill_id']} WHERE trade_id='4414544'"
+                ),
+                "position-does-not-exist": (
+                    "UPDATE exchange_fill_ingestion_state_v2 SET "
+                    "linked_position_id=NULL WHERE trade_id='4414544'; "
+                    "UPDATE binance_orders SET reconciled_position_id=999999 "
+                    "WHERE id=3826"
+                ),
+                "terminal-proof-incomplete": (
+                    "UPDATE exchange_fill_ingestion_state_v2 SET "
+                    "linked_position_id=NULL WHERE trade_id='4414544'; "
+                    "UPDATE positions SET exit_order_id=NULL WHERE id="
+                    f"{position_b}"
+                ),
+            }
+            for case, mutation in closed_negative_sql.items():
+                cur.execute("SAVEPOINT closed_convergence_negative")
+                cur.execute(mutation)
+                assert converge_partial_applied_recovery_link(
+                    cur, ingestion_id=ingestion_b
+                ) is False, case
+                cur.execute("ROLLBACK TO SAVEPOINT closed_convergence_negative")
+                cur.execute("RELEASE SAVEPOINT closed_convergence_negative")
     finally:
         conn.rollback()
         conn.close()
