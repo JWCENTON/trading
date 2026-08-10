@@ -86,7 +86,9 @@ def test_trade_to_row_rejects_missing_authoritative_identity(
         _trade_to_row("BTCUSDC", trade, source="okx")
 
 
-def test_fill_ingest_runs_due_reconciliation_without_new_fills(monkeypatch):
+def test_fill_ingest_runs_due_reconciliation_and_reobserves_recovery_without_new_fills(
+    monkeypatch,
+):
     import common.exchange_ingest_trades as ingest
 
     calls = []
@@ -135,10 +137,23 @@ def test_fill_ingest_runs_due_reconciliation_without_new_fills(monkeypatch):
     def due(_conn, *, batch_size, trading_mode):
         calls.append(("due", batch_size, trading_mode))
         return PendingEntryReconciliationRun(
-            False, "NOT_DUE", EntryFillReconciliationStats()
+            True,
+            "COMPLETE",
+            EntryFillReconciliationStats(created=1, recovered=1),
         )
 
     monkeypatch.setattr(ingest, "run_pending_entry_reconciliation_if_due", due)
+    recovered_rows = [{"trade_id": "recovered-trade"}]
+
+    def load_recovered(_conn):
+        calls.append("load-recovered")
+        return recovered_rows
+
+    def record_recovered(_conn, *, dsn, rows, **_kwargs):
+        calls.append(("record-recovered", dsn, rows))
+
+    monkeypatch.setattr(ingest, "_partial_recovery_reobservations", load_recovered)
+    monkeypatch.setattr(ingest, "_record_lei1c_observations", record_recovered)
     result = ingest.ingest_my_trades(
         client=Client(),
         symbols=["BTCUSDC"],
@@ -152,7 +167,17 @@ def test_fill_ingest_runs_due_reconciliation_without_new_fills(monkeypatch):
     assert result.status == "OK"
     assert result.ran is True
     assert result.applicable is True
-    assert calls == [("due", 100, "LIVE"), "commit"]
+    assert calls == [
+        ("due", 100, "LIVE"),
+        "commit",
+        "load-recovered",
+        (
+            "record-recovered",
+            "host=local port=5432 dbname=test user=test password=test",
+            recovered_rows,
+        ),
+        "commit",
+    ]
 
 
 @pytest.mark.parametrize("lei1c_mode", ["SHADOW", "ENFORCE"])

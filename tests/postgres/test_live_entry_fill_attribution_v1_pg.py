@@ -1062,6 +1062,89 @@ def test_gate_c_missing_position_is_valid_observed_not_applied(
     assert _counts(factory) == (1, 1, 0)
 
 
+def test_gate_c_recovered_position_reobservation_appends_applied_attribution(
+    disposable_postgres_v16,
+):
+    _, factory = _install(disposable_postgres_v16, "recovered_position")
+    repository = EntryFillAttributionRepository(factory)
+
+    first = _process(repository)
+    assert (
+        first.attribution_status
+        is FillAttributionStatus.BOT_OWNED_MISSING_POSITION
+    )
+    assert first.application_status is FillApplicationStatus.OBSERVED_NOT_APPLIED
+    assert first.evidence is not None
+
+    _seed_canonical_local_fill(factory, source_fingerprint="9" * 64)
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO positions(id,entry_order_id) VALUES "
+                "(20,'okx-order-lei1c')"
+            )
+            cur.execute(
+                """
+                INSERT INTO binance_orders(
+                  id,exchange_source,order_id,client_order_id,symbol,side,
+                  strategy,"interval",order_purpose,position_id,
+                  reconciled_position_id,is_exit
+                ) VALUES (
+                  21,'okx','okx-order-lei1c',%s,'BNBUSDC','BUY','TREND',
+                  '1m','ENTRY',20,20,false
+                )
+                """,
+                (CLIENT_ORDER_ID,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    recovered = _process(
+        repository,
+        clock_at=datetime(2026, 7, 31, 19, 0, 7, tzinfo=timezone.utc),
+    )
+
+    assert recovered.outcome is EntryFillProcessingOutcome.TRUE_DUPLICATE_APPLIED
+    assert recovered.attribution_status is FillAttributionStatus.BOT_OWNED_ATTRIBUTED
+    assert (
+        recovered.application_status
+        is FillApplicationStatus.TRUE_DUPLICATE_APPLIED
+    )
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT attribution_status,linked_position_id "
+                "FROM live_entry_fill_evidence_v1"
+            )
+            assert cur.fetchone() == ("BOT_OWNED_MISSING_POSITION", None)
+            cur.execute(
+                "SELECT attribution_status,application_status,"
+                "linked_position_id,local_fill_id "
+                "FROM live_entry_fill_applications_v1 "
+                "ORDER BY decided_at"
+            )
+            assert cur.fetchall() == [
+                (
+                    "BOT_OWNED_MISSING_POSITION",
+                    "OBSERVED_NOT_APPLIED",
+                    None,
+                    None,
+                ),
+                (
+                    "BOT_OWNED_ATTRIBUTED",
+                    "APPLIED",
+                    20,
+                    10,
+                ),
+            ]
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def test_gate_c_late_recovered_ack_appends_stronger_attribution_decision(
     disposable_postgres_v16,
 ):

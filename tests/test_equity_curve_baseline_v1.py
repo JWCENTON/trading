@@ -161,6 +161,51 @@ def test_account_level_external_btc_is_valued_at_current_price() -> None:
     assert "175." not in (ROOT / "common/equity_curve.py").read_text()
 
 
+def test_recovered_bot_inventory_is_managed_while_external_stays_excluded() -> None:
+    external_qty = Decimal("0.002716415960")
+    recovered_qty = Decimal("0.000307798920")
+    terminal_dust = Decimal("0.000000001405")
+    account_qty = Decimal("0.003024216285")
+    price = Decimal("120000")
+    cur = SequencedCursor([
+        [({
+            "contract_version": "ACCOUNT_INVENTORY_OWNERSHIP_V1",
+            "asset": "BTC",
+            "ownership": "EXTERNAL_OR_MANUAL",
+            "quantity": str(external_qty),
+            "quantity_basis": "AUTHORITATIVE_EVIDENCE",
+            "evidence_status": "COMPLETE",
+            "unresolved_quantity": "0",
+        }, {"deployment_id": "vps-live"})],
+        [("BTCUSDC", recovered_qty + terminal_dust, True)],
+        [],
+        [("BTCUSDC", Decimal("0.00000001"), Decimal("0.00001"), Decimal("1"))],
+    ])
+
+    external_value, bot_value, complete = _ownership_projection(
+        cur,
+        {
+            "BTC": account_qty,
+            "ETH": Decimal("0"),
+            "BNB": Decimal("0"),
+            "SOL": Decimal("0"),
+        },
+        {
+            "BTC": price,
+            "ETH": Decimal("0"),
+            "BNB": Decimal("0"),
+            "SOL": Decimal("0"),
+        },
+        "USDC",
+        deployment_id="vps-live",
+    )
+
+    assert external_qty + recovered_qty + terminal_dust == account_qty
+    assert complete is True
+    assert external_value == external_qty * price
+    assert bot_value == (recovered_qty + terminal_dust) * price
+
+
 class UpsertCursor:
     def __init__(self):
         self.params = None

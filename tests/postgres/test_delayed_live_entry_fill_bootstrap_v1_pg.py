@@ -100,6 +100,8 @@ CREATE TABLE binance_orders (
   unreconciled_qty NUMERIC NOT NULL DEFAULT 0,
   reconciliation_error TEXT,
   last_reconciliation_action TEXT,
+  account_identity_id BIGINT,
+  account_identity_status TEXT,
   UNIQUE(exchange_source,symbol,order_id)
 );
 
@@ -120,6 +122,8 @@ CREATE TABLE binance_order_fills (
   event_time TIMESTAMPTZ NOT NULL,
   fill_idx INTEGER NOT NULL DEFAULT 0,
   raw JSONB,
+  account_identity_id BIGINT,
+  account_identity_status TEXT,
   UNIQUE(source,trade_id)
 );
 
@@ -143,7 +147,37 @@ CREATE TABLE exchange_fill_ingestion_state_v2 (
   local_fill_id BIGINT,
   adoption_id BIGINT,
   contract_generation BIGINT,
+  ownership_classification TEXT,
   UNIQUE(source,account_identity_key,symbol,trade_id)
+);
+
+CREATE TABLE canonical_financial_truth_v1 (
+  position_id BIGINT PRIMARY KEY,
+  financial_truth_status TEXT NOT NULL,
+  executed_entry_qty NUMERIC,
+  executed_exit_qty NUMERIC,
+  remaining_qty NUMERIC,
+  authoritative_entry_fees_usdc NUMERIC,
+  authoritative_exit_fees_usdc NUMERIC,
+  authoritative_gross_pnl NUMERIC,
+  authoritative_net_pnl NUMERIC,
+  authoritative_source TEXT,
+  authoritative_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_fill_ids JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE TABLE canonical_financial_truth_audit_v1 (
+  id BIGSERIAL PRIMARY KEY,
+  position_id BIGINT NOT NULL,
+  new_fingerprint TEXT NOT NULL,
+  new_values JSONB NOT NULL
+);
+
+CREATE TABLE position_lifecycle_events_c2_2 (
+  id BIGSERIAL PRIMARY KEY,
+  position_id BIGINT NOT NULL,
+  mutation_kind TEXT NOT NULL,
+  evidence JSONB NOT NULL
 );
 
 CREATE TABLE strategy_events (
@@ -235,12 +269,14 @@ def _insert_canonical_fill(cur, row):
         INSERT INTO binance_order_fills(
           source,trade_id,order_id,symbol,side,role,executed_qty,avg_price,
           quote_notional_usdc,commission_amount,commission_asset,
-          commission_usdc,event_time,fill_idx,raw
+          commission_usdc,event_time,fill_idx,raw,account_identity_id,
+          account_identity_status
         ) VALUES (
           %(source)s,%(trade_id)s,%(order_id)s,%(symbol)s,%(side)s,%(role)s,
           %(executed_qty)s,%(avg_price)s,%(quote_notional_usdc)s,
           %(commission_amount)s,%(commission_asset)s,%(commission_usdc)s,
-          to_timestamp(%(event_time_ms)s/1000.0),%(fill_idx)s,%(raw)s::jsonb
+          to_timestamp(%(event_time_ms)s/1000.0),%(fill_idx)s,%(raw)s::jsonb,
+          %(account_identity_id)s,%(account_identity_status)s
         ) ON CONFLICT(source,trade_id) DO NOTHING
         """,
         row,
@@ -865,6 +901,599 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
             assert cur.fetchone()[0] == 1
             cur.execute("SELECT count(*) FROM binance_order_fills")
             assert cur.fetchone()[0] == 2
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
+    disposable_postgres_v16, monkeypatch
+):
+    monkeypatch.setenv("ENVIRONMENT", "live")
+    monkeypatch.setenv("DEPLOYMENT_ID", "vps-live")
+    conn = _database(disposable_postgres_v16, "partial_applied_after_exit")
+    now_ms = (int(time.time() * 1000) // 1000) * 1000
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+    incidents = {
+        "A": {
+            "local_id": 3825,
+            "order_id": "3819011200977670144",
+            "trade_id": "4400542",
+            "qty": "0.00030817",
+            "fee": "0.000001078595",
+            "net": Decimal("0.000307091405"),
+            "event_time": now - timedelta(minutes=3),
+            "cid": "ORC-L-BTCUSDC-RSI-1m-E-aaaaaa01",
+        },
+        "B": {
+            "local_id": 3826,
+            "order_id": "3820730809883758592",
+            "trade_id": "4414544",
+            "qty": "0.00030888",
+            "fee": "0.00000108108",
+            "net": Decimal("0.000307798920"),
+            "event_time": now - timedelta(minutes=2),
+            "cid": "ORC-L-BTCUSDC-RSI-1m-E-bbbbbb02",
+        },
+    }
+
+    def row_for(label):
+        item = incidents[label]
+        return _fill_row(
+            trade_id=item["trade_id"],
+            order_id=item["order_id"],
+            client_order_id=item["cid"].replace("-", ""),
+            side="BUY",
+            event_time=item["event_time"],
+            qty=item["qty"],
+            price="120000.00",
+            fee=item["fee"],
+            fee_asset="BTC",
+            deployment_id="vps-live",
+            symbol="BTCUSDC",
+        )
+
+    try:
+        with conn.cursor() as cur:
+            adoption_id = _active_adoption(
+                cur,
+                adopted_at=now - timedelta(minutes=10),
+                deployment_id="vps-live",
+                generation=3,
+            )
+            for label, item in incidents.items():
+                row = row_for(label)
+                wire_cid = item["cid"].replace("-", "")
+                cur.execute(
+                    """
+                    INSERT INTO binance_orders(
+                      id,created_at,symbol,side,order_type,client_order_id,
+                      order_id,status,raw,is_exit,strategy,"interval",
+                      order_purpose,requested_qty,order_accepted,
+                      exchange_source,account_identity_id,
+                      account_identity_status
+                    ) VALUES (
+                      %s,%s,'BTCUSDC','BUY','MARKET',%s,%s,'NEW',%s::jsonb,
+                      false,'RSI','1m','ENTRY',%s,true,'okx',1,'VERIFIED'
+                    )
+                    """,
+                    (
+                        item["local_id"],
+                        item["event_time"] + timedelta(milliseconds=96),
+                        item["cid"],
+                        item["order_id"],
+                        json.dumps({
+                            "orderId": item["order_id"],
+                            "clientOrderId": wire_cid,
+                            "status": "NEW",
+                            "executedQty": "0",
+                        }),
+                        item["qty"],
+                    ),
+                )
+                _insert_live_order_event(
+                    cur,
+                    created_at=item["event_time"] + timedelta(milliseconds=96),
+                    order_id=item["order_id"],
+                    local_cid=item["cid"],
+                    wire_cid=wire_cid,
+                    symbol="BTCUSDC",
+                    strategy="RSI",
+                )
+                _insert_canonical_fill(cur, row)
+                cur.execute(
+                    "SELECT id FROM binance_order_fills WHERE trade_id=%s",
+                    (item["trade_id"],),
+                )
+                item["fill_id"] = int(cur.fetchone()[0])
+                payload = authoritative_fill_payload(
+                    row, account_identity_key="1"
+                )
+                fingerprint = authoritative_fill_fingerprint(payload)
+                cur.execute(
+                    """
+                    INSERT INTO exchange_fill_ingestion_state_v2(
+                      source,account_identity_key,symbol,trade_id,order_id,
+                      side,source_fingerprint,applied_fingerprint,applied_at,
+                      application_status,authoritative_payload,last_decision,
+                      local_fill_id,adoption_id,contract_generation
+                    ) VALUES (
+                      'okx','1','BTCUSDC',%s,%s,'BUY',%s,%s,%s,%s,
+                      %s::jsonb,'NEW_AUTHORITATIVE_EVIDENCE',%s,%s,3
+                    )
+                    """,
+                    (
+                        item["trade_id"],
+                        item["order_id"],
+                        fingerprint,
+                        fingerprint,
+                        item["event_time"] + timedelta(seconds=1),
+                        (
+                            "APPLIED" if label == "A"
+                            else "OBSERVED_NOT_APPLIED"
+                        ),
+                        json.dumps(payload, sort_keys=True),
+                        item["fill_id"],
+                        adoption_id,
+                    ),
+                )
+
+        first = reconcile_pending_entry_fills(
+            conn, batch_size=1, trading_mode="LIVE"
+        )
+        assert (first.scanned, first.created, first.ambiguous) == (1, 1, 0)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM positions WHERE entry_order_id=%s",
+                (incidents["A"]["order_id"],),
+            )
+            position_a = int(cur.fetchone()[0])
+
+        second = reconcile_pending_entry_fills(
+            conn, batch_size=1, trading_mode="LIVE"
+        )
+        assert (second.scanned, second.created, second.ambiguous) == (1, 0, 1)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT reconciliation_status,reconciled_position_id
+                FROM binance_orders WHERE id=3826
+                """
+            )
+            assert cur.fetchone() == ("OPEN_POSITION_ORDER_MISMATCH", None)
+
+            exit_order_id = "3822000000000000000"
+            exit_trade_id = "4420000"
+            exit_time = now - timedelta(minutes=1)
+            cur.execute(
+                """
+                INSERT INTO binance_orders(
+                  created_at,symbol,side,order_type,client_order_id,order_id,
+                  status,raw,position_id,is_exit,strategy,"interval",
+                  order_purpose,requested_qty,order_accepted,exchange_source,
+                  reconciled_position_id,account_identity_id,
+                  account_identity_status
+                ) VALUES (
+                  %s,'BTCUSDC','SELL','MARKET','exit-a',%s,'FILLED','{}',%s,
+                  true,'RSI','1m','EXIT',0.00030709,true,'okx',%s,1,'VERIFIED'
+                )
+                """,
+                (exit_time, exit_order_id, position_a, position_a),
+            )
+            cur.execute(
+                """
+                INSERT INTO binance_order_fills(
+                  source,trade_id,order_id,symbol,side,role,executed_qty,
+                  avg_price,quote_notional_usdc,commission_amount,
+                  commission_asset,commission_usdc,event_time,raw,
+                  account_identity_id,account_identity_status
+                ) VALUES (
+                  'okx',%s,%s,'BTCUSDC','SELL','TAKER',0.00030709,118500,
+                  36.390165,0.01,'USDC',0.01,%s,'{}',1,'VERIFIED'
+                ) RETURNING id
+                """,
+                (exit_trade_id, exit_order_id, exit_time),
+            )
+            exit_fill_id = int(cur.fetchone()[0])
+            terminal_dust = Decimal("0.000000001405")
+            cur.execute(
+                """
+                UPDATE positions SET
+                  status='CLOSED',exit_order_id=%s,exit_price=118500,
+                  exit_time=%s,exit_reason='TERMINAL_DUST',qty=%s,
+                  cumulative_exit_executed_qty=0.00030709,
+                  exit_inventory_reduction_qty=0.00030709,
+                  remaining_inventory_qty=%s
+                WHERE id=%s
+                """,
+                (
+                    exit_order_id, exit_time, terminal_dust,
+                    terminal_dust, position_a,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO canonical_financial_truth_v1(
+                  position_id,financial_truth_status,executed_entry_qty,
+                  executed_exit_qty,remaining_qty,
+                  authoritative_entry_fees_usdc,
+                  authoritative_exit_fees_usdc,authoritative_gross_pnl,
+                  authoritative_net_pnl,authoritative_source,
+                  authoritative_evidence,source_fill_ids
+                ) VALUES (
+                  %s,'COMPLETE',0.00030817,0.00030709,%s,0.1294314,0.01,
+                  -0.32,-0.459506302708,'EXCHANGE_EXECUTION',%s::jsonb,
+                  %s::jsonb
+                )
+                """,
+                (
+                    position_a,
+                    terminal_dust,
+                    json.dumps({"provenance": "A_TERMINAL_COMPLETE"}),
+                    json.dumps([
+                        f"exchange:{incidents['A']['fill_id']}",
+                        f"exchange:{exit_fill_id}",
+                    ]),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO canonical_financial_truth_audit_v1(
+                  position_id,new_fingerprint,new_values
+                ) VALUES (%s,'a-ft-fingerprint',%s::jsonb)
+                """,
+                (position_a, json.dumps({"status": "COMPLETE"})),
+            )
+            cur.execute(
+                """
+                INSERT INTO position_lifecycle_events_c2_2(
+                  position_id,mutation_kind,evidence
+                ) VALUES (%s,'POSITION_CLOSED_TERMINAL_DUST',%s::jsonb)
+                """,
+                (position_a, json.dumps({"exit_fill_id": exit_fill_id})),
+            )
+            cur.execute(
+                """
+                SELECT p.*,ft.*,audit.*,lifecycle.*
+                FROM positions p
+                JOIN canonical_financial_truth_v1 ft ON ft.position_id=p.id
+                JOIN canonical_financial_truth_audit_v1 audit
+                  ON audit.position_id=p.id
+                JOIN position_lifecycle_events_c2_2 lifecycle
+                  ON lifecycle.position_id=p.id
+                WHERE p.id=%s
+                """,
+                (position_a,),
+            )
+            immutable_a_before = cur.fetchone()
+        conn.commit()
+
+        recovery = reconcile_pending_entry_fills(
+            conn, batch_size=10, trading_mode="LIVE"
+        )
+        assert (recovery.scanned, recovery.created, recovery.failed) == (1, 1, 0)
+        assert recovery.recovered == 1
+        conn.commit()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id,qty,gross_entry_executed_qty,entry_base_fee_qty,
+                       net_entry_inventory_qty,remaining_inventory_qty,
+                       inventory_evidence_status,
+                       inventory_contract_adoption_id,
+                       inventory_contract_generation
+                FROM positions
+                WHERE entry_order_id=%s AND status='OPEN'
+                """,
+                (incidents["B"]["order_id"],),
+            )
+            recovered = cur.fetchone()
+            assert recovered[1:] == (
+                incidents["B"]["net"],
+                Decimal(incidents["B"]["qty"]),
+                Decimal(incidents["B"]["fee"]),
+                incidents["B"]["net"],
+                incidents["B"]["net"],
+                "COMPLETE",
+                adoption_id,
+                3,
+            )
+            position_b = int(recovered[0])
+            cur.execute(
+                """
+                SELECT reconciled_position_id,last_reconciliation_action
+                FROM binance_orders WHERE id=3826
+                """
+            )
+            assert cur.fetchone() == (
+                position_b, "RECOVER_PARTIAL_APPLIED_ENTRY"
+            )
+            cur.execute(
+                """
+                SELECT application_status,local_fill_id,applied_fingerprint,
+                       applied_at,adoption_id,contract_generation,last_decision
+                FROM exchange_fill_ingestion_state_v2 WHERE trade_id='4414544'
+                """
+            )
+            state_b = cur.fetchone()
+            assert state_b[0] == "APPLIED"
+            assert state_b[1] == incidents["B"]["fill_id"]
+            assert state_b[2] is not None and state_b[3] is not None
+            assert state_b[4:] == (
+                adoption_id, 3, "PARTIAL_APPLIED_POSITION_RECOVERED"
+            )
+            cur.execute(
+                """
+                SELECT p.*,ft.*,audit.*,lifecycle.*
+                FROM positions p
+                JOIN canonical_financial_truth_v1 ft ON ft.position_id=p.id
+                JOIN canonical_financial_truth_audit_v1 audit
+                  ON audit.position_id=p.id
+                JOIN position_lifecycle_events_c2_2 lifecycle
+                  ON lifecycle.position_id=p.id
+                WHERE p.id=%s
+                """,
+                (position_a,),
+            )
+            assert cur.fetchone() == immutable_a_before
+            cur.execute("SELECT count(*) FROM binance_order_fills")
+            assert cur.fetchone()[0] == 3
+            cur.execute("SELECT count(*) FROM positions")
+            assert cur.fetchone()[0] == 2
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM binance_order_fills f
+                JOIN binance_orders bo
+                  ON bo.exchange_source=f.source
+                 AND bo.symbol=f.symbol AND bo.order_id=f.order_id
+                WHERE f.trade_id='4414544'
+                  AND bo.reconciled_position_id IS NULL
+                """
+            )
+            assert cur.fetchone()[0] == 0
+
+            external = Decimal("0.002716415960")
+            account_btc = Decimal("0.003024216285")
+            assert external + incidents["B"]["net"] + terminal_dust == account_btc
+
+        for _ in range(3):
+            repeated = reconcile_pending_entry_fills(
+                conn, batch_size=10, trading_mode="LIVE"
+            )
+            assert (repeated.scanned, repeated.created, repeated.updated) == (
+                0, 0, 0
+            )
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM binance_order_fills")
+            assert cur.fetchone()[0] == 3
+            cur.execute(
+                """
+                SELECT count(*),sum(remaining_inventory_qty),
+                       sum(entry_base_fee_qty)
+                FROM positions WHERE status='OPEN'
+                """
+            )
+            assert cur.fetchone() == (
+                1, incidents["B"]["net"], Decimal(incidents["B"]["fee"])
+            )
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "different-account",
+        "manual-external",
+        "sell",
+        "wrong-deployment",
+        "wrong-slot",
+        "already-linked",
+        "conflicting-open",
+        "missing-adoption",
+        "invalid-generation",
+        "consumed-by-terminal",
+    ),
+)
+def test_partial_applied_recovery_negative_matrix(
+    disposable_postgres_v16, monkeypatch, case
+):
+    monkeypatch.setenv("ENVIRONMENT", "live")
+    monkeypatch.setenv("DEPLOYMENT_ID", "vps-live")
+    conn = _database(
+        disposable_postgres_v16,
+        f"partial_negative_{case.replace('-', '_')}",
+    )
+    now_ms = (int(time.time() * 1000) // 1000) * 1000
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+    order_id = "partial-negative-order"
+    trade_id = "partial-negative-trade"
+    local_cid = "ORC-L-BTCUSDC-RSI-1m-E-abcdef12"
+    wire_cid = local_cid.replace("-", "")
+    side = "SELL" if case == "sell" else "BUY"
+    row = _fill_row(
+        trade_id=trade_id,
+        order_id=order_id,
+        client_order_id=wire_cid,
+        side=side,
+        event_time=now - timedelta(minutes=1),
+        qty="0.00030888",
+        price="120000.00",
+        fee="0.00000108108",
+        fee_asset="BTC",
+        deployment_id="vps-live",
+        symbol="BTCUSDC",
+    )
+    try:
+        with conn.cursor() as cur:
+            adoption_id = _active_adoption(
+                cur,
+                adopted_at=now - timedelta(minutes=10),
+                deployment_id=(
+                    "local-live" if case == "wrong-deployment" else "vps-live"
+                ),
+                generation=3,
+            )
+            cur.execute(
+                """
+                INSERT INTO positions(
+                  id,symbol,strategy,"interval",status,side,qty,entry_price,
+                  entry_time,entry_order_id,exit_order_id,
+                  inventory_contract_adoption_id,
+                  inventory_contract_generation,remaining_inventory_qty,
+                  inventory_evidence_status
+                ) VALUES (
+                  3110,%s,'RSI','1m','CLOSED','LONG',0.000000001405,
+                  120000,%s,'closed-a-order','closed-a-exit',%s,3,
+                  0.000000001405,'COMPLETE'
+                )
+                """,
+                (
+                    "ETHUSDC" if case == "wrong-slot" else "BTCUSDC",
+                    now - timedelta(minutes=3),
+                    adoption_id,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO binance_orders(
+                  created_at,symbol,side,order_type,client_order_id,order_id,
+                  status,raw,position_id,is_exit,strategy,"interval",
+                  order_purpose,requested_qty,order_accepted,exchange_source,
+                  reconciliation_status,reconciled_position_id,
+                  account_identity_id,account_identity_status
+                ) VALUES (
+                  %s,'BTCUSDC',%s,'MARKET',%s,%s,'NEW',%s::jsonb,NULL,false,
+                  'RSI','1m','ENTRY',0.00030888,true,'okx',
+                  'OPEN_POSITION_ORDER_MISMATCH',%s,1,'VERIFIED'
+                )
+                """,
+                (
+                    now - timedelta(minutes=1)
+                    + timedelta(milliseconds=96),
+                    side,
+                    local_cid,
+                    order_id,
+                    json.dumps({
+                        "orderId": order_id,
+                        "clientOrderId": wire_cid,
+                        "status": "NEW",
+                        "executedQty": "0",
+                    }),
+                    3110 if case == "already-linked" else None,
+                ),
+            )
+            _insert_live_order_event(
+                cur,
+                created_at=now - timedelta(minutes=1),
+                order_id=order_id,
+                local_cid=local_cid,
+                wire_cid=wire_cid,
+                symbol="BTCUSDC",
+                strategy="RSI",
+            )
+            _insert_canonical_fill(cur, row)
+            cur.execute(
+                "SELECT id FROM binance_order_fills WHERE trade_id=%s",
+                (trade_id,),
+            )
+            fill_id = int(cur.fetchone()[0])
+            if case == "different-account":
+                cur.execute(
+                    """
+                    UPDATE binance_order_fills
+                    SET account_identity_id=2 WHERE id=%s
+                    """,
+                    (fill_id,),
+                )
+            payload = authoritative_fill_payload(
+                row, account_identity_key="1"
+            )
+            fingerprint = authoritative_fill_fingerprint(payload)
+            cur.execute(
+                """
+                INSERT INTO exchange_fill_ingestion_state_v2(
+                  source,account_identity_key,symbol,trade_id,order_id,side,
+                  source_fingerprint,applied_fingerprint,applied_at,
+                  application_status,authoritative_payload,last_decision,
+                  local_fill_id,adoption_id,contract_generation,
+                  ownership_classification
+                ) VALUES (
+                  'okx','1','BTCUSDC',%s,%s,%s,%s,%s,%s,
+                  'OBSERVED_NOT_APPLIED',%s::jsonb,
+                  'NEW_AUTHORITATIVE_EVIDENCE',%s,%s,%s,%s
+                )
+                """,
+                (
+                    trade_id,
+                    order_id,
+                    side,
+                    fingerprint,
+                    fingerprint,
+                    now,
+                    json.dumps(payload, sort_keys=True),
+                    fill_id,
+                    999 if case == "missing-adoption" else adoption_id,
+                    99 if case == "invalid-generation" else 3,
+                    (
+                        "MANUAL_OR_EXTERNAL"
+                        if case == "manual-external" else None
+                    ),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO canonical_financial_truth_v1(
+                  position_id,financial_truth_status,authoritative_source,
+                  authoritative_evidence,source_fill_ids
+                ) VALUES (3110,'COMPLETE','EXCHANGE_EXECUTION',%s::jsonb,%s::jsonb)
+                """,
+                (
+                    json.dumps({"provenance": "TERMINAL_A"}),
+                    json.dumps(
+                        [f"exchange:{fill_id}"]
+                        if case == "consumed-by-terminal" else []
+                    ),
+                ),
+            )
+            if case == "conflicting-open":
+                cur.execute(
+                    """
+                    INSERT INTO positions(
+                      symbol,strategy,"interval",status,side,qty,entry_price,
+                      entry_time,entry_order_id,remaining_inventory_qty,
+                      inventory_evidence_status
+                    ) VALUES (
+                      'BTCUSDC','RSI','1m','OPEN','LONG',0.1,120000,%s,
+                      'another-open-order',0.1,'COMPLETE'
+                    )
+                    """,
+                    (now,),
+                )
+
+        result = reconcile_pending_entry_fills(
+            conn, batch_size=10, trading_mode="LIVE"
+        )
+        assert (result.scanned, result.created, result.updated) == (0, 0, 0)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM positions WHERE entry_order_id=%s",
+                (order_id,),
+            )
+            assert cur.fetchone()[0] == 0
+            cur.execute(
+                """
+                SELECT application_status,last_decision
+                FROM exchange_fill_ingestion_state_v2 WHERE trade_id=%s
+                """,
+                (trade_id,),
+            )
+            assert cur.fetchone() == (
+                "OBSERVED_NOT_APPLIED", "NEW_AUTHORITATIVE_EVIDENCE"
+            )
     finally:
         conn.rollback()
         conn.close()

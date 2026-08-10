@@ -168,6 +168,136 @@ WITH fill_totals AS (
     AND bo.order_accepted IS TRUE
     AND bo.reconciled_position_id IS NOT NULL
   GROUP BY bo.reconciled_position_id
+), partial_applied_recovery AS (
+  SELECT DISTINCT bo.id AS order_row_id
+  FROM binance_orders bo
+  JOIN binance_order_fills f
+    ON f.source=bo.exchange_source
+   AND f.symbol=bo.symbol AND f.order_id=bo.order_id
+  JOIN exchange_fill_ingestion_state_v2 state
+    ON state.source=f.source
+   AND state.symbol=f.symbol
+   AND state.trade_id=f.trade_id::text
+   AND state.order_id=f.order_id
+   AND state.local_fill_id=f.id
+  JOIN runtime_contract_adoption_v2 adoption
+    ON adoption.adoption_id=state.adoption_id
+   AND adoption.generation=state.contract_generation
+   AND adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+   AND adoption.status='ACTIVE'
+   AND adoption.environment=lower(%s)
+   AND adoption.deployment_id=%s
+   AND adoption.environment='live'
+   AND adoption.deployment_id IN ('local-live','vps-live')
+  WHERE bo.reconciliation_status='OPEN_POSITION_ORDER_MISMATCH'
+    AND bo.position_id IS NULL AND bo.reconciled_position_id IS NULL
+    AND lower(bo.exchange_source)='okx'
+    AND upper(bo.side)='BUY'
+    AND upper(bo.order_purpose)='ENTRY'
+    AND bo.order_accepted IS TRUE
+    AND bo.strategy IS NOT NULL AND btrim(bo.strategy)<>''
+    AND bo."interval" IS NOT NULL AND btrim(bo."interval")<>''
+    AND bo.requested_qty IS NOT NULL AND bo.requested_qty>0
+    AND bo.client_order_id LIKE (
+      'ORC-L-' || bo.symbol || '-' || upper(left(bo.strategy,4))
+      || '-' || lower(bo."interval") || '-E-%%'
+    )
+    AND bo.client_order_id ~ '-E-[0-9a-f]{6,8}$'
+    AND COALESCE(bo.raw->>'orderId','')=bo.order_id
+    AND left(regexp_replace(
+      bo.client_order_id,'[^A-Za-z0-9]','','g'
+    ),32)=COALESCE(bo.raw->>'clientOrderId','')
+    AND upper(COALESCE(bo.raw->>'status','')) IN (
+      'NEW','ACCEPTED','PARTIALLY_FILLED'
+    )
+    AND COALESCE(NULLIF(
+      bo.raw->>'executedQty',''
+    )::numeric,0)=0
+    AND upper(f.side)='BUY'
+    AND bo.account_identity_id IS NOT NULL
+    AND upper(COALESCE(bo.account_identity_status,''))='VERIFIED'
+    AND f.account_identity_id=bo.account_identity_id
+    AND upper(COALESCE(f.account_identity_status,''))='VERIFIED'
+    AND state.account_identity_key=bo.account_identity_id::text
+    AND upper(state.side)='BUY'
+    AND COALESCE(state.ownership_classification,'')<>'MANUAL_OR_EXTERNAL'
+    AND state.application_status='OBSERVED_NOT_APPLIED'
+    AND state.applied_fingerprint=state.source_fingerprint
+    AND state.applied_fingerprint IS NOT NULL
+    AND state.applied_at IS NOT NULL
+    AND state.authoritative_payload->>'exchange'=lower(f.source)
+    AND state.authoritative_payload->>'instrument'=f.symbol
+    AND state.authoritative_payload->>'trade_id'=f.trade_id::text
+    AND state.authoritative_payload->>'order_id'=f.order_id
+    AND upper(state.authoritative_payload->>'side')='BUY'
+    AND NULLIF(
+      state.authoritative_payload->>'executed_qty',''
+    )::numeric=f.executed_qty
+    AND NULLIF(
+      state.authoritative_payload->>'fill_price',''
+    )::numeric=f.avg_price
+    AND COALESCE(NULLIF(
+      state.authoritative_payload->>'fee_quantity',''
+    )::numeric,0)=COALESCE(f.commission_amount,0)
+    AND COALESCE(
+      state.authoritative_payload->>'fee_currency',''
+    )=COALESCE(f.commission_asset,'')
+    AND (state.authoritative_payload->>'event_time_ms')::bigint=(
+      extract(epoch FROM f.event_time)*1000
+    )::bigint
+    AND EXISTS (
+      SELECT 1 FROM strategy_events event
+      WHERE event.event_type='LIVE_ORDER_SENT'
+        AND event.symbol=bo.symbol
+        AND event.strategy=bo.strategy
+        AND event."interval"=bo."interval"
+        AND event.info->'resp'->>'orderId'=bo.order_id
+        AND event.info->>'client_order_id'=bo.client_order_id
+        AND event.info->'resp'->>'clientOrderId'=
+            bo.raw->>'clientOrderId'
+        AND lower(COALESCE(event.info->>'exchange_source',''))='okx'
+        AND COALESCE(NULLIF(
+          event.info->>'order_accepted',''
+        )::boolean,false) IS TRUE
+        AND COALESCE(NULLIF(
+          event.info->>'is_exit',''
+        )::boolean,false) IS FALSE
+        AND upper(COALESCE(event.info->>'order_purpose',''))='ENTRY'
+        AND upper(COALESCE(event.info->>'status','')) IN (
+          'NEW','ACCEPTED','PARTIALLY_FILLED'
+        )
+        AND COALESCE(NULLIF(
+          event.info->>'executed_qty',''
+        )::numeric,0)=0
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM positions closed
+      JOIN canonical_financial_truth_v1 ft ON ft.position_id=closed.id
+      WHERE closed.symbol=bo.symbol
+        AND closed.strategy=bo.strategy
+        AND closed."interval"=bo."interval"
+        AND closed.status='CLOSED'
+        AND ft.financial_truth_status='COMPLETE'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM positions p
+      WHERE p.entry_order_id=bo.order_id
+         OR p.exit_order_id=bo.order_id
+         OR p.id=bo.position_id
+         OR p.id=bo.reconciled_position_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM positions open_position
+      WHERE open_position.symbol=bo.symbol
+        AND open_position.strategy=bo.strategy
+        AND open_position."interval"=bo."interval"
+        AND open_position.status='OPEN'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM canonical_financial_truth_v1 consumed
+      WHERE consumed.source_fill_ids ? ('exchange:' || f.id::text)
+    )
 )
 SELECT
   bo.id,
@@ -186,7 +316,8 @@ SELECT
   ft.first_fill_time,
   ft.last_fill_time,
   ft.fill_side_count,
-  ft.fill_side
+  ft.fill_side,
+  recovery.order_row_id IS NOT NULL AS partial_applied_recovery
 FROM binance_orders bo
 JOIN fill_totals ft
   ON ft.source = bo.exchange_source
@@ -195,6 +326,8 @@ LEFT JOIN positions reconciled_position
   ON reconciled_position.id = bo.reconciled_position_id
 LEFT JOIN position_fill_totals position_totals
   ON position_totals.position_id=reconciled_position.id
+LEFT JOIN partial_applied_recovery recovery
+  ON recovery.order_row_id=bo.id
 WHERE bo.order_purpose = 'ENTRY'
   AND bo.order_accepted IS TRUE
   AND bo.strategy IS NOT NULL
@@ -203,9 +336,12 @@ WHERE bo.order_purpose = 'ENTRY'
   AND bo.order_id IS NOT NULL
   AND COALESCE(bo.reconciliation_status, '') NOT IN (
     'AMBIGUOUS_ENTRY_FILL',
-    'OPEN_POSITION_ORDER_MISMATCH',
     'LATE_ENTRY_FILL_AFTER_POSITION_CLOSED',
     'LEGACY_RECONSTRUCTION_BLOCKED'
+  )
+  AND (
+    COALESCE(bo.reconciliation_status,'')<>'OPEN_POSITION_ORDER_MISMATCH'
+    OR recovery.order_row_id IS NOT NULL
   )
   AND (
     ft.fill_count > COALESCE(bo.reconciled_fill_count, 0)
@@ -322,6 +458,7 @@ class EntryFillReconciliationStats:
     created: int = 0
     updated: int = 0
     already_reconciled: int = 0
+    recovered: int = 0
     ambiguous: int = 0
     alarms: int = 0
     failed: int = 0
@@ -375,6 +512,66 @@ def _mark_order(
             int(order_row_id),
         ),
     )
+
+
+def _complete_partial_applied_recovery(
+    cur, *, order_row_id: int, position_id: int
+) -> None:
+    """Finalize one proven local-fill application after position ownership."""
+    cur.execute(
+        """
+        /* pending-entry:complete-partial-applied-recovery */
+        UPDATE exchange_fill_ingestion_state_v2 state
+        SET application_status='APPLIED',
+            last_decision='PARTIAL_APPLIED_POSITION_RECOVERED',
+            last_seen_at=clock_timestamp()
+        FROM binance_orders bo
+        JOIN binance_order_fills f
+          ON f.source=bo.exchange_source
+         AND f.symbol=bo.symbol AND f.order_id=bo.order_id
+        JOIN runtime_contract_adoption_v2 adoption
+          ON adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+         AND adoption.status='ACTIVE'
+         AND adoption.environment=lower(%s)
+         AND adoption.deployment_id=%s
+         AND adoption.environment='live'
+         AND adoption.deployment_id IN ('local-live','vps-live')
+        WHERE bo.id=%s
+          AND bo.reconciled_position_id=%s
+          AND state.source=f.source
+          AND state.symbol=f.symbol
+          AND state.trade_id=f.trade_id::text
+          AND state.order_id=f.order_id
+          AND state.local_fill_id=f.id
+          AND state.account_identity_key=bo.account_identity_id::text
+          AND state.application_status='OBSERVED_NOT_APPLIED'
+          AND state.applied_fingerprint=state.source_fingerprint
+          AND state.applied_fingerprint IS NOT NULL
+          AND state.applied_at IS NOT NULL
+          AND state.adoption_id=adoption.adoption_id
+          AND state.contract_generation=adoption.generation
+          AND NOT EXISTS (
+            SELECT 1 FROM positions conflict
+            WHERE conflict.id<>%s
+              AND (
+                conflict.entry_order_id=bo.order_id
+                OR conflict.exit_order_id=bo.order_id
+              )
+          )
+        """,
+        (
+            os.getenv("ENVIRONMENT", ""),
+            (
+                os.getenv("DEPLOYMENT_ID")
+                or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+            ),
+            int(order_row_id),
+            int(position_id),
+            int(position_id),
+        ),
+    )
+    if cur.rowcount != 1:
+        raise RuntimeError("PARTIAL_APPLIED_RECOVERY_STATE_CONFLICT")
 
 
 def _position_identity_matches(
@@ -801,6 +998,7 @@ def _apply_exact_position(
 
 
 def _reconcile_candidate(cur, row):
+    partial_applied_recovery = bool(row[17]) if len(row) > 17 else False
     (
         order_row_id,
         exchange_source,
@@ -819,7 +1017,7 @@ def _reconcile_candidate(cur, row):
         last_fill_time,
         fill_side_count,
         fill_side,
-    ) = row
+    ) = row[:17]
 
     qty = Decimal(str(executed_qty))
     if (
@@ -946,7 +1144,19 @@ def _reconcile_candidate(cur, row):
             link_position=True,
             fill_count=fill_count,
             reconciled_qty=qty,
+            action=(
+                "RECOVER_PARTIAL_APPLIED_ENTRY"
+                if partial_applied_recovery
+                else None
+            ),
         )
+        if partial_applied_recovery:
+            _complete_partial_applied_recovery(
+                cur,
+                order_row_id=int(order_row_id),
+                position_id=position_id,
+            )
+            return "recovered"
         return "created"
 
     # A concurrent strategy/reconciler won the partial unique index race.
@@ -1002,13 +1212,24 @@ def reconcile_pending_entry_fills(
 
     bounded_batch = max(1, min(int(batch_size), 1000))
     with conn.cursor() as cur:
-        cur.execute(_CANDIDATES_SQL, (bounded_batch,))
+        cur.execute(
+            _CANDIDATES_SQL,
+            (
+                os.getenv("ENVIRONMENT", ""),
+                (
+                    os.getenv("DEPLOYMENT_ID")
+                    or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+                ),
+                bounded_batch,
+            ),
+        )
         candidates = cur.fetchall()
 
     counts = {
         "created": 0,
         "updated": 0,
         "already_reconciled": 0,
+        "recovered": 0,
         "ambiguous": 0,
         "alarms": 0,
         "failed": 0,
@@ -1020,7 +1241,11 @@ def reconcile_pending_entry_fills(
                 cur.execute("SAVEPOINT pending_entry_fill_order")
                 result = _reconcile_candidate(cur, row)
                 cur.execute("RELEASE SAVEPOINT pending_entry_fill_order")
-            counts[result] += 1
+            if result == "recovered":
+                counts["created"] += 1
+                counts["recovered"] += 1
+            else:
+                counts[result] += 1
         except Exception:
             counts["failed"] += 1
             with conn.cursor() as cur:

@@ -82,7 +82,7 @@ class MemoryCursor:
             return
 
         if "pending-entry:candidates" in normalized:
-            limit = int(params[0])
+            limit = int(params[-1])
             eligible = []
             for row in self.conn.candidates:
                 mark = self.conn.marks.get(row[0])

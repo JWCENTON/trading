@@ -183,7 +183,10 @@ def _explain_production_candidate_query(conn):
         cur.execute("ANALYZE binance_order_fills")
         cur.execute("ANALYZE positions")
         cur.execute("SET LOCAL enable_seqscan = off")
-        cur.execute("EXPLAIN (FORMAT JSON) " + _CANDIDATES_SQL, (100,))
+        cur.execute(
+            "EXPLAIN (FORMAT JSON) " + _CANDIDATES_SQL,
+            (os.getenv("ENVIRONMENT", ""), os.getenv("DEPLOYMENT_ID", ""), 100),
+        )
         plan = cur.fetchone()[0]
     index_names = _plan_index_names(plan)
     assert "ix_binance_orders_pending_entry_reconcile" in index_names, index_names
@@ -287,7 +290,14 @@ def test_real_drain_100_then_50_then_zero_without_new_fills():
         with conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM positions WHERE symbol LIKE %s", (prefix + "%",))
             assert cur.fetchone()[0] == 150
-            cur.execute(_CANDIDATES_SQL, (100,))
+            cur.execute(
+                _CANDIDATES_SQL,
+                (
+                    os.getenv("ENVIRONMENT", ""),
+                    os.getenv("DEPLOYMENT_ID", ""),
+                    100,
+                ),
+            )
             assert cur.fetchall() == []
     finally:
         conn.rollback()
