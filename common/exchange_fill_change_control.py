@@ -433,6 +433,10 @@ def _resolve_pending_entry_generation(
         event_time_ms > 0,
     )):
         return None, None, None
+    payload = authoritative_fill_payload(
+        row, account_identity_key=str(account_identity_key)
+    )
+    fingerprint = authoritative_fill_fingerprint(payload)
 
     cur.execute(
         """
@@ -518,6 +522,16 @@ def _resolve_pending_entry_generation(
             WHERE state.source='okx'
               AND state.account_identity_key=%s
               AND state.symbol=%s AND state.trade_id=%s
+              AND NOT (
+                state.application_status='OBSERVED_NOT_APPLIED'
+                AND state.applied_fingerprint IS NULL
+                AND state.applied_at IS NULL
+                AND state.local_fill_id IS NULL
+                AND state.adoption_id IS NULL
+                AND state.contract_generation IS NULL
+                AND state.source_fingerprint=%s
+                AND state.authoritative_payload=%s::jsonb
+              )
           )
         ORDER BY bo.id
         LIMIT 1
@@ -537,6 +551,8 @@ def _resolve_pending_entry_generation(
             str(account_identity_key),
             symbol,
             trade_id,
+            fingerprint,
+            json.dumps(payload, sort_keys=True),
         ),
     )
     result = cur.fetchone()
@@ -582,7 +598,8 @@ def _resolve_row_generation(
           END
         FROM positions p
         LEFT JOIN binance_orders bo
-          ON bo.position_id = p.id OR bo.order_id = p.entry_order_id
+          ON bo.position_id = p.id OR bo.reconciled_position_id = p.id
+          OR bo.order_id = p.entry_order_id
         LEFT JOIN runtime_contract_adoption_v2 adoption
           ON adoption.contract_name = 'FEE_AWARE_INVENTORY_C2_2'
          AND adoption.status = 'ACTIVE'
@@ -838,8 +855,21 @@ def register_fill_change(
                 if lei1c_attribution_status is not None else None
             ),
         )
+        delayed_bootstrap_recovery = (
+            row_generation
+            is InventoryRowGeneration.FORWARD_C2_2_PENDING_ENTRY
+            and application_status
+            is FillApplicationClassification.OBSERVED_NOT_APPLIED
+            and applied_fingerprint is None
+            and applied_at is None
+            and local_fill_id is None
+            and applied_adoption_id is None
+            and applied_generation is None
+        )
         replay_decision = (
-            FillMutationDecision.NO_CHANGE
+            FillMutationDecision.NEW_AUTHORITATIVE_EVIDENCE
+            if delayed_bootstrap_recovery
+            else FillMutationDecision.NO_CHANGE
             if application_status
             is not FillApplicationClassification.OBSERVED_NOT_APPLIED
             else FillMutationDecision.OBSERVED_NOT_APPLIED
@@ -861,10 +891,19 @@ def register_fill_change(
             int(ingestion_id), replay_decision,
             classification_fingerprint, int(revision), row_generation,
             (
-                int(applied_adoption_id)
-                if applied_adoption_id is not None else None
+                int(adoption_id)
+                if delayed_bootstrap_recovery
+                else int(applied_adoption_id)
+                if applied_adoption_id is not None
+                else None
             ),
-            int(applied_generation) if applied_generation is not None else None,
+            (
+                int(contract_generation)
+                if delayed_bootstrap_recovery
+                else int(applied_generation)
+                if applied_generation is not None
+                else None
+            ),
             application_status,
         )
 
@@ -994,7 +1033,8 @@ def attribute_fill_change_position(
             p.entry_order_id=%s OR p.exit_order_id=%s
             OR EXISTS (
               SELECT 1 FROM binance_orders bo
-              WHERE bo.position_id=p.id AND bo.order_id=%s
+              WHERE (bo.position_id=p.id OR bo.reconciled_position_id=p.id)
+                AND bo.order_id=%s
             )
           )
         """,

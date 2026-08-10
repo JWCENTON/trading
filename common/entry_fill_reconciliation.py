@@ -23,6 +23,10 @@ def _refresh_entry_inventory_projection(cur, position_id: int) -> None:
           SELECT
             p.id,
             SUM(f.executed_qty) AS gross_entry_qty,
+            SUM(f.executed_qty * f.avg_price)
+              / NULLIF(SUM(f.executed_qty),0) AS weighted_entry_price,
+            SUM(f.commission_usdc) AS entry_fees_usdc,
+            MIN(f.event_time) AS first_entry_time,
             SUM(
               CASE
                 WHEN upper(f.commission_asset) = upper(
@@ -40,13 +44,34 @@ def _refresh_entry_inventory_projection(cur, position_id: int) -> None:
               AND f.commission_amount IS NOT NULL
             ) AS fee_evidence_complete
           FROM positions p
+          JOIN binance_orders bo
+            ON bo.symbol=p.symbol
+           AND bo.strategy=p.strategy
+           AND bo."interval"=p."interval"
+           AND bo.order_purpose='ENTRY'
+           AND bo.order_accepted IS TRUE
+           AND (
+             bo.reconciled_position_id=p.id
+             OR (
+               bo.reconciled_position_id IS NULL
+               AND bo.order_id=p.entry_order_id
+             )
+           )
           JOIN binance_order_fills f
-            ON f.order_id=p.entry_order_id AND f.side='BUY'
+            ON f.source=bo.exchange_source
+           AND f.symbol=bo.symbol
+           AND f.order_id=bo.order_id
+           AND f.side='BUY'
           WHERE p.id=%s
           GROUP BY p.id
         )
         UPDATE positions p
         SET gross_entry_executed_qty=e.gross_entry_qty,
+            entry_price=e.weighted_entry_price,
+            entry_time=e.first_entry_time,
+            entry_hour_utc=EXTRACT(HOUR FROM e.first_entry_time)::smallint,
+            entry_day_utc=e.first_entry_time::date,
+            fees_usdc=round(e.entry_fees_usdc,8),
             entry_base_fee_qty=e.base_fee_qty,
             net_entry_inventory_qty=e.gross_entry_qty-e.base_fee_qty,
             remaining_inventory_qty=(
@@ -124,6 +149,21 @@ WITH fill_totals AS (
   FROM binance_order_fills f
   WHERE f.executed_qty > 0
   GROUP BY f.source, f.symbol, f.order_id
+), position_fill_totals AS (
+  SELECT
+    bo.reconciled_position_id AS position_id,
+    sum(f.executed_qty * f.avg_price) / NULLIF(sum(f.executed_qty),0)
+      AS weighted_avg_price,
+    round(sum(f.commission_usdc),8) AS fees_usdc
+  FROM binance_orders bo
+  JOIN binance_order_fills f
+    ON f.source=bo.exchange_source
+   AND f.symbol=bo.symbol AND f.order_id=bo.order_id
+   AND f.side='BUY'
+  WHERE bo.order_purpose='ENTRY'
+    AND bo.order_accepted IS TRUE
+    AND bo.reconciled_position_id IS NOT NULL
+  GROUP BY bo.reconciled_position_id
 )
 SELECT
   bo.id,
@@ -149,6 +189,8 @@ JOIN fill_totals ft
  AND ft.symbol = bo.symbol AND ft.order_id = bo.order_id
 LEFT JOIN positions reconciled_position
   ON reconciled_position.id = bo.reconciled_position_id
+LEFT JOIN position_fill_totals position_totals
+  ON position_totals.position_id=reconciled_position.id
 WHERE bo.order_purpose = 'ENTRY'
   AND bo.order_accepted IS TRUE
   AND bo.strategy IS NOT NULL
@@ -167,10 +209,14 @@ WHERE bo.order_purpose = 'ENTRY'
     OR (
       reconciled_position.status = 'OPEN'
       AND (
-        reconciled_position.entry_price IS DISTINCT FROM ft.weighted_avg_price
+        reconciled_position.entry_price IS DISTINCT FROM COALESCE(
+          position_totals.weighted_avg_price,ft.weighted_avg_price
+        )
         OR (
           ft.fees_usdc IS NOT NULL
-          AND reconciled_position.fees_usdc IS DISTINCT FROM round(ft.fees_usdc, 8)
+          AND reconciled_position.fees_usdc IS DISTINCT FROM COALESCE(
+            position_totals.fees_usdc,round(ft.fees_usdc,8)
+          )
         )
       )
     )
@@ -401,6 +447,212 @@ def _is_forward_c2_2_position(cur, position_id: int) -> bool:
         return True
 
 
+def _is_proven_delayed_entry_addition(
+    cur,
+    *,
+    position_id: int,
+    exchange_source,
+    symbol,
+    order_id,
+    qty,
+    fill_count,
+) -> bool:
+    """Require immutable delayed-fill proof before adding a second entry order."""
+    try:
+        cur.execute(
+            """
+            SELECT
+              count(DISTINCT f.id)=%s
+              AND sum(f.executed_qty)=%s
+              AND bool_and(
+                state.application_status='OBSERVED_NOT_APPLIED'
+                AND state.applied_fingerprint IS NULL
+                AND state.applied_at IS NULL
+                AND (state.local_fill_id IS NULL OR state.local_fill_id=f.id)
+                AND state.side='BUY'
+                AND NULLIF(
+                  state.authoritative_payload->>'executed_qty',''
+                )::numeric IS NOT DISTINCT FROM f.executed_qty
+                AND NULLIF(
+                  state.authoritative_payload->>'fill_price',''
+                )::numeric IS NOT DISTINCT FROM f.avg_price
+                AND NULLIF(
+                  state.authoritative_payload->>'fee_quantity',''
+                )::numeric IS NOT DISTINCT FROM f.commission_amount
+                AND COALESCE(
+                  state.authoritative_payload->>'fee_currency',''
+                )=COALESCE(f.commission_asset,'')
+                AND (
+                  extract(epoch FROM f.event_time)*1000
+                )::bigint=(
+                  state.authoritative_payload->>'event_time_ms'
+                )::bigint
+              )
+            FROM positions p
+            JOIN binance_order_fills f
+              ON f.source=%s AND f.symbol=%s AND f.order_id=%s
+             AND f.side='BUY'
+            JOIN exchange_fill_ingestion_state_v2 state
+              ON state.source=f.source
+             AND state.symbol=f.symbol
+             AND state.order_id=f.order_id
+             AND state.trade_id=f.trade_id::text
+             AND state.adoption_id IS NULL
+             AND state.contract_generation IS NULL
+            JOIN binance_orders new_order
+              ON new_order.exchange_source=f.source
+             AND new_order.symbol=f.symbol
+             AND new_order.order_id=f.order_id
+             AND upper(new_order.side)='BUY'
+             AND upper(new_order.order_purpose)='ENTRY'
+             AND new_order.order_accepted IS TRUE
+             AND upper(new_order.status) IN (
+               'NEW','ACCEPTED','PARTIALLY_FILLED'
+             )
+             AND new_order.position_id IS NULL
+             AND new_order.reconciled_position_id IS NULL
+             AND new_order.strategy IS NOT NULL
+             AND btrim(new_order.strategy)<>''
+             AND new_order."interval" IS NOT NULL
+             AND btrim(new_order."interval")<>''
+             AND new_order.client_order_id LIKE (
+               'ORC-L-' || new_order.symbol || '-'
+               || upper(left(new_order.strategy,4)) || '-'
+               || lower(new_order."interval") || '-E-%%'
+             )
+             AND new_order.client_order_id ~ '-E-[0-9a-f]{6,8}$'
+             AND COALESCE(new_order.raw->>'orderId','')=new_order.order_id
+             AND upper(COALESCE(new_order.raw->>'status','')) IN (
+               'NEW','ACCEPTED','PARTIALLY_FILLED'
+             )
+             AND COALESCE(NULLIF(
+               new_order.raw->>'executedQty',''
+             )::numeric,0)=0
+            JOIN runtime_contract_adoption_v2 adoption
+              ON adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+             AND adoption.status='ACTIVE'
+             AND adoption.environment=lower(%s)
+             AND adoption.deployment_id=%s
+            WHERE p.id=%s AND p.status='OPEN'
+              AND f.event_time>=clock_timestamp()-interval '7 days'
+              AND EXISTS (
+                SELECT 1 FROM strategy_events event
+                WHERE event.event_type='LIVE_ORDER_SENT'
+                  AND event.symbol=new_order.symbol
+                  AND event.strategy=new_order.strategy
+                  AND event."interval"=new_order."interval"
+                  AND event.info->'resp'->>'orderId'=new_order.order_id
+                  AND event.info->>'client_order_id'=
+                      new_order.client_order_id
+                  AND event.info->'resp'->>'clientOrderId'=
+                      new_order.raw->>'clientOrderId'
+                  AND lower(COALESCE(
+                    event.info->>'exchange_source',''
+                  ))='okx'
+                  AND COALESCE(NULLIF(
+                    event.info->>'order_accepted',''
+                  )::boolean,false) IS TRUE
+                  AND COALESCE(NULLIF(
+                    event.info->>'is_exit',''
+                  )::boolean,false) IS FALSE
+                  AND upper(COALESCE(
+                    event.info->>'order_purpose',''
+                  ))='ENTRY'
+                  AND COALESCE(NULLIF(
+                    event.info->>'executed_qty',''
+                  )::numeric,0)=0
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM binance_orders primary_order
+                JOIN exchange_fill_ingestion_state_v2 primary_state
+                  ON primary_state.source=primary_order.exchange_source
+                 AND primary_state.symbol=primary_order.symbol
+                 AND primary_state.order_id=primary_order.order_id
+                 AND primary_state.account_identity_key=
+                     state.account_identity_key
+                 AND (
+                   (
+                     primary_state.adoption_id=adoption.adoption_id
+                     AND primary_state.contract_generation=adoption.generation
+                     AND primary_state.application_status IN (
+                       'APPLIED','CORRECTION_APPLIED'
+                     )
+                   )
+                   OR (
+                     primary_state.adoption_id IS NULL
+                     AND primary_state.contract_generation IS NULL
+                     AND primary_state.application_status=
+                         'OBSERVED_NOT_APPLIED'
+                     AND primary_state.applied_fingerprint IS NULL
+                     AND primary_state.applied_at IS NULL
+                   )
+                 )
+                WHERE primary_order.order_id=p.entry_order_id
+                  AND primary_order.reconciled_position_id=p.id
+                  AND upper(primary_order.side)='BUY'
+                  AND upper(primary_order.order_purpose)='ENTRY'
+                  AND primary_order.order_accepted IS TRUE
+                  AND primary_order.client_order_id LIKE (
+                    'ORC-L-' || primary_order.symbol || '-'
+                    || upper(left(primary_order.strategy,4)) || '-'
+                    || lower(primary_order."interval") || '-E-%%'
+                  )
+                  AND primary_order.client_order_id ~
+                      '-E-[0-9a-f]{6,8}$'
+                  AND COALESCE(primary_order.raw->>'orderId','')=
+                      primary_order.order_id
+                  AND COALESCE(NULLIF(
+                    primary_order.raw->>'executedQty',''
+                  )::numeric,0)=0
+                  AND EXISTS (
+                    SELECT 1 FROM strategy_events primary_event
+                    WHERE primary_event.event_type='LIVE_ORDER_SENT'
+                      AND primary_event.symbol=primary_order.symbol
+                      AND primary_event.strategy=primary_order.strategy
+                      AND primary_event."interval"=primary_order."interval"
+                      AND primary_event.info->'resp'->>'orderId'=
+                          primary_order.order_id
+                      AND primary_event.info->>'client_order_id'=
+                          primary_order.client_order_id
+                      AND lower(COALESCE(
+                        primary_event.info->>'exchange_source',''
+                      ))='okx'
+                      AND COALESCE(NULLIF(
+                        primary_event.info->>'order_accepted',''
+                      )::boolean,false) IS TRUE
+                      AND COALESCE(NULLIF(
+                        primary_event.info->>'is_exit',''
+                      )::boolean,false) IS FALSE
+                      AND upper(COALESCE(
+                        primary_event.info->>'order_purpose',''
+                      ))='ENTRY'
+                      AND COALESCE(NULLIF(
+                        primary_event.info->>'executed_qty',''
+                      )::numeric,0)=0
+                  )
+              )
+            """,
+            (
+                int(fill_count),
+                qty,
+                exchange_source,
+                symbol,
+                str(order_id),
+                os.getenv("ENVIRONMENT", ""),
+                (
+                    os.getenv("DEPLOYMENT_ID")
+                    or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+                ),
+                int(position_id),
+            ),
+        )
+        result = cur.fetchone()
+        return bool(result and result[0])
+    except AssertionError:
+        return False
+
+
 def _apply_exact_position(
     cur,
     position,
@@ -621,6 +873,33 @@ def _reconcile_candidate(cur, row):
     cur.execute(_OPEN_SLOT_SQL, (symbol, strategy, interval))
     open_slots = cur.fetchall()
     if open_slots:
+        if (
+            len(open_slots) == 1
+            and str(order_side).upper() == "BUY"
+            and _is_forward_c2_2_position(cur, int(open_slots[0][0]))
+            and _is_proven_delayed_entry_addition(
+                cur,
+                position_id=int(open_slots[0][0]),
+                exchange_source=exchange_source,
+                symbol=symbol,
+                order_id=order_id,
+                qty=qty,
+                fill_count=fill_count,
+            )
+        ):
+            position_id = int(open_slots[0][0])
+            _mark_order(
+                cur,
+                order_row_id=order_row_id,
+                status="ENTRY_FILL_POSITION_UPDATED",
+                position_id=position_id,
+                link_position=True,
+                fill_count=fill_count,
+                reconciled_qty=qty,
+                action="ATTACH_PROVEN_DELAYED_ENTRY_ORDER",
+            )
+            _refresh_entry_inventory_projection(cur, position_id)
+            return "updated"
         _mark_order(
             cur,
             order_row_id=order_row_id,
