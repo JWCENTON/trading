@@ -7,8 +7,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+import psycopg2
 
-from common.entry_fill_reconciliation import reconcile_pending_entry_fills
+from common.entry_fill_reconciliation import (
+    converge_partial_applied_recovery_link,
+    reconcile_pending_entry_fills,
+)
 from common.exchange_fill_change_control import (
     FillMutationDecision,
     InventoryRowGeneration,
@@ -145,6 +149,7 @@ CREATE TABLE exchange_fill_ingestion_state_v2 (
   authoritative_payload JSONB NOT NULL,
   last_decision TEXT NOT NULL,
   local_fill_id BIGINT,
+  linked_position_id BIGINT,
   adoption_id BIGINT,
   contract_generation BIGINT,
   ownership_classification TEXT,
@@ -955,6 +960,17 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
 
     try:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass('public.live_entry_fill_evidence_v1')"
+            )
+            assert cur.fetchone()[0] is None
+            cur.execute("SAVEPOINT missing_lei1c_reproducer")
+            with pytest.raises(psycopg2.errors.UndefinedTable):
+                cur.execute("SELECT 1 FROM live_entry_fill_evidence_v1")
+            cur.execute("ROLLBACK TO SAVEPOINT missing_lei1c_reproducer")
+            cur.execute("RELEASE SAVEPOINT missing_lei1c_reproducer")
+
+        with conn.cursor() as cur:
             adoption_id = _active_adoption(
                 cur,
                 adopted_at=now - timedelta(minutes=10),
@@ -1211,16 +1227,18 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
             )
             cur.execute(
                 """
-                SELECT application_status,local_fill_id,applied_fingerprint,
-                       applied_at,adoption_id,contract_generation,last_decision
+                SELECT application_status,local_fill_id,linked_position_id,
+                       applied_fingerprint,applied_at,adoption_id,
+                       contract_generation,last_decision
                 FROM exchange_fill_ingestion_state_v2 WHERE trade_id='4414544'
                 """
             )
             state_b = cur.fetchone()
-            assert state_b[0] == "APPLIED"
+            assert state_b[0] == "TRUE_DUPLICATE_APPLIED"
             assert state_b[1] == incidents["B"]["fill_id"]
-            assert state_b[2] is not None and state_b[3] is not None
-            assert state_b[4:] == (
+            assert state_b[2] == position_b
+            assert state_b[3] is not None and state_b[4] is not None
+            assert state_b[5:] == (
                 adoption_id, 3, "PARTIAL_APPLIED_POSITION_RECOVERED"
             )
             cur.execute(
@@ -1258,6 +1276,101 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
             account_btc = Decimal("0.003024216285")
             assert external + incidents["B"]["net"] + terminal_dust == account_btc
 
+            # Exact pre-fix production remainder: application proof and order
+            # linkage exist, but mutable ingestion linkage is still absent.
+            cur.execute(
+                """
+                UPDATE exchange_fill_ingestion_state_v2
+                SET linked_position_id=NULL
+                WHERE trade_id='4414544'
+                """
+            )
+
+        replay_results = []
+        for _ in range(3):
+            with conn.cursor() as cur:
+                replay = register_fill_change(
+                    cur, row_for("B"), account_identity_key="1"
+                )
+                replay_results.append(
+                    converge_partial_applied_recovery_link(
+                        cur, ingestion_id=replay.ingestion_id
+                    )
+                )
+        assert replay_results == [True, False, False]
+
+        convergence_negative_sql = {
+            "manual-external": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL,"
+                "ownership_classification='MANUAL_OR_EXTERNAL' "
+                "WHERE trade_id='4414544'"
+            ),
+            "wrong-account": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL WHERE trade_id='4414544'; "
+                "UPDATE binance_order_fills SET account_identity_id=2 "
+                "WHERE trade_id='4414544'"
+            ),
+            "sell": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL WHERE trade_id='4414544'; "
+                "UPDATE binance_order_fills SET side='SELL' "
+                "WHERE trade_id='4414544'"
+            ),
+            "already-linked": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                f"linked_position_id={position_b} WHERE trade_id='4414544'"
+            ),
+            "conflicting-position": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                f"linked_position_id={position_a} WHERE trade_id='4414544'"
+            ),
+            "missing-adoption": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL,adoption_id=NULL "
+                "WHERE trade_id='4414544'"
+            ),
+            "invalid-generation": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL,contract_generation=99 "
+                "WHERE trade_id='4414544'"
+            ),
+            "economically-consumed": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL WHERE trade_id='4414544'; "
+                "UPDATE canonical_financial_truth_v1 SET source_fill_ids="
+                f"'[\"exchange:{incidents['B']['fill_id']}\"]'::jsonb "
+                f"WHERE position_id={position_a}"
+            ),
+        }
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ingestion_id FROM exchange_fill_ingestion_state_v2 "
+                "WHERE trade_id='4414544'"
+            )
+            ingestion_b = int(cur.fetchone()[0])
+            for case, mutation in convergence_negative_sql.items():
+                cur.execute("SAVEPOINT convergence_negative")
+                cur.execute(mutation)
+                assert converge_partial_applied_recovery_link(
+                    cur, ingestion_id=ingestion_b
+                ) is False, case
+                cur.execute("ROLLBACK TO SAVEPOINT convergence_negative")
+                cur.execute("RELEASE SAVEPOINT convergence_negative")
+            cur.execute("SAVEPOINT convergence_wrong_deployment")
+            cur.execute(
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "linked_position_id=NULL WHERE trade_id='4414544'"
+            )
+            monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+            assert converge_partial_applied_recovery_link(
+                cur, ingestion_id=ingestion_b
+            ) is False
+            monkeypatch.setenv("DEPLOYMENT_ID", "vps-live")
+            cur.execute("ROLLBACK TO SAVEPOINT convergence_wrong_deployment")
+            cur.execute("RELEASE SAVEPOINT convergence_wrong_deployment")
+
         for _ in range(3):
             repeated = reconcile_pending_entry_fills(
                 conn, batch_size=10, trading_mode="LIVE"
@@ -1277,6 +1390,22 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
             )
             assert cur.fetchone() == (
                 1, incidents["B"]["net"], Decimal(incidents["B"]["fee"])
+            )
+            cur.execute(
+                """
+                SELECT application_status,local_fill_id,linked_position_id,
+                       adoption_id,contract_generation,last_decision
+                FROM exchange_fill_ingestion_state_v2
+                WHERE trade_id='4414544'
+                """
+            )
+            assert cur.fetchone() == (
+                "TRUE_DUPLICATE_APPLIED",
+                incidents["B"]["fill_id"],
+                position_b,
+                adoption_id,
+                3,
+                "NO_CHANGE",
             )
     finally:
         conn.rollback()

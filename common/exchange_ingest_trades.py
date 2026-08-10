@@ -15,7 +15,10 @@ from common.contract_adoption import (
     log_runtime_revision_provenance_diagnostic,
     require_runtime_git_revision,
 )
-from common.entry_fill_reconciliation import run_pending_entry_reconciliation_if_due
+from common.entry_fill_reconciliation import (
+    converge_partial_applied_recovery_link,
+    run_pending_entry_reconciliation_if_due,
+)
 from common.entry_position_projection import (
     EntryPositionProjectionMode,
     run_entry_position_projection,
@@ -28,6 +31,7 @@ from common.entry_fill_attribution import (
     process_entry_fill_attribution,
 )
 from common.exchange_fill_change_control import (
+    FillApplicationClassification,
     FillMutationDecision,
     attribute_fill_change_position,
     mark_fill_change_applied,
@@ -828,72 +832,6 @@ def _trade_to_row(symbol: str, t: Dict[str, Any], fill_idx: int = 0, source: str
     }
 
 
-def _partial_recovery_reobservations(conn) -> list[Dict[str, Any]]:
-    """Load only recovered fills whose immutable LEI1C evidence already exists."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT f.source,f.trade_id::text,f.order_id,
-                   COALESCE(f.raw->>'clOrdId',bo.raw->>'clientOrderId'),
-                   f.symbol,f.side,f.role,f.executed_qty,f.avg_price,
-                   f.quote_notional_usdc,f.commission_amount,
-                   f.commission_asset,f.commission_usdc,
-                   (extract(epoch FROM f.event_time)*1000)::bigint,
-                   f.fill_idx,f.raw,f.account_identity_id,
-                   f.instrument_snapshot_id,f.account_identity_status
-            FROM binance_orders bo
-            JOIN binance_order_fills f
-              ON f.source=bo.exchange_source
-             AND f.symbol=bo.symbol AND f.order_id=bo.order_id
-            JOIN exchange_fill_ingestion_state_v2 state
-              ON state.source=f.source
-             AND state.symbol=f.symbol
-             AND state.trade_id=f.trade_id::text
-             AND state.local_fill_id=f.id
-            WHERE bo.last_reconciliation_action=
-                    'RECOVER_PARTIAL_APPLIED_ENTRY'
-              AND bo.reconciled_position_id IS NOT NULL
-              AND state.application_status='APPLIED'
-              AND state.last_decision='PARTIAL_APPLIED_POSITION_RECOVERED'
-              AND EXISTS (
-                SELECT 1 FROM live_entry_fill_evidence_v1 evidence
-                WHERE evidence.environment=lower(%s)
-                  AND evidence.deployment_id=%s
-                  AND evidence.exchange_source=f.source
-                  AND evidence.exchange_trade_id=f.trade_id::text
-              )
-            ORDER BY f.id
-            """,
-            (
-                os.getenv("ENVIRONMENT", ""),
-                (
-                    os.getenv("DEPLOYMENT_ID")
-                    or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
-                ),
-            ),
-        )
-        rows = list(cur.fetchall())
-    keys = (
-        "source", "trade_id", "order_id", "client_order_id", "symbol",
-        "side", "role", "executed_qty", "avg_price",
-        "quote_notional_usdc", "commission_amount", "commission_asset",
-        "commission_usdc", "event_time_ms", "fill_idx", "raw",
-        "account_identity_id", "instrument_snapshot_id",
-        "account_identity_status",
-    )
-    return [
-        {
-            **dict(zip(keys, row)),
-            "environment": os.getenv("ENVIRONMENT", ""),
-            "deployment_id": (
-                os.getenv("DEPLOYMENT_ID")
-                or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
-            ),
-        }
-        for row in rows
-    ]
-
-
 def _record_lei1c_observations(
     conn,
     *,
@@ -1278,6 +1216,7 @@ def ingest_my_trades(
     total_fetched = 0
     min_event_time_ms_seen: Optional[int] = None
     accepted_changes = []
+    converged_partial_links = 0
     changed_exit_order_ids: set[str] = set()
 
     with psycopg2.connect(dsn) as conn:
@@ -1361,6 +1300,14 @@ def ingest_my_trades(
                             else f"{source}:ACCOUNT_IDENTITY_MISSING"
                         ),
                     )
+                    if (
+                        change.application_status
+                        is FillApplicationClassification.TRUE_DUPLICATE_APPLIED
+                        and converge_partial_applied_recovery_link(
+                            cur, ingestion_id=change.ingestion_id
+                        )
+                    ):
+                        converged_partial_links += 1
                     if change.permits_mutation:
                         attribute_fill_change_position(cur, item, change)
                         accepted_rows.append(item)
@@ -1406,7 +1353,6 @@ def ingest_my_trades(
 
         priced_updated = 0
         reconciled_entries = 0
-        partial_recoveries = 0
         reconciled_exits = 0
         if min_event_time_ms_seen is not None:
             with conn.cursor() as cur:
@@ -1443,7 +1389,6 @@ def ingest_my_trades(
                     cur.execute("RELEASE SAVEPOINT pending_entry_fill_batch")
                 entry_stats = entry_run.stats
                 reconciled_entries = entry_stats.created + entry_stats.updated
-                partial_recoveries = entry_stats.recovered
                 logging.info(
                     "EXCHANGE_INGEST|entry fill reconciliation "
                     "status=%s ran=%s scanned=%s created=%s updated=%s already=%s "
@@ -1506,14 +1451,12 @@ def ingest_my_trades(
             for change in accepted_changes:
                 mark_fill_change_applied(cur, change)
         conn.commit()
-        if partial_recoveries:
-            recovered_rows = _partial_recovery_reobservations(conn)
-            _record_lei1c_observations(
-                conn,
-                dsn=dsn,
-                rows=recovered_rows,
-            )
-            conn.commit()
+
+    if converged_partial_links:
+        logging.warning(
+            "EXCHANGE_INGEST|partial recovery linkage converged=%s",
+            converged_partial_links,
+        )
 
     if reconciled_exits:
         logging.warning(

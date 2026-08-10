@@ -522,7 +522,8 @@ def _complete_partial_applied_recovery(
         """
         /* pending-entry:complete-partial-applied-recovery */
         UPDATE exchange_fill_ingestion_state_v2 state
-        SET application_status='APPLIED',
+        SET application_status='TRUE_DUPLICATE_APPLIED',
+            linked_position_id=%s,
             last_decision='PARTIAL_APPLIED_POSITION_RECOVERED',
             last_seen_at=clock_timestamp()
         FROM binance_orders bo
@@ -548,6 +549,8 @@ def _complete_partial_applied_recovery(
           AND state.applied_fingerprint=state.source_fingerprint
           AND state.applied_fingerprint IS NOT NULL
           AND state.applied_at IS NOT NULL
+          AND COALESCE(state.ownership_classification,'')<>
+              'MANUAL_OR_EXTERNAL'
           AND state.adoption_id=adoption.adoption_id
           AND state.contract_generation=adoption.generation
           AND NOT EXISTS (
@@ -560,6 +563,7 @@ def _complete_partial_applied_recovery(
           )
         """,
         (
+            int(position_id),
             os.getenv("ENVIRONMENT", ""),
             (
                 os.getenv("DEPLOYMENT_ID")
@@ -572,6 +576,106 @@ def _complete_partial_applied_recovery(
     )
     if cur.rowcount != 1:
         raise RuntimeError("PARTIAL_APPLIED_RECOVERY_STATE_CONFLICT")
+
+
+def converge_partial_applied_recovery_link(cur, *, ingestion_id: int) -> bool:
+    """Bind a proven recovered position on a later authoritative replay."""
+    cur.execute(
+        """
+        /* pending-entry:converge-partial-recovery-link */
+        UPDATE exchange_fill_ingestion_state_v2 state
+        SET linked_position_id=position.id,
+            last_seen_at=clock_timestamp()
+        FROM binance_orders bo,binance_order_fills fill,positions position,
+             runtime_contract_adoption_v2 adoption
+        WHERE state.ingestion_id=%s
+          AND state.linked_position_id IS NULL
+          AND state.application_status IN ('APPLIED','TRUE_DUPLICATE_APPLIED')
+          AND state.applied_fingerprint=state.source_fingerprint
+          AND state.applied_fingerprint IS NOT NULL
+          AND state.applied_at IS NOT NULL
+          AND COALESCE(state.ownership_classification,'')<>
+              'MANUAL_OR_EXTERNAL'
+          AND state.local_fill_id=fill.id
+          AND state.source=fill.source
+          AND state.symbol=fill.symbol
+          AND state.trade_id=fill.trade_id::text
+          AND state.order_id=fill.order_id
+          AND upper(state.side)='BUY'
+          AND upper(fill.side)='BUY'
+          AND bo.exchange_source=fill.source
+          AND bo.symbol=fill.symbol
+          AND bo.order_id=fill.order_id
+          AND upper(bo.side)='BUY'
+          AND upper(bo.order_purpose)='ENTRY'
+          AND bo.is_exit IS FALSE
+          AND bo.order_accepted IS TRUE
+          AND bo.last_reconciliation_action='RECOVER_PARTIAL_APPLIED_ENTRY'
+          AND bo.reconciled_position_id=position.id
+          AND bo.position_id IS NULL
+          AND bo.account_identity_id IS NOT NULL
+          AND upper(COALESCE(bo.account_identity_status,''))='VERIFIED'
+          AND fill.account_identity_id=bo.account_identity_id
+          AND upper(COALESCE(fill.account_identity_status,''))='VERIFIED'
+          AND state.account_identity_key=bo.account_identity_id::text
+          AND position.status='OPEN'
+          AND position.entry_order_id=bo.order_id
+          AND position.symbol=bo.symbol
+          AND position.strategy=bo.strategy
+          AND position."interval"=bo."interval"
+          AND NOT EXISTS (
+            SELECT 1 FROM positions conflict
+            WHERE conflict.id<>position.id
+              AND (
+                conflict.entry_order_id=bo.order_id
+                OR conflict.exit_order_id=bo.order_id
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM canonical_financial_truth_v1 consumed
+            WHERE consumed.source_fill_ids ? ('exchange:' || fill.id::text)
+          )
+          AND adoption.adoption_id=state.adoption_id
+          AND adoption.generation=state.contract_generation
+          AND adoption.adoption_id=position.inventory_contract_adoption_id
+          AND adoption.generation=position.inventory_contract_generation
+          AND adoption.contract_name='FEE_AWARE_INVENTORY_C2_2'
+          AND adoption.status='ACTIVE'
+          AND adoption.environment=lower(%s)
+          AND adoption.deployment_id=%s
+          AND adoption.environment='live'
+          AND adoption.deployment_id IN ('local-live','vps-live')
+          AND state.authoritative_payload->>'exchange'=lower(fill.source)
+          AND state.authoritative_payload->>'instrument'=fill.symbol
+          AND state.authoritative_payload->>'trade_id'=fill.trade_id::text
+          AND state.authoritative_payload->>'order_id'=fill.order_id
+          AND upper(state.authoritative_payload->>'side')='BUY'
+          AND NULLIF(
+            state.authoritative_payload->>'executed_qty',''
+          )::numeric=fill.executed_qty
+          AND NULLIF(
+            state.authoritative_payload->>'fill_price',''
+          )::numeric=fill.avg_price
+          AND COALESCE(NULLIF(
+            state.authoritative_payload->>'fee_quantity',''
+          )::numeric,0)=COALESCE(fill.commission_amount,0)
+          AND COALESCE(
+            state.authoritative_payload->>'fee_currency',''
+          )=COALESCE(fill.commission_asset,'')
+          AND (state.authoritative_payload->>'event_time_ms')::bigint=(
+            extract(epoch FROM fill.event_time)*1000
+          )::bigint
+        """,
+        (
+            int(ingestion_id),
+            os.getenv("ENVIRONMENT", ""),
+            (
+                os.getenv("DEPLOYMENT_ID")
+                or os.getenv("WALTRADE_DEPLOYMENT_ID", "")
+            ),
+        ),
+    )
+    return cur.rowcount == 1
 
 
 def _position_identity_matches(
