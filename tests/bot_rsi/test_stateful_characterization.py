@@ -876,7 +876,7 @@ def test_live_partial_stop_exit_reduces_remaining_quantity_without_close_event(h
          True, True),
     ],
 )
-def test_execute_and_record_propagates_order_accepted(
+def test_live_exit_remains_authorized_with_entries_disabled(
     rsi, monkeypatch, place_result, expected_order_accepted, expected_live_ok
 ):
     class FakeCursor:
@@ -899,8 +899,14 @@ def test_execute_and_record_propagates_order_accepted(
     side_effects = {"place_live_order": 0}
 
     def place_once(*_args, **_kwargs):
+        assert _kwargs["live_orders_enabled"] is True
+        assert _kwargs["order_purpose"] == "EXIT"
         side_effects["place_live_order"] += 1
         return place_result
+
+    def preflight_exit(*_args, **_kwargs):
+        assert _kwargs["live_orders_enabled"] is True
+        return {"ok": True}
 
     monkeypatch.setattr(rsi, "insert_simulated_order", lambda **_kwargs: True)
     monkeypatch.setattr(
@@ -909,13 +915,17 @@ def test_execute_and_record_propagates_order_accepted(
     )
     monkeypatch.setattr(rsi, "get_db_conn", lambda: FakeConnection())
     monkeypatch.setattr(rsi, "attach_exit_order_id_with_conn", lambda *_args: None)
-    monkeypatch.setattr(rsi, "preflight_live_order", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(rsi, "preflight_live_order", preflight_exit)
     monkeypatch.setattr(rsi, "get_exchange_client", lambda: object())
     monkeypatch.setattr(rsi, "place_live_order", place_once)
     monkeypatch.setattr(rsi, "emit_strategy_event", lambda **_kwargs: None)
 
     cfg_live = rsi.replace(
-        rsi.cfg, trading_mode="LIVE", live_orders_enabled=True
+        rsi.cfg,
+        trading_mode="LIVE",
+        live_orders_enabled=False,
+        regime_enabled=True,
+        regime_mode="DRY_RUN",
     )
     result = rsi.execute_and_record(
         side="SELL", price=99.0, qty_btc=0.1, reason="STOP_LOSS",

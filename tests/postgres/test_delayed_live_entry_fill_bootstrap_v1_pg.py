@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
 from common.entry_fill_reconciliation import reconcile_pending_entry_fills
 from common.exchange_fill_change_control import (
     FillMutationDecision,
@@ -167,16 +169,18 @@ def _database(disposable_postgres_v16, purpose: str):
     return conn
 
 
-def _active_adoption(cur, *, adopted_at: datetime):
+def _active_adoption(
+    cur, *, adopted_at: datetime, deployment_id: str = "local-live"
+):
     cur.execute(
         """
         INSERT INTO runtime_contract_adoption_v2(
           contract_name,environment,deployment_id,generation,status,adopted_at
         ) VALUES (
-          'FEE_AWARE_INVENTORY_C2_2','live','local-live',1,'ACTIVE',%s
+          'FEE_AWARE_INVENTORY_C2_2','live',%s,1,'ACTIVE',%s
         ) RETURNING adoption_id
         """,
-        (adopted_at,),
+        (deployment_id, adopted_at),
     )
     return int(cur.fetchone()[0])
 
@@ -192,13 +196,16 @@ def _fill_row(
     price: str,
     fee: str,
     fee_asset: str,
+    deployment_id: str = "local-live",
+    symbol: str = "BNBUSDC",
 ):
+    base_asset = symbol.removesuffix("USDC")
     return {
         "source": "okx",
         "trade_id": trade_id,
         "order_id": order_id,
         "client_order_id": client_order_id,
-        "symbol": "BNBUSDC",
+        "symbol": symbol,
         "side": side,
         "role": "TAKER",
         "executed_qty": qty,
@@ -208,14 +215,14 @@ def _fill_row(
         "commission_asset": fee_asset,
         "commission_usdc": (
             str(Decimal(fee) * Decimal(price))
-            if fee_asset == "BNB"
+            if fee_asset == base_asset
             else fee
         ),
         "event_time_ms": int(event_time.timestamp() * 1000),
         "fill_idx": 0,
         "raw": json.dumps({"clOrdId": client_order_id}),
         "environment": "live",
-        "deployment_id": "local-live",
+        "deployment_id": deployment_id,
         "account_identity_id": 1,
         "account_identity_status": "VERIFIED",
     }
@@ -246,17 +253,21 @@ def _insert_live_order_event(
     order_id: str,
     local_cid: str,
     wire_cid: str,
+    symbol: str = "BNBUSDC",
+    strategy: str = "TREND",
 ):
     cur.execute(
         """
         INSERT INTO strategy_events(
           created_at,symbol,strategy,"interval",event_type,decision,info
         ) VALUES (
-          %s,'BNBUSDC','TREND','1m','LIVE_ORDER_SENT','BUY',%s::jsonb
+          %s,%s,%s,'1m','LIVE_ORDER_SENT','BUY',%s::jsonb
         )
         """,
         (
             created_at,
+            symbol,
+            strategy,
             json.dumps({
                 "resp": {
                     "orderId": order_id,
@@ -274,48 +285,77 @@ def _insert_live_order_event(
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "deployment_id", "symbol", "strategy", "local_order_id",
+        "order_id", "trade_id", "qty", "fee", "expected_net",
+    ),
+    (
+        (
+            "local-live", "BNBUSDC", "TREND", None,
+            "forward-delayed-order-1", "forward-delayed-fill-1",
+            "0.10000000", "0.00040000", "0.09960000",
+        ),
+        (
+            "vps-live", "BTCUSDC", "RSI", 3825,
+            "3819011200977670144", "4400542",
+            "0.00030817", "0.000001078595", "0.000307091405",
+        ),
+    ),
+    ids=("local-live", "vps-live-forward-incident"),
+)
 def test_delayed_new_zero_fill_bootstraps_canonical_then_fee_aware_position(
-    disposable_postgres_v16, monkeypatch
+    disposable_postgres_v16, monkeypatch, deployment_id, symbol, strategy,
+    local_order_id, order_id, trade_id, qty, fee, expected_net
 ):
     monkeypatch.setenv("ENVIRONMENT", "live")
-    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
-    conn = _database(disposable_postgres_v16, "forward")
+    monkeypatch.setenv("DEPLOYMENT_ID", deployment_id)
+    conn = _database(
+        disposable_postgres_v16, f"forward_{deployment_id.replace('-', '_')}"
+    )
     account = "1"
     event_ms = (int(time.time() * 1000) // 1000) * 1000
     event_time = datetime.fromtimestamp(event_ms / 1000, tz=timezone.utc)
     order_time = event_time - timedelta(seconds=3)
-    local_cid = "ORC-L-BNBUSDC-TREN-1m-E-abcdef12"
-    wire_cid = "ORCLBNBUSDCTREN1mEabcdef12"
-    order_id = "forward-delayed-order-1"
+    strategy_prefix = strategy[:4].upper()
+    local_cid = f"ORC-L-{symbol}-{strategy_prefix}-1m-E-abcdef12"
+    wire_cid = local_cid.replace("-", "")
     row = _fill_row(
-        trade_id="forward-delayed-fill-1",
+        trade_id=trade_id,
         order_id=order_id,
         client_order_id=wire_cid,
         side="BUY",
         event_time=event_time,
-        qty="0.10000000",
-        price="600.00",
-        fee="0.00040000",
-        fee_asset="BNB",
+        qty=qty,
+        price="60000.00" if symbol == "BTCUSDC" else "600.00",
+        fee=fee,
+        fee_asset=symbol.removesuffix("USDC"),
+        deployment_id=deployment_id,
+        symbol=symbol,
     )
     try:
         with conn.cursor() as cur:
             adoption_id = _active_adoption(
-                cur, adopted_at=order_time - timedelta(minutes=1)
+                cur,
+                adopted_at=order_time - timedelta(minutes=1),
+                deployment_id=deployment_id,
             )
             cur.execute(
                 """
                 INSERT INTO binance_orders(
-                  created_at,symbol,side,order_type,client_order_id,order_id,
+                  id,created_at,symbol,side,order_type,client_order_id,order_id,
                   status,raw,position_id,is_exit,strategy,"interval",
                   order_purpose,requested_qty,order_accepted,exchange_source
                 ) VALUES (
-                  %s,'BNBUSDC','BUY','MARKET',%s,%s,'NEW',%s::jsonb,NULL,
-                  false,'TREND','1m','ENTRY',0.1,true,'okx'
+                  COALESCE(%s,nextval('binance_orders_id_seq')),%s,%s,'BUY',
+                  'MARKET',%s,%s,'NEW',%s::jsonb,NULL,false,%s,'1m','ENTRY',
+                  %s,true,'okx'
                 )
                 """,
                 (
+                    local_order_id,
                     order_time,
+                    symbol,
                     local_cid,
                     order_id,
                     json.dumps({
@@ -324,6 +364,8 @@ def test_delayed_new_zero_fill_bootstraps_canonical_then_fee_aware_position(
                         "status": "NEW",
                         "executedQty": "0",
                     }),
+                    strategy,
+                    qty,
                 ),
             )
             assert _resolve_pending_entry_generation(
@@ -335,6 +377,8 @@ def test_delayed_new_zero_fill_bootstraps_canonical_then_fee_aware_position(
                 order_id=order_id,
                 local_cid=local_cid,
                 wire_cid=wire_cid,
+                symbol=symbol,
+                strategy=strategy,
             )
 
             change = register_fill_change(
@@ -368,11 +412,11 @@ def test_delayed_new_zero_fill_bootstraps_canonical_then_fee_aware_position(
                 (order_id,),
             )
             assert cur.fetchone() == (
-                Decimal("0.09960000"),
-                Decimal("0.10000000"),
-                Decimal("0.00040000"),
-                Decimal("0.09960000"),
-                Decimal("0.09960000"),
+                Decimal(expected_net),
+                Decimal(qty),
+                Decimal(fee),
+                Decimal(expected_net),
+                Decimal(expected_net),
                 "COMPLETE",
                 order_id,
             )
@@ -407,6 +451,48 @@ def test_delayed_new_zero_fill_bootstraps_canonical_then_fee_aware_position(
     finally:
         conn.rollback()
         conn.close()
+
+
+@pytest.mark.parametrize(
+    ("deployment_id", "source", "side", "identity_status"),
+    (
+        ("local-paper", "okx", "BUY", "VERIFIED"),
+        ("vps-paper", "okx", "BUY", "VERIFIED"),
+        ("UNKNOWN", "okx", "BUY", "VERIFIED"),
+        (None, "okx", "BUY", "VERIFIED"),
+        ("other-live", "okx", "BUY", "VERIFIED"),
+        ("vps-live", "manual", "BUY", "VERIFIED"),
+        ("vps-live", "okx", "SELL", "VERIFIED"),
+        ("vps-live", "okx", "BUY", "CONFLICTING"),
+    ),
+)
+def test_delayed_entry_bootstrap_fails_closed_before_database_lookup(
+    deployment_id, source, side, identity_status
+):
+    class NoQueryCursor:
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("fail-closed input must not query the database")
+
+    event_time = datetime.now(timezone.utc)
+    row = _fill_row(
+        trade_id="fail-closed-trade",
+        order_id="fail-closed-order",
+        client_order_id="ORCLBTCUSDCRSI1mEabcdef12",
+        side=side,
+        event_time=event_time,
+        qty="0.00030817",
+        price="60000.00",
+        fee="0.000001078595",
+        fee_asset="BTC",
+        deployment_id=deployment_id,
+        symbol="BTCUSDC",
+    )
+    row["source"] = source
+    row["account_identity_status"] = identity_status
+
+    assert _resolve_pending_entry_generation(
+        NoQueryCursor(), row, account_identity_key="1"
+    ) == (None, None, None)
 
 
 def test_historical_bnb_four_fill_cohort_remains_observed_not_applied(

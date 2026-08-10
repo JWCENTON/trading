@@ -8,6 +8,9 @@ from enum import Enum
 from typing import Any, Mapping
 
 
+DELAYED_ENTRY_BOOTSTRAP_DEPLOYMENTS = frozenset({"local-live", "vps-live"})
+
+
 class FillMutationDecision(str, Enum):
     NEW_AUTHORITATIVE_EVIDENCE = "NEW_AUTHORITATIVE_EVIDENCE"
     AUTHORITATIVE_CORRECTION = "AUTHORITATIVE_CORRECTION"
@@ -395,7 +398,7 @@ def _resolve_pending_entry_generation(
     """Resolve the first delayed fill from an exact baseline pending order.
 
     This is deliberately narrower than the normal position-owned generation
-    resolver.  It only bootstraps fresh LOCAL LIVE OKX BUY evidence whose
+    resolver.  It only bootstraps fresh allowlisted LIVE OKX BUY evidence whose
     deterministic wire CID proves ownership by one accepted pending entry
     order.  Previously observed evidence is excluded so deploying this code
     cannot replay an historical ``OBSERVED_NOT_APPLIED`` cohort.
@@ -418,7 +421,7 @@ def _resolve_pending_entry_generation(
     if not all((
         source == "okx",
         environment == "live",
-        deployment_id == "local-live",
+        deployment_id in DELAYED_ENTRY_BOOTSTRAP_DEPLOYMENTS,
         side == "BUY",
         symbol,
         order_id,
