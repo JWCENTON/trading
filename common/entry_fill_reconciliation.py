@@ -220,6 +220,7 @@ WITH fill_totals AS (
     AND upper(COALESCE(f.account_identity_status,''))='VERIFIED'
     AND state.account_identity_key=bo.account_identity_id::text
     AND upper(state.side)='BUY'
+    AND state.linked_position_id IS NULL
     AND COALESCE(state.ownership_classification,'')<>'MANUAL_OR_EXTERNAL'
     AND state.application_status='OBSERVED_NOT_APPLIED'
     AND state.applied_fingerprint=state.source_fingerprint
@@ -270,15 +271,62 @@ WITH fill_totals AS (
           event.info->>'executed_qty',''
         )::numeric,0)=0
     )
-    AND EXISTS (
-      SELECT 1
-      FROM positions closed
-      JOIN canonical_financial_truth_v1 ft ON ft.position_id=closed.id
-      WHERE closed.symbol=bo.symbol
-        AND closed.strategy=bo.strategy
-        AND closed."interval"=bo."interval"
-        AND closed.status='CLOSED'
-        AND ft.financial_truth_status='COMPLETE'
+    AND (
+      (
+        EXISTS (
+          SELECT 1
+          FROM positions closed
+          JOIN canonical_financial_truth_v1 ft ON ft.position_id=closed.id
+          WHERE closed.symbol=bo.symbol
+            AND closed.strategy=bo.strategy
+            AND closed."interval"=bo."interval"
+            AND closed.status='CLOSED'
+            AND ft.financial_truth_status='COMPLETE'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM positions open_position
+          WHERE open_position.symbol=bo.symbol
+            AND open_position.strategy=bo.strategy
+            AND open_position."interval"=bo."interval"
+            AND open_position.status='OPEN'
+        )
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM positions open_position
+        JOIN binance_orders primary_order
+          ON primary_order.exchange_source=bo.exchange_source
+         AND primary_order.symbol=open_position.symbol
+         AND primary_order.order_id=open_position.entry_order_id
+         AND primary_order.reconciled_position_id=open_position.id
+         AND primary_order.account_identity_id=bo.account_identity_id
+         AND upper(COALESCE(primary_order.account_identity_status,''))=
+             'VERIFIED'
+        JOIN exchange_fill_ingestion_state_v2 primary_state
+          ON primary_state.source=primary_order.exchange_source
+         AND primary_state.symbol=primary_order.symbol
+         AND primary_state.order_id=primary_order.order_id
+         AND primary_state.account_identity_key=state.account_identity_key
+         AND primary_state.adoption_id=adoption.adoption_id
+         AND primary_state.contract_generation=adoption.generation
+         AND primary_state.application_status IN (
+           'APPLIED','CORRECTION_APPLIED','TRUE_DUPLICATE_APPLIED'
+         )
+         AND primary_state.applied_fingerprint=
+             primary_state.source_fingerprint
+         AND primary_state.applied_fingerprint IS NOT NULL
+         AND primary_state.applied_at IS NOT NULL
+         AND COALESCE(primary_state.ownership_classification,'')<>
+             'MANUAL_OR_EXTERNAL'
+        WHERE open_position.symbol=bo.symbol
+          AND open_position.strategy=bo.strategy
+          AND open_position."interval"=bo."interval"
+          AND open_position.status='OPEN'
+          AND open_position.inventory_contract_adoption_id=
+              adoption.adoption_id
+          AND open_position.inventory_contract_generation=
+              adoption.generation
+      )
     )
     AND NOT EXISTS (
       SELECT 1 FROM positions p
@@ -286,13 +334,6 @@ WITH fill_totals AS (
          OR p.exit_order_id=bo.order_id
          OR p.id=bo.position_id
          OR p.id=bo.reconciled_position_id
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM positions open_position
-      WHERE open_position.symbol=bo.symbol
-        AND open_position.strategy=bo.strategy
-        AND open_position."interval"=bo."interval"
-        AND open_position.status='OPEN'
     )
     AND NOT EXISTS (
       SELECT 1 FROM canonical_financial_truth_v1 consumed
@@ -545,6 +586,7 @@ def _complete_partial_applied_recovery(
           AND state.order_id=f.order_id
           AND state.local_fill_id=f.id
           AND state.account_identity_key=bo.account_identity_id::text
+          AND state.linked_position_id IS NULL
           AND state.application_status='OBSERVED_NOT_APPLIED'
           AND state.applied_fingerprint=state.source_fingerprint
           AND state.applied_fingerprint IS NOT NULL
@@ -610,7 +652,9 @@ def converge_partial_applied_recovery_link(cur, *, ingestion_id: int) -> bool:
           AND upper(bo.order_purpose)='ENTRY'
           AND bo.is_exit IS FALSE
           AND bo.order_accepted IS TRUE
-          AND bo.last_reconciliation_action='RECOVER_PARTIAL_APPLIED_ENTRY'
+          AND bo.last_reconciliation_action IN (
+            'RECOVER_PARTIAL_APPLIED_ENTRY','ENTRY_FILL_POSITION_CREATED'
+          )
           AND bo.reconciled_position_id=position.id
           AND bo.position_id IS NULL
           AND bo.account_identity_id IS NOT NULL
@@ -795,8 +839,34 @@ def _is_proven_delayed_entry_addition(
               AND sum(f.executed_qty)=%s
               AND bool_and(
                 state.application_status='OBSERVED_NOT_APPLIED'
-                AND state.applied_fingerprint IS NULL
-                AND state.applied_at IS NULL
+                AND (
+                  (
+                    state.adoption_id IS NULL
+                    AND state.contract_generation IS NULL
+                    AND state.applied_fingerprint IS NULL
+                    AND state.applied_at IS NULL
+                  )
+                  OR (
+                    state.adoption_id=adoption.adoption_id
+                    AND state.contract_generation=adoption.generation
+                    AND state.applied_fingerprint=state.source_fingerprint
+                    AND state.applied_fingerprint IS NOT NULL
+                    AND state.applied_at IS NOT NULL
+                    AND new_order.account_identity_id IS NOT NULL
+                    AND upper(COALESCE(
+                      new_order.account_identity_status,''
+                    ))='VERIFIED'
+                    AND f.account_identity_id=new_order.account_identity_id
+                    AND upper(COALESCE(
+                      f.account_identity_status,''
+                    ))='VERIFIED'
+                    AND state.account_identity_key=
+                        new_order.account_identity_id::text
+                    AND state.linked_position_id IS NULL
+                    AND COALESCE(state.ownership_classification,'')<>
+                        'MANUAL_OR_EXTERNAL'
+                  )
+                )
                 AND (state.local_fill_id IS NULL OR state.local_fill_id=f.id)
                 AND state.side='BUY'
                 AND NULLIF(
@@ -826,8 +896,6 @@ def _is_proven_delayed_entry_addition(
              AND state.symbol=f.symbol
              AND state.order_id=f.order_id
              AND state.trade_id=f.trade_id::text
-             AND state.adoption_id IS NULL
-             AND state.contract_generation IS NULL
             JOIN binance_orders new_order
               ON new_order.exchange_source=f.source
              AND new_order.symbol=f.symbol
@@ -905,7 +973,8 @@ def _is_proven_delayed_entry_addition(
                      primary_state.adoption_id=adoption.adoption_id
                      AND primary_state.contract_generation=adoption.generation
                      AND primary_state.application_status IN (
-                       'APPLIED','CORRECTION_APPLIED'
+                       'APPLIED','CORRECTION_APPLIED',
+                       'TRUE_DUPLICATE_APPLIED'
                      )
                    )
                    OR (
@@ -1229,6 +1298,12 @@ def _reconcile_candidate(cur, row):
                 action="ATTACH_PROVEN_DELAYED_ENTRY_ORDER",
             )
             _refresh_entry_inventory_projection(cur, position_id)
+            if partial_applied_recovery:
+                _complete_partial_applied_recovery(
+                    cur,
+                    order_row_id=int(order_row_id),
+                    position_id=position_id,
+                )
             return "updated"
         _mark_order(
             cur,

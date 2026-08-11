@@ -911,6 +911,325 @@ def test_two_delayed_buy_orders_share_one_fee_aware_open_position(
         conn.close()
 
 
+def test_adopted_partial_applied_same_slot_converges_atomically(
+    disposable_postgres_v16, monkeypatch
+):
+    monkeypatch.setenv("ENVIRONMENT", "live")
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+    conn = _database(disposable_postgres_v16, "adopted_same_slot")
+    now_ms = (int(time.time() * 1000) // 1000) * 1000
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+    incidents = {
+        "A": {
+            "local_id": 3764,
+            "order_id": "3824249827953774592",
+            "trade_id": "4438037",
+            "qty": "0.00031611",
+            "fee": "0.000001106385",
+            "price": "63268.5",
+            "cid": "ORC-L-BTCUSDC-RSI-1m-E-aaaaaa01",
+            "event_time": now - timedelta(minutes=3),
+        },
+        "B": {
+            "local_id": 3765,
+            "order_id": "3824254098459889664",
+            "trade_id": "4438062",
+            "qty": "0.00031607",
+            "fee": "0.000001106245",
+            "price": "63276.1",
+            "cid": "ORC-L-BTCUSDC-RSI-1m-E-bbbbbb02",
+            "event_time": now - timedelta(minutes=2),
+        },
+    }
+
+    def row_for(label):
+        item = incidents[label]
+        return _fill_row(
+            trade_id=item["trade_id"],
+            order_id=item["order_id"],
+            client_order_id=item["cid"].replace("-", ""),
+            side="BUY",
+            event_time=item["event_time"],
+            qty=item["qty"],
+            price=item["price"],
+            fee=item["fee"],
+            fee_asset="BTC",
+            deployment_id="local-live",
+            symbol="BTCUSDC",
+        )
+
+    try:
+        with conn.cursor() as cur:
+            adoption_id = _active_adoption(
+                cur,
+                adopted_at=now - timedelta(minutes=10),
+                deployment_id="local-live",
+                generation=1,
+            )
+            for label, item in incidents.items():
+                wire_cid = item["cid"].replace("-", "")
+                cur.execute(
+                    """
+                    INSERT INTO binance_orders(
+                      id,created_at,symbol,side,order_type,client_order_id,
+                      order_id,status,raw,is_exit,strategy,"interval",
+                      order_purpose,requested_qty,order_accepted,
+                      exchange_source,reconciliation_status,
+                      reconciled_position_id,reconciled_fill_count,
+                      reconciled_executed_qty,unreconciled_qty,
+                      last_reconciliation_action,account_identity_id,
+                      account_identity_status
+                    ) VALUES (
+                      %s,%s,'BTCUSDC','BUY','MARKET',%s,%s,'NEW',%s::jsonb,
+                      false,'RSI','1m','ENTRY',%s,true,'okx',%s,%s,%s,%s,%s,
+                      %s,1,'VERIFIED'
+                    )
+                    """,
+                    (
+                        item["local_id"],
+                        item["event_time"] + timedelta(milliseconds=96),
+                        item["cid"],
+                        item["order_id"],
+                        json.dumps({
+                            "orderId": item["order_id"],
+                            "clientOrderId": wire_cid,
+                            "status": "NEW",
+                            "executedQty": "0",
+                        }),
+                        item["qty"],
+                        (
+                            "ENTRY_FILL_POSITION_CREATED"
+                            if label == "A"
+                            else "OPEN_POSITION_ORDER_MISMATCH"
+                        ),
+                        3086 if label == "A" else None,
+                        1 if label == "A" else 0,
+                        item["qty"] if label == "A" else "0",
+                        "0" if label == "A" else item["qty"],
+                        (
+                            "ENTRY_FILL_POSITION_CREATED"
+                            if label == "A"
+                            else "OPEN_POSITION_ORDER_MISMATCH"
+                        ),
+                    ),
+                )
+                _insert_live_order_event(
+                    cur,
+                    created_at=item["event_time"] + timedelta(milliseconds=96),
+                    order_id=item["order_id"],
+                    local_cid=item["cid"],
+                    wire_cid=wire_cid,
+                    symbol="BTCUSDC",
+                    strategy="RSI",
+                )
+                row = row_for(label)
+                _insert_canonical_fill(cur, row)
+                cur.execute(
+                    "SELECT id FROM binance_order_fills WHERE trade_id=%s",
+                    (item["trade_id"],),
+                )
+                item["fill_id"] = int(cur.fetchone()[0])
+                payload = authoritative_fill_payload(
+                    row, account_identity_key="1"
+                )
+                fingerprint = authoritative_fill_fingerprint(payload)
+                cur.execute(
+                    """
+                    INSERT INTO exchange_fill_ingestion_state_v2(
+                      source,account_identity_key,symbol,trade_id,order_id,
+                      side,source_fingerprint,applied_fingerprint,applied_at,
+                      application_status,authoritative_payload,last_decision,
+                      local_fill_id,adoption_id,contract_generation
+                    ) VALUES (
+                      'okx','1','BTCUSDC',%s,%s,'BUY',%s,%s,%s,%s,
+                      %s::jsonb,%s,%s,%s,1
+                    ) RETURNING ingestion_id
+                    """,
+                    (
+                        item["trade_id"],
+                        item["order_id"],
+                        fingerprint,
+                        fingerprint,
+                        item["event_time"] + timedelta(seconds=1),
+                        (
+                            "TRUE_DUPLICATE_APPLIED"
+                            if label == "A"
+                            else "OBSERVED_NOT_APPLIED"
+                        ),
+                        json.dumps(payload, sort_keys=True),
+                        "NO_CHANGE" if label == "A" else "OBSERVED_NOT_APPLIED",
+                        item["fill_id"],
+                        adoption_id,
+                    ),
+                )
+                item["ingestion_id"] = int(cur.fetchone()[0])
+
+            net_a = Decimal(incidents["A"]["qty"]) - Decimal(
+                incidents["A"]["fee"]
+            )
+            cur.execute(
+                """
+                INSERT INTO positions(
+                  id,symbol,strategy,"interval",status,side,qty,entry_price,
+                  entry_time,entry_order_id,entry_client_order_id,fees_usdc,
+                  inventory_contract_adoption_id,
+                  inventory_contract_generation,gross_entry_executed_qty,
+                  entry_base_fee_qty,net_entry_inventory_qty,
+                  cumulative_exit_executed_qty,exit_inventory_reduction_qty,
+                  remaining_inventory_qty,inventory_evidence_status
+                ) VALUES (
+                  3086,'BTCUSDC','RSI','1m','OPEN','LONG',%s,63268.5,%s,%s,%s,
+                  %s,%s,1,%s,%s,%s,0,0,%s,'COMPLETE'
+                )
+                """,
+                (
+                    net_a,
+                    incidents["A"]["event_time"],
+                    incidents["A"]["order_id"],
+                        incidents["A"]["cid"],
+                        (
+                            Decimal(incidents["A"]["fee"])
+                            * Decimal(incidents["A"]["price"])
+                        ).quantize(Decimal("0.00000001")),
+                    adoption_id,
+                    incidents["A"]["qty"],
+                    incidents["A"]["fee"],
+                    net_a,
+                    net_a,
+                ),
+            )
+
+            assert converge_partial_applied_recovery_link(
+                cur, ingestion_id=incidents["A"]["ingestion_id"]
+            ) is True
+        conn.commit()
+
+        negative_mutations = {
+            "wrong-account": (
+                "UPDATE binance_order_fills SET account_identity_id=2 "
+                "WHERE trade_id='4438062'"
+            ),
+            "wrong-generation": (
+                "UPDATE exchange_fill_ingestion_state_v2 "
+                "SET contract_generation=2 WHERE trade_id='4438062'"
+            ),
+            "payload-mismatch": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "authoritative_payload=jsonb_set(authoritative_payload,"
+                "'{fill_price}','\"1\"'::jsonb) WHERE trade_id='4438062'"
+            ),
+            "manual-external": (
+                "UPDATE exchange_fill_ingestion_state_v2 SET "
+                "ownership_classification='MANUAL_OR_EXTERNAL' "
+                "WHERE trade_id='4438062'"
+            ),
+            "different-symbol": (
+                "UPDATE binance_orders SET symbol='ETHUSDC' WHERE id=3765"
+            ),
+            "different-interval": (
+                "UPDATE binance_orders SET \"interval\"='5m' WHERE id=3765"
+            ),
+            "different-strategy": (
+                "UPDATE binance_orders SET strategy='TREND' WHERE id=3765"
+            ),
+            "already-owned-by-different-position": (
+                "UPDATE exchange_fill_ingestion_state_v2 "
+                "SET linked_position_id=999999 WHERE trade_id='4438062'"
+            ),
+            "conflicting-position-ownership": (
+                "INSERT INTO positions(id,symbol,strategy,\"interval\",status,"
+                "side,qty,entry_price,entry_time,entry_order_id) VALUES "
+                "(3087,'ETHUSDC','RSI','1m','CLOSED','LONG',0.1,1,now(),"
+                "'3824254098459889664')"
+            ),
+        }
+        for case, mutation in negative_mutations.items():
+            with conn.cursor() as cur:
+                cur.execute("SAVEPOINT adopted_same_slot_negative")
+                cur.execute(mutation)
+                rejected = reconcile_pending_entry_fills(
+                    conn, batch_size=10, trading_mode="LIVE"
+                )
+                assert rejected.scanned == 0, case
+                cur.execute("ROLLBACK TO SAVEPOINT adopted_same_slot_negative")
+                cur.execute("RELEASE SAVEPOINT adopted_same_slot_negative")
+
+        monkeypatch.setenv("DEPLOYMENT_ID", "vps-live")
+        rejected = reconcile_pending_entry_fills(
+            conn, batch_size=10, trading_mode="LIVE"
+        )
+        assert rejected.scanned == 0, "wrong-deployment"
+        monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+
+        result = reconcile_pending_entry_fills(
+            conn, batch_size=10, trading_mode="LIVE"
+        )
+        assert (result.scanned, result.updated, result.failed) == (1, 1, 0)
+        assert result.ambiguous == 0
+        conn.commit()
+
+        expected_inventory = sum(
+            Decimal(item["qty"]) - Decimal(item["fee"])
+            for item in incidents.values()
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(*),max(qty),max(gross_entry_executed_qty),
+                       max(entry_base_fee_qty),max(remaining_inventory_qty)
+                FROM positions
+                WHERE symbol='BTCUSDC' AND strategy='RSI' AND "interval"='1m'
+                  AND status='OPEN'
+                """
+            )
+            assert cur.fetchone() == (
+                1,
+                expected_inventory,
+                Decimal("0.00063218"),
+                Decimal("0.000002212630"),
+                expected_inventory,
+            )
+            cur.execute(
+                """
+                SELECT id,reconciled_position_id,last_reconciliation_action
+                FROM binance_orders WHERE id IN (3764,3765) ORDER BY id
+                """
+            )
+            assert cur.fetchall() == [
+                (3764, 3086, "ENTRY_FILL_POSITION_CREATED"),
+                (3765, 3086, "ATTACH_PROVEN_DELAYED_ENTRY_ORDER"),
+            ]
+            cur.execute(
+                """
+                SELECT trade_id,application_status,linked_position_id
+                FROM exchange_fill_ingestion_state_v2
+                WHERE trade_id IN ('4438037','4438062') ORDER BY trade_id
+                """
+            )
+            assert cur.fetchall() == [
+                ("4438037", "TRUE_DUPLICATE_APPLIED", 3086),
+                ("4438062", "TRUE_DUPLICATE_APPLIED", 3086),
+            ]
+
+        for _ in range(3):
+            replay = reconcile_pending_entry_fills(
+                conn, batch_size=10, trading_mode="LIVE"
+            )
+            assert (replay.scanned, replay.created, replay.updated) == (0, 0, 0)
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM positions")
+            assert cur.fetchone()[0] == 1
+            cur.execute("SELECT count(*) FROM binance_order_fills")
+            assert cur.fetchone()[0] == 2
+            cur.execute(
+                "SELECT qty,remaining_inventory_qty FROM positions WHERE id=3086"
+            )
+            assert cur.fetchone() == (expected_inventory, expected_inventory)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
     disposable_postgres_v16, monkeypatch
 ):
@@ -1064,6 +1383,18 @@ def test_partial_applied_fill_recovers_after_sibling_terminal_exit(
                 (incidents["A"]["order_id"],),
             )
             position_a = int(cur.fetchone()[0])
+            # Keep this test on the distinct terminal-recovery path. An OPEN
+            # position with conflicting generation must not accept a same-slot
+            # addition; once terminally closed, the existing recovery proof
+            # may create the independently proven delayed position.
+            cur.execute(
+                """
+                UPDATE positions
+                SET inventory_contract_generation=99
+                WHERE id=%s
+                """,
+                (position_a,),
+            )
 
         second = reconcile_pending_entry_fills(
             conn, batch_size=1, trading_mode="LIVE"
