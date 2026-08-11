@@ -43,7 +43,11 @@ from common.orc_apply_ledger import (
 from common.learning_evidence_context import (
     set_learning_evidence_transaction_context,
 )
-from common.equity_curve import collect_current_equity, upsert_daily_snapshot
+from common.equity_curve import (
+    collect_current_equity,
+    ensure_paper_equity_baseline_v2,
+    upsert_daily_snapshot,
+)
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -2060,25 +2064,58 @@ def run_daily_equity_snapshot(conn):
     """Capture one forward-only equity observation at the existing UTC cadence."""
     if os.getenv("EQUITY_SNAPSHOT_ENABLED", "1") != "1":
         return
-    target = os.getenv(
-        "EQUITY_SNAPSHOT_HHMM_UTC",
-        os.getenv("DAILY_REPORT_HHMM_UTC", "0020"),
-    )
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if now_utc_hhmm() < target:
-        return
     deployment_id = os.getenv("DEPLOYMENT_ID", "").strip().lower()
     if deployment_id not in {
         "local-paper", "local-live", "vps-paper", "vps-live"
     }:
         raise RuntimeError("EQUITY_SNAPSHOT_DEPLOYMENT_ID_INVALID")
 
+    baseline_created = False
+    if (
+        cfg.trading_mode == "PAPER"
+        and _env_bool("PAPER_EQUITY_BASELINE_V2_ENABLED", "0")
+    ):
+        approved_by = os.getenv(
+            "PAPER_EQUITY_BASELINE_V2_APPROVED_BY", ""
+        ).strip()
+        configured_provenance = os.getenv(
+            "PAPER_EQUITY_BASELINE_V2_APPROVAL_PROVENANCE", ""
+        ).strip()
+        if not approved_by or not configured_provenance:
+            raise RuntimeError("PAPER_EQUITY_BASELINE_V2_APPROVAL_REQUIRED")
+        with conn.cursor() as cur:
+            activation = ensure_paper_equity_baseline_v2(
+                cur,
+                trading_mode=cfg.trading_mode,
+                deployment_id=deployment_id,
+                exchange_client=client,
+                quote_asset=os.getenv("QUOTE_ASSET", "USDC").upper(),
+                paper_start_usdc=Decimal(
+                    os.getenv("PAPER_START_USDT", "1000")
+                ),
+                approved_by=approved_by,
+                approval_provenance={
+                    "approval_type": "PRODUCT_OWNER_APPROVED",
+                    "configured_provenance": configured_provenance,
+                    "runtime_git_sha": os.getenv("GIT_SHA", "UNKNOWN"),
+                },
+            )
+            baseline_created = activation.created
+
+    target = os.getenv(
+        "EQUITY_SNAPSHOT_HHMM_UTC",
+        os.getenv("DAILY_REPORT_HHMM_UTC", "0020"),
+    )
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if now_utc_hhmm() < target and not baseline_created:
+        return
+
     with conn.cursor() as cur:
         last = q1(
             cur,
             "SELECT value FROM automation_kv WHERE key='equity_snapshot_last_run';",
         )
-        if last == today:
+        if last == today and not baseline_created:
             return
         observation = collect_current_equity(
             cur,

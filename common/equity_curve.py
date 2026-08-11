@@ -5,8 +5,17 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Iterable, Mapping
 
-from common.closed_outcome_read_model import fetch_closed_outcome_summary
+from common.closed_outcome_read_model import (
+    fetch_closed_outcomes,
+    fetch_closed_outcome_summary,
+)
 from common.paper_account_read_model import reconstruct_paper_account
+from common.paper_equity_baseline_v2 import (
+    BaselineActivationResult,
+    activate_paper_equity_baseline_v2,
+    calculate_post_baseline_paper_equity,
+    fetch_paper_equity_baseline_v2,
+)
 
 
 ZERO = Decimal("0")
@@ -342,6 +351,18 @@ def collect_current_equity(
     mode = trading_mode.upper()
     window_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
     observed_at = datetime.now(timezone.utc)
+    paper_baseline = None
+    if mode == "PAPER":
+        paper_baseline = fetch_paper_equity_baseline_v2(
+            cur, deployment_id=deployment_id
+        )
+        if paper_baseline is not None:
+            # The baseline owns outcomes at or before the cutover. PostgreSQL
+            # timestamps have microsecond precision, so the forward denominator
+            # begins exactly one representable unit later.
+            window_start = paper_baseline.baseline_timestamp + timedelta(
+                microseconds=1
+            )
     stats = fetch_closed_outcome_summary(
         cur,
         environment=mode,
@@ -368,6 +389,24 @@ def collect_current_equity(
     unrealized_decimal = _decimal(unrealized)
 
     if mode == "PAPER":
+        inventory_value = _decimal(paper_inventory_value)
+        if paper_baseline is not None:
+            forward = calculate_post_baseline_paper_equity(
+                paper_baseline,
+                closed_count=stats["trades"],
+                resolved_count=stats["resolved_trades"],
+                realized_net_pnl=stats["net_pnl"],
+                fees=stats["fees"],
+                current_unrealized_pnl=unrealized_decimal,
+                current_inventory_value=inventory_value,
+            )
+            return EquityObservation(
+                forward.account_total, forward.external_manual,
+                forward.managed_equity, forward.available,
+                forward.inventory_value, forward.realized_net_pnl,
+                forward.unrealized_pnl, forward.fees,
+                int(open_positions), forward.evidence_status, observed_at,
+            )
         bridge = reconstruct_paper_account(
             initial_equity=paper_start_usdc,
             realized_net_pnl=stats["net_pnl"],
@@ -388,7 +427,6 @@ def collect_current_equity(
         managed, evidence = subtract_external_manual(
             total or ZERO, ZERO, ownership_complete=complete
         )
-        inventory_value = _decimal(paper_inventory_value)
         return EquityObservation(
             total or ZERO, ZERO, managed,
             (total or ZERO) - inventory_value, inventory_value,
@@ -408,6 +446,55 @@ def collect_current_equity(
         total, external, managed, quantities.get(quote_asset, ZERO),
         bot_inventory, stats["net_pnl"], unrealized_decimal, stats["fees"],
         int(open_positions), evidence, observed_at,
+    )
+
+
+def ensure_paper_equity_baseline_v2(
+    cur: Any,
+    *,
+    trading_mode: str,
+    deployment_id: str,
+    exchange_client: Any,
+    approved_by: str,
+    approval_provenance: Mapping[str, Any],
+    quote_asset: str = "USDC",
+    paper_start_usdc: Decimal = Decimal("1000"),
+) -> BaselineActivationResult:
+    if str(trading_mode).strip().upper() != "PAPER":
+        return BaselineActivationResult(None, False, "NOT_APPLICABLE")
+    existing = fetch_paper_equity_baseline_v2(
+        cur, deployment_id=deployment_id
+    )
+    if existing is not None:
+        return BaselineActivationResult(existing, False, "ALREADY_ACTIVE")
+    observation = collect_current_equity(
+        cur,
+        trading_mode="PAPER",
+        exchange_client=exchange_client,
+        quote_asset=quote_asset,
+        paper_start_usdc=paper_start_usdc,
+        deployment_id=deployment_id,
+    )
+    outcomes = fetch_closed_outcomes(
+        cur,
+        environment="PAPER",
+        window_start=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        window_end=observation.source_timestamp,
+        include_administrative_retirements=True,
+    )
+    unresolved = {
+        position_id: outcome
+        for position_id, outcome in outcomes.items()
+        if not outcome["evidence_complete"]
+    }
+    return activate_paper_equity_baseline_v2(
+        cur,
+        deployment_id=deployment_id,
+        observation=observation,
+        unresolved_outcomes=unresolved,
+        approved_by=approved_by,
+        approval_provenance=approval_provenance,
+        trading_mode="PAPER",
     )
 
 
