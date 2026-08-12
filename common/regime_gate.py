@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Tuple
 
 from common.db import get_db_conn
@@ -137,13 +137,14 @@ def emit_regime_gate_event(
     strategy: str,
     decision: str,
     d: RegimeGateDecision,
-) -> None:
+) -> int:
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
         """
         INSERT INTO regime_gate_events(symbol, interval, strategy, decision, allow, regime, mode, would_block, why, meta)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+        RETURNING id
         """,
         (
             symbol,
@@ -158,6 +159,25 @@ def emit_regime_gate_event(
             json.dumps(d.meta or {}),
         ),
     )
+    event_id = int(cur.fetchone()[0])
     conn.commit()
     cur.close()
     conn.close()
+    return event_id
+
+
+def attach_regime_gate_event(
+    evaluation,
+    *,
+    gate_event_id: int | None,
+    decision: RegimeGateDecision,
+):
+    """Return a new EvaluationContext carrying exact gate evidence identity."""
+    if gate_event_id is None:
+        return evaluation
+    context = dict(evaluation.context)
+    context["regime_gate_event_id"] = int(gate_event_id)
+    context["regime_gate_regime"] = decision.regime
+    context["regime_gate_mode"] = decision.mode
+    context["regime_gate_would_block"] = decision.would_block
+    return replace(evaluation, context=context)

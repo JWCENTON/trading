@@ -23,7 +23,7 @@ from common.simulated_execution_evidence import (
     simulated_order_write_status,
 )
 from common.permissions import can_trade
-from common.regime_gate import decide_regime_gate, emit_regime_gate_event
+from common.regime_gate import attach_regime_gate_event, decide_regime_gate, emit_regime_gate_event
 from datetime import datetime, timezone, date
 from decimal import Decimal
 from psycopg2.extras import execute_batch
@@ -3355,12 +3355,15 @@ def _run_trend_strategy():
             regime_mode=bc.regime_mode,
         )
 
-        emit_regime_gate_event(
+        gate_event_id = emit_regime_gate_event(
             symbol=SYMBOL,
             interval=INTERVAL,
             strategy=STRATEGY_NAME,
             decision="ENTRY_CHECK",
             d=gate_entry,
+        )
+        evaluation = attach_regime_gate_event(
+            evaluation, gate_event_id=gate_event_id, decision=gate_entry,
         )
 
         if not gate_entry.allow:

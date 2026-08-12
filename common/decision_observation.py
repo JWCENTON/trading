@@ -99,6 +99,7 @@ class DecisionObservationEvent:
     source_service: str
     source_instance: str
     decision_kind: str
+    regime_gate_event_id: int | None = None
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -293,4 +294,5 @@ def event_from_final_decision(decision: FinalDecision, *, event_id: str,
         decision_reason=decision.reason_code.value,
         decision_payload_hash=payload_hash, source_service=source_service,
         source_instance=source_instance, decision_kind=kind,
+        regime_gate_event_id=ctx.context.get("regime_gate_event_id"),
     )

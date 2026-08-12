@@ -385,7 +385,8 @@ class DecisionObservationOutboxConsumer:
                 "strategy","symbol","interval","slot_key","regime","regime_confidence","action",
                 "direction","confidence","quantity_intent","entry_intent","stop_loss_intent",
                 "take_profit_intent","exit_intent","execution_eligible","decision_reason",
-                "decision_payload_hash","source_service","source_instance","decision_kind","schema_version")
+                "decision_payload_hash","source_service","source_instance","decision_kind",
+                "regime_gate_event_id","schema_version")
         semantic = stable_hash({name: payload.get(name) for name in (
             "strategy","symbol","interval","action","direction","confidence","quantity_intent",
             "entry_intent","stop_loss_intent","take_profit_intent","exit_intent","execution_eligible")})
@@ -397,8 +398,8 @@ class DecisionObservationOutboxConsumer:
                      slot_key,regime,regime_confidence,action,direction,confidence,quantity_intent,entry_intent,
                      stop_loss_intent,take_profit_intent,exit_intent,execution_eligible,decision_reason,
                      decision_payload_hash,semantic_digest,event_digest,source_service,source_instance,
-                     decision_kind,schema_version,created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     decision_kind,regime_gate_event_id,schema_version,created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (deployment_id,decision_key) DO NOTHING""",
                     tuple(payload.get(key) for key in keys[:22]) + (semantic, event_digest,) +
                     tuple(payload.get(key) for key in keys[22:]) + (datetime.now(timezone.utc),))
@@ -423,3 +424,9 @@ class DecisionObservationOutboxConsumer:
                     ON CONFLICT DO NOTHING""", (payload["environment"], payload["decision_key"],
                     payload["symbol"], payload["interval"], payload["strategy"], projection,
                     payload["deployment_id"], payload["decision_key"]))
+        if payload.get("regime_gate_event_id") is not None:
+            cur.execute(
+                "SELECT persist_regime_gate_experiment_attribution_v1(%s,%s,%s)",
+                (payload["deployment_id"], payload["decision_key"],
+                 payload["regime_gate_event_id"]),
+            )

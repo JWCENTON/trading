@@ -45,7 +45,7 @@ from common.simulated_execution_evidence import (
 from common.permissions import can_trade
 from common.execution import place_live_order
 from common.bot_control import upsert_defaults, read as read_bot_control
-from common.regime_gate import decide_regime_gate, emit_regime_gate_event
+from common.regime_gate import attach_regime_gate_event, decide_regime_gate, emit_regime_gate_event
 from common.sizing import compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
 from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapshot
@@ -2460,12 +2460,15 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
             regime_mode=bc.regime_mode,
         )
 
-        emit_regime_gate_event(
+        gate_event_id = emit_regime_gate_event(
             symbol=SYMBOL,
             interval=INTERVAL,
             strategy=STRATEGY_NAME,
             decision="ENTRY_CHECK",
             d=gate_entry,
+        )
+        evaluation = attach_regime_gate_event(
+            evaluation, gate_event_id=gate_event_id, decision=gate_entry,
         )
 
         if not gate_entry.allow:
