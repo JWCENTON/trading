@@ -17,6 +17,7 @@ from common.decision_contract import (
     FinalDecision,
     normalize_entry_execution_outcome,
 )
+from common.canonical_regime import evaluation_regime_fields, frozen_regime_provenance
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
@@ -404,7 +405,8 @@ def attach_exit_order_id_with_conn(cur, pos_id: int, order_id: str | None, clien
     )
 
 
-def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str | None) -> int | None:
+def open_position(side: str, qty: float, entry_price: float, entry_client_order_id: str | None,
+                  *, market_regime: str | None = None) -> int | None:
     # SPOT => tylko LONG
     if str(side).upper() != "LONG":
         return None
@@ -432,13 +434,14 @@ def open_position(side: str, qty: float, entry_price: float, entry_client_order_
     cur.execute(
         """
         INSERT INTO positions(
-          symbol, strategy, interval, status, side, qty, entry_price, entry_time, entry_client_order_id
+          symbol, strategy, interval, status, side, qty, entry_price, entry_time,
+          entry_client_order_id, market_regime
         )
-        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
+        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s, %s)
         RETURNING id;
         """,
         (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price),
-         (str(entry_client_order_id) if entry_client_order_id else None)),
+         (str(entry_client_order_id) if entry_client_order_id else None), market_regime),
     )
     pos_id = int(cur.fetchone()[0])
     conn.commit()
@@ -737,6 +740,8 @@ def insert_simulated_order(
     *,
     is_exit: bool,
     strategy: str = STRATEGY_NAME,
+    market_regime: str | None = None,
+    regime_source_provenance: dict | None = None,
 ):
     conn = get_db_conn()
     cur = conn.cursor()
@@ -746,6 +751,8 @@ def insert_simulated_order(
         reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
         rsi_14=None if rsi_14 is None else Decimal(str(rsi_14)),
         ema_21=None if ema_21 is None else Decimal(str(ema_21)),
+        market_regime=market_regime,
+        regime_source_provenance=regime_source_provenance,
     )
     if inserted:
         conn.commit()
@@ -773,6 +780,7 @@ def execute_and_record(
     allow_meta: dict,
     rsi_14: float | None,
     ema_21: float | None,
+    evaluation: EvaluationContext | None = None,
 ):
     def action(preflight):
         return _execute_and_record_after_paper_exit_preflight(
@@ -780,6 +788,7 @@ def execute_and_record(
             is_exit=is_exit, cfg_used=cfg_used,
             allow_live_orders=allow_live_orders, allow_meta=allow_meta,
             rsi_14=rsi_14, ema_21=ema_21,
+            evaluation=evaluation,
             paper_position_id=(preflight.position_id if preflight else None),
         )
 
@@ -816,6 +825,7 @@ def _execute_and_record_after_paper_exit_preflight(
     allow_meta: dict,
     rsi_14: float | None,
     ema_21: float | None,
+    evaluation: EvaluationContext | None = None,
     paper_position_id: int | None = None,
 ):
     """
@@ -848,6 +858,12 @@ def _execute_and_record_after_paper_exit_preflight(
         ema_21=ema_21,
         candle_open_time=candle_open_time,
         is_exit=is_exit,
+        market_regime=(evaluation.market_regime if evaluation is not None else None),
+        regime_source_provenance=(
+            frozen_regime_provenance(evaluation)
+            if evaluation is not None and trading_mode == "PAPER" and not is_exit
+            else None
+        ),
     )
 
     if not inserted:
@@ -884,7 +900,10 @@ def _execute_and_record_after_paper_exit_preflight(
         try:
             evidence_position_id = None
             if not is_exit:
-                pos_id = open_position("LONG", qty_btc, price, None)
+                pos_id = open_position(
+                    "LONG", qty_btc, price, None,
+                    market_regime=(evaluation.market_regime if evaluation is not None else None),
+                )
                 evidence_position_id = pos_id
                 emit_strategy_event(
                     event_type=(
@@ -1659,6 +1678,11 @@ def _bbrange_evaluation_context(open_time, evaluation_started_at, snap=None):
     candle_time = open_time or evaluation_started_at
     if candle_time.tzinfo is None or candle_time.utcoffset() is None:
         candle_time = candle_time.replace(tzinfo=timezone.utc)
+    paper_mode = cfg_effective.trading_mode != "LIVE"
+    market_regime, regime_confidence, regime_context = evaluation_regime_fields(
+        get_db_conn, symbol=SYMBOL, interval=INTERVAL,
+        decision_candle_timestamp=candle_time, paper_mode=paper_mode,
+    )
     return EvaluationContext(
         deployment_id=os.environ.get(
             "DEPLOYMENT_ID",
@@ -1671,8 +1695,10 @@ def _bbrange_evaluation_context(open_time, evaluation_started_at, snap=None):
         runtime_enabled=(bool(bc.enabled) if bc is not None else None),
         live_orders_enabled=(bool(snap["allowed_orders_entry"])
                              if snap is not None else None),
-        paper_mode=cfg_effective.trading_mode != "LIVE",
-        context={"contract_version": "FINAL_DECISION_V1"},
+        market_regime=market_regime,
+        regime_confidence=regime_confidence,
+        paper_mode=paper_mode,
+        context={"contract_version": "FINAL_DECISION_V1", **regime_context},
     )
 
 
@@ -2595,6 +2621,7 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
             allow_meta=snap["allow_meta_entry"],
             rsi_14=rsi_val,
             ema_21=ema_val,
+            evaluation=evaluation,
         )
         if not res["ledger_ok"]:
             logging.info("BBRANGE: entry blocked/failed -> not opening position.")

@@ -100,6 +100,13 @@ class DecisionObservationEvent:
     source_instance: str
     decision_kind: str
     regime_gate_event_id: int | None = None
+    regime_source: str | None = None
+    regime_source_symbol: str | None = None
+    regime_source_interval: str | None = None
+    regime_source_ts: datetime | None = None
+    regime_source_created_at: datetime | None = None
+    regime_source_confidence: Decimal | None = None
+    regime_attribution_version: str | None = None
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -295,4 +302,16 @@ def event_from_final_decision(decision: FinalDecision, *, event_id: str,
         decision_payload_hash=payload_hash, source_service=source_service,
         source_instance=source_instance, decision_kind=kind,
         regime_gate_event_id=ctx.context.get("regime_gate_event_id"),
+        regime_source=ctx.context.get("regime_source"),
+        regime_source_symbol=ctx.context.get("regime_source_symbol"),
+        regime_source_interval=ctx.context.get("regime_source_interval"),
+        regime_source_ts=ctx.context.get("regime_source_ts"),
+        regime_source_created_at=ctx.context.get("regime_source_created_at"),
+        regime_source_confidence=(
+            None if ctx.context.get("regime_source_confidence") is None
+            else Decimal(str(ctx.context.get("regime_source_confidence")))
+        ),
+        regime_attribution_version=ctx.context.get(
+            "regime_attribution_version"
+        ),
     )

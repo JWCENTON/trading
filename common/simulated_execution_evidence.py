@@ -9,6 +9,7 @@ import os
 import uuid
 
 import psycopg2
+from psycopg2.extras import Json
 
 from common.contract_adoption import (
     contract_adoption_compatible,
@@ -456,6 +457,8 @@ def create_simulated_order_cursor(
     position_id: int | None = None,
     environment: str | None = None,
     deployment_id: str | None = None,
+    market_regime: str | None = None,
+    regime_source_provenance: dict | None = None,
 ) -> int | SimulatedOrderWriteBlocked:
     """Canonical transaction-bound simulated-order writer.
 
@@ -488,6 +491,53 @@ def create_simulated_order_cursor(
     if order_class == ADMINISTRATIVE_ORDER_CLASS and not namespace.is_namespace_v1:
         raise RuntimeError("SIMULATED_ORDER_NAMESPACE_MIGRATION_REQUIRED")
 
+    forward_decision_id = None
+    forward_contract_version = None
+    if (
+        order_class == FORWARD_ORDER_CLASS
+        and not is_exit
+        and regime_source_provenance is not None
+    ):
+        provenance = dict(regime_source_provenance)
+        if (
+            not str(market_regime or "").strip()
+            or provenance.get("regime_attribution_version")
+                != "CANONICAL_REGIME_ATTRIBUTION_V1"
+            or provenance.get("regime_source") != "market_regime"
+            or str(provenance.get("regime_source_symbol", "")).upper()
+                != str(symbol).upper()
+            or str(provenance.get("regime_source_interval", "")).lower()
+                != str(interval).lower()
+            or provenance.get("regime_source_ts") is None
+        ):
+            return SimulatedOrderWriteBlocked(
+                "CANONICAL_REGIME_ATTRIBUTION_REQUIRED"
+            )
+        source_ts = datetime.fromisoformat(
+            str(provenance["regime_source_ts"]).replace("Z", "+00:00")
+        )
+        if source_ts > candle_open_time:
+            return SimulatedOrderWriteBlocked(
+                "CANONICAL_REGIME_ATTRIBUTION_REQUIRED"
+            )
+        cur.execute(
+            """
+            SELECT public.register_forward_entry_decision_v1(
+              %s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb
+            )
+            """,
+            (
+                str(symbol), str(interval), str(strategy), str(side).upper(),
+                Decimal(str(price)), Decimal(str(quantity)), str(reason),
+                candle_open_time, str(market_regime), Json(provenance),
+            ),
+        )
+        registered = cur.fetchone()
+        if registered is None or registered[0] is None:
+            raise RuntimeError("FORWARD_DECISION_REGISTRY_REQUIRED")
+        forward_decision_id = registered[0]
+        forward_contract_version = "CANONICAL_REGIME_ATTRIBUTION_V1"
+
     if is_exit:
         lock_simulated_exit_slot_cursor(
             cur, symbol=symbol, interval=interval, strategy=strategy,
@@ -504,8 +554,9 @@ def create_simulated_order_cursor(
             INSERT INTO simulated_orders (
               symbol,interval,strategy,side,price,quantity_btc,reason,
               rsi_14,ema_21,candle_open_time,is_exit,
-              order_class,position_id,environment,deployment_id
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              order_class,position_id,environment,deployment_id,
+              decision_id,decision_contract_version
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING id
         """
         insert_params = params + (
@@ -513,6 +564,8 @@ def create_simulated_order_cursor(
             None if position_id is None else int(position_id),
             None if environment is None else str(environment),
             None if deployment_id is None else str(deployment_id),
+            forward_decision_id,
+            forward_contract_version,
         )
     else:
         insert_sql = """

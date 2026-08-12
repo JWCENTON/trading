@@ -409,7 +409,21 @@ class DecisionObservationOutboxConsumer:
         if cur.fetchone()[0] != event_digest:
             raise IdempotencyConflict("different observation payload for decision key")
         # Baseline-only projections. They carry no attribution or recommendation context.
-        projection = json.dumps({"decision_kind": payload["decision_kind"], "action": payload["action"]})
+        projection = json.dumps({
+            "decision_kind": payload["decision_kind"],
+            "action": payload["action"],
+            "market_regime": payload.get("regime"),
+            "regime_confidence": payload.get("regime_confidence"),
+            "regime_source": payload.get("regime_source"),
+            "regime_source_symbol": payload.get("regime_source_symbol"),
+            "regime_source_interval": payload.get("regime_source_interval"),
+            "regime_source_ts": payload.get("regime_source_ts"),
+            "regime_source_created_at": payload.get("regime_source_created_at"),
+            "regime_source_confidence": payload.get("regime_source_confidence"),
+            "regime_attribution_version": payload.get(
+                "regime_attribution_version"
+            ),
+        })
         cur.execute("""INSERT INTO decision_replay_v1
                     (environment,decision_key,symbol,interval,strategy,replay_status,decision_vector,
                      deployment_id,observation_decision_key,causal_linkage_status)

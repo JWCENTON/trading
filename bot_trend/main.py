@@ -57,6 +57,7 @@ from common.decision_contract import (
     FinalDecision,
     normalize_entry_execution_outcome,
 )
+from common.canonical_regime import evaluation_regime_fields, frozen_regime_provenance
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
 
@@ -171,6 +172,12 @@ def _as_aware_utc(value):
 def _trend_evaluation_context(open_time, evaluation_started_at, snap=None):
     cfg_effective = snap["cfg_effective"] if snap is not None else cfg
     bc = snap["bc"] if snap is not None else None
+    candle_time = _as_aware_utc(open_time)
+    paper_mode = cfg_effective.trading_mode != "LIVE"
+    market_regime, regime_confidence, regime_context = evaluation_regime_fields(
+        get_db_conn, symbol=SYMBOL, interval=INTERVAL,
+        decision_candle_timestamp=candle_time, paper_mode=paper_mode,
+    )
     return EvaluationContext(
         deployment_id=os.environ.get(
             "DEPLOYMENT_ID",
@@ -180,14 +187,16 @@ def _trend_evaluation_context(open_time, evaluation_started_at, snap=None):
         symbol=SYMBOL,
         interval=INTERVAL,
         strategy=STRATEGY_NAME,
-        candle_open_time=_as_aware_utc(open_time),
+        candle_open_time=candle_time,
         evaluation_started_at=evaluation_started_at,
         engine_name=STRATEGY_NAME,
         engine_version=os.environ.get("BOT_VERSION"),
         runtime_enabled=(bool(bc.enabled) if bc is not None else None),
         live_orders_enabled=(bool(snap["allowed_orders_entry"]) if snap is not None else None),
-        paper_mode=cfg_effective.trading_mode != "LIVE",
-        context={"contract_version": "FINAL_DECISION_V1"},
+        market_regime=market_regime,
+        regime_confidence=regime_confidence,
+        paper_mode=paper_mode,
+        context={"contract_version": "FINAL_DECISION_V1", **regime_context},
     )
 
 
@@ -598,7 +607,9 @@ def get_open_position():
     return row
 
 
-def open_position(side: str, qty: float, entry_price: float, open_time, *, entry_client_order_id: str | None) -> int | None:
+def open_position(side: str, qty: float, entry_price: float, open_time, *,
+                  entry_client_order_id: str | None,
+                  market_regime: str | None = None) -> int | None:
     if cfg.trading_mode == "LIVE" and not entry_client_order_id:
         logging.error("TREND: open_position refused in LIVE without entry_client_order_id")
         return None
@@ -622,12 +633,13 @@ def open_position(side: str, qty: float, entry_price: float, open_time, *, entry
         """
         INSERT INTO positions(
             symbol, strategy, interval, status, side, qty, entry_price, entry_time,
-            entry_client_order_id
+            entry_client_order_id, market_regime
         )
-        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s)
+        VALUES (%s, %s, %s, 'OPEN', %s, %s, %s, now(), %s, %s)
         RETURNING id;
         """,
-        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price), (str(entry_client_order_id) if entry_client_order_id else None)),
+        (SYMBOL, STRATEGY_NAME, INTERVAL, side, float(qty), float(entry_price),
+         (str(entry_client_order_id) if entry_client_order_id else None), market_regime),
     )
     row = cur.fetchone()
     conn.commit()
@@ -1262,6 +1274,8 @@ def insert_simulated_order(
     *,
     is_exit: bool,
     strategy: str = STRATEGY_NAME,
+    market_regime: str | None = None,
+    regime_source_provenance: dict | None = None,
 ):
     conn = get_db_conn()
     cur = conn.cursor()
@@ -1271,6 +1285,8 @@ def insert_simulated_order(
         reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
         rsi_14=None if rsi_14 is None else Decimal(str(rsi_14)),
         ema_21=None if ema_21 is None else Decimal(str(ema_21)),
+        market_regime=market_regime,
+        regime_source_provenance=regime_source_provenance,
     )
     if inserted:
         conn.commit()
@@ -1299,6 +1315,7 @@ def ssot_apply_positions_paper(
     candle_open_time,
     is_exit: bool,
     expected_position_id: int | None = None,
+    evaluation: EvaluationContext | None = None,
 ) -> dict:
     """
     PAPER SSOT:
@@ -1318,6 +1335,7 @@ def ssot_apply_positions_paper(
             entry_price=float(price),
             open_time=candle_open_time,
             entry_client_order_id=None,
+            market_regime=(evaluation.market_regime if evaluation is not None else None),
         )
         if pos_id is None:
             return {"paper_pos_action": "ENTRY_SKIPPED_ALREADY_OPEN", "paper_pos_id": None}
@@ -1352,6 +1370,7 @@ def execute_and_record(
     rsi_14: float | None = None,
     ema_21: float | None = None,
     pos_id: int | None = None,
+    evaluation: EvaluationContext | None = None,
 ):
     def action(preflight):
         return _execute_and_record_after_paper_exit_preflight(
@@ -1359,6 +1378,7 @@ def execute_and_record(
             is_exit=is_exit, cfg_used=cfg_used,
             allow_live_orders=allow_live_orders, allow_meta=allow_meta,
             rsi_14=rsi_14, ema_21=ema_21, pos_id=pos_id,
+            evaluation=evaluation,
             paper_position_id=(preflight.position_id if preflight else None),
         )
 
@@ -1396,6 +1416,7 @@ def _execute_and_record_after_paper_exit_preflight(
     rsi_14: float | None = None,
     ema_21: float | None = None,
     pos_id: int | None = None,
+    evaluation: EvaluationContext | None = None,
     paper_position_id: int | None = None,
 ):
     trading_mode = str(cfg_used.trading_mode).upper()
@@ -1419,6 +1440,12 @@ def _execute_and_record_after_paper_exit_preflight(
         candle_open_time=candle_open_time,
         is_exit=is_exit,
         strategy=STRATEGY_NAME,
+        market_regime=(evaluation.market_regime if evaluation is not None else None),
+        regime_source_provenance=(
+            frozen_regime_provenance(evaluation)
+            if evaluation is not None and trading_mode == "PAPER" and not is_exit
+            else None
+        ),
     )
 
     if not inserted:
@@ -1458,6 +1485,7 @@ def _execute_and_record_after_paper_exit_preflight(
             candle_open_time=candle_open_time,
             is_exit=bool(is_exit),
             expected_position_id=paper_position_id,
+            evaluation=evaluation,
         )
         evidence_persisted = None
         if (
@@ -3523,6 +3551,7 @@ def _run_trend_strategy():
             allow_live_orders=snap["allowed_orders_entry"],
             allow_meta=snap["allow_meta_entry"],
             is_exit=False,
+            evaluation=evaluation,
         )
         final_decision = _trend_execution_decision(
             evaluation, res, cfg_effective, is_exit=False,

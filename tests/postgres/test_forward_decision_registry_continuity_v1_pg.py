@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = (
     ROOT / "db/migrations/20260805_forward_decision_registry_continuity_v1.sql"
 ).read_text()
+REGIME_MIGRATION = (
+    ROOT / "db/migrations/20260812_canonical_regime_attribution_v1.sql"
+).read_text()
 NAMESPACE = (
     ROOT / "db/migrations/20260802_simulated_order_namespace_v1.sql"
 ).read_text()
@@ -216,6 +219,8 @@ def continuity_db(disposable_postgres_v16):
         cur.execute(NAMESPACE)
         cur.execute(MIGRATION)
         cur.execute(MIGRATION)
+        cur.execute(REGIME_MIGRATION)
+        cur.execute(REGIME_MIGRATION)
     conn.commit()
     yield conn
     conn.close()
@@ -226,6 +231,16 @@ def _entry(cur, candle):
         cur,symbol="BTCUSDC",interval="1m",strategy="BBRANGE",side="BUY",
         price=Decimal("100"),quantity=Decimal("0.01"),reason="FINAL_ALLOW",
         candle_open_time=candle,is_exit=False,
+        market_regime="RANGE",
+        regime_source_provenance={
+            "regime_attribution_version": "CANONICAL_REGIME_ATTRIBUTION_V1",
+            "regime_source": "market_regime",
+            "regime_source_symbol": "BTCUSDC",
+            "regime_source_interval": "1m",
+            "regime_source_ts": candle.isoformat(),
+            "regime_source_created_at": candle.isoformat(),
+            "regime_source_confidence": "0.8",
+        },
     )
 
 
@@ -236,8 +251,8 @@ def test_forward_entry_retry_failure_and_full_outcome_continuity(continuity_db):
         assert isinstance(order_id,int) and not isinstance(order_id,bool)
         cur.execute(
             "INSERT INTO positions(symbol,strategy,interval,status,side,qty,"
-            "entry_price,entry_time) VALUES "
-            "('BTCUSDC','BBRANGE','1m','OPEN','LONG',0.01,100,%s) RETURNING id",
+            "entry_price,entry_time,market_regime) VALUES "
+            "('BTCUSDC','BBRANGE','1m','OPEN','LONG',0.01,100,%s,'RANGE') RETURNING id",
             (candle,),
         )
         position_id = int(cur.fetchone()[0])
@@ -260,11 +275,13 @@ def test_forward_entry_retry_failure_and_full_outcome_continuity(continuity_db):
         cur.execute(
             "SELECT count(*),(SELECT count(*) FROM simulated_orders),"
             "(SELECT count(*) FROM positions),position_id,decision_action,"
-            "decision_payload->>'final_action',decision_payload->>'execution_side' "
+            "decision_payload->>'final_action',decision_payload->>'execution_side',"
+            "market_regime,decision_payload->'regime_source'->>'regime_source_ts' "
             "FROM decision_registry_v1 WHERE decision_type='ENTRY_DECISION' "
-            "GROUP BY position_id,decision_action,decision_payload"
+            "GROUP BY position_id,decision_action,decision_payload,market_regime"
         )
-        assert cur.fetchone() == (1,1,1,position_id,"EXECUTE","EXECUTE","BUY")
+        row = cur.fetchone()
+        assert row[:9] == (1,1,1,position_id,"EXECUTE","EXECUTE","BUY","RANGE",candle.isoformat())
         cur.execute("SELECT decision_id FROM simulated_orders WHERE id=%s",(order_id,))
         assert cur.fetchone()[0] == decision_id
 
@@ -333,6 +350,6 @@ def test_forward_entry_retry_failure_and_full_outcome_continuity(continuity_db):
         assert cur.fetchone()[0] == 1
         cur.execute(
             "SELECT count(*) FROM schema_migration_ledger_v1 WHERE migration_id=%s",
-            ("20260805_forward_decision_registry_continuity_v1.sql",),
+            ("20260812_canonical_regime_attribution_v1.sql",),
         )
         assert cur.fetchone()[0] == 1
