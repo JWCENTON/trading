@@ -37,13 +37,12 @@ from common.legacy_repair_quarantine import (
     call_stage_hook,
 )
 from common.simulated_execution_evidence import (
-    SIMULATION_FEE_RATE,
-    SIMULATION_MODEL_VERSION,
     create_simulated_execution_fill_cursor,
     create_simulated_order_cursor,
     lock_simulated_exit_slot_cursor,
     simulated_order_write_status,
 )
+from common.paper_simulation_fee_config import load_paper_simulation_fee_config
 from common.simulated_order_namespace import (
     ADMINISTRATIVE_ORDER_CLASS,
     NAMESPACE_SCHEMA_VERSION,
@@ -575,6 +574,7 @@ class LegacyOpenRetirementPlanRepository:
                 if int(cur.fetchone()[0]):
                     blocking.append("PARALLEL_EXIT_OR_RETIREMENT_INTENT")
 
+        fee_config = load_paper_simulation_fee_config()
         payload = _safe({
             "fingerprint_version": "PAPER_OPEN_RETIREMENT_FINGERPRINT_V2",
             "environment": environment,
@@ -607,9 +607,10 @@ class LegacyOpenRetirementPlanRepository:
                 "purpose": "EXIT", "side": "SELL",
                 "quantity": planned_qty,
                 "price": market.price if market else None,
-                "fee_rate": SIMULATION_FEE_RATE,
+                "fee_rate": fee_config.rate,
                 "fee_asset": instrument.get("quote_asset"),
-                "simulation_model_version": SIMULATION_MODEL_VERSION,
+                "simulation_model_version": fee_config.model_version,
+                "fee_config_source": fee_config.config_source,
                 "execution_time_contract": "DATABASE_CLOCK_AT_APPLY",
             },
             "planned_lifecycle": {
@@ -1079,7 +1080,11 @@ class LegacyOpenRetirementTransactionService:
                         "git_sha": git_sha,
                     },
                     "fee_evidence": {
-                        "fee_policy": str(SIMULATION_FEE_RATE),
+                        "fee_policy": str(
+                            calculation.simulation_fee_rate
+                            if calculation.simulation_fee_rate is not None
+                            else load_paper_simulation_fee_config().rate
+                        ),
                         "authoritative_fees_usdc": str(
                             calculation.authoritative_fees_usdc
                         ),

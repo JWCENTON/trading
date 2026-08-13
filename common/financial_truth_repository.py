@@ -53,6 +53,7 @@ SIMULATED_SCHEMA_CONTRACT = {
         "fee_asset", "authoritative_fee_usdc", "estimated_fee_usdc",
         "account_identity_id", "instrument_snapshot_id", "source_authority",
         "environment", "deployment_id", "simulation_model_version",
+        "simulation_fee_rate", "fee_model_version", "fee_config_source",
         "execution_at",
     },
     "simulated_orders": {"id", "symbol"},
@@ -117,6 +118,12 @@ class FinancialTruthSourceRepository:
             source_environment=str(row[20]), source_deployment_id=str(row[21]),
             source_version=str(row[22]),
             event_time=row[23].astimezone(timezone.utc),
+            simulation_fee_rate=(
+                None if len(row) < 26 or row[24] is None
+                else Decimal(str(row[24]))
+            ),
+            fee_model_version=(None if len(row) < 26 else row[25]),
+            fee_config_source=(None if len(row) < 27 else row[26]),
         )
 
     @staticmethod
@@ -178,7 +185,9 @@ class FinancialTruthSourceRepository:
                   im.metadata_fingerprint, im.step_size, im.base_asset,
                   im.quote_asset, sf.source_authority, 'SIMULATOR',
                   sf.environment, sf.deployment_id,
-                  sf.simulation_model_version, sf.execution_at, so.symbol
+                  sf.simulation_model_version, sf.execution_at,
+                  sf.simulation_fee_rate,sf.fee_model_version,
+                  sf.fee_config_source,so.symbol
                 FROM public.simulated_execution_fills_v1 sf
                 JOIN public.simulated_orders so ON so.id=sf.simulated_order_id
                 LEFT JOIN public.financial_truth_account_identity_v1 ai
@@ -197,10 +206,10 @@ class FinancialTruthSourceRepository:
                 )
                 rows = list(cur.fetchall())
                 if any(
-                    len(row) > 24
+                    len(row) > 27
                     and
                     str(row[5]).strip().upper()
-                    != str(row[24]).strip().upper()
+                    != str(row[27]).strip().upper()
                     for row in rows
                 ):
                     return (
@@ -318,6 +327,11 @@ class CanonicalFinancialTruthWriteRepository:
             "precision_contract_version": (
                 calculation.precision_contract_version
             ),
+            "simulation_fee_rate": json_number(
+                calculation.simulation_fee_rate
+            ),
+            "fee_model_version": calculation.fee_model_version,
+            "fee_config_source": calculation.fee_config_source,
         }
         now_complete = calculation.financial_truth_status == "COMPLETE"
         cur.execute(

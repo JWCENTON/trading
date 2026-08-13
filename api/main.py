@@ -62,7 +62,9 @@ LIVE_DAILY_PROFIT_ALERT_USDC = float(os.environ.get("LIVE_DAILY_PROFIT_ALERT_USD
 PAPER_DAILY_DRAWDOWN_ALERT_USDC = float(os.environ.get("PAPER_DAILY_DRAWDOWN_ALERT_USDC", "-500"))
 PAPER_DAILY_PROFIT_ALERT_USDC = float(os.environ.get("PAPER_DAILY_PROFIT_ALERT_USDC", "500"))
 
-FEE_RATE = float(os.environ.get("PAPER_FEE_RATE", "0.0004"))       # 0.04% (taker-ish)
+from common.paper_simulation_fee_config import load_paper_simulation_fee_config
+
+FEE_RATE = float(load_paper_simulation_fee_config().rate)
 SLIPPAGE_RATE = float(os.environ.get("PAPER_SLIPPAGE_RATE", "0.0002"))  # 0.02%
 
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")

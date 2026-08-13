@@ -145,6 +145,7 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
 
     monkeypatch.setenv("GIT_SHA", "b" * 40)
     monkeypatch.setenv("EXCHANGE", "OKX")
+    monkeypatch.setenv("PAPER_SIMULATION_FEE_RATE", "0.0035")
     import common.sizing as sizing
     monkeypatch.setattr(sizing, "_FILTERS_CACHE", {})
 
@@ -164,6 +165,14 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
                 (migration_root / (
                     "20260728_canonical_financial_truth_writer_v1.sql"
                 )).read_text()
+            )
+            cur.execute(
+                """
+                ALTER TABLE simulated_execution_fills_v1
+                  ADD COLUMN simulation_fee_rate NUMERIC,
+                  ADD COLUMN fee_model_version TEXT,
+                  ADD COLUMN fee_config_source TEXT
+                """
             )
         conn.commit()
         with conn.cursor() as cur:

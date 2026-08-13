@@ -24,6 +24,10 @@ from common.inventory_quantity import (
     InstrumentExecutionLimits,
     project_inventory_from_execution_evidence,
 )
+from common.paper_simulation_fee_config import (
+    PaperSimulationFeeConfig,
+    load_paper_simulation_fee_config,
+)
 from common.simulated_order_namespace import (
     ADMINISTRATIVE_ORDER_CLASS,
     FORWARD_ORDER_CLASS,
@@ -31,8 +35,6 @@ from common.simulated_order_namespace import (
 )
 
 
-SIMULATION_MODEL_VERSION = "PAPER_SIMULATOR_FINANCIAL_MODEL_V1"
-SIMULATION_FEE_RATE = Decimal("0.0004")
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
 INSTRUMENT_METADATA_VERSION = "EXECUTION_INSTRUMENT_SNAPSHOT_V1"
 
@@ -692,7 +694,10 @@ def create_simulated_execution_fill_cursor(
         raise ValueError("INVALID_SIMULATED_EXECUTION_VALUE")
     _base_asset, quote_asset = _assets(symbol)
     notional = quantity * price
-    fee_usdc = notional * SIMULATION_FEE_RATE
+    fee_config = _fee_contract_for_fill(
+        cur, purpose=purpose, position_id=int(position_id),
+    )
+    fee_usdc = notional * fee_config.rate
     source_payload = {
         "simulated_order_id": int(simulated_order_id),
         "position_id": int(position_id),
@@ -704,7 +709,9 @@ def create_simulated_execution_fill_cursor(
         "instrument": instrument_metadata_fingerprint,
         "environment": str(environment),
         "deployment_id": str(deployment_id),
-        "model": SIMULATION_MODEL_VERSION,
+        "simulation_fee_rate": str(fee_config.rate),
+        "fee_model_version": fee_config.model_version,
+        "fee_config_source": fee_config.config_source,
     }
     cur.execute(
         """
@@ -712,10 +719,11 @@ def create_simulated_execution_fill_cursor(
           simulated_order_id,position_id,order_purpose,side,symbol,
           fill_qty,fill_price,fill_notional,fee_qty,fee_asset,
           authoritative_fee_usdc,account_identity_id,instrument_snapshot_id,
-          environment,deployment_id,simulation_model_version,execution_at,
-          source_fingerprint
+          environment,deployment_id,simulation_model_version,
+          simulation_fee_rate,fee_model_version,fee_config_source,
+          execution_at,source_fingerprint
         ) VALUES (
-          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
         )
         ON CONFLICT (simulated_order_id,fill_index) DO NOTHING
         RETURNING id
@@ -725,11 +733,70 @@ def create_simulated_execution_fill_cursor(
             str(side).upper(), str(symbol), quantity, price, notional,
             fee_usdc, quote_asset, fee_usdc, account_identity_id,
             instrument_snapshot_id, str(environment), str(deployment_id),
-            SIMULATION_MODEL_VERSION, execution_at, _hash(source_payload),
+            fee_config.model_version, fee_config.rate,
+            fee_config.model_version, fee_config.config_source,
+            execution_at, _hash(source_payload),
         ),
     )
     row = cur.fetchone()
     return int(row[0]) if row is not None else None
+
+
+def _fee_contract_for_fill(
+    cur,
+    *,
+    purpose: str,
+    position_id: int,
+) -> PaperSimulationFeeConfig:
+    configured = load_paper_simulation_fee_config()
+    if purpose == "ENTRY":
+        return configured
+
+    cur.execute(
+        """
+        SELECT simulation_model_version,simulation_fee_rate,
+               fee_model_version,fee_config_source,fill_notional,
+               authoritative_fee_usdc
+        FROM simulated_execution_fills_v1
+        WHERE position_id=%s AND order_purpose='ENTRY'
+        ORDER BY execution_at,id
+        """,
+        (int(position_id),),
+    )
+    entries = list(cur.fetchall())
+    if not entries:
+        raise RuntimeError("PAPER_EXIT_ENTRY_FEE_CONTRACT_MISSING")
+
+    contracts: set[tuple[Decimal, str, str]] = set()
+    for (
+        simulation_model_version,
+        stored_rate,
+        fee_model_version,
+        fee_config_source,
+        fill_notional,
+        authoritative_fee_usdc,
+    ) in entries:
+        if stored_rate is None:
+            notional = Decimal(str(fill_notional))
+            if notional <= 0 or authoritative_fee_usdc is None:
+                raise RuntimeError("LEGACY_ENTRY_FEE_CONTRACT_UNRESOLVED")
+            rate = Decimal(str(authoritative_fee_usdc)) / notional
+            model = str(simulation_model_version)
+            source = "FROZEN_LEGACY_ENTRY_EVIDENCE"
+        else:
+            rate = Decimal(str(stored_rate))
+            model = str(fee_model_version or simulation_model_version)
+            source = str(fee_config_source or "FROZEN_ENTRY_EVIDENCE")
+        contracts.add((rate, model, source))
+
+    if len(contracts) != 1:
+        raise RuntimeError("PAPER_ENTRY_FEE_CONTRACT_CONFLICT")
+    rate, model, source = next(iter(contracts))
+    return PaperSimulationFeeConfig(
+        rate=rate,
+        model_version=model,
+        config_source=source,
+    )
 
 
 def _instrument_values(client, symbol: str, *, allow_remote: bool = True):

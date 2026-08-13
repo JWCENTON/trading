@@ -94,6 +94,9 @@ class FillEvidence:
     base_asset: str | None
     quote_asset: str | None
     source_version: str
+    simulation_fee_rate: Decimal | None = None
+    fee_model_version: str | None = None
+    fee_config_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,9 @@ class FinancialTruthCalculation:
     calculation_version: str
     failure_code: str | None
     failure_detail: str | None
+    simulation_fee_rate: Decimal | None = None
+    fee_model_version: str | None = None
+    fee_config_source: str | None = None
 
     @property
     def arithmetic_contract_version(self) -> str:
@@ -323,6 +329,37 @@ def calculate_financial_truth(
     symbols = {f.symbol for f in evidence}
     if any(len(values) > 1 for values in (authorities, exchanges, environments, deployments, symbols)):
         return failed("SOURCE_PROVENANCE_CONFLICT", "source provenance is inconsistent")
+    v2_fee_fills = tuple(
+        fill for fill in evidence
+        if fill.source_version == "PAPER_SIMULATOR_FINANCIAL_MODEL_V2"
+    )
+    if v2_fee_fills and any(
+        fill.simulation_fee_rate is None
+        or not fill.fee_model_version
+        or not fill.fee_config_source
+        for fill in v2_fee_fills
+    ):
+        return failed(
+            "FEE_MODEL_PROVENANCE_MISSING",
+            "PAPER fee model V2 requires rate, version, and config source",
+        )
+    fee_rates = {
+        fill.simulation_fee_rate
+        for fill in evidence if fill.simulation_fee_rate is not None
+    }
+    fee_models = {
+        fill.fee_model_version
+        for fill in evidence if fill.fee_model_version
+    }
+    fee_sources = {
+        fill.fee_config_source
+        for fill in evidence if fill.fee_config_source
+    }
+    if any(len(values) > 1 for values in (fee_rates, fee_models, fee_sources)):
+        return failed(
+            "FEE_MODEL_PROVENANCE_CONFLICT",
+            "fill fee model provenance is inconsistent",
+        )
     if (
         position_symbol is not None
         and {str(position_symbol).strip().upper()} != {
@@ -505,4 +542,7 @@ def calculate_financial_truth(
         tuple(sorted({f.fill_id for f in evidence})), fingerprint,
         CALCULATION_VERSION, missing[0] if missing else None,
         ",".join(missing) if missing else None,
+        simulation_fee_rate=(next(iter(fee_rates)) if fee_rates else None),
+        fee_model_version=(next(iter(fee_models)) if fee_models else None),
+        fee_config_source=(next(iter(fee_sources)) if fee_sources else None),
     )

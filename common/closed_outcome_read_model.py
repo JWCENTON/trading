@@ -436,8 +436,26 @@ bounded_simulated_fills AS MATERIALIZED (
     MIN(lower(f.deployment_id)) AS derived_deployment_id,
     BOOL_AND(
       f.simulation_model_version IS NOT NULL
-      AND f.simulation_model_version = 'PAPER_SIMULATOR_FINANCIAL_MODEL_V1'
-    ) AS simulation_model_consistent,
+      AND (
+        f.simulation_model_version = 'PAPER_SIMULATOR_FINANCIAL_MODEL_V1'
+        OR (
+          f.simulation_model_version = 'PAPER_SIMULATOR_FINANCIAL_MODEL_V2'
+          AND f.simulation_fee_rate IS NOT NULL
+          AND f.fee_model_version = f.simulation_model_version
+          AND NULLIF(btrim(f.fee_config_source), '') IS NOT NULL
+        )
+      )
+    )
+      AND COUNT(DISTINCT f.simulation_model_version) = 1
+      AND COUNT(DISTINCT f.simulation_fee_rate) FILTER (
+        WHERE f.simulation_model_version =
+          'PAPER_SIMULATOR_FINANCIAL_MODEL_V2'
+      ) <= 1
+      AND COUNT(DISTINCT f.fee_config_source) FILTER (
+        WHERE f.simulation_model_version =
+          'PAPER_SIMULATOR_FINANCIAL_MODEL_V2'
+      ) <= 1
+      AS simulation_model_consistent,
     BOOL_AND(NOT EXISTS (
       SELECT 1
       FROM simulated_execution_fills_v1 other_fill

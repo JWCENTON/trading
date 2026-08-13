@@ -103,6 +103,9 @@ def _database(disposable_postgres_v16, purpose):
               environment TEXT,
               deployment_id TEXT,
               simulation_model_version TEXT,
+              simulation_fee_rate NUMERIC,
+              fee_model_version TEXT,
+              fee_config_source TEXT,
               source_fingerprint TEXT
             );
             CREATE INDEX ix_sim_fills_position
@@ -220,6 +223,7 @@ def _fill(
     source_authority="SIMULATED_EXECUTION", environment="paper",
     deployment_id="local-paper",
     simulation_model_version="PAPER_SIMULATOR_FINANCIAL_MODEL_V1",
+    simulation_fee_rate=None, fee_model_version=None, fee_config_source=None,
 ):
     cur.execute(
         """
@@ -227,12 +231,15 @@ def _fill(
           id,simulated_order_id,position_id,fill_index,order_purpose,side,symbol,
           fill_qty,fill_price,fill_notional,fee_qty,fee_asset,
           authoritative_fee_usdc,estimated_fee_usdc,source_authority,
-          environment,deployment_id,simulation_model_version,source_fingerprint
+          environment,deployment_id,simulation_model_version,
+          simulation_fee_rate,fee_model_version,fee_config_source,
+          source_fingerprint
         ) VALUES (
           COALESCE(%s,nextval(pg_get_serial_sequence(
             'simulated_execution_fills_v1','id'
           ))),
-          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'USDC',%s,NULL,%s,%s,%s,%s,%s
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'USDC',%s,NULL,%s,%s,%s,%s,
+          %s,%s,%s,%s
         )
         """,
         (
@@ -255,6 +262,9 @@ def _fill(
             environment,
             deployment_id,
             simulation_model_version,
+            simulation_fee_rate,
+            fee_model_version,
+            fee_config_source,
             source_fingerprint or f"fill-{position_id}-{purpose}-{index}",
         ),
     )
