@@ -324,8 +324,10 @@ def test_patch_and_reprojection_preserve_protected_economics_tables():
     assert "UPDATE positions" not in REPROJECTION
     assert "UPDATE canonical_financial_truth_v1" not in REPROJECTION
     assert "financial_truth.financial_truth_status = 'COMPLETE'" in REPROJECTION
-    assert "outcome.environment = 'trading_paper'" in REPROJECTION
-    assert "outcome.deployment_id = 'LOCAL'" in REPROJECTION
+    assert "contract.environment = outcome.environment" in REPROJECTION
+    assert "contract.deployment_id = outcome.deployment_id" in REPROJECTION
+    assert "v_environment IS DISTINCT FROM 'trading_paper'" in REPROJECTION
+    assert "v_deployment_id NOT IN ('LOCAL','VPS')" in REPROJECTION
     assert "outcome.environment = 'trading_live'" not in REPROJECTION
     assert "target_position_ids" in REPROJECTION
     assert "v_target_count > 1000" in REPROJECTION
