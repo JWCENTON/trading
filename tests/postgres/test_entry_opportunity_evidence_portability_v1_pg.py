@@ -204,12 +204,18 @@ def test_replay_and_warehouse_retain_snapshot_deployment_provenance(
                 "INSERT INTO decision_replay_v1(decision_key) VALUES('vps-key') "
                 "RETURNING entry_opportunity_snapshot_id"
             )
-            assert cur.fetchone()[0] == snapshot_id
+            actual_replay_snapshot_id = cur.fetchone()[0]
+            assert uuid.UUID(str(actual_replay_snapshot_id)) == uuid.UUID(
+                str(snapshot_id)
+            )
             cur.execute(
                 "INSERT INTO learning_feature_warehouse_v1(decision_key) "
                 "VALUES('vps-key') RETURNING entry_opportunity_snapshot_id"
             )
-            assert cur.fetchone()[0] == snapshot_id
+            actual_warehouse_snapshot_id = cur.fetchone()[0]
+            assert uuid.UUID(str(actual_warehouse_snapshot_id)) == uuid.UUID(
+                str(snapshot_id)
+            )
             cur.execute(
                 "SELECT count(*) FROM entry_opportunity_evidence_v1 e "
                 "JOIN decision_replay_v1 r "
