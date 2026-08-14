@@ -15,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = (
     ROOT / "db/migrations/20260805_forward_decision_registry_continuity_v1.sql"
 ).read_text()
+DENOMINATOR_FIX = (
+    ROOT
+    / "db/migrations/20260814_legacy_administrative_outcome_denominator_fix_v1.sql"
+).read_text()
 REGIME_MIGRATION = (
     ROOT / "db/migrations/20260812_canonical_regime_attribution_v1.sql"
 ).read_text()
@@ -119,6 +123,10 @@ INSERT INTO runtime_contract_adoption_v2 VALUES(
  'FEE_AWARE_INVENTORY_C2_2','paper','local-paper',repeat('a',40),1,'ACTIVE'
 );
 CREATE TABLE learning_outcome_exclusion_v1(position_id BIGINT PRIMARY KEY);
+CREATE TABLE legacy_repair_provenance_v1(
+ provenance_id BIGSERIAL PRIMARY KEY,evidence_source TEXT NOT NULL,
+ immutable_payload JSONB NOT NULL
+);
 
 CREATE OR REPLACE FUNCTION refresh_decision_identity_outcome_v1(
  p_lookback_hours INTEGER,p_environment TEXT,p_deployment_id TEXT,
@@ -221,6 +229,8 @@ def continuity_db(disposable_postgres_v16):
         cur.execute(MIGRATION)
         cur.execute(REGIME_MIGRATION)
         cur.execute(REGIME_MIGRATION)
+        cur.execute(DENOMINATOR_FIX)
+        cur.execute(DENOMINATOR_FIX)
     conn.commit()
     yield conn
     conn.close()

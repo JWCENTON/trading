@@ -11,6 +11,10 @@ MIGRATION = (
     ROOT
     / "db/migrations/20260813_decision_outcome_canonical_financial_truth_source_v1.sql"
 ).read_text()
+DENOMINATOR_FIX = (
+    ROOT
+    / "db/migrations/20260814_legacy_administrative_outcome_denominator_fix_v1.sql"
+).read_text()
 REPROJECTION = (
     ROOT / "tools/reproject_decision_outcomes_from_canonical_ft_v1.sql"
 ).read_text()
@@ -46,6 +50,24 @@ CREATE TABLE public.canonical_financial_truth_v1(
     authoritative_exit_fees_usdc NUMERIC,
     authoritative_fees_usdc NUMERIC,
     authoritative_net_pnl NUMERIC
+);
+
+CREATE TABLE public.simulated_orders(
+    id BIGSERIAL PRIMARY KEY,
+    position_id BIGINT NOT NULL REFERENCES public.positions(id),
+    order_class TEXT NOT NULL,
+    is_exit BOOLEAN NOT NULL
+);
+
+CREATE TABLE public.learning_outcome_exclusion_v1(
+    position_id BIGINT PRIMARY KEY REFERENCES public.positions(id),
+    exclusion_reason TEXT NOT NULL
+);
+
+CREATE TABLE public.legacy_repair_provenance_v1(
+    provenance_id BIGSERIAL PRIMARY KEY,
+    evidence_source TEXT NOT NULL,
+    immutable_payload JSONB NOT NULL
 );
 
 CREATE TABLE public.decision_registry_v1(
@@ -133,8 +155,7 @@ BEGIN
           AND d.deployment_id = p_deployment_id
           AND d.decision_type = 'TRADE_EXECUTED'
           AND p.status = 'CLOSED'
-          AND p.entry_time >= clock_timestamp()
-              - make_interval(hours => p_lookback_hours)
+          AND p.entry_time >= clock_timestamp() - make_interval(hours => p_lookback_hours)
     ), upserted AS (
         INSERT INTO decision_outcomes_v1 (
             outcome_id, decision_id, deployment_id, environment,
@@ -193,6 +214,8 @@ def outcome_db(disposable_postgres_v16):
         cur.execute(SCHEMA)
         cur.execute(MIGRATION)
         cur.execute(MIGRATION)
+        cur.execute(DENOMINATOR_FIX)
+        cur.execute(DENOMINATOR_FIX)
     connection.commit()
     yield connection
     connection.close()
@@ -313,6 +336,79 @@ def test_refresh_is_idempotent_for_canonical_economics(outcome_db):
 
         assert first == second
         assert cur.fetchone()[0] == 1
+
+
+def test_legacy_administrative_retirement_is_not_a_decision_outcome_candidate(
+    outcome_db,
+):
+    with outcome_db.cursor() as cur:
+        position_id = 6394
+        _position(cur, position_id)
+        cur.execute(
+            "UPDATE positions SET exit_reason='LEGACY_ADMINISTRATIVE_CLOSE' "
+            "WHERE id=%s",
+            (position_id,),
+        )
+        cur.execute(
+            "INSERT INTO simulated_orders(position_id,order_class,is_exit) "
+            "VALUES (%s,'LEGACY_ADMINISTRATIVE_CLOSE',true)",
+            (position_id,),
+        )
+        cur.execute(
+            "INSERT INTO learning_outcome_exclusion_v1(position_id,exclusion_reason) "
+            "VALUES (%s,'LEGACY_OPEN_POSITION_RETIREMENT')",
+            (position_id,),
+        )
+        cur.execute(
+            "INSERT INTO legacy_repair_provenance_v1("
+            "evidence_source,immutable_payload) VALUES ("
+            "'LEGACY_OPEN_POSITION_RETIREMENT',"
+            "jsonb_build_object("
+            "'position',jsonb_build_object('id',%s),"
+            "'retirement_classification','LEGACY_ADMINISTRATIVE_CLOSE',"
+            "'outcome_origin','LEGACY_ADMINISTRATIVE_CLOSE'))",
+            (position_id,),
+        )
+        _ft(
+            cur, position_id, "COMPLETE",
+            Decimal("1.00"), Decimal("0.25"), Decimal("0.75"),
+        )
+
+        _refresh(cur)
+
+        cur.execute(
+            "SELECT count(*) FROM decision_outcomes_v1 WHERE position_id=%s",
+            (position_id,),
+        )
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM v_decision_outcome_coverage_v1")
+        assert cur.fetchone()[0] == 0
+
+
+def test_learning_exclusion_alone_does_not_remove_decision_outcome(outcome_db):
+    with outcome_db.cursor() as cur:
+        position_id = 7
+        _position(cur, position_id)
+        cur.execute(
+            "INSERT INTO learning_outcome_exclusion_v1(position_id,exclusion_reason) "
+            "VALUES (%s,'ORDINARY_DOWNSTREAM_POLICY')",
+            (position_id,),
+        )
+        _ft(
+            cur, position_id, "COMPLETE",
+            Decimal("1.00"), Decimal("0.25"), Decimal("0.75"),
+        )
+
+        _refresh(cur)
+
+        assert _outcome(cur, position_id)[:3] == (
+            Decimal("1.00"), Decimal("0.25"), Decimal("0.75"),
+        )
+        cur.execute(
+            "SELECT decisions,outcomes,missing_outcomes "
+            "FROM v_decision_outcome_coverage_v1"
+        )
+        assert cur.fetchone() == (1, 1, 0)
 
 
 def test_patch_and_reprojection_preserve_protected_economics_tables():
