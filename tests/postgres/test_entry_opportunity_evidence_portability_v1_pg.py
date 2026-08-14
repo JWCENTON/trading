@@ -83,7 +83,7 @@ def _seed_snapshot(connection, deployment: str, key: str):
               deployment_id,strategy,symbol,interval,decision_payload
             ) VALUES(%s,%s,now(),'trading_paper',%s,'RSI','BTCUSDC','1m','{}')
             """,
-            (decision_id, key, deployment),
+            (str(decision_id), key, deployment),
         )
         cur.execute(
             """
@@ -104,15 +104,15 @@ def _seed_snapshot(connection, deployment: str, key: str):
               'ENV:PAPER_SIMULATION_FEE_RATE','MISSING',repeat('b',64)
             )
             """,
-            (snapshot_id, decision_id, deployment),
+            (str(snapshot_id), str(decision_id), deployment),
         )
         cur.execute(
             "UPDATE decision_registry_v1 SET entry_opportunity_snapshot_id=%s "
             "WHERE decision_id=%s",
-            (snapshot_id, decision_id),
+            (str(snapshot_id), str(decision_id)),
         )
     connection.commit()
-    return decision_id, snapshot_id
+    return str(decision_id), str(snapshot_id)
 
 
 def test_local_existing_and_vps_fresh_install_are_portable_and_schema_equal(
