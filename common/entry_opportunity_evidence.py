@@ -12,6 +12,7 @@ from decimal import Decimal
 import hashlib
 import json
 import logging
+import os
 import uuid
 from typing import Any, Callable
 
@@ -24,10 +25,48 @@ from common.realtime_engine import compute_realtime_snapshot
 SCHEMA_VERSION = "ENTRY_OPPORTUNITY_EVIDENCE_V1"
 _UUID_NAMESPACE = uuid.UUID("d925d1a4-4bf5-4f72-baf8-98a61d8c51fe")
 _LOGGER = logging.getLogger(__name__)
+_PAPER_RUNTIME_PROVENANCE = {
+    "local-paper": ("trading_paper", "LOCAL"),
+    "vps-paper": ("trading_paper", "VPS"),
+}
 
 # Keep UUID handling explicit for standalone writers/tests as well as runtime
 # connections created through common.db.
 register_uuid()
+
+
+def canonical_runtime_paper_provenance(
+    environ: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    """Map explicit runtime identity to the canonical registry provenance."""
+    source = os.environ if environ is None else environ
+    trading_mode = str(source.get("TRADING_MODE") or "").strip().upper()
+    environment = str(source.get("ENVIRONMENT") or "").strip().lower()
+    deployment = str(
+        source.get("DEPLOYMENT_ID")
+        or source.get("WALTRADE_DEPLOYMENT_ID")
+        or ""
+    ).strip().lower()
+    if trading_mode != "PAPER" or environment not in {"paper", "trading_paper"}:
+        raise RuntimeError("ENTRY_OPPORTUNITY_RUNTIME_ENVIRONMENT_NOT_PAPER")
+    provenance = _PAPER_RUNTIME_PROVENANCE.get(deployment)
+    if provenance is None:
+        raise RuntimeError("ENTRY_OPPORTUNITY_RUNTIME_DEPLOYMENT_NOT_ALLOWED")
+    return provenance
+
+
+def validate_registry_runtime_provenance(
+    registry_environment: str,
+    registry_deployment_id: str,
+    *,
+    runtime_provenance_provider: Callable[[], tuple[str, str]] = (
+        canonical_runtime_paper_provenance
+    ),
+) -> None:
+    expected = runtime_provenance_provider()
+    actual = (str(registry_environment), str(registry_deployment_id))
+    if actual != expected:
+        raise RuntimeError("ENTRY_OPPORTUNITY_RUNTIME_REGISTRY_IDENTITY_MISMATCH")
 
 
 def cost_assumptions(
@@ -141,6 +180,9 @@ def capture_entry_opportunity_snapshot_cursor(
     planned_entry_notional: Decimal,
     fee_config: PaperSimulationFeeConfig,
     realtime_provider: Callable[[str, str, Any], dict[str, Any]] = _load_realtime,
+    runtime_provenance_provider: Callable[[], tuple[str, str]] = (
+        canonical_runtime_paper_provenance
+    ),
     captured_at: datetime | None = None,
 ) -> uuid.UUID:
     """Capture one immutable snapshot inside the caller-owned transaction."""
@@ -169,6 +211,11 @@ def capture_entry_opportunity_snapshot_cursor(
     decision_payload = dict(decision_payload or {})
     if environment != "trading_paper":
         raise RuntimeError("ENTRY_OPPORTUNITY_PAPER_FEE_CONTRACT_NOT_APPLICABLE")
+    validate_registry_runtime_provenance(
+        environment,
+        deployment_id,
+        runtime_provenance_provider=runtime_provenance_provider,
+    )
 
     cur.execute(
         """

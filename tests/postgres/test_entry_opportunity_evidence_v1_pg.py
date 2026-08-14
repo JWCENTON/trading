@@ -97,6 +97,7 @@ def test_snapshot_immutability_late_link_and_frozen_replay():
                     "ENV:PAPER_SIMULATION_FEE_RATE",
                 ),
                 realtime_provider=_realtime,
+                runtime_provenance_provider=lambda: ("trading_paper", "LOCAL"),
                 captured_at=decision_time.replace(second=30),
             )
             cur.execute(
@@ -124,6 +125,7 @@ def test_snapshot_immutability_late_link_and_frozen_replay():
                     Decimal("0.009"), "FUTURE", "test-future"
                 ),
                 realtime_provider=lambda *_: {"ok": True, "realtime_score": 99},
+                runtime_provenance_provider=lambda: ("trading_paper", "LOCAL"),
                 captured_at=decision_time.replace(minute=1),
             ) == snapshot_id
             cur.execute(

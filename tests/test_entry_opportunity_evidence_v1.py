@@ -140,11 +140,13 @@ def test_h_future_outcome_is_separate_from_entry_snapshot():
     assert "entry_opportunity_expected_move_v1_ck" in MIGRATION
 
 
-def test_i_deployment_identity_comes_from_registry_not_constants():
+def test_i_deployment_identity_is_validated_against_canonical_runtime():
     assert "decision_timestamp,environment," in WRITER
     assert "deployment_id,strategy" in WRITER
-    assert 'deployment_id = "local-paper"' not in WRITER
-    assert 'environment = "trading_paper"' not in WRITER
+    assert "canonical_runtime_paper_provenance" in WRITER
+    assert "validate_registry_runtime_provenance" in WRITER
+    assert '"local-paper": ("trading_paper", "LOCAL")' in WRITER
+    assert '"vps-paper": ("trading_paper", "VPS")' in WRITER
 
 
 def test_j_hook_is_observational_and_does_not_change_order_result():
