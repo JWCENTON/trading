@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 import hashlib
 import json
+import logging
 import os
 import uuid
 
@@ -19,6 +20,11 @@ from common.contract_adoption import (
 from common.financial_truth_identity import IDENTITY_VERSION
 from common.financial_truth_repository import ExecutionEvidenceContext
 from common.financial_truth_writer import FinancialTruthReconciler
+from common.entry_opportunity_evidence import (
+    capture_entry_opportunity_snapshot_fail_open_cursor,
+    link_entry_opportunity_order_fail_open_cursor,
+    link_entry_opportunity_position_fail_open_cursor,
+)
 from common.inventory_lifecycle import apply_inventory_lifecycle_mutation
 from common.inventory_quantity import (
     InstrumentExecutionLimits,
@@ -655,7 +661,29 @@ def create_simulated_order_cursor(
         cur.execute(f"RELEASE SAVEPOINT {savepoint}")
         if inserted is None:
             raise RuntimeError("SIMULATED_ORDER_INSERT_RETURNING_MISSING")
-        return int(inserted[0])
+        inserted_order_id = int(inserted[0])
+        if forward_decision_id is not None:
+            try:
+                snapshot_id = capture_entry_opportunity_snapshot_fail_open_cursor(
+                    cur,
+                    decision_id=forward_decision_id,
+                    simulated_order_id=inserted_order_id,
+                    planned_entry_notional=(
+                        Decimal(str(price)) * Decimal(str(quantity))
+                    ),
+                    fee_config=load_paper_simulation_fee_config(),
+                )
+                if snapshot_id is not None:
+                    link_entry_opportunity_order_fail_open_cursor(
+                        cur,
+                        decision_id=forward_decision_id,
+                        simulated_order_id=inserted_order_id,
+                    )
+            except Exception:
+                # Evidence is observational. It must never change the order
+                # result returned by the existing writer.
+                logging.exception("entry_opportunity_evidence_fail_open")
+        return inserted_order_id
 
 
 def create_simulated_execution_fill_cursor(
@@ -739,7 +767,18 @@ def create_simulated_execution_fill_cursor(
         ),
     )
     row = cur.fetchone()
-    return int(row[0]) if row is not None else None
+    fill_id = int(row[0]) if row is not None else None
+    if purpose == "ENTRY" and fill_id is not None:
+        try:
+            link_entry_opportunity_position_fail_open_cursor(
+                cur,
+                simulated_order_id=int(simulated_order_id),
+                position_id=int(position_id),
+                fill_id=fill_id,
+            )
+        except Exception:
+            logging.exception("entry_opportunity_position_link_fail_open")
+    return fill_id
 
 
 def _fee_contract_for_fill(
