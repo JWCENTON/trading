@@ -43,6 +43,9 @@ from common.orc_apply_ledger import (
 from common.learning_evidence_context import (
     set_learning_evidence_transaction_context,
 )
+from common.bounded_horizon_label_automation import (
+    run_bounded_horizon_label_automation,
+)
 from common.equity_curve import (
     collect_current_equity,
     ensure_paper_equity_baseline_v2,
@@ -3749,6 +3752,15 @@ def main():
                     conn.rollback()
                 except Exception:
                     pass
+
+            # PAPER observation only. The job has a second strict runtime-
+            # deployment fence before it can call the canonical SQL producer.
+            if cfg.trading_mode == "PAPER":
+                run_independent_refresh_job(
+                    conn,
+                    run_bounded_horizon_label_automation,
+                    "bounded_horizon_label_automation failed",
+                )
 
             try:
                 run_learning_feedback_engine_refresh(conn)
