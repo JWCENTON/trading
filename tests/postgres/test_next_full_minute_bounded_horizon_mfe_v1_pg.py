@@ -17,6 +17,14 @@ MIGRATION = "\n".join(
     line for line in MIGRATION_SOURCE.splitlines()
     if not line.lstrip().startswith("\\")
 )
+CORRECTION_SOURCE = (
+    ROOT
+    / "db/migrations/20260815_next_full_minute_bounded_horizon_mfe_v1_1_reference_fix.sql"
+).read_text()
+CORRECTION = "\n".join(
+    line for line in CORRECTION_SOURCE.splitlines()
+    if not line.lstrip().startswith("\\")
+)
 
 BASE_SCHEMA = r"""
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -54,6 +62,18 @@ def _database(pg, suffix: str):
     with connection.cursor() as cur:
         cur.execute(BASE_SCHEMA)
         cur.execute(MIGRATION)
+        cur.execute(CORRECTION)
+    connection.commit()
+    return connection
+
+
+def _database_before_reference_fix(pg, suffix: str):
+    name = f"waltrade_baseline_test_bounded_horizon_v1_{suffix}".lower()
+    pg.create_database(name)
+    connection = pg.connect(name)
+    with connection.cursor() as cur:
+        cur.execute(BASE_SCHEMA)
+        cur.execute(MIGRATION)
     connection.commit()
     return connection
 
@@ -77,7 +97,7 @@ def _snapshot(
           strategy_features,captured_at
         ) VALUES(
           %s,%s,%s,'trading_paper',%s,'a5e154d','RSI',%s,'1m',%s,
-          jsonb_build_object('price',%s::numeric,'signal_created_at',%s::timestamptz),
+          jsonb_build_object('price',%s::text,'signal_created_at',%s::timestamptz),
           %s
         )
         """,
@@ -407,6 +427,7 @@ def test_migration_idempotency_and_invalid_input_statuses(disposable_postgres_v1
         anchor = datetime(2026,8,1,10,0,tzinfo=timezone.utc)
         with connection.cursor() as cur:
             cur.execute(MIGRATION)
+            cur.execute(CORRECTION)
             cur.execute(
                 """
                 SELECT count(*) FROM schema_migration_ledger_v1
@@ -431,6 +452,38 @@ def test_migration_idempotency_and_invalid_input_statuses(disposable_postgres_v1
             assert cur.fetchone()[0] == 2
             assert _label(cur,invalid_reference)[6] == "INVALID_REFERENCE"
             assert _label(cur,unsupported_direction)[6] == "UNSUPPORTED_DIRECTION"
+    finally:
+        connection.close()
+
+
+def test_reference_fix_reprojects_only_parser_generated_invalid_label(
+    disposable_postgres_v16,
+):
+    connection = _database_before_reference_fix(
+        disposable_postgres_v16,"reference_repair"
+    )
+    try:
+        anchor = datetime(2026,8,1,10,0,tzinfo=timezone.utc)
+        with connection.cursor() as cur:
+            snapshot_id,_ = _snapshot(cur,anchor=anchor)
+            _candles(cur,symbol="BTCUSDC",start=anchor,count=15)
+            cur.execute(
+                "SELECT refresh_entry_opportunity_bounded_horizon_labels_v1(%s,%s,%s)",
+                ('trading_paper','LOCAL',100),
+            )
+            assert cur.fetchone()[0] == 1
+            assert _label(cur,snapshot_id)[6] == "INVALID_REFERENCE"
+
+            cur.execute(CORRECTION)
+            assert _label(cur,snapshot_id) is None
+            cur.execute(
+                "SELECT refresh_entry_opportunity_bounded_horizon_labels_v1(%s,%s,%s)",
+                ('trading_paper','LOCAL',100),
+            )
+            assert cur.fetchone()[0] == 1
+            repaired = _label(cur,snapshot_id)
+            assert repaired[4] == Decimal("100")
+            assert repaired[6] == "COMPLETE"
     finally:
         connection.close()
 
