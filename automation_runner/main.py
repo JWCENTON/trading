@@ -46,6 +46,10 @@ from common.learning_evidence_context import (
 from common.bounded_horizon_label_automation import (
     run_bounded_horizon_label_automation,
 )
+from common.thesis_evidence_bundle import (
+    canonical_evidence_cutoff,
+    capture_thesis_evidence_bundle_cycle,
+)
 from common.equity_curve import (
     collect_current_equity,
     ensure_paper_equity_baseline_v2,
@@ -81,6 +85,29 @@ ORC_LEDGER_OBSERVE_ONLY_ENABLED = _env_bool(
 )
 
 CAUSAL_TRANSPORT_METRICS = TransportMetrics()
+_last_thesis_evidence_cutoff = None
+
+
+def run_thesis_evidence_bundle_v1() -> dict:
+    """Run the independent evidence-only producer at most once per 5m cutoff."""
+    global _last_thesis_evidence_cutoff
+    if not _env_bool("THESIS_EVIDENCE_BUNDLE_V1_ENABLED", "0"):
+        return {"status": "DISABLED"}
+    cutoff = canonical_evidence_cutoff(datetime.now(timezone.utc))
+    if cutoff == _last_thesis_evidence_cutoff:
+        return {"status": "ALREADY_ATTEMPTED_FOR_CUTOFF", "evidence_cutoff": cutoff}
+    result = capture_thesis_evidence_bundle_cycle()
+    _last_thesis_evidence_cutoff = cutoff
+    logging.info(
+        "thesis_evidence_bundle_v1: status=%s cutoff=%s evidence=%s "
+        "symbols=%s bundles=%s structural=%s mme=%s transitions=%s tactical_sets=%s",
+        result.get("status"), result.get("evidence_cutoff"),
+        result.get("evidence_status"), result.get("symbols"),
+        result.get("bundles"), result.get("structural"),
+        result.get("mme_observations"), result.get("mme_transitions"),
+        result.get("tactical_sets"),
+    )
+    return result
 
 
 def run_causal_decision_observation_consumer() -> int:
@@ -3641,6 +3668,14 @@ def main():
                 run_market_regime_confidence_refresh,
                 "market_regime_confidence_refresh failed",
             )
+
+            # Freeze only evidence that existed at the closed 5m cutoff.  This
+            # intentionally runs before the next mutable MME refresh cycle.
+            try:
+                run_thesis_evidence_bundle_v1()
+            except Exception:
+                logging.exception("thesis_evidence_bundle_v1 failed")
+
             run_independent_refresh_job(
                 conn,
                 run_market_memory_events_refresh,
