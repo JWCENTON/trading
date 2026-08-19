@@ -922,6 +922,36 @@ def capture_thesis_evidence_bundle_cycle(
             if cur.fetchone()[0] is None:
                 conn.rollback()
                 return {"status": "SCHEMA_NOT_READY", "evidence_cutoff": cutoff}
+            cur.execute(
+                """
+                SELECT pipeline_run_id,evidence_status,missing_sources
+                  FROM public.thesis_evidence_pipeline_run_v1
+                 WHERE environment=%s AND deployment_id=%s
+                   AND evidence_cutoff=%s AND contract_version=%s
+                """,
+                (environment, deployment_id, cutoff, PIPELINE_CONTRACT_VERSION),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                conn.rollback()
+                return {
+                    "status": "CUTOFF_ALREADY_CAPTURED",
+                    "pipeline_run_id": existing[0],
+                    "evidence_cutoff": cutoff,
+                    "evidence_status": existing[1],
+                    "missing_sources": existing[2],
+                    "symbols": 0,
+                    "pipeline_runs": 0,
+                    "structural": 0,
+                    "mme_observations": 0,
+                    "mme_transitions": 0,
+                    "tactical_sets": 0,
+                    "tactical_members": 0,
+                    "bundles": 0,
+                    "cutovers": 0,
+                    "candidate_freezes": 0,
+                    "candidate_evaluations": 0,
+                }
             cycle = _build_cycle(
                 cur,
                 environment=environment,

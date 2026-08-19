@@ -215,8 +215,11 @@ def test_full_shadow_contract_is_append_only_and_idempotent(disposable_postgres_
         assert first["bundles"] == 1
 
         retry = capture_thesis_evidence_bundle_cycle(
-            factory, evaluated_at=cutoff + timedelta(minutes=4), environ=ENVIRON,
+            factory,
+            evaluated_at=cutoff + timedelta(minutes=4),
+            environ={**ENVIRON, "GIT_SHA": "d" * 40},
         )
+        assert retry["status"] == "CUTOFF_ALREADY_CAPTURED"
         assert retry["pipeline_run_id"] == first["pipeline_run_id"]
         assert retry["pipeline_runs"] == 0
         assert retry["structural"] == 0
@@ -416,6 +419,7 @@ def test_semantic_candidate_freeze_is_prospective_append_only_and_idempotent(
             factory, evaluated_at=cutoff + timedelta(minutes=14),
             environ=SEMANTIC_ENVIRON,
         )
+        assert retry["status"] == "CUTOFF_ALREADY_CAPTURED"
         assert retry["pipeline_runs"] == 0
         assert retry["candidate_freezes"] == 0
         assert retry["candidate_evaluations"] == 0
