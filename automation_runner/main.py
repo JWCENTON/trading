@@ -100,12 +100,14 @@ def run_thesis_evidence_bundle_v1() -> dict:
     _last_thesis_evidence_cutoff = cutoff
     logging.info(
         "thesis_evidence_bundle_v1: status=%s cutoff=%s evidence=%s "
-        "symbols=%s bundles=%s structural=%s mme=%s transitions=%s tactical_sets=%s",
+        "symbols=%s bundles=%s structural=%s mme=%s transitions=%s tactical_sets=%s "
+        "candidate_freezes=%s candidate_evaluations=%s",
         result.get("status"), result.get("evidence_cutoff"),
         result.get("evidence_status"), result.get("symbols"),
         result.get("bundles"), result.get("structural"),
         result.get("mme_observations"), result.get("mme_transitions"),
         result.get("tactical_sets"),
+        result.get("candidate_freezes"), result.get("candidate_evaluations"),
     )
     return result
 

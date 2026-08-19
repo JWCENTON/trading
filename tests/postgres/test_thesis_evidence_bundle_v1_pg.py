@@ -8,16 +8,28 @@ import psycopg2
 import pytest
 
 from common.thesis_evidence_bundle import capture_thesis_evidence_bundle_cycle
+from common.thesis_semantic_candidate import (
+    ACTIVE_RULE_ID,
+    FORMING_RULE_ID,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "db" / "migrations" / "20260818_thesis_evidence_bundle_v1.sql"
+SEMANTIC_MIGRATION = (
+    ROOT / "db" / "migrations"
+    / "20260819_thesis_semantic_candidate_freeze_v1.sql"
+)
 GIT_REVISION = "a" * 40
 ENVIRON = {
     "TRADING_MODE": "PAPER",
     "ENVIRONMENT": "paper",
     "DEPLOYMENT_ID": "local-paper",
     "GIT_SHA": GIT_REVISION,
+}
+SEMANTIC_ENVIRON = {
+    **ENVIRON,
+    "THESIS_SEMANTIC_CANDIDATE_FREEZE_V1_ENABLED": "1",
 }
 
 
@@ -88,6 +100,43 @@ def _apply_migration(conn):
     conn.commit()
 
 
+def _apply_semantic_migration(conn):
+    with conn.cursor() as cur:
+        cur.execute("SET waltrade.migration_checksum=%s", ("c" * 64,))
+        cur.execute("SET waltrade.target_environment='PAPER'")
+        cur.execute("SET waltrade.target_deployment_id='LOCAL'")
+        cur.execute("SET waltrade.git_sha=%s", (GIT_REVISION,))
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(SEMANTIC_MIGRATION.read_text())
+    conn.commit()
+
+
+def _insert_semantic_transition_candles(conn, *, symbol: str, cutoff: datetime):
+    start = cutoff - timedelta(days=3)
+    rows = []
+    for index in range(864):
+        open_time = start + timedelta(minutes=5 * index)
+        if index < 792:
+            close = 100 + (100 * index / 791)
+        else:
+            close = 200 - ((index - 792) / 71)
+        rows.append((
+            symbol, "5m", open_time, close, close + 1, close - 1,
+            close, 10 + index, open_time + timedelta(minutes=5, microseconds=-1),
+        ))
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO candles(
+                symbol,interval,open_time,open,high,low,close,volume,close_time
+            ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            rows,
+        )
+    conn.commit()
+
+
 def _insert_complete_candles(conn, *, symbol: str, cutoff: datetime):
     start = cutoff - timedelta(days=3)
     rows = []
@@ -119,6 +168,22 @@ def _append_candle(conn, *, symbol: str, open_time: datetime):
             ) VALUES(%s,'5m',%s,110,111,109,110.5,20,%s)
             """,
             (symbol, open_time, open_time + timedelta(minutes=5, microseconds=-1)),
+        )
+    conn.commit()
+
+
+def _append_semantic_candle(conn, *, symbol: str, open_time: datetime, close: float):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO candles(
+                symbol,interval,open_time,open,high,low,close,volume,close_time
+            ) VALUES(%s,'5m',%s,%s,%s,%s,%s,20,%s)
+            """,
+            (
+                symbol, open_time, close, close + 1, close - 1, close,
+                open_time + timedelta(minutes=5, microseconds=-1),
+            ),
         )
     conn.commit()
 
@@ -249,6 +314,164 @@ def test_full_shadow_contract_is_append_only_and_idempotent(disposable_postgres_
             assert cur.fetchone() == (1, 1, 1)
             cur.execute("SELECT * FROM v_thesis_evidence_integrity_v1")
             assert cur.fetchone() == (0, 0, 0, 0, 0)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_semantic_candidate_freeze_is_prospective_append_only_and_idempotent(
+    disposable_postgres_v16,
+):
+    logical_database = f"waltrade_baseline_test_semantic_{uuid.uuid4().hex[:8]}"
+    disposable_postgres_v16.create_database(logical_database)
+    conn = disposable_postgres_v16.connect(logical_database)
+    cutoff = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+    try:
+        _prepare_schema(conn)
+        _apply_migration(conn)
+        _apply_semantic_migration(conn)
+        _apply_semantic_migration(conn)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO bot_control VALUES('BTCUSDC','5m',true)")
+            cur.execute(
+                """
+                INSERT INTO market_memory_sequence(
+                    symbol,interval,sequence_key,sequence_type,sequence_stage,
+                    direction,first_event_at,last_event_at,expires_at,
+                    refreshed_at,payload
+                ) VALUES(
+                    'BTCUSDC','5m','semantic','ACTIVE_IMPULSE_SEQUENCE',
+                    'EXPANSION','UP',%s,%s,%s,%s,'{}'::jsonb
+                )
+                """,
+                (
+                    cutoff - timedelta(minutes=10), cutoff - timedelta(minutes=5),
+                    cutoff + timedelta(hours=1), cutoff - timedelta(minutes=1),
+                ),
+            )
+        conn.commit()
+        _insert_semantic_transition_candles(
+            conn, symbol="BTCUSDC", cutoff=cutoff,
+        )
+        factory = lambda: disposable_postgres_v16.connect(logical_database)
+
+        first = capture_thesis_evidence_bundle_cycle(
+            factory, evaluated_at=cutoff + timedelta(minutes=2),
+            environ=SEMANTIC_ENVIRON,
+        )
+        assert first["candidate_freezes"] == 1
+        assert first["candidate_evaluations"] == 2
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT effective_at FROM thesis_semantic_candidate_freeze_v1"
+            )
+            assert cur.fetchone()[0] == cutoff
+            cur.execute(
+                "SELECT count(*) FROM thesis_semantic_candidate_observation_v1"
+            )
+            assert cur.fetchone()[0] == 2
+
+        _append_semantic_candle(
+            conn, symbol="BTCUSDC", open_time=cutoff, close=201,
+        )
+        second = capture_thesis_evidence_bundle_cycle(
+            factory, evaluated_at=cutoff + timedelta(minutes=7),
+            environ=SEMANTIC_ENVIRON,
+        )
+        assert second["candidate_evaluations"] == 2
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT evaluation_result,reason_code,direction "
+                "FROM thesis_semantic_candidate_observation_v1 "
+                "WHERE candidate_rule_id=%s ORDER BY evidence_cutoff DESC LIMIT 1",
+                (FORMING_RULE_ID,),
+            )
+            assert cur.fetchone() == ("MATCH", "FORMING_ALIGNMENT_MATCH", "UP")
+
+        _append_semantic_candle(
+            conn, symbol="BTCUSDC", open_time=cutoff + timedelta(minutes=5),
+            close=202,
+        )
+        third = capture_thesis_evidence_bundle_cycle(
+            factory, evaluated_at=cutoff + timedelta(minutes=12),
+            environ=SEMANTIC_ENVIRON,
+        )
+        assert third["candidate_evaluations"] == 2
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT evaluation_result,reason_code,direction "
+                "FROM thesis_semantic_candidate_observation_v1 "
+                "WHERE candidate_rule_id=%s ORDER BY evidence_cutoff DESC LIMIT 1",
+                (ACTIVE_RULE_ID,),
+            )
+            assert cur.fetchone() == (
+                "MATCH", "ACTIVE_ADJACENT_COHERENCE_MATCH", "UP",
+            )
+            cur.execute(
+                "SELECT candidate_state FROM v_thesis_semantic_candidate_current_v1"
+            )
+            assert cur.fetchone()[0] == "ACTIVE_CANDIDATE"
+
+        retry = capture_thesis_evidence_bundle_cycle(
+            factory, evaluated_at=cutoff + timedelta(minutes=14),
+            environ=SEMANTIC_ENVIRON,
+        )
+        assert retry["pipeline_runs"] == 0
+        assert retry["candidate_freezes"] == 0
+        assert retry["candidate_evaluations"] == 0
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*),count(DISTINCT candidate_fingerprint) "
+                "FROM thesis_semantic_candidate_observation_v1"
+            )
+            assert cur.fetchone() == (6, 6)
+            cur.execute(
+                "UPDATE market_memory_sequence SET direction='DOWN',"
+                "last_event_at=%s,refreshed_at=%s WHERE symbol='BTCUSDC'",
+                (
+                    cutoff + timedelta(minutes=10),
+                    cutoff + timedelta(minutes=11),
+                ),
+            )
+        conn.commit()
+        _append_semantic_candle(
+            conn, symbol="BTCUSDC", open_time=cutoff + timedelta(minutes=10),
+            close=203,
+        )
+        fourth = capture_thesis_evidence_bundle_cycle(
+            factory, evaluated_at=cutoff + timedelta(minutes=17),
+            environ=SEMANTIC_ENVIRON,
+        )
+        assert fourth["candidate_evaluations"] == 2
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT evaluation_result,reason_code FROM "
+                "thesis_semantic_candidate_observation_v1 "
+                "WHERE candidate_rule_id=%s ORDER BY evidence_cutoff DESC LIMIT 1",
+                (ACTIVE_RULE_ID,),
+            )
+            assert cur.fetchone() == ("NO_MATCH", "MME_OPPOSITE_AVAILABLE")
+            cur.execute(
+                "SELECT candidate_state FROM v_thesis_semantic_candidate_current_v1"
+            )
+            assert cur.fetchone()[0] == "FORMING"
+            cur.execute("SAVEPOINT immutable_semantic_update")
+            with pytest.raises(psycopg2.Error):
+                cur.execute(
+                    "UPDATE thesis_semantic_candidate_observation_v1 "
+                    "SET evaluation_result='NO_MATCH'"
+                )
+            cur.execute("ROLLBACK TO SAVEPOINT immutable_semantic_update")
+            cur.execute("SAVEPOINT immutable_semantic_delete")
+            with pytest.raises(psycopg2.Error):
+                cur.execute("DELETE FROM thesis_semantic_candidate_freeze_v1")
+            cur.execute("ROLLBACK TO SAVEPOINT immutable_semantic_delete")
+            cur.execute(
+                "SELECT (SELECT count(*) FROM positions),"
+                "(SELECT count(*) FROM orders),(SELECT count(*) FROM fills)"
+            )
+            assert cur.fetchone() == (1, 1, 1)
         conn.rollback()
     finally:
         conn.close()

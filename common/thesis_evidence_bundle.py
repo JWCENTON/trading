@@ -911,7 +911,8 @@ def capture_thesis_evidence_bundle_cycle(
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Capture one deterministic shadow cycle; retries are verified no-ops."""
-    environment, deployment_id, git_revision = runtime_provenance(environ)
+    runtime_environ = os.environ if environ is None else environ
+    environment, deployment_id, git_revision = runtime_provenance(runtime_environ)
     cutoff = canonical_evidence_cutoff(evaluated_at or datetime.now(timezone.utc))
     conn = connection_factory()
     try:
@@ -929,6 +930,15 @@ def capture_thesis_evidence_bundle_cycle(
                 evidence_cutoff=cutoff,
             )
             counts = _persist_cycle(cur, cycle)
+            from common.thesis_semantic_candidate import (
+                candidate_enabled,
+                persist_candidate_evaluations,
+            )
+            candidate_counts = (
+                persist_candidate_evaluations(cur, cycle)
+                if candidate_enabled(runtime_environ)
+                else {"candidate_freezes": 0, "candidate_evaluations": 0}
+            )
         conn.commit()
         return {
             "status": "CAPTURED",
@@ -938,6 +948,7 @@ def capture_thesis_evidence_bundle_cycle(
             "missing_sources": cycle["run"]["missing_sources"],
             "symbols": len(cycle["bundles"]),
             **counts,
+            **candidate_counts,
         }
     except Exception:
         conn.rollback()
