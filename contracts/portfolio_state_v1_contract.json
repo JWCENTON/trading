@@ -1,0 +1,65 @@
+{
+  "contract": "PORTFOLIO_STATE_V1_CONTRACT",
+  "version": "PORTFOLIO_STATE_V1",
+  "capital_scope": "MANAGED_PORTFOLIO_EQUITY",
+  "environment_identity": {
+    "allowed": {
+      "local-live": "LIVE",
+      "local-paper": "PAPER",
+      "vps-live": "LIVE",
+      "vps-paper": "PAPER"
+    },
+    "mismatch": "FAIL_CLOSED"
+  },
+  "fields": {
+    "portfolio_state_version": {"type": "string", "null": false, "unit": null, "authority": "PORTFOLIO_STATE_V1"},
+    "environment": {"type": "enum[PAPER,LIVE]", "null": false, "unit": null, "authority": "explicit runtime identity"},
+    "deployment_id": {"type": "enum[local-paper,local-live,vps-paper,vps-live]", "null": false, "unit": null, "authority": "explicit runtime identity"},
+    "as_of": {"type": "timestamptz", "null": false, "unit": "UTC", "authority": "caller-supplied read boundary"},
+    "runtime_revision": {"type": "string", "null": true, "unit": null, "authority": "GIT_SHA"},
+    "total_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "PAPER_EQUITY_BASELINE_V2 + post-baseline canonical_financial_truth_v1 COMPLETE + fresh open marks"},
+    "available_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "NONE_V1; baseline_available rejected because its source allowed entry-price fallback"},
+    "reserved_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "NONE_V1"},
+    "deployed_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "positions.remaining_inventory_qty * fresh candles.close"},
+    "realized_pnl": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "canonical_financial_truth_v1 COMPLETE after accepted cutover"},
+    "unrealized_pnl": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "positions.remaining_inventory_qty and entry_price marked with fresh candles.close"},
+    "open_positions_count": {"type": "integer", "null": false, "unit": "positions", "authority": "positions.status=OPEN"},
+    "open_exposure_notional": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "same as deployed_capital"},
+    "exposure_by_symbol": {"type": "ExposureBucket[]", "null": false, "unit": "symbol base quantity and USDC", "authority": "canonical open inventory and fresh mark"},
+    "exposure_by_strategy": {"type": "ExposureBucket[]", "null": false, "unit": "USDC; quantity null because heterogeneous base assets are not additive", "authority": "canonical open inventory and fresh mark"},
+    "exposure_by_regime": {"type": "ExposureBucket[]", "null": false, "unit": "USDC; quantity null because heterogeneous base assets are not additive", "authority": "market_regime CANONICAL_REGIME_ATTRIBUTION_V1; missing key=UNKNOWN"},
+    "open_risk": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "NONE_V1"},
+    "portfolio_heat": {"type": "Decimal", "null": true, "unit": null, "authority": "NONE_V1"},
+    "drawdown": {"type": "Decimal", "null": true, "unit": "percent", "authority": "accepted-baseline-aligned managed equity and equity_daily_snapshot_v1"}
+  },
+  "status_vocabulary": ["CANONICAL", "INCOMPLETE", "PRICE_STALE", "PRICE_UNAVAILABLE", "NOT_YET_CANONICAL"],
+  "price_contract": {
+    "authority": "candles.close",
+    "timestamp": "candles.open_time",
+    "freshness": "20 minutes",
+    "missing_semantics": "NULL/PRICE_UNAVAILABLE",
+    "stale_semantics": "NULL/PRICE_STALE",
+    "entry_price_fallback": false
+  },
+  "equations": {
+    "paper_managed_equity": "baseline_managed_equity + post_baseline_FT_COMPLETE_net_pnl + current_unrealized_pnl - baseline_unrealized_pnl",
+    "deployed_capital": "sum(abs(remaining_inventory_qty * fresh_mark_price))",
+    "unrealized_long": "(fresh_mark_price - entry_price) * remaining_inventory_qty",
+    "unrealized_short": "(entry_price - fresh_mark_price) * remaining_inventory_qty",
+    "drawdown_pct": "(current_managed_equity - max_managed_equity_since_accepted_baseline) / max_managed_equity_since_accepted_baseline * 100",
+    "reserved_is_not_inventory": true,
+    "available_is_not_inferred": true
+  },
+  "schema_objects": [],
+  "migration": null,
+  "implementation": "common/portfolio_state.py",
+  "implementation_sha256": "20be6cd1cd78a78e033cdc0308d288bdb1f629cbad271ec6ae8de2bfc697236c",
+  "read_entrypoint": "scripts/portfolio_state_v1_read.py",
+  "read_entrypoint_sha256": "6590176ad544c35cac0e1fec69f7e9ca6b2f920ee0574f9860e0e9b705540de3",
+  "excluded_authorities": [
+    "RECONSTRUCTED_PARTIAL_MIXED",
+    "legacy stored outcomes",
+    "positions.qty",
+    "entry_price as mark fallback"
+  ]
+}
