@@ -62,7 +62,8 @@
     "available_fallback": false,
     "owner_flow_equation": "flow_adjusted_equity = raw_managed_equity - deposits - transfer_in + withdrawals + transfer_out",
     "pre_baseline_history": "excluded by accepted cutover",
-    "baseline_activation": "explicit fingerprint-pinned Product Owner approval only"
+    "baseline_activation": "exact immutable LIVE_MANAGED_CAPITAL_BASELINE_PLAN_V1 artifact plus fingerprint-pinned Product Owner approval",
+    "unapproved_plan_consumed_by_portfolio_state": false
   },
   "schema_objects": [
     "live_managed_capital_baseline_v1",
@@ -73,12 +74,14 @@
   "implementation": "common/portfolio_state.py",
   "implementation_sha256": "cdc1b4c0b3e64aa60f99f56267b88e925c6a9436b9f76a2c297b0ca605fba902",
   "live_implementation": "common/live_managed_capital.py",
-  "live_implementation_sha256": "daf326bbf54bd50409778e3a9ce2bc5d26d4a4025efa85c496ccbaed876f494a",
-  "live_authority_contract_sha256": "d75ea8c75aca11a95eba978329c3d7413d432f01dc7585c1bf43420b5b5e4840",
+  "live_implementation_sha256": "b9dbab120b435cdd46afb2729e176a16b2e5e633a562eb27492eb62e75e6a554",
+  "live_authority_contract_sha256": "8e49b73fe467fb1a1aee22a83653ee48c51fbbb57b793dfdfef1088c8c1b277e",
   "read_entrypoint": "scripts/portfolio_state_v1_read.py",
   "read_entrypoint_sha256": "93b86e5509827e784c6ddce93937fb8b0abcbc4bddd1e14244488af5b28169ba",
   "baseline_entrypoint": "scripts/live_managed_capital_v1_baseline.py",
-  "baseline_entrypoint_sha256": "1605e2987b26a8ca737a616ff2d6c3a9144fef113f1b04ab778787f83c079420",
+  "baseline_entrypoint_sha256": "ab6399e6d94bc3a98f76c9bb0aeef93704f75a269348ee936ff4eaec1fb11143",
+  "baseline_plan_fingerprint_tool": "scripts/live_managed_capital_v1_plan_fingerprint.py",
+  "baseline_plan_fingerprint_tool_sha256": "10f2045a8ba8163e7ef7ebd0fe7a65115d068f3c59b3b7d8a508005ebd338b5f",
   "migration_sha256": "81bf0e6b13f6d8f2ff9f997fe64b04f9816dec2c8882967cf8863e415d2c8cd8",
   "excluded_authorities": [
     "RECONSTRUCTED_PARTIAL_MIXED",

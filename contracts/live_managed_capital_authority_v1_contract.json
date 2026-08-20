@@ -25,9 +25,29 @@
   "owner_flow_types": ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT"],
   "flow_adjusted_equity": "raw_managed_equity - deposit - transfer_in + withdrawal + transfer_out",
   "baseline": {
-    "activation": "explicit Product Owner approval and exact plan fingerprint",
+    "plan_artifact_contract_version": "LIVE_MANAGED_CAPITAL_BASELINE_PLAN_V1",
+    "activation": "explicit Product Owner approval and exact immutable artifact fingerprint",
     "automatic_creation": false,
-    "history": "cutover-forward only"
+    "history": "cutover-forward only",
+    "artifact_storage": "explicit file created before approval",
+    "canonical_json": "UTF-8, sorted keys, compact separators, no floats",
+    "fingerprint": "SHA-256 over all artifact fields except artifact_fingerprint",
+    "mark_selection": "latest fully closed canonical 1m candle before PLAN_CREATED_AT",
+    "excluded_mutable_diagnostics": ["OKX eq", "OKX eqUsd"],
+    "apply_financial_evidence": "exact approved artifact only; no reconstruction",
+    "fresh_apply_checks": [
+      "environment",
+      "deployment_id",
+      "account_identity_fingerprint",
+      "runtime_revision",
+      "duplicate_baseline"
+    ],
+    "stale_balance_policy": "apply approved historical anchor; fresh balance changes do not mutate or block it",
+    "timestamps": {
+      "plan_created_at": "artifact generation time",
+      "accepted_at": "approved cutover candidate frozen in artifact",
+      "applied_at": "database created_at"
+    }
   },
   "fail_closed": [
     "UNCLASSIFIED_ACCOUNT_ASSET",

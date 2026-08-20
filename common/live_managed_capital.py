@@ -19,6 +19,7 @@ from typing import Any, Mapping
 _CONTRACT_PATH = Path(__file__).resolve().parents[1] / "contracts/live_managed_capital_authority_v1_contract.json"
 _CONTRACT = json.loads(_CONTRACT_PATH.read_text())
 CONTRACT_VERSION = str(_CONTRACT["contract_version"])
+PLAN_ARTIFACT_CONTRACT_VERSION = "LIVE_MANAGED_CAPITAL_BASELINE_PLAN_V1"
 ACCOUNT_SCOPE = str(_CONTRACT["account_scope"])
 MANAGED_ASSET_SCOPE = tuple(str(asset) for asset in _CONTRACT["managed_asset_scope"])
 PRICE_FRESHNESS = timedelta(minutes=int(_CONTRACT["valuation"]["freshness_minutes"]))
@@ -233,84 +234,202 @@ def evaluate_live_managed_capital(
     )
 
 
+def _reject_floats(value: Any, *, path: str = "$") -> None:
+    if isinstance(value, float):
+        raise ValueError(f"LIVE_BASELINE_CANONICAL_JSON_FLOAT_FORBIDDEN:{path}")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_floats(item, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_floats(item, path=f"{path}[{index}]")
+
+
+def canonical_json(payload: Mapping[str, Any]) -> str:
+    """Repository-owned deterministic JSON encoding for approval identities."""
+    _reject_floats(payload)
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
 def baseline_fingerprint(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def plan_artifact_fingerprint(artifact: Mapping[str, Any]) -> str:
+    payload = dict(artifact)
+    payload.pop("artifact_fingerprint", None)
+    return baseline_fingerprint(payload)
+
+
+def validate_live_baseline_plan_artifact(
+    artifact: Mapping[str, Any], *, expected_fingerprint: str,
+) -> dict[str, Any]:
+    supplied = dict(artifact)
+    embedded = str(supplied.get("artifact_fingerprint") or "")
+    computed = plan_artifact_fingerprint(supplied)
+    if embedded != expected_fingerprint or computed != embedded:
+        raise ValueError("LIVE_BASELINE_FINGERPRINT_MISMATCH")
+    if supplied.get("plan_artifact_contract_version") != PLAN_ARTIFACT_CONTRACT_VERSION:
+        raise ValueError("LIVE_BASELINE_PLAN_ARTIFACT_VERSION_MISMATCH")
+    if supplied.get("baseline_contract_version") != CONTRACT_VERSION:
+        raise ValueError("LIVE_BASELINE_CONTRACT_VERSION_MISMATCH")
+    if supplied.get("environment") != "LIVE":
+        raise ValueError("LIVE_BASELINE_ENVIRONMENT_MISMATCH")
+    if supplied.get("deployment_id") not in {"local-live", "vps-live"}:
+        raise ValueError("LIVE_BASELINE_DEPLOYMENT_MISMATCH")
+    if supplied.get("account_scope") != ACCOUNT_SCOPE:
+        raise ValueError("LIVE_BASELINE_ACCOUNT_SCOPE_MISMATCH")
+    if tuple(supplied.get("managed_asset_scope") or ()) != MANAGED_ASSET_SCOPE:
+        raise ValueError("LIVE_BASELINE_MANAGED_ASSET_SCOPE_MISMATCH")
+    if supplied.get("applied_at") is not None:
+        raise ValueError("LIVE_BASELINE_PLAN_APPLIED_AT_MUST_BE_NULL")
+    try:
+        plan_created_at = datetime.fromisoformat(str(supplied["plan_created_at"]))
+        accepted_at = datetime.fromisoformat(str(supplied["accepted_at_candidate"]))
+    except (KeyError, ValueError) as exc:
+        raise ValueError("LIVE_BASELINE_PLAN_TIMESTAMP_INVALID") from exc
+    if (
+        plan_created_at.tzinfo is None or accepted_at.tzinfo is None
+        or accepted_at > plan_created_at
+    ):
+        raise ValueError("LIVE_BASELINE_PLAN_TIMESTAMP_INVALID")
+    if supplied.get("plan_status") != "CANONICAL":
+        raise ValueError("LIVE_BASELINE_PLAN_INCOMPLETE")
+    return supplied
 
 
 def build_live_baseline_plan(
     context: LiveManagedCapitalReadContext, *, deployment_id: str,
-    accepted_at: datetime, runtime_revision: str,
+    plan_created_at: datetime, accepted_at_candidate: datetime,
+    runtime_revision: str,
 ) -> dict[str, Any]:
+    if plan_created_at.tzinfo is None or accepted_at_candidate.tzinfo is None:
+        raise ValueError("LIVE_BASELINE_PLAN_TIMESTAMP_REQUIRED")
+    plan_created_at = plan_created_at.astimezone(timezone.utc)
+    accepted_at_candidate = accepted_at_candidate.astimezone(timezone.utc)
+    if accepted_at_candidate > plan_created_at:
+        raise ValueError("LIVE_BASELINE_ACCEPTED_AT_AFTER_PLAN_CREATED_AT")
     provisional = LiveManagedCapitalBaseline(
-        accepted_at, context.snapshot.account_identity_fingerprint, ZERO, "0" * 64
+        accepted_at_candidate, context.snapshot.account_identity_fingerprint, ZERO, "0" * 64
     )
     evidence = evaluate_live_managed_capital(
         context.snapshot, marks=context.marks,
         inventory_quantities=context.inventory_quantities,
         inventory_limits=context.inventory_limits, baseline=provisional,
-        as_of=accepted_at,
+        as_of=plan_created_at,
     )
+    by_asset = {row.asset: row for row in context.snapshot.balances}
     payload = {
+        "plan_artifact_contract_version": PLAN_ARTIFACT_CONTRACT_VERSION,
+        "baseline_contract_version": CONTRACT_VERSION,
         "environment": "LIVE",
         "deployment_id": deployment_id,
-        "contract_version": CONTRACT_VERSION,
         "account_identity_fingerprint": context.snapshot.account_identity_fingerprint,
         "account_scope": ACCOUNT_SCOPE,
-        "accepted_at": accepted_at.astimezone(timezone.utc).isoformat(),
+        "plan_created_at": plan_created_at.isoformat(),
+        "accepted_at_candidate": accepted_at_candidate.isoformat(),
+        "applied_at": None,
         "managed_asset_scope": list(MANAGED_ASSET_SCOPE),
         "raw_balance_snapshot": {
-            row.asset: {
-                "total_balance": str(row.total_balance),
-                "available_balance": str(row.available_balance),
-                "frozen_balance": str(row.frozen_balance),
-                "order_frozen": str(row.order_frozen),
-                "raw": dict(row.raw),
-            } for row in context.snapshot.balances
+            asset: {
+                "total_balance": str(by_asset[asset].total_balance) if asset in by_asset else "0",
+                "available_balance": str(by_asset[asset].available_balance) if asset in by_asset else "0",
+                "frozen_balance": str(by_asset[asset].frozen_balance) if asset in by_asset else "0",
+                "order_frozen": str(by_asset[asset].order_frozen) if asset in by_asset else "0",
+            } for asset in MANAGED_ASSET_SCOPE
         },
         "valuation_snapshot": {
             asset: {
-                "mark": "1" if asset == "USDC" else (
+                "price": "1" if asset == "USDC" else (
                     None if context.marks.get(asset, (None, None))[0] is None
                     else str(context.marks[asset][0])
                 ),
-                "timestamp": accepted_at.isoformat() if asset == "USDC" else (
+                "candle_timestamp": None if asset == "USDC" else (
                     None if context.marks.get(asset, (None, None))[1] is None
                     else context.marks[asset][1].isoformat()
                 ),
-                "authority": "USDC_PAR" if asset == "USDC" else "candles.close/1m",
+                "mark_source": "USDC_PAR" if asset == "USDC" else "candles.close/1m",
+                "mark_freshness": (
+                    "CANONICAL" if asset == "USDC" else
+                    "PRICE_UNAVAILABLE" if (
+                        context.marks.get(asset, (None, None))[0] is None
+                        or context.marks.get(asset, (None, None))[1] is None
+                    ) else "CANONICAL" if (
+                        context.marks[asset][1] >= plan_created_at - PRICE_FRESHNESS
+                    ) else "PRICE_STALE"
+                ),
+                "mark_selection_rule": (
+                    "FIXED_PAR" if asset == "USDC"
+                    else "LATEST_FULLY_CLOSED_CANONICAL_1M_CANDLE_BEFORE_PLAN_CREATED_AT"
+                ),
             } for asset in MANAGED_ASSET_SCOPE
         },
-        "baseline_managed_equity": (
+        "managed_equity": (
             None if evidence.managed_equity is None else str(evidence.managed_equity)
         ),
-        "raw_okx_usdc_avail_bal": (
+        "raw_available_balance": (
             None if evidence.raw_usdc_avail_bal is None else str(evidence.raw_usdc_avail_bal)
         ),
+        "raw_frozen_balance": str(by_asset["USDC"].frozen_balance) if "USDC" in by_asset else "0",
+        "raw_order_frozen": str(by_asset["USDC"].order_frozen) if "USDC" in by_asset else "0",
         "available_capital": None,
         "available_capital_status": "INCOMPLETE",
         "reserved_capital": None,
         "reserved_capital_status": "NOT_YET_CANONICAL",
-        "ownership_reconciliation_status": evidence.inventory_reconciliation_status,
+        "inventory_reconciliation_result": evidence.inventory_reconciliation_status,
+        "owner_flow_boundary": accepted_at_candidate.isoformat(),
+        "owner_flow_status": "CUTOVER_FORWARD_ONLY",
+        "unclassified_asset_status": (
+            "INCOMPLETE" if any(reason.startswith("UNCLASSIFIED_ACCOUNT_ASSET:")
+                                for reason in evidence.incomplete_reasons) else "CANONICAL"
+        ),
+        "unclassified_assets": [
+            row.asset for row in context.snapshot.balances
+            if row.asset not in MANAGED_ASSET_SCOPE and row.total_balance != ZERO
+        ],
+        "source_authorities": {
+            "balances": "OKX_API_V5_ACCOUNT_BALANCE_RAW",
+            "marks": "candles.close/1m",
+            "inventory_quantity": "positions.remaining_inventory_qty",
+        },
+        "canonical_fingerprint_inputs": [
+            "all artifact fields except artifact_fingerprint",
+            "decimal values encoded as strings",
+            "raw OKX eq and eqUsd explicitly excluded",
+        ],
+        "historical_anchor_policy": (
+            "APPLY_APPROVED_HISTORICAL_SNAPSHOT_NO_BALANCE_RECONSTRUCTION"
+        ),
         "runtime_revision": runtime_revision,
         "plan_status": evidence.managed_equity_status,
         "incomplete_reasons": list(evidence.incomplete_reasons),
     }
-    payload["activation_fingerprint"] = baseline_fingerprint(payload)
+    payload["artifact_fingerprint"] = plan_artifact_fingerprint(payload)
     return payload
 
 
 def activate_live_managed_capital_baseline(
-    cur: Any, *, plan: Mapping[str, Any], expected_fingerprint: str,
+    cur: Any, *, artifact: Mapping[str, Any], expected_fingerprint: str,
     approved_by: str, approval_reference: Mapping[str, Any],
+    fresh_environment: str, fresh_deployment_id: str,
+    fresh_account_identity_fingerprint: str, fresh_runtime_revision: str,
 ) -> int:
-    """Explicitly gated writer; never called by migrations or ordinary reads."""
-    supplied = dict(plan)
-    fingerprint = str(supplied.pop("activation_fingerprint", ""))
-    if fingerprint != expected_fingerprint or baseline_fingerprint(supplied) != fingerprint:
-        raise ValueError("LIVE_BASELINE_FINGERPRINT_MISMATCH")
-    if supplied.get("plan_status") != "CANONICAL":
-        raise ValueError("LIVE_BASELINE_PLAN_INCOMPLETE")
+    """Apply an exact approved artifact without rebuilding financial evidence."""
+    supplied = validate_live_baseline_plan_artifact(
+        artifact, expected_fingerprint=expected_fingerprint,
+    )
+    fingerprint = supplied["artifact_fingerprint"]
+    if str(fresh_environment).upper() != supplied["environment"]:
+        raise ValueError("LIVE_BASELINE_ENVIRONMENT_MISMATCH")
+    if str(fresh_deployment_id).lower() != supplied["deployment_id"]:
+        raise ValueError("LIVE_BASELINE_DEPLOYMENT_MISMATCH")
+    if fresh_account_identity_fingerprint != supplied["account_identity_fingerprint"]:
+        raise ValueError("LIVE_BASELINE_ACCOUNT_IDENTITY_MISMATCH")
+    if fresh_runtime_revision != supplied["runtime_revision"]:
+        raise ValueError("LIVE_BASELINE_RUNTIME_REVISION_MISMATCH")
     approver = str(approved_by).strip()
     approval = dict(approval_reference or {})
     if not approver or not approval:
@@ -319,6 +438,13 @@ def activate_live_managed_capital_baseline(
         "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
         (f"{CONTRACT_VERSION}:{supplied['deployment_id']}",),
     )
+    cur.execute(
+        "SELECT baseline_id FROM live_managed_capital_baseline_v1 "
+        "WHERE deployment_id=%s AND contract_version=%s",
+        (supplied["deployment_id"], supplied["baseline_contract_version"]),
+    )
+    if cur.fetchone() is not None:
+        raise ValueError("LIVE_BASELINE_ALREADY_ACCEPTED")
     cur.execute(
         """INSERT INTO live_managed_capital_baseline_v1(
              environment,deployment_id,contract_version,
@@ -335,15 +461,15 @@ def activate_live_managed_capital_baseline(
            ) RETURNING baseline_id""",
         (
             supplied["environment"], supplied["deployment_id"],
-            supplied["contract_version"], supplied["account_identity_fingerprint"],
-            supplied["account_scope"], supplied["accepted_at"],
+            supplied["baseline_contract_version"], supplied["account_identity_fingerprint"],
+            supplied["account_scope"], supplied["accepted_at_candidate"],
             json.dumps(supplied["managed_asset_scope"]),
             json.dumps(supplied["raw_balance_snapshot"]),
             json.dumps(supplied["valuation_snapshot"]),
-            supplied["baseline_managed_equity"], supplied["raw_okx_usdc_avail_bal"],
+            supplied["managed_equity"], supplied["raw_available_balance"],
             supplied["available_capital"], supplied["available_capital_status"],
             supplied["reserved_capital"], supplied["reserved_capital_status"],
-            supplied["ownership_reconciliation_status"], supplied["runtime_revision"],
+            supplied["inventory_reconciliation_result"], supplied["runtime_revision"],
             approver, json.dumps(approval), fingerprint,
         ),
     )
@@ -461,6 +587,7 @@ def record_live_managed_equity_observation(
 
 def load_live_managed_capital_evidence(
     cur: Any, *, exchange_client: Any, deployment_id: str, as_of: datetime,
+    fully_closed_marks: bool = False,
 ) -> tuple[
     LiveManagedCapitalEvidence, LiveManagedCapitalBaseline | None,
     Decimal | None, LiveManagedCapitalReadContext,
@@ -496,9 +623,10 @@ def load_live_managed_capital_evidence(
     for asset in MANAGED_ASSET_SCOPE:
         if asset == "USDC":
             continue
+        comparison = "open_time < date_trunc('minute', %s)" if fully_closed_marks else "open_time<=%s"
         cur.execute(
-            """SELECT close,open_time FROM candles
-               WHERE symbol=%s AND interval='1m' AND open_time<=%s
+            f"""SELECT close,open_time FROM candles
+               WHERE symbol=%s AND interval='1m' AND {comparison}
                ORDER BY open_time DESC LIMIT 1""",
             (f"{asset}USDC", as_of),
         )
