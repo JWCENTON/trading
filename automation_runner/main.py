@@ -55,6 +55,10 @@ from common.equity_curve import (
     ensure_paper_equity_baseline_v2,
     upsert_daily_snapshot,
 )
+from common.live_managed_capital import (
+    load_live_managed_capital_evidence,
+    record_live_managed_equity_observation,
+)
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -2165,12 +2169,37 @@ def run_daily_equity_snapshot(conn):
             trading_mode=cfg.trading_mode,
             observation=observation,
         )
+        live_observation_id = None
+        if cfg.trading_mode.upper() == "LIVE":
+            observed_at = datetime.now(timezone.utc)
+            live_evidence, live_baseline, _peak, _context = (
+                load_live_managed_capital_evidence(
+                    cur, exchange_client=client, deployment_id=deployment_id,
+                    as_of=observed_at,
+                )
+            )
+            if live_baseline is not None:
+                cur.execute(
+                    "SELECT baseline_id FROM live_managed_capital_baseline_v1 "
+                    "WHERE deployment_id=%s AND activation_fingerprint=%s",
+                    (deployment_id, live_baseline.activation_fingerprint),
+                )
+                live_observation_id = record_live_managed_equity_observation(
+                    cur, baseline_id=int(cur.fetchone()[0]),
+                    deployment_id=deployment_id, observed_at=observed_at,
+                    evidence=live_evidence,
+                )
         upsert_kv(cur, "equity_snapshot_last_run", today)
     conn.commit()
     logging.info(
         "equity_snapshot: captured id=%s deployment=%s evidence=%s",
         snapshot_id, deployment_id, observation.evidence_status,
     )
+    if live_observation_id is not None:
+        logging.info(
+            "live_managed_equity_observation: captured id=%s deployment=%s",
+            live_observation_id, deployment_id,
+        )
 
 
 

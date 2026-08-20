@@ -547,6 +547,10 @@ class OkxMarketDataAdapter:
             "raw": data,
         }
 
+    def get_raw_account_balance(self):
+        """Return unmodified OKX balance evidence for Decimal-safe authorities."""
+        return self._private_request("GET", "/api/v5/account/balance")
+
     def get_account_identity(
         self,
         *,

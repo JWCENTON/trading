@@ -7,6 +7,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
+from common.live_managed_capital import (
+    LiveManagedCapitalEvidence,
+    load_live_managed_capital_evidence,
+)
+
 
 PORTFOLIO_STATE_VERSION = "PORTFOLIO_STATE_V1"
 PRICE_FRESHNESS = timedelta(minutes=20)
@@ -181,6 +186,9 @@ def build_portfolio_state(
     open_marks: Iterable[OpenInventoryMark],
     historical_peak_managed_equity: Decimal | None,
     runtime_revision: str | None = None,
+    live_capital: LiveManagedCapitalEvidence | None = None,
+    live_baseline_managed_equity: Decimal | None = None,
+    live_baseline_at: datetime | None = None,
 ) -> PortfolioStateV1:
     mode, deployment = validate_identity(environment, deployment_id)
     if as_of.tzinfo is None:
@@ -220,6 +228,9 @@ def build_portfolio_state(
         realized.net_pnl if realized.closed_count else ZERO
     ) if realized_complete else None
     realized_status = "CANONICAL" if realized_complete else "INCOMPLETE"
+    if mode == "LIVE" and live_baseline_at is None:
+        realized_pnl = None
+        realized_status = "INCOMPLETE"
 
     total = None
     total_status = "NOT_YET_CANONICAL" if mode == "LIVE" else "INCOMPLETE"
@@ -239,25 +250,47 @@ def build_portfolio_state(
             - baseline.unrealized_pnl
         )
         total_status = "CANONICAL"
+    elif live_capital is None:
+        reasons.append("LIVE_MANAGED_CAPITAL_EVIDENCE_UNAVAILABLE")
+    elif live_capital.managed_equity_status == "CANONICAL":
+        total = live_capital.managed_equity
+        total_status = "CANONICAL"
+        reasons.extend(live_capital.incomplete_reasons)
     else:
-        reasons.append("LIVE_MANAGED_CAPITAL_AUTHORITY_OUT_OF_SCOPE_V1")
+        total_status = "INCOMPLETE"
+        reasons.extend(live_capital.incomplete_reasons)
 
     drawdown = None
     drawdown_status = "INCOMPLETE"
     if total_status == "CANONICAL":
+        drawdown_equity = (
+            live_capital.flow_adjusted_equity
+            if mode == "LIVE" and live_capital is not None
+            else total
+        )
         peak = max(
             value for value in (
-                baseline.managed_equity if baseline else None,
+                (baseline.managed_equity if baseline else live_baseline_managed_equity),
                 historical_peak_managed_equity,
-                total,
+                drawdown_equity,
             ) if value is not None
         )
-        drawdown = None if peak == ZERO else (total - peak) / peak * Decimal("100")
+        drawdown = None if peak == ZERO else (drawdown_equity - peak) / peak * Decimal("100")
         drawdown_status = "CANONICAL"
 
     if mode == "PAPER":
         reasons.append("AVAILABLE_BASELINE_DEPENDS_ON_FORBIDDEN_PRICE_FALLBACK")
     reasons.append("CANONICAL_CAPITAL_RESERVATION_AUTHORITY_UNAVAILABLE")
+
+    available = None
+    available_status = "INCOMPLETE"
+    reserved = None
+    reserved_status = "NOT_YET_CANONICAL"
+    if mode == "LIVE" and live_capital is not None:
+        available = live_capital.available_capital
+        available_status = live_capital.available_capital_status
+        reserved = live_capital.reserved_capital
+        reserved_status = live_capital.reserved_capital_status
 
     source_marks = [mark.mark_timestamp for mark in marks if mark.mark_timestamp]
     source_regimes = [mark.regime_timestamp for mark in marks if mark.regime_timestamp]
@@ -267,14 +300,22 @@ def build_portfolio_state(
     return PortfolioStateV1(
         PORTFOLIO_STATE_VERSION, mode, deployment, as_of, runtime_revision or None,
         "MANAGED_PORTFOLIO_EQUITY", total, total_status,
-        None, "INCOMPLETE", None, "NOT_YET_CANONICAL",
+        available, available_status, reserved, reserved_status,
         deployed, aggregate_mark_status, realized_pnl, realized_status,
         unrealized, aggregate_mark_status, len(marks), "CANONICAL",
         deployed, aggregate_mark_status, by_symbol, by_strategy, by_regime,
         None, "NOT_YET_CANONICAL", None, "NOT_YET_CANONICAL",
         drawdown, drawdown_status,
         {
-            "accepted_baseline_at": baseline.timestamp if baseline else None,
+            "accepted_baseline_at": (
+                baseline.timestamp if baseline else live_baseline_at
+            ),
+            "live_balance_observed_at": (
+                live_capital.balance_observed_at if live_capital else None
+            ),
+            "live_account_mark_oldest_at": (
+                live_capital.mark_oldest_at if live_capital else None
+            ),
             "financial_truth_latest_evidence_at": realized.latest_evidence_at,
             "mark_price_oldest_at": min(source_marks) if source_marks else None,
             "mark_price_latest_at": max(source_marks) if source_marks else None,
@@ -283,15 +324,25 @@ def build_portfolio_state(
         {
             "mark_price": aggregate_mark_status,
             "financial_truth": realized_status,
-            "accepted_baseline": "CANONICAL" if baseline else "INCOMPLETE",
+            "accepted_baseline": "CANONICAL" if (
+                baseline or live_baseline_managed_equity is not None
+            ) else "INCOMPLETE",
         },
         {
-            "total_capital": "PAPER_EQUITY_BASELINE_V2_PLUS_POST_BASELINE_CANONICAL_FINANCIAL_TRUTH_COMPLETE_PLUS_FRESH_OPEN_MARK",
+            "total_capital": (
+                "LIVE_MANAGED_CAPITAL_AUTHORITY_V1_RAW_OKX_BALANCES_MARKED_TO_USDC"
+                if mode == "LIVE" else
+                "PAPER_EQUITY_BASELINE_V2_PLUS_POST_BASELINE_CANONICAL_FINANCIAL_TRUTH_COMPLETE_PLUS_FRESH_OPEN_MARK"
+            ),
             "realized_pnl": "canonical_financial_truth_v1.COMPLETE",
             "inventory_quantity": "positions.remaining_inventory_qty",
             "mark_price": "candles.close/FRESH_20_MINUTES",
             "regime": "market_regime/CANONICAL_REGIME_ATTRIBUTION_V1",
-            "drawdown": "PAPER_EQUITY_BASELINE_V2_ALIGNED_MANAGED_EQUITY",
+            "drawdown": (
+                "LIVE_MANAGED_CAPITAL_AUTHORITY_V1_FLOW_ADJUSTED_EQUITY"
+                if mode == "LIVE" else
+                "PAPER_EQUITY_BASELINE_V2_ALIGNED_MANAGED_EQUITY"
+            ),
             "account_reporting_excluded": "RECONSTRUCTED_PARTIAL_MIXED",
         },
         tuple(dict.fromkeys(reasons)),
@@ -301,6 +352,7 @@ def build_portfolio_state(
 def read_portfolio_state(
     cur: Any, *, environment: str, deployment_id: str, as_of: datetime,
     runtime_revision: str | None = None,
+    exchange_client: Any | None = None,
 ) -> PortfolioStateV1:
     mode, deployment = validate_identity(environment, deployment_id)
     baseline = None
@@ -322,7 +374,18 @@ def read_portfolio_state(
                 row[0], _decimal(row[1]), _decimal(row[2]), str(row[3]), str(row[4])
             )
 
-    boundary = baseline.timestamp if baseline else as_of
+    live_capital = None
+    live_baseline = None
+    live_peak = None
+    if mode == "LIVE" and exchange_client is not None:
+        live_capital, live_baseline, live_peak, _live_context = load_live_managed_capital_evidence(
+            cur, exchange_client=exchange_client, deployment_id=deployment,
+            as_of=as_of,
+        )
+    boundary = (
+        baseline.timestamp if baseline else
+        live_baseline.accepted_at if live_baseline else as_of
+    )
     cur.execute(
         """
         SELECT COUNT(*),
@@ -375,7 +438,7 @@ def read_portfolio_state(
         for row in cur.fetchall()
     )
 
-    peak = None
+    peak = live_peak
     if baseline is not None:
         cur.execute(
             """
@@ -393,4 +456,9 @@ def read_portfolio_state(
         baseline=baseline, realized=realized, open_marks=marks,
         historical_peak_managed_equity=peak,
         runtime_revision=runtime_revision,
+        live_capital=live_capital,
+        live_baseline_managed_equity=(
+            live_baseline.baseline_managed_equity if live_baseline else None
+        ),
+        live_baseline_at=(live_baseline.accepted_at if live_baseline else None),
     )

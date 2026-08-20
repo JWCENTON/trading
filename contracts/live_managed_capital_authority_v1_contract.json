@@ -1,0 +1,39 @@
+{
+  "contract_version": "LIVE_MANAGED_CAPITAL_AUTHORITY_V1",
+  "account_scope": "DEDICATED_WALTRADE_MANAGED_ACCOUNT",
+  "environments": {"local-live": "LIVE", "vps-live": "LIVE"},
+  "managed_asset_scope": ["USDC", "BTC", "ETH", "SOL", "BNB"],
+  "raw_balance_authority": {
+    "source": "OKX /api/v5/account/balance",
+    "total": "cashBal",
+    "available": "availBal",
+    "frozen": "frozenBal",
+    "order_frozen": "ordFrozen",
+    "fallbacks": false,
+    "arithmetic": "Decimal"
+  },
+  "valuation": {
+    "USDC": "1",
+    "non_USDC": "fresh candles.close/1m",
+    "freshness_minutes": 20,
+    "missing_or_stale": "INCOMPLETE"
+  },
+  "managed_equity": "sum(raw managed-asset total balance * canonical mark)",
+  "inventory_already_in_account_equity": true,
+  "available_capital": "raw USDC availBal minus canonical unreflected internal reservations",
+  "reserved_capital_status_until_reservation_authority": "NOT_YET_CANONICAL",
+  "owner_flow_types": ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT"],
+  "flow_adjusted_equity": "raw_managed_equity - deposit - transfer_in + withdrawal + transfer_out",
+  "baseline": {
+    "activation": "explicit Product Owner approval and exact plan fingerprint",
+    "automatic_creation": false,
+    "history": "cutover-forward only"
+  },
+  "fail_closed": [
+    "UNCLASSIFIED_ACCOUNT_ASSET",
+    "LIVE_ACCOUNT_IDENTITY_MISMATCH",
+    "PRICE_UNAVAILABLE",
+    "PRICE_STALE",
+    "INVENTORY_RECONCILIATION_INCOMPLETE"
+  ]
+}
