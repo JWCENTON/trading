@@ -39,6 +39,10 @@ from common.simulated_order_namespace import (
     FORWARD_ORDER_CLASS,
     detect_simulated_order_namespace,
 )
+from common.capital_reservation import (
+    accept_paper_simulated_order_cursor,
+    deploy_paper_simulated_fill_cursor,
+)
 
 
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
@@ -662,6 +666,25 @@ def create_simulated_order_cursor(
         if inserted is None:
             raise RuntimeError("SIMULATED_ORDER_INSERT_RETURNING_MISSING")
         inserted_order_id = int(inserted[0])
+        if order_class == FORWARD_ORDER_CLASS and not is_exit:
+            paper_deployment = str(
+                os.getenv("DEPLOYMENT_ID")
+                or os.getenv("WALTRADE_DEPLOYMENT_ID")
+                or "local-paper"
+            ).strip().lower()
+            accept_paper_simulated_order_cursor(
+                cur, simulated_order_id=inserted_order_id,
+                deployment_id=paper_deployment, symbol=str(symbol),
+                strategy=str(strategy), interval=str(interval),
+                requested_notional=(
+                    Decimal(str(price)) * Decimal(str(quantity))
+                ),
+                effective_at=datetime.now(timezone.utc),
+                decision_identity=(
+                    None if forward_decision_id is None
+                    else str(forward_decision_id)
+                ),
+            )
         if forward_decision_id is not None:
             try:
                 snapshot_id = capture_entry_opportunity_snapshot_fail_open_cursor(
@@ -769,6 +792,11 @@ def create_simulated_execution_fill_cursor(
     row = cur.fetchone()
     fill_id = int(row[0]) if row is not None else None
     if purpose == "ENTRY" and fill_id is not None:
+        deploy_paper_simulated_fill_cursor(
+            cur, simulated_order_id=int(simulated_order_id), fill_id=fill_id,
+            position_id=int(position_id), deployed_notional=notional,
+            effective_at=execution_at,
+        )
         try:
             link_entry_opportunity_position_fail_open_cursor(
                 cur,

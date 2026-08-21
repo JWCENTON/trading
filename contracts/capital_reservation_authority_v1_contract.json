@@ -1,0 +1,66 @@
+{
+  "contract": "CAPITAL_RESERVATION_AUTHORITY_V1",
+  "version": "CAPITAL_RESERVATION_AUTHORITY_V1",
+  "purpose": "ENTRY",
+  "commitment_boundary": "ACCEPTED_LOCAL_CAPITAL_COMMITMENT_BEFORE_EXCHANGE_NETWORK_CALL",
+  "storage": "APPEND_ONLY_CUMULATIVE_EVENT_LEDGER",
+  "current_projection": "v_capital_reservation_current_v1 latest event per reservation_id",
+  "financial_type": "PostgreSQL NUMERIC(38,18) / Python Decimal; binary float forbidden",
+  "identity": {
+    "cardinality": "one reservation_id per logical_commitment_key",
+    "paper_source": "simulated_order_id",
+    "live_source": "LIVE_ENTRY_INTENT_V1 intent_id",
+    "environment_account_fencing": true
+  },
+  "lifecycle": [
+    "ACCEPTED_COMMITMENT",
+    "INTERNAL_RESERVED",
+    "SUBMITTED",
+    "EXCHANGE_ACK",
+    "EXCHANGE_LOCKED",
+    "PARTIALLY_DEPLOYED",
+    "DEPLOYED"
+  ],
+  "terminal_states": ["RELEASED", "CANCELLED", "EXPIRED", "REJECTED"],
+  "equations": {
+    "event_accounting": "requested_notional = remaining_reserved_notional + deployed_notional + released_notional",
+    "reserved_capital": "sum(current remaining_reserved_notional for active ENTRY reservations)",
+    "live_available_capital": "raw OKX USDC availBal - sum(INTERNAL_UNREFLECTED remaining_reserved_notional)",
+    "exchange_reflected_subtracted_again": false,
+    "inventory_is_reserved": false
+  },
+  "reconciliation": {
+    "statuses": ["CANONICAL", "PENDING_EXCHANGE_REFLECTION", "RECONCILIATION_FAILED"],
+    "failure_semantics": "NULL/RECONCILIATION_FAILED; never guessed zero",
+    "historical_backfill": false
+  },
+  "paper": {
+    "reservation_hook": "canonical forward simulated order insertion",
+    "deployment_hook": "canonical simulated ENTRY fill insertion",
+    "available_capital": "NULL/INCOMPLETE until a canonical PAPER spendable balance exists"
+  },
+  "live": {
+    "accepted_identity": "LIVE_ENTRY_INTENT_V1",
+    "exchange_ack_is_exchange_locked": false,
+    "available_balance_source": "LIVE_MANAGED_CAPITAL_AUTHORITY_V1 raw_usdc_avail_bal"
+  },
+  "schema_objects": [
+    "capital_reservation_event_v1",
+    "v_capital_reservation_current_v1"
+  ],
+  "migration": "db/migrations/20260821_capital_reservation_authority_v1.sql",
+  "implementation": "common/capital_reservation.py",
+  "implementation_sha256": "1d604b40dc73e185d28c82bcf5f106c1b1252e5dff971d8022fe17cf4caf9b18",
+  "portfolio_integration": "common/portfolio_state.py",
+  "portfolio_integration_sha256": "8416c0da385d0fab0e6dfc728efa59396abbe2ec827e5527c6f37a20226ec8da",
+  "live_balance_integration": "common/live_managed_capital.py",
+  "live_balance_integration_sha256": "9c14794d17b91646d1ffeba62b3feb0b824c7c8840a1d59b304b498dc66d059a",
+  "live_entry_integration": "common/execution.py",
+  "live_entry_integration_sha256": "d9f6745e78df4d03dff245853796a75713edf73607dea806496a6def58e787c8",
+  "paper_execution_integration": "common/simulated_execution_evidence.py",
+  "paper_execution_integration_sha256": "f485cf18219a516b2f3728abece5fc7c3e44a42c37bedeea844254aba9c38ff3",
+  "excluded_scope": [
+    "OPEN_RISK", "PORTFOLIO_HEAT", "RISK_BUDGET", "CAPITAL_ALLOCATION",
+    "SIZING", "H1_H2_H3", "TREATMENT", "ORC", "LEARNING"
+  ]
+}

@@ -11,6 +11,11 @@ from common.live_managed_capital import (
     LiveManagedCapitalEvidence,
     load_live_managed_capital_evidence,
 )
+from common.capital_reservation import (
+    CapitalReservationEvidence,
+    load_capital_reservation_evidence,
+    paper_account_identity_fingerprint,
+)
 
 
 PORTFOLIO_STATE_VERSION = "PORTFOLIO_STATE_V1"
@@ -189,6 +194,7 @@ def build_portfolio_state(
     live_capital: LiveManagedCapitalEvidence | None = None,
     live_baseline_managed_equity: Decimal | None = None,
     live_baseline_at: datetime | None = None,
+    reservation_evidence: CapitalReservationEvidence | None = None,
 ) -> PortfolioStateV1:
     mode, deployment = validate_identity(environment, deployment_id)
     if as_of.tzinfo is None:
@@ -278,19 +284,57 @@ def build_portfolio_state(
         drawdown = None if peak == ZERO else (drawdown_equity - peak) / peak * Decimal("100")
         drawdown_status = "CANONICAL"
 
-    if mode == "PAPER":
-        reasons.append("AVAILABLE_BASELINE_DEPENDS_ON_FORBIDDEN_PRICE_FALLBACK")
-    reasons.append("CANONICAL_CAPITAL_RESERVATION_AUTHORITY_UNAVAILABLE")
-
     available = None
     available_status = "INCOMPLETE"
     reserved = None
     reserved_status = "NOT_YET_CANONICAL"
-    if mode == "LIVE" and live_capital is not None:
-        available = live_capital.available_capital
-        available_status = live_capital.available_capital_status
-        reserved = live_capital.reserved_capital
-        reserved_status = live_capital.reserved_capital_status
+    reservation_consistent = True
+    if (
+        mode == "LIVE" and live_capital is not None
+        and live_capital.raw_usdc_ord_frozen is not None
+        and reservation_evidence is not None
+        and reservation_evidence.status == "CANONICAL"
+        and reservation_evidence.exchange_reflected_reserved is not None
+        and _decimal(live_capital.raw_usdc_ord_frozen)
+            != _decimal(reservation_evidence.exchange_reflected_reserved)
+    ):
+        reservation_consistent = False
+        reserved_status = "RECONCILIATION_FAILED"
+        reasons.append("LIVE_EXCHANGE_ORDER_FROZEN_RESERVATION_MISMATCH")
+    if reservation_evidence is None:
+        reasons.append("CAPITAL_RESERVATION_EVIDENCE_UNAVAILABLE")
+    elif reservation_evidence.status == "CANONICAL":
+        if reservation_consistent:
+            reserved = reservation_evidence.reserved_capital
+            reserved_status = "CANONICAL"
+    else:
+        reserved_status = reservation_evidence.status
+        reasons.extend(reservation_evidence.incomplete_reasons)
+
+    if mode == "PAPER":
+        # PAPER_EQUITY_BASELINE_V2.available is reconstructed with forbidden
+        # inventory/price fallbacks and is not spendable-balance authority.
+        reasons.append("CANONICAL_PAPER_SPENDABLE_BALANCE_UNAVAILABLE")
+    elif (
+        live_capital is not None
+        and live_capital.raw_usdc_avail_bal is not None
+        and reservation_evidence is not None
+        and reservation_evidence.status == "CANONICAL"
+        and reservation_consistent
+        and reservation_evidence.internal_unreflected_reserved is not None
+    ):
+        candidate = (
+            _decimal(live_capital.raw_usdc_avail_bal)
+            - _decimal(reservation_evidence.internal_unreflected_reserved)
+        )
+        if candidate < ZERO:
+            available_status = "RECONCILIATION_FAILED"
+            reasons.append("LIVE_INTERNAL_RESERVATION_EXCEEDS_SPENDABLE_BALANCE")
+        else:
+            available = candidate
+            available_status = "CANONICAL"
+    elif mode == "LIVE":
+        reasons.append("LIVE_AVAILABLE_CAPITAL_EVIDENCE_INCOMPLETE")
 
     source_marks = [mark.mark_timestamp for mark in marks if mark.mark_timestamp]
     source_regimes = [mark.regime_timestamp for mark in marks if mark.regime_timestamp]
@@ -320,6 +364,10 @@ def build_portfolio_state(
             "mark_price_oldest_at": min(source_marks) if source_marks else None,
             "mark_price_latest_at": max(source_marks) if source_marks else None,
             "regime_latest_at": max(source_regimes) if source_regimes else None,
+            "capital_reservation_latest_event_at": (
+                reservation_evidence.latest_event_at
+                if reservation_evidence else None
+            ),
         },
         {
             "mark_price": aggregate_mark_status,
@@ -327,6 +375,10 @@ def build_portfolio_state(
             "accepted_baseline": "CANONICAL" if (
                 baseline or live_baseline_managed_equity is not None
             ) else "INCOMPLETE",
+            "capital_reservation": (
+                reservation_evidence.status if reservation_evidence
+                else "INCOMPLETE"
+            ),
         },
         {
             "total_capital": (
@@ -342,6 +394,12 @@ def build_portfolio_state(
                 "LIVE_MANAGED_CAPITAL_AUTHORITY_V1_FLOW_ADJUSTED_EQUITY"
                 if mode == "LIVE" else
                 "PAPER_EQUITY_BASELINE_V2_ALIGNED_MANAGED_EQUITY"
+            ),
+            "reserved_capital": "CAPITAL_RESERVATION_AUTHORITY_V1",
+            "available_capital": (
+                "OKX_RAW_USDC_AVAIL_BAL_MINUS_INTERNAL_UNREFLECTED_RESERVATIONS"
+                if mode == "LIVE" else
+                "CANONICAL_PAPER_SPENDABLE_BALANCE_NOT_YET_AVAILABLE"
             ),
             "account_reporting_excluded": "RECONSTRUCTED_PARTIAL_MIXED",
         },
@@ -382,6 +440,15 @@ def read_portfolio_state(
             cur, exchange_client=exchange_client, deployment_id=deployment,
             as_of=as_of,
         )
+    reservation_account_identity = (
+        paper_account_identity_fingerprint(deployment)
+        if mode == "PAPER" else
+        live_baseline.account_identity_fingerprint if live_baseline else None
+    )
+    reservation_evidence = load_capital_reservation_evidence(
+        cur, environment=mode, deployment_id=deployment,
+        account_identity_fingerprint=reservation_account_identity,
+    )
     boundary = (
         baseline.timestamp if baseline else
         live_baseline.accepted_at if live_baseline else as_of
@@ -461,4 +528,5 @@ def read_portfolio_state(
             live_baseline.baseline_managed_equity if live_baseline else None
         ),
         live_baseline_at=(live_baseline.accepted_at if live_baseline else None),
+        reservation_evidence=reservation_evidence,
     )

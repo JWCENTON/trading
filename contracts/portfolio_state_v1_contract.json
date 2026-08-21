@@ -18,8 +18,8 @@
     "as_of": {"type": "timestamptz", "null": false, "unit": "UTC", "authority": "caller-supplied read boundary"},
     "runtime_revision": {"type": "string", "null": true, "unit": null, "authority": "GIT_SHA"},
     "total_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "PAPER: PAPER_EQUITY_BASELINE_V2 forward equation; LIVE: LIVE_MANAGED_CAPITAL_AUTHORITY_V1 raw managed-scope OKX balances marked to USDC"},
-    "available_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "PAPER: NONE_V1; LIVE candidate: raw OKX USDC availBal minus canonical internal reservations; INCOMPLETE until reservation authority exists"},
-    "reserved_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "NONE_V1"},
+    "available_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "PAPER: NONE_V1/INCOMPLETE; LIVE: raw OKX USDC availBal minus CAPITAL_RESERVATION_AUTHORITY_V1 INTERNAL_UNREFLECTED reservations"},
+    "reserved_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "CAPITAL_RESERVATION_AUTHORITY_V1 current active ENTRY remaining_reserved_notional"},
     "deployed_capital": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "positions.remaining_inventory_qty * fresh candles.close"},
     "realized_pnl": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "canonical_financial_truth_v1 COMPLETE after accepted cutover"},
     "unrealized_pnl": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "positions.remaining_inventory_qty and entry_price marked with fresh candles.close"},
@@ -32,7 +32,7 @@
     "portfolio_heat": {"type": "Decimal", "null": true, "unit": null, "authority": "NONE_V1"},
     "drawdown": {"type": "Decimal", "null": true, "unit": "percent", "authority": "accepted-baseline-aligned managed equity and equity_daily_snapshot_v1"}
   },
-  "status_vocabulary": ["CANONICAL", "INCOMPLETE", "PRICE_STALE", "PRICE_UNAVAILABLE", "NOT_YET_CANONICAL"],
+  "status_vocabulary": ["CANONICAL", "INCOMPLETE", "PRICE_STALE", "PRICE_UNAVAILABLE", "NOT_YET_CANONICAL", "RECONCILIATION_FAILED"],
   "price_contract": {
     "authority": "candles.close",
     "timestamp": "candles.open_time",
@@ -48,7 +48,9 @@
     "unrealized_short": "(entry_price - fresh_mark_price) * remaining_inventory_qty",
     "drawdown_pct": "(current_managed_equity - max_managed_equity_since_accepted_baseline) / max_managed_equity_since_accepted_baseline * 100",
     "reserved_is_not_inventory": true,
-    "available_is_not_inferred": true
+    "available_is_not_inferred": true,
+    "reserved_capital": "sum(CAPITAL_RESERVATION_AUTHORITY_V1 remaining_reserved_notional for active ENTRY reservations)",
+    "live_available_capital": "raw_usdc_avail_bal - internal_unreflected_reserved; exchange-reflected reservation is not subtracted twice"
   },
   "live_managed_capital": {
     "contract_version": "LIVE_MANAGED_CAPITAL_AUTHORITY_V1",
@@ -65,16 +67,23 @@
     "baseline_activation": "exact immutable LIVE_MANAGED_CAPITAL_BASELINE_PLAN_V1 artifact plus fingerprint-pinned Product Owner approval",
     "unapproved_plan_consumed_by_portfolio_state": false
   },
+  "capital_reservation_contract": "contracts/capital_reservation_authority_v1_contract.json",
   "schema_objects": [
     "live_managed_capital_baseline_v1",
     "owner_capital_flow_v1",
-    "live_managed_equity_observation_v1"
+    "live_managed_equity_observation_v1",
+    "capital_reservation_event_v1",
+    "v_capital_reservation_current_v1"
   ],
   "migration": "db/migrations/20260820_live_managed_capital_authority_v1.sql",
   "implementation": "common/portfolio_state.py",
-  "implementation_sha256": "cdc1b4c0b3e64aa60f99f56267b88e925c6a9436b9f76a2c297b0ca605fba902",
+  "implementation_sha256": "8416c0da385d0fab0e6dfc728efa59396abbe2ec827e5527c6f37a20226ec8da",
+  "capital_reservation_implementation": "common/capital_reservation.py",
+  "capital_reservation_implementation_sha256": "1d604b40dc73e185d28c82bcf5f106c1b1252e5dff971d8022fe17cf4caf9b18",
+  "capital_reservation_contract_sha256": "351541ea8fb75475282767cc2d3beaddf5dfbbd8762517ee391776dabf1e4a0f",
+  "capital_reservation_migration_sha256": "fa20e750d6b52f1269da8804fdb0c67acf4fd9325453b1471cf9daa7ee55e122",
   "live_implementation": "common/live_managed_capital.py",
-  "live_implementation_sha256": "b9dbab120b435cdd46afb2729e176a16b2e5e633a562eb27492eb62e75e6a554",
+  "live_implementation_sha256": "9c14794d17b91646d1ffeba62b3feb0b824c7c8840a1d59b304b498dc66d059a",
   "live_authority_contract_sha256": "8e49b73fe467fb1a1aee22a83653ee48c51fbbb57b793dfdfef1088c8c1b277e",
   "read_entrypoint": "scripts/portfolio_state_v1_read.py",
   "read_entrypoint_sha256": "93b86e5509827e784c6ddce93937fb8b0abcbc4bddd1e14244488af5b28169ba",

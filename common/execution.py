@@ -926,6 +926,12 @@ def place_live_order(
                 EntrySubmissionRepository,
                 execute_committed_entry_submission,
             )
+            from common.capital_reservation import (
+                accept_live_entry_intent_cursor,
+                prepare_live_submission_cursor,
+                reconcile_live_submission_cursor,
+                reservation_schema_available_cursor,
+            )
 
             clock = entry_submission_clock or (
                 lambda: datetime.now(timezone.utc)
@@ -1018,6 +1024,47 @@ def place_live_order(
                     )
                 resp = network_submit()
             else:
+                reservation_id = None
+                reservation_connection_factory = (
+                    entry_submission_connection_factory
+                    or (None if entry_submission_repository is not None else get_db_conn)
+                )
+
+                def reservation_bound_network_submit():
+                    nonlocal reservation_id
+                    if reservation_connection_factory is not None:
+                        reservation_conn = reservation_connection_factory()
+                        try:
+                            with reservation_conn:
+                                with reservation_conn.cursor() as reservation_cur:
+                                    if reservation_schema_available_cursor(reservation_cur):
+                                        reservation_cur.execute(
+                                            "SELECT account_identity_fingerprint FROM "
+                                            "live_managed_capital_baseline_v1 "
+                                            "WHERE deployment_id=%s ORDER BY accepted_at DESC LIMIT 1",
+                                            (deployment.value,),
+                                        )
+                                        identity_row = reservation_cur.fetchone()
+                                        if identity_row is None:
+                                            raise RuntimeError(
+                                                "LIVE_CAPITAL_RESERVATION_ACCOUNT_IDENTITY_UNAVAILABLE"
+                                            )
+                                        _, reservation_id = accept_live_entry_intent_cursor(
+                                            reservation_cur, intent=intent,
+                                            account_identity_fingerprint=str(identity_row[0]),
+                                            requested_notional=Decimal(str(pre["notional"])),
+                                            effective_at=clock(),
+                                        )
+                                        prepare_live_submission_cursor(
+                                            reservation_cur,
+                                            reservation_id=reservation_id,
+                                            intent_identity=str(intent.intent_id),
+                                            effective_at=clock(),
+                                        )
+                        finally:
+                            reservation_conn.close()
+                    return network_submit()
+
                 def default_event_sink(event):
                     logging.info(
                         "%s intent_id=%s clientOrderId=%s detail=%s",
@@ -1040,7 +1087,7 @@ def place_live_order(
                     mode=selected_entry_mode,
                     intent=intent,
                     repository=repository,
-                    network_submit=network_submit,
+                    network_submit=reservation_bound_network_submit,
                     lookup_by_client_order_id=lookup,
                     event_sink=(
                         entry_submission_event_sink or default_event_sink
@@ -1054,6 +1101,26 @@ def place_live_order(
                         submission_result
                     ),
                 }
+                if reservation_id is not None and reservation_connection_factory is not None:
+                    reservation_conn = reservation_connection_factory()
+                    try:
+                        with reservation_conn:
+                            with reservation_conn.cursor() as reservation_cur:
+                                accepted_ack = submission_result.ack is not None
+                                reconcile_live_submission_cursor(
+                                    reservation_cur, reservation_id=reservation_id,
+                                    source_event_identity=(
+                                        "ACK:" if accepted_ack else "REJECTED:"
+                                    ) + str(intent.intent_id),
+                                    accepted=accepted_ack, effective_at=clock(),
+                                    order_identity=(
+                                        str(submission_result.ack.exchange_order_id)
+                                        if accepted_ack else None
+                                    ),
+                                    reason=submission_result.error_code,
+                                )
+                    finally:
+                        reservation_conn.close()
                 if submission_result.outcome in {
                     EntrySubmissionExecutionOutcome.ACK_ALREADY_PERSISTED,
                     EntrySubmissionExecutionOutcome.ACK_RECOVERED,

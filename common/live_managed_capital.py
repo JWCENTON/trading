@@ -81,6 +81,8 @@ class LiveManagedCapitalEvidence:
     balance_observed_at: datetime | None
     mark_oldest_at: datetime | None
     incomplete_reasons: tuple[str, ...]
+    raw_usdc_frozen_bal: Decimal | None = None
+    raw_usdc_ord_frozen: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -228,9 +230,9 @@ def evaluate_live_managed_capital(
         inventory_reconciliation_status=("CANONICAL" if reconciliation_complete else "INCOMPLETE"),
         balance_observed_at=snapshot.observed_at,
         mark_oldest_at=min(mark_times) if mark_times else None,
-        incomplete_reasons=tuple(dict.fromkeys(reasons + [
-            "CANONICAL_INTERNAL_RESERVATION_AUTHORITY_UNAVAILABLE"
-        ])),
+        incomplete_reasons=tuple(dict.fromkeys(reasons)),
+        raw_usdc_frozen_bal=usdc.frozen_balance if usdc else ZERO,
+        raw_usdc_ord_frozen=usdc.order_frozen if usdc else ZERO,
     )
 
 

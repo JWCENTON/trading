@@ -94,7 +94,7 @@ def test_available_is_not_inferred_from_baseline_or_inventory():
     result = state()
     assert result.available_capital is None
     assert result.available_capital_status == "INCOMPLETE"
-    assert "AVAILABLE_BASELINE_DEPENDS_ON_FORBIDDEN_PRICE_FALLBACK" in result.incomplete_reasons
+    assert "CANONICAL_PAPER_SPENDABLE_BALANCE_UNAVAILABLE" in result.incomplete_reasons
 
 
 def test_incomplete_post_baseline_ft_is_null_not_partial_sum_or_zero():
