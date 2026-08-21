@@ -1,0 +1,81 @@
+{
+  "contract": "POSITION_RISK_BOUNDARY_AUTHORITY_V1",
+  "scope": "SPOT_LONG_OPEN_POSITION_RISK_BOUNDARY",
+  "authority_lifecycle": {
+    "BOUNDARY_POLICY_ACCEPTED": "accepted entry commitment before execution; freezes the effective STOP_LOSS_PCT policy",
+    "BOUNDARY_ACTIVATED": "canonical position identity and weighted canonical entry-fill basis exist",
+    "BOUNDARY_REVISED_ENTRY_BASIS": "additional canonical entry fill changes weighted entry basis; append-only revision"
+  },
+  "identity": {
+    "boundary_id": "UUIDv5(reservation_id)",
+    "isolation": ["environment", "deployment_id", "account_identity_fingerprint"],
+    "position_linkage": "one current boundary per position",
+    "retry": "natural-identity idempotent without re-reading mutable strategy policy"
+  },
+  "policy": {
+    "type": "ENTRY_BASIS_PERCENT_DISTANCE",
+    "source": "effective strategy_params.STOP_LOSS_PCT at accepted commitment",
+    "price": "canonical_weighted_entry_fill_basis * (1 - frozen_boundary_distance_pct / 100)",
+    "arithmetic": "Decimal/Numeric only",
+    "side": "LONG",
+    "boundary_type": "SOFTWARE_TRIGGER",
+    "execution_price_guarantee": "NO",
+    "tail_risk_status": "UNBOUNDED_BY_TRIGGER"
+  },
+  "current_risk": {
+    "quantity_authority": "positions.remaining_inventory_qty",
+    "mark_authority": "fresh canonical candles.close",
+    "core_equation": "(fresh_mark_price - frozen_boundary_price) * remaining_inventory_qty",
+    "paper_exit_cost": "frozen entry-opportunity exit fee assumption * frozen_boundary_price * remaining_inventory_qty",
+    "live_exit_cost": "NULL/MISSING_COST_AUTHORITY in V1",
+    "mark_at_or_below_boundary": "NULL/BOUNDARY_BREACHED_UNRESOLVED",
+    "aggregate": "CANONICAL only when every material open position is CANONICAL",
+    "empty_portfolio": "0/CANONICAL_EMPTY",
+    "partial_diagnostics_are_not_aggregate_authority": true
+  },
+  "status_vocabulary": [
+    "CANONICAL",
+    "CANONICAL_EMPTY",
+    "INCOMPLETE",
+    "MISSING_BOUNDARY",
+    "MISSING_POSITION_LINKAGE",
+    "MISSING_ENTRY_BASIS",
+    "MISSING_MARK",
+    "STALE_MARK",
+    "MISSING_COST_AUTHORITY",
+    "BOUNDARY_INVALID",
+    "BOUNDARY_BREACHED_UNRESOLVED"
+  ],
+  "legacy": {
+    "backfill": false,
+    "existing_positions": "MISSING_BOUNDARY",
+    "strategy_exit_fallback": "existing stop logic only when no frozen boundary exists"
+  },
+  "database": {
+    "event_table": "position_risk_boundary_event_v1",
+    "current_projection": "v_position_risk_boundary_current_v1",
+    "append_only": true,
+    "migration": "db/migrations/20260821_position_risk_boundary_authority_v1.sql",
+    "active_database_application_in_this_change": false
+  },
+  "portfolio_state": {
+    "field": "open_risk",
+    "evidence_field": "position_risk",
+    "coverage_fields": [
+      "material_risk_position_count",
+      "canonical_risk_position_count",
+      "covered_exposure",
+      "partial_risk_sum"
+    ]
+  },
+  "excluded": [
+    "risk budget",
+    "portfolio heat",
+    "capital allocation",
+    "executability guarantee",
+    "slippage or spread fabrication",
+    "position sizing changes",
+    "historical backfill",
+    "strategy tuning"
+  ]
+}

@@ -16,6 +16,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Mapping
 
+from common.position_risk_boundary import activate_live_boundary_cursor
+
 
 ENTRY_POSITION_PROJECTION_MODE_ENV = "LIVE_ENTRY_POSITION_PROJECTION_MODE"
 PROJECTION_DIAGNOSTIC_NAMESPACE = uuid.UUID(
@@ -509,6 +511,11 @@ def project_entry_intent(cur, intent_id: uuid.UUID | str) -> EntryProjectionResu
     )
     if cur.rowcount != 1:
         raise RuntimeError("LEI1D_POSITION_UPDATE_LOST_OPEN_RACE")
+    activate_live_boundary_cursor(
+        cur, intent_id=str(canonical_intent_id), position_id=position_id,
+        canonical_entry_basis=weighted_price,
+        effective_at=max(row[15] for row in eligible),
+    )
     for row in eligible:
         cur.execute(
             """

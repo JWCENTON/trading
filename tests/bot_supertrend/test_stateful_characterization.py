@@ -216,6 +216,17 @@ def test_final_decision_exit_reason_and_exactly_once(harness, price, reason):
     assert sum(mutation[0] == "CLOSE" for mutation in observed.mutations) == 1
 
 
+def test_long_uses_frozen_boundary_before_legacy_stop(harness):
+    use_execution(harness, "EXIT_FULL")
+    harness.set_position(price=100.0)
+    harness.monkeypatch.setattr(
+        harness.module, "load_frozen_boundary_price", lambda *_args, **_kwargs: "99.8",
+    )
+    observed = harness.strategy_cycle(candle(price=99.7), candle(minute=-1))
+    assert observed.final_decision.reason_code.value == "STOP_LOSS"
+    assert observed.position is None
+
+
 def test_final_decision_profit_lock_and_flip(harness):
     use_execution(harness, "PAPER")
     harness.set_position()

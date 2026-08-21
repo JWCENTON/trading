@@ -259,6 +259,9 @@ class SupertrendHarness:
         self.monkeypatch.setattr(m, "heartbeat", self._heartbeat)
         self.monkeypatch.setattr(m, "get_runtime_snapshot", self._snapshot)
         self.monkeypatch.setattr(m, "get_open_position", lambda: self.position)
+        self.monkeypatch.setattr(
+            m, "load_frozen_boundary_price", lambda *_args, **_kwargs: None,
+        )
         self.monkeypatch.setattr(m, "execute_and_record", self._execute)
         self.monkeypatch.setattr(m, "close_position", self._close)
         self.monkeypatch.setattr(m, "set_mode", self._set_mode)

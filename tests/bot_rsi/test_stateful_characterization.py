@@ -295,6 +295,16 @@ def test_open_position_stop_loss(harness):
     assert_isolated(observed)
 
 
+def test_open_position_uses_frozen_boundary_before_legacy_stop(harness):
+    harness.open_long()
+    harness.monkeypatch.setattr(
+        harness.module, "load_frozen_boundary_price", lambda *_args, **_kwargs: "99.8",
+    )
+    observed = harness.cycle(candle(close=99.7, high=100.0, low=99.7))
+    assert observed.final_decision.reason_code is DecisionReason.STOP_LOSS
+    assert observed.position_after is None
+
+
 def test_open_position_take_profit(harness):
     harness.open_long()
     observed = harness.cycle(candle(close=101.0, high=101.3, low=100.0))

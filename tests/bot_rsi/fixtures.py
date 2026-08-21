@@ -172,6 +172,9 @@ class RsiStatefulHarness:
             ),
         )
         self.monkeypatch.setattr(self.module, "get_open_position", lambda: self.position)
+        self.monkeypatch.setattr(
+            self.module, "load_frozen_boundary_price", lambda *_args, **_kwargs: None,
+        )
         self.monkeypatch.setattr(self.module, "execute_and_record", self._execute)
         self.monkeypatch.setattr(self.module, "execute_exit_safe", self._execute_exit)
         self.monkeypatch.setattr(self.module, "close_position", self._close_position)

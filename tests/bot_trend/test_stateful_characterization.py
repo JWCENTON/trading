@@ -687,6 +687,16 @@ def test_take_profit_stop_loss_and_side_mapping(harness, side, entry, price, exp
     assert observed.position_mutations[-1].reason == reason
 
 
+def test_long_uses_frozen_boundary_before_legacy_stop(harness):
+    harness.set_position(side="LONG", entry_price=100.0)
+    harness.monkeypatch.setattr(
+        harness.module, "load_frozen_boundary_price", lambda *_args, **_kwargs: "99.8",
+    )
+    observed = harness.cycle(trend_rows(current=99.7))
+    assert observed.observed_action == "EXIT"
+    assert observed.position_mutations[-1].reason == "STOP_LOSS_LONG"
+
+
 def test_hold_has_heartbeat_but_no_explicit_hold_event(harness):
     harness.set_position(entry_price=102.0, age_minutes=5)
     observed = harness.cycle(trend_rows(current=102.1))

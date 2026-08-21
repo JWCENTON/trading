@@ -170,6 +170,7 @@ class StatefulBbrangeHarness:
         ))
         mp.setattr(m, "get_open_position",
                    lambda: rec.add("position_lookup") or self.position)
+        mp.setattr(m, "load_frozen_boundary_price", lambda *_args, **_kwargs: None)
         mp.setattr(m, "decide_regime_gate", lambda **_kw: SimpleNamespace(
             allow=self.regime_allow, why="fixture", regime="FLAT", meta={}))
         mp.setattr(m, "get_trend", lambda *_a: "FLAT")

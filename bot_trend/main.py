@@ -60,6 +60,7 @@ from common.decision_contract import (
 from common.canonical_regime import evaluation_regime_fields, frozen_regime_provenance
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
+from common.position_risk_boundary import load_frozen_boundary_price
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2346,6 +2347,9 @@ def _run_trend_strategy():
             # --- EXIT LOGIC ---
             if pos_side == "LONG":
                 change_pct = (price - pos_entry_price) / pos_entry_price * 100.0
+                frozen_boundary = load_frozen_boundary_price(
+                    get_db_conn, position_id=int(pos[0]),
+                )
 
                 if TAKE_PROFIT_PCT > 0 and change_pct >= TAKE_PROFIT_PCT:
                     reason = f"TREND TAKE PROFIT LONG {change_pct:.2f}% >= {TAKE_PROFIT_PCT:.2f}%"
@@ -2394,7 +2398,11 @@ def _run_trend_strategy():
                     return final_decision
 
                 drop_pct = -change_pct
-                if STOP_LOSS_PCT > 0 and drop_pct >= STOP_LOSS_PCT:
+                if (
+                    (frozen_boundary is not None and price <= float(frozen_boundary))
+                    or (frozen_boundary is None and STOP_LOSS_PCT > 0
+                        and drop_pct >= STOP_LOSS_PCT)
+                ):
                     reason = f"TREND STOP LOSS LONG {drop_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
                     emit_regime_gate_event(
                         symbol=SYMBOL,

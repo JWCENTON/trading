@@ -48,6 +48,7 @@ from common.decision_contract import (
 from common.canonical_regime import evaluation_regime_fields, frozen_regime_provenance
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
+from common.position_risk_boundary import load_frozen_boundary_price
 from common.execution import (
     place_live_order,
     place_live_exit_maker_then_market as exchange_place_live_exit_maker_then_market,
@@ -2848,7 +2849,13 @@ def _run_strategy(row, prev_row=None):
             # --- LONG ---
             if pos_side_u == "LONG":
                 tp_level = entry_f * (1.0 + TAKE_PROFIT_PCT / 100.0)
-                sl_level = entry_f * (1.0 - STOP_LOSS_PCT / 100.0)
+                frozen_boundary = load_frozen_boundary_price(
+                    get_db_conn, position_id=int(_pos_id),
+                )
+                sl_level = (
+                    float(frozen_boundary) if frozen_boundary is not None
+                    else entry_f * (1.0 - STOP_LOSS_PCT / 100.0)
+                )
 
                 # TP intrabar
                 if TAKE_PROFIT_PCT > 0 and high_price >= tp_level:

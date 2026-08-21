@@ -69,6 +69,7 @@ from common.supertrend_incremental_indicators import (
     calculate_incremental,
 )
 from common.final_decision_observation_sink import finalize_decision_observation
+from common.position_risk_boundary import load_frozen_boundary_price
 from common.simulated_execution_evidence import (
     create_simulated_order_cursor,
     execute_paper_exit_after_preflight,
@@ -2683,6 +2684,9 @@ def _run_strategy(latest, prev, *, freshness_context=None):
 
             pos_qty = float(pos_qty)
             pos_entry_price = float(pos_entry_price)
+            frozen_boundary = load_frozen_boundary_price(
+                get_db_conn, position_id=int(pos[0]),
+            )
 
             change_pct = (price - pos_entry_price) / pos_entry_price * 100.0
 
@@ -2737,7 +2741,11 @@ def _run_strategy(latest, prev, *, freshness_context=None):
 
             # Stop loss
             drop_pct = -change_pct
-            if STOP_LOSS_PCT > 0 and drop_pct >= STOP_LOSS_PCT:
+            if (
+                (frozen_boundary is not None and price <= float(frozen_boundary))
+                or (frozen_boundary is None and STOP_LOSS_PCT > 0
+                    and drop_pct >= STOP_LOSS_PCT)
+            ):
                 reason = f"SUPERTREND STOP LOSS LONG {drop_pct:.2f}% >= {STOP_LOSS_PCT:.2f}%"
                 emit_regime_gate_event(
                     symbol=SYMBOL,

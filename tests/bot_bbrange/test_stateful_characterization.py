@@ -108,6 +108,17 @@ def test_stop_loss_confirmed_close_exactly_once(stateful_bbrange):
     ).payload["reason"]
 
 
+def test_long_uses_frozen_boundary_before_legacy_stop(stateful_bbrange):
+    h = stateful_bbrange
+    h.set_position()
+    h.monkeypatch.setattr(
+        h.module, "load_frozen_boundary_price", lambda *_args, **_kwargs: "99.8",
+    )
+    observed = h.cycle(candle(close=99.7, high=100.0, low=99.7))
+    assert observed.returned_value.reason_code.value == "STOP_LOSS"
+    assert observed.position is None
+
+
 def test_profit_lock_armed_state_persists_then_giveback_exits(stateful_bbrange):
     h = stateful_bbrange
     h.set_position()

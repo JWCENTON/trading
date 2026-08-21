@@ -932,6 +932,7 @@ def place_live_order(
                 reconcile_live_submission_cursor,
                 reservation_schema_available_cursor,
             )
+            from common.position_risk_boundary import accept_boundary_policy_cursor
 
             clock = entry_submission_clock or (
                 lambda: datetime.now(timezone.utc)
@@ -1060,6 +1061,24 @@ def place_live_order(
                                             reservation_id=reservation_id,
                                             intent_identity=str(intent.intent_id),
                                             effective_at=clock(),
+                                        )
+                                        accept_boundary_policy_cursor(
+                                            reservation_cur, environment="LIVE",
+                                            deployment_id=deployment.value,
+                                            account_identity_fingerprint=str(identity_row[0]),
+                                            reservation_id=reservation_id,
+                                            decision_id=str(intent.decision_id),
+                                            intent_id=str(intent.intent_id),
+                                            order_identity=str(intent.client_order_id),
+                                            symbol=intent.symbol,
+                                            strategy=intent.strategy,
+                                            interval=intent.interval,
+                                            effective_at=clock(),
+                                            source_authority="LIVE_ACCEPTED_ENTRY_COMMITMENT",
+                                            provenance={
+                                                "intent_id": str(intent.intent_id),
+                                                "intent_fingerprint": intent.content_fingerprint,
+                                            },
                                         )
                         finally:
                             reservation_conn.close()

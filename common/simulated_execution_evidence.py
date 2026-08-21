@@ -43,6 +43,10 @@ from common.capital_reservation import (
     accept_paper_simulated_order_cursor,
     deploy_paper_simulated_fill_cursor,
 )
+from common.position_risk_boundary import (
+    accept_paper_boundary_cursor,
+    activate_boundary_for_position_cursor,
+)
 
 
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
@@ -672,7 +676,7 @@ def create_simulated_order_cursor(
                 or os.getenv("WALTRADE_DEPLOYMENT_ID")
                 or "local-paper"
             ).strip().lower()
-            accept_paper_simulated_order_cursor(
+            _reservation_status, reservation_id = accept_paper_simulated_order_cursor(
                 cur, simulated_order_id=inserted_order_id,
                 deployment_id=paper_deployment, symbol=str(symbol),
                 strategy=str(strategy), interval=str(interval),
@@ -685,6 +689,17 @@ def create_simulated_order_cursor(
                     else str(forward_decision_id)
                 ),
             )
+            if reservation_id is not None:
+                accept_paper_boundary_cursor(
+                    cur, simulated_order_id=inserted_order_id,
+                    deployment_id=paper_deployment,
+                    decision_id=(
+                        str(forward_decision_id) if forward_decision_id is not None
+                        else f"SIMULATED_ORDER:{inserted_order_id}"
+                    ), symbol=str(symbol), strategy=str(strategy),
+                    interval=str(interval),
+                    effective_at=datetime.now(timezone.utc),
+                )
         if forward_decision_id is not None:
             try:
                 snapshot_id = capture_entry_opportunity_snapshot_fail_open_cursor(
@@ -796,6 +811,11 @@ def create_simulated_execution_fill_cursor(
             cur, simulated_order_id=int(simulated_order_id), fill_id=fill_id,
             position_id=int(position_id), deployed_notional=notional,
             effective_at=execution_at,
+        )
+        activate_boundary_for_position_cursor(
+            cur, position_id=int(position_id), environment=str(environment),
+            deployment_id=str(deployment_id), effective_at=execution_at,
+            source_authority="PAPER_CANONICAL_SIMULATED_ENTRY_FILL",
         )
         try:
             link_entry_opportunity_position_fail_open_cursor(

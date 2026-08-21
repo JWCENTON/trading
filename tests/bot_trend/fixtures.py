@@ -136,6 +136,9 @@ class TrendStatefulHarness:
         self.monkeypatch.setattr(self.module, "emit_regime_gate_event", self._regime_event)
         self.monkeypatch.setattr(self.module, "heartbeat", self._heartbeat)
         self.monkeypatch.setattr(self.module, "get_open_position", lambda: self.position)
+        self.monkeypatch.setattr(
+            self.module, "load_frozen_boundary_price", lambda *_args, **_kwargs: None,
+        )
         self.monkeypatch.setattr(self.module, "execute_and_record", self._execute)
         self.monkeypatch.setattr(self.module, "close_position", self._close)
         self.monkeypatch.setattr(self.module, "safe_close_if_open", self._panic_close)

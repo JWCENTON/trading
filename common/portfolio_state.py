@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
@@ -15,6 +15,12 @@ from common.capital_reservation import (
     CapitalReservationEvidence,
     load_capital_reservation_evidence,
     paper_account_identity_fingerprint,
+)
+from common.position_risk_boundary import (
+    PositionRiskEvidence,
+    RiskBoundaryProjection,
+    evaluate_position_risk,
+    load_boundary_projections_cursor,
 )
 
 
@@ -113,6 +119,11 @@ class PortfolioStateV1:
     source_freshness: Mapping[str, str]
     source_authorities: Mapping[str, str]
     incomplete_reasons: tuple[str, ...]
+    position_risk: tuple[PositionRiskEvidence, ...] = ()
+    material_risk_position_count: int = 0
+    canonical_risk_position_count: int = 0
+    covered_exposure: Decimal | None = None
+    partial_risk_sum: Decimal | None = None
 
     def serializable(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -149,6 +160,19 @@ def _mark_status(mark: OpenInventoryMark, *, as_of: datetime) -> str:
         return "PRICE_STALE"
     if mark.entry_price is None:
         return "INCOMPLETE"
+    return "CANONICAL"
+
+
+def _risk_mark_status(mark: OpenInventoryMark, *, as_of: datetime) -> str:
+    if (
+        mark.remaining_inventory_qty is None
+        or mark.inventory_evidence_status != "COMPLETE"
+    ):
+        return "INCOMPLETE"
+    if mark.mark_price is None or mark.mark_timestamp is None:
+        return "PRICE_UNAVAILABLE"
+    if mark.mark_timestamp < as_of - PRICE_FRESHNESS:
+        return "PRICE_STALE"
     return "CANONICAL"
 
 
@@ -195,6 +219,8 @@ def build_portfolio_state(
     live_baseline_managed_equity: Decimal | None = None,
     live_baseline_at: datetime | None = None,
     reservation_evidence: CapitalReservationEvidence | None = None,
+    risk_boundaries: Mapping[int, RiskBoundaryProjection] | None = None,
+    risk_boundary_source_status: str = "MISSING_BOUNDARY",
 ) -> PortfolioStateV1:
     mode, deployment = validate_identity(environment, deployment_id)
     if as_of.tzinfo is None:
@@ -341,6 +367,46 @@ def build_portfolio_state(
     by_symbol = _aggregate_exposure(marks, dimension="symbol", as_of=as_of)
     by_strategy = _aggregate_exposure(marks, dimension="strategy", as_of=as_of)
     by_regime = _aggregate_exposure(marks, dimension="regime", as_of=as_of)
+    position_risk = tuple(
+        evaluate_position_risk(
+            position_id=mark.position_id, side=mark.side,
+            remaining_inventory_qty=mark.remaining_inventory_qty,
+            mark_price=mark.mark_price,
+            mark_status=_risk_mark_status(mark, as_of=as_of),
+            projection=(risk_boundaries or {}).get(mark.position_id),
+            require_exit_cost=True,
+        )
+        for mark in marks
+    )
+    if not marks:
+        open_risk = ZERO
+        open_risk_status = "CANONICAL_EMPTY"
+    elif all(item.status == "CANONICAL" for item in position_risk):
+        open_risk = sum(
+            (item.open_risk_to_trigger for item in position_risk
+             if item.open_risk_to_trigger is not None), ZERO,
+        )
+        open_risk_status = "CANONICAL"
+    else:
+        open_risk = None
+        open_risk_status = "INCOMPLETE"
+        reasons.extend(
+            f"POSITION_RISK_{item.position_id}:{item.status}"
+            for item in position_risk if item.status != "CANONICAL"
+        )
+    canonical_risk_ids = {
+        item.position_id for item in position_risk if item.status == "CANONICAL"
+    }
+    covered_exposure = sum((
+        abs(_decimal(mark.remaining_inventory_qty) * _decimal(mark.mark_price))
+        for mark in marks
+        if mark.position_id in canonical_risk_ids
+        and _risk_mark_status(mark, as_of=as_of) == "CANONICAL"
+    ), ZERO)
+    partial_risk_sum = sum((
+        item.open_risk_to_trigger for item in position_risk
+        if item.open_risk_to_trigger is not None
+    ), ZERO)
     return PortfolioStateV1(
         PORTFOLIO_STATE_VERSION, mode, deployment, as_of, runtime_revision or None,
         "MANAGED_PORTFOLIO_EQUITY", total, total_status,
@@ -348,7 +414,7 @@ def build_portfolio_state(
         deployed, aggregate_mark_status, realized_pnl, realized_status,
         unrealized, aggregate_mark_status, len(marks), "CANONICAL",
         deployed, aggregate_mark_status, by_symbol, by_strategy, by_regime,
-        None, "NOT_YET_CANONICAL", None, "NOT_YET_CANONICAL",
+        open_risk, open_risk_status, None, "NOT_YET_CANONICAL",
         drawdown, drawdown_status,
         {
             "accepted_baseline_at": (
@@ -368,6 +434,10 @@ def build_portfolio_state(
                 reservation_evidence.latest_event_at
                 if reservation_evidence else None
             ),
+            "position_risk_boundary_latest_event_at": max(
+                (item.effective_at for item in (risk_boundaries or {}).values()),
+                default=None,
+            ),
         },
         {
             "mark_price": aggregate_mark_status,
@@ -379,6 +449,7 @@ def build_portfolio_state(
                 reservation_evidence.status if reservation_evidence
                 else "INCOMPLETE"
             ),
+            "position_risk_boundary": risk_boundary_source_status,
         },
         {
             "total_capital": (
@@ -401,9 +472,13 @@ def build_portfolio_state(
                 if mode == "LIVE" else
                 "CANONICAL_PAPER_SPENDABLE_BALANCE_NOT_YET_AVAILABLE"
             ),
+            "open_risk": "POSITION_RISK_BOUNDARY_AUTHORITY_V1",
+            "risk_quantity": "positions.remaining_inventory_qty",
+            "risk_mark_price": "candles.close/FRESH_20_MINUTES",
             "account_reporting_excluded": "RECONSTRUCTED_PARTIAL_MIXED",
         },
-        tuple(dict.fromkeys(reasons)),
+        tuple(dict.fromkeys(reasons)), position_risk, len(marks),
+        len(canonical_risk_ids), covered_exposure, partial_risk_sum,
     )
 
 
@@ -446,6 +521,10 @@ def read_portfolio_state(
         live_baseline.account_identity_fingerprint if live_baseline else None
     )
     reservation_evidence = load_capital_reservation_evidence(
+        cur, environment=mode, deployment_id=deployment,
+        account_identity_fingerprint=reservation_account_identity,
+    )
+    risk_boundaries, boundary_status = load_boundary_projections_cursor(
         cur, environment=mode, deployment_id=deployment,
         account_identity_fingerprint=reservation_account_identity,
     )
@@ -504,6 +583,23 @@ def read_portfolio_state(
         )
         for row in cur.fetchall()
     )
+    if mode == "PAPER" and risk_boundaries:
+        cur.execute(
+            """
+            SELECT p.id,e.fee_rate_exit_assumption,e.fee_model_version
+            FROM positions p
+            LEFT JOIN entry_opportunity_evidence_v1 e
+              ON e.snapshot_id=p.entry_opportunity_snapshot_id
+            WHERE p.status='OPEN'
+            """
+        )
+        for position_id, fee_rate, fee_model in cur.fetchall():
+            projection = risk_boundaries.get(int(position_id))
+            if projection is not None and fee_rate is not None and fee_model:
+                risk_boundaries[int(position_id)] = replace(
+                    projection, exit_fee_rate=_decimal(fee_rate),
+                    exit_fee_model=str(fee_model),
+                )
 
     peak = live_peak
     if baseline is not None:
@@ -529,4 +625,6 @@ def read_portfolio_state(
         ),
         live_baseline_at=(live_baseline.accepted_at if live_baseline else None),
         reservation_evidence=reservation_evidence,
+        risk_boundaries=risk_boundaries,
+        risk_boundary_source_status=boundary_status,
     )

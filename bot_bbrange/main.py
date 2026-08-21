@@ -20,6 +20,7 @@ from common.decision_contract import (
 from common.canonical_regime import evaluation_regime_fields, frozen_regime_provenance
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
+from common.position_risk_boundary import load_frozen_boundary_price
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
@@ -1976,7 +1977,13 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
             low_price = float(low_px) if low_px is not None else price
 
             tp_level = entry_f * (1.0 + TAKE_PROFIT_PCT / 100.0)
-            sl_level = entry_f * (1.0 - STOP_LOSS_PCT / 100.0)
+            frozen_boundary = load_frozen_boundary_price(
+                get_db_conn, position_id=int(_pos_id),
+            )
+            sl_level = (
+                float(frozen_boundary) if frozen_boundary is not None
+                else entry_f * (1.0 - STOP_LOSS_PCT / 100.0)
+            )
 
             if TAKE_PROFIT_PCT > 0 and high_price >= tp_level:
                 reason = f"BBRANGE TAKE PROFIT LONG intrabar high={high_price:.2f} >= tp={tp_level:.2f}"
