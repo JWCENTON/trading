@@ -11,6 +11,7 @@ from common.schema_readiness import (
     BASE_REQUIRED_COLUMNS,
     BASE_REQUIRED_INDEXES,
     LIVE_ONLY_INDEXES,
+    PAPER_ONLY_REQUIRED_COLUMNS,
     PENDING_ENTRY_FUNCTION,
     PENDING_ENTRY_INDEX_CONTRACT,
     PENDING_ENTRY_REQUIRED_KV,
@@ -245,6 +246,25 @@ def test_paper_readiness_still_rejects_missing_base_schema():
     ])
 
     with pytest.raises(RuntimeError, match="apply migrations"):
+        validate_strategy_runtime_schema(conn, trading_mode="PAPER")
+
+
+@pytest.mark.parametrize("missing_table", tuple(PAPER_ONLY_REQUIRED_COLUMNS))
+def test_paper_readiness_fails_closed_without_supertrend_direct_dependency(
+    missing_table,
+):
+    columns = [
+        (table, column)
+        for table, names in BASE_REQUIRED_COLUMNS.items()
+        if table != missing_table
+        for column in names
+    ]
+    conn = RecordingConnection([
+        columns,
+        [(name,) for name in BASE_REQUIRED_INDEXES],
+    ])
+
+    with pytest.raises(RuntimeError, match=missing_table):
         validate_strategy_runtime_schema(conn, trading_mode="PAPER")
 
 

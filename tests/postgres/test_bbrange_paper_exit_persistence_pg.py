@@ -13,6 +13,7 @@ from common.financial_truth_repository import (
     ExecutionEvidenceContext,
     FinancialTruthSourceRepository,
 )
+from common.financial_truth_writer import FinancialTruthReconciler
 from common.simulated_execution_evidence import record_simulated_fill_evidence
 
 
@@ -132,6 +133,9 @@ def _record(
         pytest.param("BBRANGE", "BBRANGE PROFIT_LOCK", id="bbrange-profit-lock"),
         pytest.param("TREND", "TREND PAPER_EXIT", id="trend-paper-exit"),
         pytest.param("RSI", "RSI SOFT_EXIT", id="rsi-soft-exit"),
+        pytest.param(
+            "SUPERTREND", "SUPERTREND FLIP DOWN", id="supertrend-flip-down"
+        ),
     ],
 )
 def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
@@ -278,14 +282,49 @@ def test_paper_exit_fill_lifecycle_ft_and_failure_rollback(
             cur.execute(
                 """
                 SELECT financial_truth_status,calculation_version,
-                       authoritative_net_pnl
+                       executed_entry_qty,executed_exit_qty,
+                       authoritative_entry_fees_usdc,
+                       authoritative_exit_fees_usdc,
+                       authoritative_gross_pnl,authoritative_net_pnl,
+                       entry_fill_count,exit_fill_count
                 FROM canonical_financial_truth_v1 WHERE position_id=77
                 """
             )
-            status, calculation_version, net_pnl = cur.fetchone()
+            canonical = cur.fetchone()
+            status, calculation_version = canonical[:2]
             assert status == "COMPLETE"
             assert calculation_version == "FINANCIAL_TRUTH_CALCULATION_V3"
-            assert net_pnl is not None
+            assert canonical[2:] == (
+                outcome.gross_entry_qty,
+                outcome.gross_exit_qty,
+                outcome.authoritative_entry_fees_usdc,
+                outcome.authoritative_exit_fees_usdc,
+                outcome.authoritative_gross_pnl,
+                outcome.authoritative_net_pnl,
+                outcome.entry_fill_count,
+                outcome.exit_fill_count,
+            )
+
+        with conn:
+            with conn.cursor() as cur:
+                repeated = FinancialTruthReconciler(
+                    connect
+                ).reconcile_in_transaction(
+                    77,
+                    connection=conn,
+                    cursor=cur,
+                    evidence_context=ExecutionEvidenceContext(
+                        environment="paper", exchange=None,
+                        deployment_id="local-paper",
+                    ),
+                    invocation_identity=f"PAPER_SIMULATED_EXIT:{exit_order}",
+                )
+                assert repeated["written"] is False
+                cur.execute(
+                    "SELECT count(*) FROM canonical_financial_truth_v1 "
+                    "WHERE position_id=77"
+                )
+                assert cur.fetchone() == (1,)
 
         rollback_entry = _insert_order(
             conn, position_id=78, is_exit=False, strategy=strategy

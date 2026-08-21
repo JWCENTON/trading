@@ -69,10 +69,7 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
 
     def record(*_args, **kwargs):
         evidence.append(dict(kwargs))
-        if (
-            strategy in {"RSI", "TREND", "BBRANGE"}
-            and kwargs.get("require_terminal_close")
-        ):
+        if kwargs.get("require_terminal_close"):
             assert state["position_id"] == 77
             state["position_id"] = None
         return True
@@ -163,14 +160,15 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
     assert evidence[-1]["simulated_order_id"] == 501
 
     exit_result = invoke(True)
-    if strategy == "SUPERTREND":
-        assert exit_result["position_id"] == 77
-        close_position()
     assert state["position_id"] is None
     assert evidence[-1]["position_id"] == 77
     assert evidence[-1]["simulated_order_id"] == 502
     assert [item["position_id"] for item in evidence] == [77, 77]
     assert [item["environment"] for item in evidence] == ["paper", "paper"]
+    assert [item.get("require_terminal_close", False) for item in evidence] == [
+        False, True,
+    ]
+    assert evidence[-1]["exit_reason"] == "parity"
     assert entry["ledger_ok"] is True
     assert exit_result["ledger_ok"] is True
 

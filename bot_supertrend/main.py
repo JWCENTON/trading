@@ -1281,6 +1281,8 @@ def _execute_and_record_after_paper_exit_preflight(
                     "DEPLOYMENT_ID",
                     os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
                 ),
+                exit_reason=str(reason) if is_exit else None,
+                require_terminal_close=bool(is_exit),
             )
         except Exception:
             logging.exception(

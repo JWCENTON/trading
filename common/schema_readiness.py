@@ -109,11 +109,23 @@ LIVE_ONLY_INDEXES = {
     "ix_binance_order_fills_entry_reconcile_lookup",
     "ux_binance_order_fill_trade",
 }
+PAPER_ONLY_REQUIRED_COLUMNS = {
+    "paper_strategy_entry_gate_v1": {
+        "environment", "deployment_id", "strategy", "entries_enabled",
+        "operator_reason", "changed_at", "changed_by",
+    },
+    "supertrend_exit_intents_v1": {
+        "position_id", "simulated_order_id", "environment", "deployment_id",
+        "strategy", "symbol", "interval", "canonical_reason_code",
+        "raw_reason", "exit_decision_at", "producer_version",
+        "content_fingerprint",
+    },
+}
 BASE_REQUIRED_COLUMNS = {
     table_name: columns
     for table_name, columns in REQUIRED_COLUMNS.items()
     if table_name not in LIVE_ONLY_TABLES
-}
+} | PAPER_ONLY_REQUIRED_COLUMNS
 BASE_REQUIRED_INDEXES = REQUIRED_INDEXES - LIVE_ONLY_INDEXES
 
 

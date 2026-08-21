@@ -161,6 +161,8 @@ def test_paper_exit_evidence_uses_open_position_before_caller_close(
     assert result["simulated_order_id"] == 501
     assert evidence_calls[0][1]["position_id"] == 77
     assert evidence_calls[0][1]["simulated_order_id"] == 501
+    assert evidence_calls[0][1]["exit_reason"] == "test-exit"
+    assert evidence_calls[0][1]["require_terminal_close"] is True
     assert operations.index("evidence") < operations.index("caller-close")
 
 
