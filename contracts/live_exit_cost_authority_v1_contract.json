@@ -1,0 +1,32 @@
+{
+  "contract": "LIVE_EXIT_COST_AUTHORITY_V1",
+  "scope": "OKX_SPOT_LONG_POSITION_EXIT_FEE_COST",
+  "source": "OKX_API_V5_ACCOUNT_TRADE_FEE",
+  "fee_role": "TAKER",
+  "raw_rate_semantics": "OKX signed rate; negative means account fee cost",
+  "canonical_rate_semantics": "positive Decimal cost rate; abs(raw taker)",
+  "freshness": {
+    "duration": "24 hours",
+    "basis": "existing OKX account-metadata refresh convention",
+    "freeze_requires": "effective_at <= boundary activation time < expires_at",
+    "stale": "NULL/STALE_FEE_EVIDENCE"
+  },
+  "freeze_point": "after canonical LIVE position and activated POSITION_RISK_BOUNDARY_AUTHORITY_V1 boundary exist",
+  "position_linkage": "immutable position_id + boundary_id + exit_cost_snapshot_id",
+  "fee_equation": "frozen_boundary_price * remaining_inventory_qty * canonical_exit_fee_rate",
+  "material_inventory": {
+    "positive": "material",
+    "zero": "non-contributing",
+    "null_or_negative": "fail-closed inventory data-quality error",
+    "dust_threshold": false
+  },
+  "missing_existing_position": "NULL/INCOMPLETE/MISSING_EXIT_COST_AUTHORITY",
+  "later_tier_change": "append snapshot; never mutate existing position link",
+  "append_only": true,
+  "historical_backfill": false,
+  "spread_status": "UNKNOWN",
+  "slippage_status": "UNKNOWN",
+  "gap_status": "UNKNOWN",
+  "tail_risk_status": "UNBOUNDED_BY_TRIGGER",
+  "excluded": ["spread", "slippage", "gap buffer", "executability", "trading gates"]
+}

@@ -86,6 +86,18 @@ REQUIRED_COLUMNS = {
         "service_name", "environment", "status", "last_tick", "last_ok",
         "last_error", "loop_duration_ms", "meta", "updated_at",
     },
+    "live_exit_cost_snapshot_v1": {
+        "exit_cost_snapshot_id", "environment", "deployment_id",
+        "account_identity_fingerprint", "instrument_type", "symbol",
+        "fee_role", "canonical_fee_rate", "raw_fee_rate",
+        "raw_sign_semantics", "rule_type", "account_level", "observed_at",
+        "effective_at", "expires_at", "source", "contract_version",
+        "source_evidence_fingerprint", "snapshot_fingerprint", "created_at",
+    },
+    "live_position_exit_cost_link_v1": {
+        "link_id", "position_id", "boundary_id", "exit_cost_snapshot_id",
+        "effective_at", "link_fingerprint", "contract_version", "created_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -101,7 +113,10 @@ REQUIRED_INDEXES = {
     "ux_binance_order_fill_trade",
 }
 
-LIVE_ONLY_TABLES = {"binance_orders", "binance_order_fills"}
+LIVE_ONLY_TABLES = {
+    "binance_orders", "binance_order_fills", "live_exit_cost_snapshot_v1",
+    "live_position_exit_cost_link_v1",
+}
 LIVE_ONLY_INDEXES = {
     "ux_binance_orders_source_symbol_order_id",
     "ux_binance_orders_legacy_null_source_symbol_order_id",

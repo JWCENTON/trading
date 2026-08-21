@@ -22,6 +22,7 @@ from common.position_risk_boundary import (
     evaluate_position_risk,
     load_boundary_projections_cursor,
 )
+from common.live_exit_cost import load_live_exit_cost_links_cursor
 
 
 PORTFOLIO_STATE_VERSION = "PORTFOLIO_STATE_V1"
@@ -378,12 +379,21 @@ def build_portfolio_state(
         )
         for mark in marks
     )
-    if not marks:
+    material_marks = tuple(
+        mark for mark in marks
+        if mark.remaining_inventory_qty is None
+        or _decimal(mark.remaining_inventory_qty) != ZERO
+    )
+    material_ids = {mark.position_id for mark in material_marks}
+    material_risk = tuple(
+        item for item in position_risk if item.position_id in material_ids
+    )
+    if not material_marks:
         open_risk = ZERO
         open_risk_status = "CANONICAL_EMPTY"
-    elif all(item.status == "CANONICAL" for item in position_risk):
+    elif all(item.status == "CANONICAL" for item in material_risk):
         open_risk = sum(
-            (item.open_risk_to_trigger for item in position_risk
+            (item.open_risk_to_trigger for item in material_risk
              if item.open_risk_to_trigger is not None), ZERO,
         )
         open_risk_status = "CANONICAL"
@@ -392,10 +402,10 @@ def build_portfolio_state(
         open_risk_status = "INCOMPLETE"
         reasons.extend(
             f"POSITION_RISK_{item.position_id}:{item.status}"
-            for item in position_risk if item.status != "CANONICAL"
+            for item in material_risk if item.status != "CANONICAL"
         )
     canonical_risk_ids = {
-        item.position_id for item in position_risk if item.status == "CANONICAL"
+        item.position_id for item in material_risk if item.status == "CANONICAL"
     }
     covered_exposure = sum((
         abs(_decimal(mark.remaining_inventory_qty) * _decimal(mark.mark_price))
@@ -472,12 +482,18 @@ def build_portfolio_state(
                 if mode == "LIVE" else
                 "CANONICAL_PAPER_SPENDABLE_BALANCE_NOT_YET_AVAILABLE"
             ),
-            "open_risk": "POSITION_RISK_BOUNDARY_AUTHORITY_V1",
+            "open_risk": (
+                "POSITION_RISK_BOUNDARY_AUTHORITY_V1_PLUS_"
+                "LIVE_EXIT_COST_AUTHORITY_V1"
+                if mode == "LIVE" else
+                "POSITION_RISK_BOUNDARY_AUTHORITY_V1_PLUS_"
+                "PAPER_SIMULATOR_FINANCIAL_MODEL_V2"
+            ),
             "risk_quantity": "positions.remaining_inventory_qty",
             "risk_mark_price": "candles.close/FRESH_20_MINUTES",
             "account_reporting_excluded": "RECONSTRUCTED_PARTIAL_MIXED",
         },
-        tuple(dict.fromkeys(reasons)), position_risk, len(marks),
+        tuple(dict.fromkeys(reasons)), position_risk, len(material_marks),
         len(canonical_risk_ids), covered_exposure, partial_risk_sum,
     )
 
@@ -600,6 +616,20 @@ def read_portfolio_state(
                     projection, exit_fee_rate=_decimal(fee_rate),
                     exit_fee_model=str(fee_model),
                 )
+    elif mode == "LIVE" and risk_boundaries and reservation_account_identity:
+        exit_costs = load_live_exit_cost_links_cursor(
+            cur, deployment_id=deployment,
+            account_identity_fingerprint=reservation_account_identity,
+            as_of=as_of,
+        )
+        for position_id, projection in tuple(risk_boundaries.items()):
+            fee_rate, fee_status, fee_model = exit_costs.get(
+                int(position_id), (None, "MISSING_EXIT_COST_AUTHORITY", None)
+            )
+            risk_boundaries[int(position_id)] = replace(
+                projection, exit_fee_rate=fee_rate,
+                exit_fee_model=fee_model, exit_fee_status=fee_status,
+            )
 
     peak = live_peak
     if baseline is not None:

@@ -28,7 +28,7 @@
     "exposure_by_symbol": {"type": "ExposureBucket[]", "null": false, "unit": "symbol base quantity and USDC", "authority": "canonical open inventory and fresh mark"},
     "exposure_by_strategy": {"type": "ExposureBucket[]", "null": false, "unit": "USDC; quantity null because heterogeneous base assets are not additive", "authority": "canonical open inventory and fresh mark"},
     "exposure_by_regime": {"type": "ExposureBucket[]", "null": false, "unit": "USDC; quantity null because heterogeneous base assets are not additive", "authority": "market_regime CANONICAL_REGIME_ATTRIBUTION_V1; missing key=UNKNOWN"},
-    "open_risk": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "POSITION_RISK_BOUNDARY_AUTHORITY_V1; all material positions must be canonical"},
+    "open_risk": {"type": "Decimal", "null": true, "unit": "USDC", "authority": "POSITION_RISK_BOUNDARY_AUTHORITY_V1 + frozen LIVE_EXIT_COST_AUTHORITY_V1; all material positions must be canonical"},
     "position_risk": {"type": "PositionRiskEvidence[]", "null": false, "unit": "USDC", "authority": "per-position POSITION_RISK_BOUNDARY_AUTHORITY_V1 evidence"},
     "material_risk_position_count": {"type": "integer", "null": false, "unit": "positions", "authority": "canonical open inventory"},
     "canonical_risk_position_count": {"type": "integer", "null": false, "unit": "positions", "authority": "per-position canonical risk evidence"},
@@ -37,7 +37,7 @@
     "portfolio_heat": {"type": "Decimal", "null": true, "unit": null, "authority": "NONE_V1"},
     "drawdown": {"type": "Decimal", "null": true, "unit": "percent", "authority": "accepted-baseline-aligned managed equity and equity_daily_snapshot_v1"}
   },
-  "status_vocabulary": ["CANONICAL", "CANONICAL_EMPTY", "INCOMPLETE", "PRICE_STALE", "PRICE_UNAVAILABLE", "NOT_YET_CANONICAL", "RECONCILIATION_FAILED", "MISSING_BOUNDARY", "MISSING_POSITION_LINKAGE", "MISSING_ENTRY_BASIS", "MISSING_MARK", "STALE_MARK", "MISSING_COST_AUTHORITY", "BOUNDARY_INVALID", "BOUNDARY_BREACHED_UNRESOLVED"],
+  "status_vocabulary": ["CANONICAL", "CANONICAL_EMPTY", "INCOMPLETE", "PRICE_STALE", "PRICE_UNAVAILABLE", "NOT_YET_CANONICAL", "RECONCILIATION_FAILED", "MISSING_BOUNDARY", "MISSING_POSITION_LINKAGE", "MISSING_ENTRY_BASIS", "MISSING_MARK", "STALE_MARK", "MISSING_COST_AUTHORITY", "MISSING_EXIT_COST_AUTHORITY", "STALE_FEE_EVIDENCE", "ACCOUNT_IDENTITY_MISMATCH", "INSTRUMENT_MISMATCH", "INVENTORY_DATA_QUALITY_ERROR", "BOUNDARY_INVALID", "BOUNDARY_BREACHED_UNRESOLVED"],
   "price_contract": {
     "authority": "candles.close",
     "timestamp": "candles.open_time",
@@ -57,7 +57,9 @@
     "reserved_capital": "sum(CAPITAL_RESERVATION_AUTHORITY_V1 remaining_reserved_notional for active ENTRY reservations)",
     "live_available_capital": "raw_usdc_avail_bal - internal_unreflected_reserved; exchange-reflected reservation is not subtracted twice",
     "open_risk_core": "(fresh_mark_price - frozen_boundary_price) * remaining_inventory_qty for SPOT LONG and mark > boundary",
-    "open_risk_aggregate": "sum canonical per-position risk including authoritative exit cost only when every material open position is canonical; empty=0/CANONICAL_EMPTY",
+    "live_exit_fee_estimate": "frozen_boundary_price * remaining_inventory_qty * frozen canonical taker fee rate",
+    "open_risk_aggregate": "sum canonical per-position risk including authoritative exit cost only when every positive-inventory position is canonical; no material inventory=0/CANONICAL_EMPTY",
+    "material_position": "remaining_inventory_qty > 0; zero is non-contributing; null or negative fails closed",
     "boundary_breached": "NULL/BOUNDARY_BREACHED_UNRESOLVED"
   },
   "live_managed_capital": {
@@ -77,6 +79,7 @@
   },
   "capital_reservation_contract": "contracts/capital_reservation_authority_v1_contract.json",
   "position_risk_boundary_contract": "contracts/position_risk_boundary_authority_v1_contract.json",
+  "live_exit_cost_contract": "contracts/live_exit_cost_authority_v1_contract.json",
   "schema_objects": [
     "live_managed_capital_baseline_v1",
     "owner_capital_flow_v1",
@@ -84,18 +87,25 @@
     "capital_reservation_event_v1",
     "v_capital_reservation_current_v1",
     "position_risk_boundary_event_v1",
-    "v_position_risk_boundary_current_v1"
+    "v_position_risk_boundary_current_v1",
+    "live_exit_cost_snapshot_v1",
+    "live_position_exit_cost_link_v1"
   ],
   "migrations": [
     "db/migrations/20260820_live_managed_capital_authority_v1.sql",
-    "db/migrations/20260821_position_risk_boundary_authority_v1.sql"
+    "db/migrations/20260821_position_risk_boundary_authority_v1.sql",
+    "db/migrations/20260821_z_live_exit_cost_authority_v1.sql"
   ],
   "implementation": "common/portfolio_state.py",
-  "implementation_sha256": "8c2f975cbdbf01be7d3b6cef445025511485b54f984029fd250865a0a6b663e6",
+  "implementation_sha256": "116cc635e532172fc83daba5f9436359bfdc6b9e3e9fd5cca86202e5cd61e2bf",
   "position_risk_boundary_implementation": "common/position_risk_boundary.py",
-  "position_risk_boundary_implementation_sha256": "84223cbbbdea54f9e222c275421441a5b96a7b4f18c043e75db1d9708bdf05b4",
-  "position_risk_boundary_contract_sha256": "3d353215afc4227339a8a8a6ccbc5e35e37ba475f605b48d6816a653bb47a85d",
+  "position_risk_boundary_implementation_sha256": "4d96900b8f84577824a90a66fe7c486917b8aad6b43f0de2ad9df9783fe78ebe",
+  "position_risk_boundary_contract_sha256": "cadc23c58583233f52f192b2ef4043be3166e087bc64e65b5eea50fff9686e6d",
   "position_risk_boundary_migration_sha256": "543b04ef7a7208a5ba6b67dd389ad8470bc14426322fe7d5e6b9be2b89b54670",
+  "live_exit_cost_implementation": "common/live_exit_cost.py",
+  "live_exit_cost_implementation_sha256": "65e333816a6ba1867e77dd884420ef0727414139b57231c7806608a4d4b2c7de",
+  "live_exit_cost_contract_sha256": "0ead18a6dcd367c87555a4c54eacd8248db30aa1979f9821eda7d6dedc046ff5",
+  "live_exit_cost_migration_sha256": "17cc23f306da739126e107044587633f260d5fbfc7182f1d050188e33f2e92a7",
   "capital_reservation_implementation": "common/capital_reservation.py",
   "capital_reservation_implementation_sha256": "1d604b40dc73e185d28c82bcf5f106c1b1252e5dff971d8022fe17cf4caf9b18",
   "capital_reservation_contract_sha256": "351541ea8fb75475282767cc2d3beaddf5dfbbd8762517ee391776dabf1e4a0f",

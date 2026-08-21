@@ -152,6 +152,7 @@ class RiskBoundaryProjection:
     effective_at: datetime
     exit_fee_rate: Decimal | None = None
     exit_fee_model: str | None = None
+    exit_fee_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,7 @@ class PositionRiskEvidence:
     tail_risk_status: str
     spread_status: str = "UNKNOWN"
     slippage_status: str = "UNKNOWN"
+    gap_status: str = "UNKNOWN"
 
 
 def evaluate_position_risk(
@@ -184,6 +186,18 @@ def evaluate_position_risk(
             projection.execution_price_guarantee if projection else None
         ), tail_risk_status=TAIL_RISK_STATUS,
     )
+    if remaining_inventory_qty is None:
+        return PositionRiskEvidence(status="INVENTORY_DATA_QUALITY_ERROR", **base)
+    qty = _decimal(remaining_inventory_qty, "remaining_inventory_qty")
+    if qty < ZERO:
+        return PositionRiskEvidence(status="INVENTORY_DATA_QUALITY_ERROR", **base)
+    if qty == ZERO:
+        return PositionRiskEvidence(
+            status="CANONICAL", core_price_risk=ZERO,
+            exit_fee_estimate=ZERO, open_risk_to_trigger=ZERO,
+            **{key: value for key, value in base.items()
+               if key not in {"core_price_risk", "exit_fee_estimate", "open_risk_to_trigger"}},
+        )
     if projection is None or projection.state not in {
         "BOUNDARY_ACTIVATED", "BOUNDARY_REVISED_ENTRY_BASIS"
     }:
@@ -196,23 +210,15 @@ def evaluate_position_risk(
         return PositionRiskEvidence(status="MISSING_MARK", **base)
     if mark_status == "PRICE_STALE":
         return PositionRiskEvidence(status="STALE_MARK", **base)
-    if mark_status != "CANONICAL" or remaining_inventory_qty is None:
+    if mark_status != "CANONICAL":
         return PositionRiskEvidence(status="INCOMPLETE", **base)
     if projection.entry_basis_price is None:
         return PositionRiskEvidence(status="MISSING_ENTRY_BASIS", **base)
-    qty = _decimal(remaining_inventory_qty, "remaining_inventory_qty")
     mark = _decimal(mark_price, "mark_price")
     boundary = _decimal(projection.boundary_price, "boundary_price")
     basis = _decimal(projection.entry_basis_price, "entry_basis_price")
-    if qty < ZERO or boundary <= ZERO or boundary >= basis:
+    if boundary <= ZERO or boundary >= basis:
         return PositionRiskEvidence(status="BOUNDARY_INVALID", **base)
-    if qty == ZERO:
-        return PositionRiskEvidence(
-            status="CANONICAL", core_price_risk=ZERO,
-            exit_fee_estimate=ZERO, open_risk_to_trigger=ZERO,
-            **{key: value for key, value in base.items()
-               if key not in {"core_price_risk", "exit_fee_estimate", "open_risk_to_trigger"}},
-        )
     if mark <= boundary:
         return PositionRiskEvidence(
             status="BOUNDARY_BREACHED_UNRESOLVED", **base
@@ -220,7 +226,8 @@ def evaluate_position_risk(
     core = (mark - boundary) * qty
     if require_exit_cost and projection.exit_fee_rate is None:
         return PositionRiskEvidence(
-            status="MISSING_COST_AUTHORITY", core_price_risk=core,
+            status=(projection.exit_fee_status or "MISSING_COST_AUTHORITY"),
+            core_price_risk=core,
             **{key: value for key, value in base.items() if key != "core_price_risk"},
         )
     fee = (
@@ -501,6 +508,13 @@ def activate_live_boundary_cursor(
     previous = _event_from_row(row)
     basis = _decimal(canonical_entry_basis, "entry_basis_price")
     if previous.entry_basis_price == basis and previous.position_id == int(position_id):
+        from common.live_exit_cost import link_latest_exit_cost_snapshot_cursor
+        link_latest_exit_cost_snapshot_cursor(
+            cur, position_id=position_id, boundary_id=previous.boundary_id,
+            deployment_id=previous.deployment_id,
+            account_identity_fingerprint=previous.account_identity_fingerprint,
+            symbol=previous.symbol, effective_at=effective_at,
+        )
         return "IDEMPOTENT"
     state = (
         "BOUNDARY_ACTIVATED" if previous.entry_basis_price is None
@@ -537,7 +551,15 @@ def activate_live_boundary_cursor(
             "intent_id": previous.intent_id,
         },
     )
-    return append_boundary_event_cursor(cur, event)
+    result = append_boundary_event_cursor(cur, event)
+    from common.live_exit_cost import link_latest_exit_cost_snapshot_cursor
+    link_latest_exit_cost_snapshot_cursor(
+        cur, position_id=position_id, boundary_id=previous.boundary_id,
+        deployment_id=previous.deployment_id,
+        account_identity_fingerprint=previous.account_identity_fingerprint,
+        symbol=previous.symbol, effective_at=effective_at,
+    )
+    return result
 
 
 def _event_from_row(row: tuple[Any, ...]) -> BoundaryEvent:

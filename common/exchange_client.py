@@ -551,6 +551,16 @@ class OkxMarketDataAdapter:
         """Return unmodified OKX balance evidence for Decimal-safe authorities."""
         return self._private_request("GET", "/api/v5/account/balance")
 
+    def get_trade_fee(self, *, symbol: str, instrument_type: str = "SPOT"):
+        """Return raw private fee-tier evidence without numeric coercion."""
+        return self._private_request(
+            "GET", "/api/v5/account/trade-fee",
+            params={
+                "instType": str(instrument_type).upper(),
+                "instId": to_exchange_symbol(symbol, "OKX"),
+            },
+        )
+
     def get_account_identity(
         self,
         *,
