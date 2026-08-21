@@ -17,6 +17,7 @@ COPY api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY common /app/common
+COPY contracts /app/contracts
 COPY tools /app/tools
 COPY api/main.py /app/main.py
 

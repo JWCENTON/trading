@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY common /app/common
 COPY scripts /app/scripts
+COPY contracts /app/contracts
 COPY automation_runner/main.py /app/main.py
 
 CMD ["python", "-u", "main.py"]
