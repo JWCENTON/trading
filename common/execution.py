@@ -793,6 +793,7 @@ def place_live_order(
     entry_submission_connection_factory=None,
     entry_submission_event_sink=None,
     entry_submission_clock=None,
+    entry_reference_price_timestamp=None,
 ):
     pre = preflight_live_order(
         client,
@@ -933,6 +934,7 @@ def place_live_order(
                 reservation_schema_available_cursor,
             )
             from common.position_risk_boundary import accept_boundary_policy_cursor
+            from common.pre_entry_risk import freeze_live_pre_entry_risk_cursor
 
             clock = entry_submission_clock or (
                 lambda: datetime.now(timezone.utc)
@@ -1056,12 +1058,6 @@ def place_live_order(
                                             requested_notional=Decimal(str(pre["notional"])),
                                             effective_at=clock(),
                                         )
-                                        prepare_live_submission_cursor(
-                                            reservation_cur,
-                                            reservation_id=reservation_id,
-                                            intent_identity=str(intent.intent_id),
-                                            effective_at=clock(),
-                                        )
                                         accept_boundary_policy_cursor(
                                             reservation_cur, environment="LIVE",
                                             deployment_id=deployment.value,
@@ -1079,6 +1075,20 @@ def place_live_order(
                                                 "intent_id": str(intent.intent_id),
                                                 "intent_fingerprint": intent.content_fingerprint,
                                             },
+                                        )
+                                        freeze_live_pre_entry_risk_cursor(
+                                            reservation_cur, intent=intent,
+                                            reservation_id=reservation_id,
+                                            account_identity_fingerprint=str(identity_row[0]),
+                                            reference_price_timestamp=(
+                                                entry_reference_price_timestamp
+                                            ), effective_at=clock(),
+                                        )
+                                        prepare_live_submission_cursor(
+                                            reservation_cur,
+                                            reservation_id=reservation_id,
+                                            intent_identity=str(intent.intent_id),
+                                            effective_at=clock(),
                                         )
                         finally:
                             reservation_conn.close()

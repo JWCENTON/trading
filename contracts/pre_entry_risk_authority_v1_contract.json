@@ -1,0 +1,93 @@
+{
+  "contract": "PRE_ENTRY_RISK_AUTHORITY_V1",
+  "scope": "SPOT_LONG_ACCEPTED_NOT_YET_OPEN_RISK",
+  "freeze_order": [
+    "ACCEPTED_COMMITMENT",
+    "BOUNDARY_POLICY_ACCEPTED",
+    "PRE_ENTRY_RISK_FROZEN",
+    "INTERNAL_RESERVED_OR_SUBMITTED",
+    "TRANSACTION_COMMIT",
+    "NETWORK_SUBMIT"
+  ],
+  "identity": {
+    "pre_entry_risk_id": "UUIDv5(reservation_id)",
+    "event_id": "UUIDv5(pre_entry_risk_id,source_event_identity,evidence_fingerprint)",
+    "isolation": ["environment", "deployment_id", "account_identity_fingerprint"],
+    "concurrent_commitments": "independent immutable authorities"
+  },
+  "authorities": {
+    "boundary_policy": "POSITION_RISK_BOUNDARY_AUTHORITY_V1/BOUNDARY_POLICY_ACCEPTED",
+    "reference_price": "exact decision-linked candles.close/FRESH_20_MINUTES",
+    "paper_quantity": "simulated_orders.quantity_btc",
+    "live_quantity": "LIVE_ENTRY_INTENT_V1.requested_qty",
+    "paper_exit_cost": "PAPER_SIMULATOR_FINANCIAL_MODEL_V2",
+    "live_exit_cost": "LIVE_EXIT_COST_AUTHORITY_V1 latest fresh canonical snapshot"
+  },
+  "formula": {
+    "proposed_boundary_price": "reference_entry_price * (1 - boundary_distance_pct / 100)",
+    "pre_entry_core_price_risk": "abs(reference_entry_price - proposed_boundary_price) * proposed_inventory_qty",
+    "pre_entry_exit_fee_estimate": "proposed_boundary_price * proposed_inventory_qty * canonical_exit_fee_rate",
+    "total_pre_entry_risk": "pre_entry_core_price_risk + pre_entry_exit_fee_estimate",
+    "arithmetic": "PostgreSQL Numeric / Python Decimal; binary float forbidden"
+  },
+  "evidence_statuses": [
+    "CANONICAL",
+    "MISSING_BOUNDARY_POLICY",
+    "MISSING_REFERENCE_PRICE",
+    "STALE_REFERENCE_PRICE",
+    "MISSING_PROPOSED_QUANTITY",
+    "MISSING_EXIT_COST_AUTHORITY",
+    "STALE_EXIT_COST_AUTHORITY",
+    "ACCOUNT_IDENTITY_MISMATCH",
+    "DEPLOYMENT_MISMATCH",
+    "INSTRUMENT_MISMATCH",
+    "INVALID_QUANTITY",
+    "INVALID_BOUNDARY",
+    "EVIDENCE_INCOMPLETE"
+  ],
+  "noncanonical_value": "NULL",
+  "lifecycle_states": [
+    "ACTIVE_COMMITTED",
+    "PARTIALLY_TRANSFERRED",
+    "REPLACED_BY_OPEN_RISK",
+    "RELEASED"
+  ],
+  "ownership": {
+    "invariant": "ONE_RISK_OWNER_PER_QUANTITY_SLICE",
+    "zero_fill": "ACTIVE_COMMITTED",
+    "partial_fill": "transfer only with canonical Open Risk evidence in the same transaction",
+    "full_fill": "REPLACED_BY_OPEN_RISK only after canonical Open Risk ownership",
+    "open_risk_incomplete": "Pre-Entry Risk remains responsible",
+    "terminal_release": "REJECTED/CANCELLED/EXPIRED plus CANONICAL_NONE unattributed-fill proof"
+  },
+  "database": {
+    "event_table": "pre_entry_risk_event_v1",
+    "current_projection": "v_pre_entry_risk_current_v1",
+    "append_only": true,
+    "migration": "db/migrations/20260822_pre_entry_risk_authority_v1.sql",
+    "historical_backfill": false,
+    "active_database_application_in_this_change": false
+  },
+  "artifact_sha256": {
+    "implementation": "91adf0f9e63d9bbdfd4465efdd1c4db57f3040db0296d50c3170f60ff9dbdfa9",
+    "migration": "2c7d8f53289bff0c6645baf5a45960cb8710500e8ed8dade4248a3ca62298e5b",
+    "paper_integration": "5080eb7c359c3501fa0b828acc4fac5cd2453f326c318e4a3e2ab380c451d930",
+    "live_integration": "ca6598c315598ddcceb1e36892d4e14dbdf0cf7868e563ff0a123a09667c74d5"
+  },
+  "integration": {
+    "paper": "common.simulated_execution_evidence.create_simulated_order_cursor",
+    "live": "common.execution.place_live_order.reservation_bound_network_submit",
+    "live_entry_submission_enabled_by_change": false
+  },
+  "excluded": [
+    "risk budget policy",
+    "portfolio heat",
+    "capital allocation",
+    "executability",
+    "campaign",
+    "strategy tuning",
+    "sizing",
+    "stop-loss changes",
+    "historical backfill"
+  ]
+}

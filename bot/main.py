@@ -701,6 +701,7 @@ def _execute_and_record_after_paper_exit_preflight(
         order_purpose=("EXIT" if is_exit else "ENTRY"),
         strategy=STRATEGY_NAME,
         interval=cfg_used.interval,
+        entry_reference_price_timestamp=candle_open_time,
         exchange_source=normalize_exchange_source(
             os.environ.get("EXCHANGE")
             or os.environ.get("EXCHANGE_PROVIDER")

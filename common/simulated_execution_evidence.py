@@ -47,6 +47,9 @@ from common.position_risk_boundary import (
     accept_paper_boundary_cursor,
     activate_boundary_for_position_cursor,
 )
+from common.pre_entry_risk import (
+    freeze_paper_pre_entry_risk_cursor,
+)
 
 
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
@@ -671,6 +674,7 @@ def create_simulated_order_cursor(
             raise RuntimeError("SIMULATED_ORDER_INSERT_RETURNING_MISSING")
         inserted_order_id = int(inserted[0])
         if order_class == FORWARD_ORDER_CLASS and not is_exit:
+            commitment_effective_at = datetime.now(timezone.utc)
             paper_deployment = str(
                 os.getenv("DEPLOYMENT_ID")
                 or os.getenv("WALTRADE_DEPLOYMENT_ID")
@@ -683,7 +687,7 @@ def create_simulated_order_cursor(
                 requested_notional=(
                     Decimal(str(price)) * Decimal(str(quantity))
                 ),
-                effective_at=datetime.now(timezone.utc),
+                effective_at=commitment_effective_at,
                 decision_identity=(
                     None if forward_decision_id is None
                     else str(forward_decision_id)
@@ -698,7 +702,12 @@ def create_simulated_order_cursor(
                         else f"SIMULATED_ORDER:{inserted_order_id}"
                     ), symbol=str(symbol), strategy=str(strategy),
                     interval=str(interval),
-                    effective_at=datetime.now(timezone.utc),
+                    effective_at=commitment_effective_at,
+                )
+                freeze_paper_pre_entry_risk_cursor(
+                    cur, simulated_order_id=inserted_order_id,
+                    deployment_id=paper_deployment,
+                    effective_at=commitment_effective_at,
                 )
         if forward_decision_id is not None:
             try:
