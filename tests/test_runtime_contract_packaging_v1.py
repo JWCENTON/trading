@@ -5,6 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_CONTRACTS = {
+    "live_drawdown_history_authority_v1_contract.json",
+    "live_drawdown_history_authority_v1_contract.sha256",
     "live_exit_cost_authority_v1_contract.json",
     "live_managed_capital_authority_v1_contract.json",
     "portfolio_state_v1_contract.json",

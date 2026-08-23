@@ -301,15 +301,16 @@ def build_portfolio_state(
             if mode == "LIVE" and live_capital is not None
             else total
         )
-        peak = max(
-            value for value in (
-                (baseline.managed_equity if baseline else live_baseline_managed_equity),
-                historical_peak_managed_equity,
-                drawdown_equity,
-            ) if value is not None
-        )
-        drawdown = None if peak == ZERO else (drawdown_equity - peak) / peak * Decimal("100")
-        drawdown_status = "CANONICAL"
+        if drawdown_equity is not None:
+            peak = max(
+                value for value in (
+                    (baseline.managed_equity if baseline else live_baseline_managed_equity),
+                    historical_peak_managed_equity,
+                    drawdown_equity,
+                ) if value is not None
+            )
+            drawdown = None if peak == ZERO else (drawdown_equity - peak) / peak * Decimal("100")
+            drawdown_status = "CANONICAL"
 
     available = None
     available_status = "INCOMPLETE"
@@ -502,6 +503,9 @@ def read_portfolio_state(
     cur: Any, *, environment: str, deployment_id: str, as_of: datetime,
     runtime_revision: str | None = None,
     exchange_client: Any | None = None,
+    live_managed_bundle: tuple[
+        LiveManagedCapitalEvidence, Any, Decimal | None, Any
+    ] | None = None,
 ) -> PortfolioStateV1:
     mode, deployment = validate_identity(environment, deployment_id)
     baseline = None
@@ -526,7 +530,9 @@ def read_portfolio_state(
     live_capital = None
     live_baseline = None
     live_peak = None
-    if mode == "LIVE" and exchange_client is not None:
+    if mode == "LIVE" and live_managed_bundle is not None:
+        live_capital, live_baseline, live_peak, _live_context = live_managed_bundle
+    elif mode == "LIVE" and exchange_client is not None:
         live_capital, live_baseline, live_peak, _live_context = load_live_managed_capital_evidence(
             cur, exchange_client=exchange_client, deployment_id=deployment,
             as_of=as_of,

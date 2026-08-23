@@ -60,6 +60,13 @@ from common.live_managed_capital import (
     record_live_managed_equity_observation,
 )
 from common.owner_capital_flow_sync import run_owner_capital_flow_sync_if_due
+from common.live_drawdown_history import (
+    capture_observation_candidate,
+    persist_observation_candidate,
+    reemit_late_event_history,
+    select_observation_trigger,
+)
+from common.portfolio_state import read_portfolio_state
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -91,6 +98,106 @@ ORC_LEDGER_OBSERVE_ONLY_ENABLED = _env_bool(
 
 CAUSAL_TRANSPORT_METRICS = TransportMetrics()
 _last_thesis_evidence_cutoff = None
+_live_drawdown_pending = {}
+
+
+def run_live_drawdown_history_cycle():
+    """Capture now, then append only after the lagged flow watermark covers now."""
+    if not _env_bool("LIVE_DRAWDOWN_HISTORY_V1_ENABLED", "0"):
+        return {"status": "DISABLED"}
+    if cfg.trading_mode.upper() != "LIVE":
+        return {"status": "ENVIRONMENT_FENCE"}
+    deployment_id = os.getenv("DEPLOYMENT_ID", "").strip().lower()
+    if deployment_id not in {"local-live", "vps-live"}:
+        raise RuntimeError("LIVE_DRAWDOWN_DEPLOYMENT_INVALID")
+    connection = get_db_conn()
+    connection.autocommit = False
+    persisted = []
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass('public.v_live_drawdown_history_observation_v1')"
+            )
+            if cur.fetchone()[0] is None:
+                connection.rollback()
+                return {"status": "SCHEMA_UNAVAILABLE"}
+            cur.execute(
+                """SELECT account_identity_fingerprint
+                   FROM live_managed_capital_baseline_v1
+                   WHERE environment='LIVE' AND deployment_id=%s
+                   ORDER BY accepted_at DESC LIMIT 1""",
+                (deployment_id,),
+            )
+            identity_row = cur.fetchone()
+            reemitted = 0
+            if identity_row:
+                reemitted = reemit_late_event_history(
+                    cur, deployment_id=deployment_id,
+                    account_identity_fingerprint=str(identity_row[0]),
+                )
+                if reemitted:
+                    connection.commit()
+            for identity, candidate in tuple(_live_drawdown_pending.items()):
+                result = persist_observation_candidate(cur, candidate)
+                if result.status == "CANONICAL":
+                    connection.commit()
+                    persisted.append(result.observation_id)
+                    _live_drawdown_pending.pop(identity, None)
+                elif result.status != "INCOMPLETE_CAPITAL_FLOW":
+                    connection.rollback()
+                    return {"status": result.status}
+            trigger = select_observation_trigger(
+                cur, now=datetime.now(timezone.utc),
+                pending_keys=(
+                    (candidate.observation_trigger, candidate.trigger_reference)
+                    for candidate in _live_drawdown_pending.values()
+                ),
+            )
+            if trigger is None:
+                connection.rollback()
+                return {"status": "CANONICAL", "persisted": persisted}
+            observed_at = datetime.now(timezone.utc)
+            bundle = load_live_managed_capital_evidence(
+                cur, exchange_client=client, deployment_id=deployment_id,
+                as_of=observed_at, fully_closed_marks=True,
+            )
+            live_capital, baseline, _peak, context = bundle
+            state = read_portfolio_state(
+                cur, environment="LIVE", deployment_id=deployment_id,
+                as_of=observed_at, runtime_revision=os.getenv("GIT_SHA", ""),
+                live_managed_bundle=bundle,
+            )
+            baseline_id = None
+            if baseline is not None:
+                cur.execute(
+                    """SELECT baseline_id FROM live_managed_capital_baseline_v1
+                       WHERE environment='LIVE' AND deployment_id=%s
+                         AND activation_fingerprint=%s""",
+                    (deployment_id, baseline.activation_fingerprint),
+                )
+                baseline_row = cur.fetchone()
+                baseline_id = None if not baseline_row else int(baseline_row[0])
+            captured = capture_observation_candidate(
+                state=state, live_capital=live_capital, context=context,
+                baseline_id=baseline_id, baseline=baseline,
+                observed_at=observed_at, observation_trigger=trigger[0],
+                trigger_reference=trigger[1],
+                producer_identity=f"automation-runner:{os.getenv('HOSTNAME', 'unknown')}",
+                git_revision=os.getenv("GIT_SHA", ""),
+            )
+            connection.rollback()
+            if captured.candidate is not None:
+                _live_drawdown_pending[
+                    captured.candidate.observation_identity
+                ] = captured.candidate
+            return {
+                "status": captured.status,
+                "persisted": persisted,
+                "pending": len(_live_drawdown_pending),
+                "reconciliations_reemitted": reemitted,
+            }
+    finally:
+        connection.close()
 
 
 def run_thesis_evidence_bundle_v1() -> dict:
@@ -3696,6 +3803,17 @@ def main():
                 except Exception:
                     logging.exception("owner_capital_flow_sync_v1 failed")
                     conn.rollback()
+
+                try:
+                    drawdown_history = run_live_drawdown_history_cycle()
+                    logging.info(
+                        "live_drawdown_history_v1 status=%s pending=%s persisted=%s",
+                        drawdown_history.get("status"),
+                        drawdown_history.get("pending"),
+                        drawdown_history.get("persisted"),
+                    )
+                except Exception:
+                    logging.exception("live_drawdown_history_v1 failed")
 
             try:
                 causal_processed = run_causal_decision_observation_consumer()
