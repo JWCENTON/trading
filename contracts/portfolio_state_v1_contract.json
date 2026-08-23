@@ -72,7 +72,10 @@
     "inventory_mismatch": "INCOMPLETE/INVENTORY_RECONCILIATION_INCOMPLETE",
     "available": "raw OKX USDC availBal minus canonical unreflected internal reservations",
     "available_fallback": false,
-    "owner_flow_equation": "flow_adjusted_equity = raw_managed_equity - deposits - transfer_in + withdrawals + transfer_out",
+    "owner_flow_sync_authority": "OWNER_CAPITAL_FLOW_CANONICAL_SYNC_AUTHORITY_V1",
+    "owner_flow_boundary": "OKX_TRADING_ACCOUNT",
+    "owner_flow_equation": "flow_adjusted_equity = raw_managed_equity - canonical_transfer_in + canonical_transfer_out",
+    "external_deposit_withdrawal_policy": "SOURCE_CONTEXT_ONLY_NO_MANAGED_CAPITAL_EFFECT",
     "pre_baseline_history": "excluded by accepted cutover",
     "baseline_activation": "exact immutable LIVE_MANAGED_CAPITAL_BASELINE_PLAN_V1 artifact plus fingerprint-pinned Product Owner approval",
     "unapproved_plan_consumed_by_portfolio_state": false

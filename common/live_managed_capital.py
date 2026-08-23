@@ -83,6 +83,8 @@ class LiveManagedCapitalEvidence:
     incomplete_reasons: tuple[str, ...]
     raw_usdc_frozen_bal: Decimal | None = None
     raw_usdc_ord_frozen: Decimal | None = None
+    flow_history_status: str = "CANONICAL"
+    flow_sync_through: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,8 @@ def evaluate_live_managed_capital(
     baseline: LiveManagedCapitalBaseline | None,
     cumulative_deposits_and_transfer_in: Decimal = ZERO,
     cumulative_withdrawals_and_transfer_out: Decimal = ZERO,
+    flow_history_status: str = "CANONICAL",
+    flow_sync_through: datetime | None = None,
     as_of: datetime,
 ) -> LiveManagedCapitalEvidence:
     reasons: list[str] = []
@@ -209,8 +213,11 @@ def evaluate_live_managed_capital(
         and baseline.account_identity_fingerprint == snapshot.account_identity_fingerprint
     )
     managed = total if complete else None
+    flow_status = str(flow_history_status).upper()
+    if flow_status != "CANONICAL":
+        reasons.append(f"OWNER_FLOW_HISTORY_{flow_status}")
     flow_adjusted = None
-    if managed is not None:
+    if managed is not None and flow_status == "CANONICAL":
         flow_adjusted = (
             managed - Decimal(str(cumulative_deposits_and_transfer_in))
             + Decimal(str(cumulative_withdrawals_and_transfer_out))
@@ -233,6 +240,8 @@ def evaluate_live_managed_capital(
         incomplete_reasons=tuple(dict.fromkeys(reasons)),
         raw_usdc_frozen_bal=usdc.frozen_balance if usdc else ZERO,
         raw_usdc_ord_frozen=usdc.order_frozen if usdc else ZERO,
+        flow_history_status=flow_status,
+        flow_sync_through=flow_sync_through,
     )
 
 
@@ -659,19 +668,23 @@ def load_live_managed_capital_evidence(
         ) for asset, step, min_qty, min_notional in cur.fetchall()
     }
     flow_in = flow_out = ZERO
+    flow_history_status = "NO_SYNC"
+    flow_sync_through = None
     peak = None
     if baseline is not None:
-        cur.execute(
-            """SELECT
-                 COALESCE(sum(value_usdc) FILTER (WHERE event_type IN ('DEPOSIT','TRANSFER_IN')),0),
-                 COALESCE(sum(value_usdc) FILTER (WHERE event_type IN ('WITHDRAWAL','TRANSFER_OUT')),0)
-               FROM owner_capital_flow_v1
-               WHERE deployment_id=%s AND account_identity_fingerprint=%s
-                 AND evidence_status='COMPLETE' AND event_at>%s AND event_at<=%s""",
-            (deployment_id, baseline.account_identity_fingerprint,
-             baseline.accepted_at, as_of),
+        # Local import avoids coupling the pure evaluator to network/persistence.
+        from common.owner_capital_flow_sync import load_owner_flow_history_authority
+        flow_authority = load_owner_flow_history_authority(
+            cur,
+            deployment_id=deployment_id,
+            account_identity_fingerprint=baseline.account_identity_fingerprint,
+            as_of=as_of,
         )
-        flow_in, flow_out = (Decimal(str(value)) for value in cur.fetchone())
+        flow_history_status = flow_authority.flow_history_status
+        flow_sync_through = flow_authority.sync_through
+        if flow_history_status == "CANONICAL":
+            flow_in = flow_authority.cumulative_flow_in or ZERO
+            flow_out = flow_authority.cumulative_flow_out or ZERO
         cur.execute(
             """SELECT max(flow_adjusted_equity)
                FROM live_managed_equity_observation_v1
@@ -685,7 +698,10 @@ def load_live_managed_capital_evidence(
         snapshot, marks=marks, inventory_quantities=inventory,
         inventory_limits=limits, baseline=baseline,
         cumulative_deposits_and_transfer_in=flow_in,
-        cumulative_withdrawals_and_transfer_out=flow_out, as_of=as_of,
+        cumulative_withdrawals_and_transfer_out=flow_out,
+        flow_history_status=flow_history_status,
+        flow_sync_through=flow_sync_through,
+        as_of=as_of,
     )
     if not schema_ready:
         evidence = LiveManagedCapitalEvidence(

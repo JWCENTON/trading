@@ -1,0 +1,55 @@
+{
+  "contract_version": "OWNER_CAPITAL_FLOW_CANONICAL_SYNC_AUTHORITY_V1",
+  "environment": "LIVE",
+  "deployments": ["local-live", "vps-live"],
+  "managed_capital_boundary": "OKX_TRADING_ACCOUNT",
+  "required_source": "TRADING_ACCOUNT_BILLS",
+  "source_endpoints": [
+    "/api/v5/account/bills",
+    "/api/v5/account/bills-archive"
+  ],
+  "source_safety_lag_seconds": 300,
+  "overlap_rescan_seconds": 86400,
+  "page_size": 100,
+  "asset_scope": ["USDC"],
+  "non_usdc_behavior": "UNSUPPORTED_ASSET",
+  "event_identity": "OKX:TRADING_BILL:{billId}",
+  "transfer_in": {
+    "type": "1",
+    "subType": "11",
+    "from": "6",
+    "to": "18",
+    "balChg_sign": "POSITIVE",
+    "event_type": "TRANSFER_IN"
+  },
+  "transfer_out": {
+    "type": "1",
+    "subType": "12",
+    "from": "18",
+    "to": "6",
+    "balChg_sign": "NEGATIVE",
+    "event_type": "TRANSFER_OUT"
+  },
+  "value_authority": "Decimal(abs(balChg))",
+  "deposit_policy": "SOURCE_CONTEXT_ONLY",
+  "withdrawal_policy": "SOURCE_CONTEXT_ONLY",
+  "pagination": {
+    "ordering": "REVERSE_CHRONOLOGICAL",
+    "cursor": "after=billId",
+    "fixed_upper_boundary": "source_cutoff",
+    "deduplication": "billId",
+    "last_request_success_is_completeness": false
+  },
+  "completeness": [
+    "all pages through fixed source_cutoff exhausted",
+    "account identity matched",
+    "every supported boundary event canonicalized",
+    "no pagination failure",
+    "no idempotency conflict",
+    "24 hour overlap reconciliation completed"
+  ],
+  "late_event_policy": "APPEND_EVENT_AND_RECONCILIATION_REQUIRED",
+  "baseline_bootstrap": "2026-08-20T22:41:03.623066+00:00",
+  "arithmetic": "Decimal",
+  "fallbacks": false
+}

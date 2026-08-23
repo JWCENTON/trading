@@ -561,6 +561,41 @@ class OkxMarketDataAdapter:
             },
         )
 
+    def get_account_bills_page(
+        self,
+        *,
+        archive: bool = False,
+        after: str | None = None,
+        begin_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Return one immutable-ID page of OKX Trading Account bills.
+
+        The caller owns exhaustive pagination and completeness.  This method
+        deliberately performs no timestamp/amount correlation and requests
+        only OKX bill type ``1`` (Transfer).
+        """
+        page_size = int(limit)
+        if page_size < 1 or page_size > 100:
+            raise ValueError("OKX_ACCOUNT_BILLS_LIMIT_INVALID")
+        params: Dict[str, Any] = {"type": "1", "limit": str(page_size)}
+        if after not in (None, ""):
+            params["after"] = str(after)
+        if begin_ms is not None:
+            params["begin"] = str(int(begin_ms))
+        if end_ms is not None:
+            params["end"] = str(int(end_ms))
+        return self._private_request(
+            "GET",
+            (
+                "/api/v5/account/bills-archive"
+                if archive
+                else "/api/v5/account/bills"
+            ),
+            params=params,
+        )
+
     def get_account_identity(
         self,
         *,

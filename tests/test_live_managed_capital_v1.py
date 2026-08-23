@@ -105,6 +105,19 @@ def test_owner_flows_change_raw_but_not_flow_adjusted_performance():
     assert gain.flow_adjusted_equity == Decimal("107")
 
 
+def test_owner_flow_watermark_missing_blocks_adjusted_equity_not_raw_equity():
+    evidence = evaluate(
+        snapshot(balance("USDC", "125")),
+        cumulative_deposits_and_transfer_in=Decimal("0"),
+        flow_history_status="NO_SYNC",
+    )
+    assert evidence.managed_equity == Decimal("125")
+    assert evidence.managed_equity_status == "CANONICAL"
+    assert evidence.flow_adjusted_equity is None
+    assert evidence.flow_history_status == "NO_SYNC"
+    assert "OWNER_FLOW_HISTORY_NO_SYNC" in evidence.incomplete_reasons
+
+
 def test_unknown_asset_and_material_inventory_residual_fail_closed():
     unknown = evaluate(snapshot(balance("USDC", "100"), balance("DOGE", "1")))
     mismatch = evaluate(snapshot(balance("BTC", "0.002")))

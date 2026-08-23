@@ -59,6 +59,7 @@ from common.live_managed_capital import (
     load_live_managed_capital_evidence,
     record_live_managed_equity_observation,
 )
+from common.owner_capital_flow_sync import run_owner_capital_flow_sync_if_due
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -3671,6 +3672,30 @@ def main():
             conn.autocommit = False
 
             now = time.time()
+
+            if cfg.trading_mode == "LIVE":
+                try:
+                    owner_flow_sync = run_owner_capital_flow_sync_if_due(
+                        conn,
+                        exchange_client=client,
+                        trading_mode=cfg.trading_mode,
+                        deployment_id=os.getenv("DEPLOYMENT_ID", "").strip().lower(),
+                    )
+                    logging.info(
+                        "owner_capital_flow_sync_v1 status=%s sync_through=%s",
+                        (
+                            owner_flow_sync.get("status")
+                            if isinstance(owner_flow_sync, dict)
+                            else owner_flow_sync.status
+                        ),
+                        (
+                            None if isinstance(owner_flow_sync, dict)
+                            else owner_flow_sync.sync_through
+                        ),
+                    )
+                except Exception:
+                    logging.exception("owner_capital_flow_sync_v1 failed")
+                    conn.rollback()
 
             try:
                 causal_processed = run_causal_decision_observation_consumer()
