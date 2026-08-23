@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import inspect
 from pathlib import Path
 
 import pytest
@@ -108,7 +109,7 @@ def test_configured_v2_entry_fee_and_stored_provenance(monkeypatch):
     assert params[18] == "ENV:PAPER_SIMULATION_FEE_RATE"
 
 
-def test_entry_fill_handoff_runs_after_boundary_activation(monkeypatch):
+def test_entry_fill_defers_post_inventory_authorities(monkeypatch):
     monkeypatch.setenv("PAPER_SIMULATION_FEE_RATE", "0.0035")
     calls = []
     monkeypatch.setattr(
@@ -129,10 +130,30 @@ def test_entry_fill_handoff_runs_after_boundary_activation(monkeypatch):
     )
 
     assert _write(FillCursor(), "ENTRY") == 901
-    assert calls == [
-        "reservation_deployed", "boundary_activated", "position_evidence_linked",
-        "pre_entry_handoff",
-    ]
+    assert calls == []
+
+
+def test_record_flow_canonicalizes_inventory_before_pre_entry_handoff():
+    source = inspect.getsource(execution.record_simulated_fill_evidence)
+
+    inventory_update = source.index("apply_inventory_lifecycle_mutation(")
+    reservation_deployment = source.index("deploy_paper_simulated_fill_cursor(")
+    boundary_activation = source.index("activate_boundary_for_position_cursor(")
+    cost_evidence = source.index(
+        "link_entry_opportunity_position_fail_open_cursor("
+    )
+    handoff = source.index("handoff_paper_fill_pre_entry_risk_cursor(")
+    duplicate_noop = source.index("if fill_id is None:")
+
+    assert (
+        duplicate_noop
+        < inventory_update
+        < reservation_deployment
+        < boundary_activation
+        < cost_evidence
+        < handoff
+    )
+    assert "if not is_exit:" in source[inventory_update:reservation_deployment]
 
 
 def test_exit_uses_frozen_entry_fee_contract(monkeypatch):

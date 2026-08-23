@@ -1039,35 +1039,6 @@ def create_simulated_execution_fill_cursor(
     )
     row = cur.fetchone()
     fill_id = int(row[0]) if row is not None else None
-    if purpose == "ENTRY" and fill_id is not None:
-        deploy_paper_simulated_fill_cursor(
-            cur, simulated_order_id=int(simulated_order_id), fill_id=fill_id,
-            position_id=int(position_id), deployed_notional=notional,
-            effective_at=execution_at,
-        )
-        activate_boundary_for_position_cursor(
-            cur, position_id=int(position_id), environment=str(environment),
-            deployment_id=str(deployment_id), effective_at=execution_at,
-            source_authority="PAPER_CANONICAL_SIMULATED_ENTRY_FILL",
-        )
-        try:
-            link_entry_opportunity_position_fail_open_cursor(
-                cur,
-                simulated_order_id=int(simulated_order_id),
-                position_id=int(position_id),
-                fill_id=fill_id,
-            )
-        except Exception:
-            logging.exception("entry_opportunity_position_link_fail_open")
-        handoff_status = handoff_paper_fill_pre_entry_risk_cursor(
-            cur, fill_id=fill_id, environment=str(environment),
-            deployment_id=str(deployment_id),
-        )
-        if handoff_status not in {"INSERTED", "IDEMPOTENT"}:
-            logging.warning(
-                "paper pre-entry risk handoff status=%s fill_id=%s position_id=%s",
-                handoff_status, fill_id, position_id,
-            )
     return fill_id
 
 
@@ -1359,7 +1330,7 @@ def record_simulated_fill_evidence(
                     instrument_id = cur.fetchone()[0]
                 quantity = Decimal(str(qty))
                 fill_price = Decimal(str(price))
-                fill_inserted = create_simulated_execution_fill_cursor(
+                fill_id = create_simulated_execution_fill_cursor(
                     cur,
                     simulated_order_id=int(simulated_order_id),
                     position_id=int(position_id),
@@ -1374,7 +1345,10 @@ def record_simulated_fill_evidence(
                     interval=str(interval), strategy=str(strategy),
                     account_identity_fingerprint=identity_fingerprint,
                     instrument_metadata_fingerprint=metadata_fingerprint,
-                ) is not None
+                )
+                if fill_id is None:
+                    return False
+                fill_inserted = True
 
                 cur.execute(
                     """
@@ -1456,6 +1430,41 @@ def record_simulated_fill_evidence(
                         if is_exit else None
                     ),
                 )
+                if not is_exit:
+                    deploy_paper_simulated_fill_cursor(
+                        cur, simulated_order_id=int(simulated_order_id),
+                        fill_id=fill_id, position_id=int(position_id),
+                        deployed_notional=quantity * fill_price,
+                        effective_at=execution_at,
+                    )
+                    activate_boundary_for_position_cursor(
+                        cur, position_id=int(position_id),
+                        environment=str(environment),
+                        deployment_id=str(deployment_id),
+                        effective_at=execution_at,
+                        source_authority="PAPER_CANONICAL_SIMULATED_ENTRY_FILL",
+                    )
+                    try:
+                        link_entry_opportunity_position_fail_open_cursor(
+                            cur,
+                            simulated_order_id=int(simulated_order_id),
+                            position_id=int(position_id),
+                            fill_id=fill_id,
+                        )
+                    except Exception:
+                        logging.exception(
+                            "entry_opportunity_position_link_fail_open"
+                        )
+                    handoff_status = handoff_paper_fill_pre_entry_risk_cursor(
+                        cur, fill_id=fill_id, environment=str(environment),
+                        deployment_id=str(deployment_id),
+                    )
+                    if handoff_status not in {"INSERTED", "IDEMPOTENT"}:
+                        logging.warning(
+                            "paper pre-entry risk handoff status=%s fill_id=%s "
+                            "position_id=%s",
+                            handoff_status, fill_id, position_id,
+                        )
                 if (
                     require_terminal_close
                     and (not is_exit or mutation.position_status != "CLOSED")
