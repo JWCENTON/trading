@@ -17,10 +17,16 @@ from common.pre_entry_risk import (
     release_pre_entry_risk_cursor,
     transition_pre_entry_risk_cursor,
 )
-from common.capital_reservation import accept_paper_simulated_order_cursor
+from common.capital_reservation import (
+    accept_paper_simulated_order_cursor,
+    deploy_paper_simulated_fill_cursor,
+)
 from common.position_risk_boundary import (
     accept_paper_boundary_cursor,
     activate_boundary_for_position_cursor,
+)
+from common.simulated_execution_evidence import (
+    handoff_paper_fill_pre_entry_risk_cursor,
 )
 
 
@@ -45,22 +51,26 @@ def apply(conn):
     conn.commit()
 
 
-def frozen_event(*, environment="PAPER", fee_rate=Decimal("0.0035")):
+def frozen_event(
+    *, environment="PAPER", fee_rate=Decimal("0.0035"),
+    reservation_id=RESERVATION_ID, boundary_id=BOUNDARY_ID,
+    decision_id="decision-1", order_identity="101",
+):
     qty = Decimal("2")
     boundary = Decimal("99.2")
     core = Decimal("1.6")
     fee = boundary * qty * fee_rate
-    risk_id = deterministic_pre_entry_risk_id(RESERVATION_ID)
+    risk_id = deterministic_pre_entry_risk_id(reservation_id)
     return _make_event(
         pre_entry_risk_id=risk_id, event_sequence=1,
-        source_event_identity=f"FROZEN:{RESERVATION_ID}",
+        source_event_identity=f"FROZEN:{reservation_id}",
         environment=environment,
         deployment_id="local-paper" if environment == "PAPER" else "local-live",
-        account_identity_fingerprint="a" * 64, decision_id="decision-1",
-        commitment_id="commitment-1", reservation_id=RESERVATION_ID,
+        account_identity_fingerprint="a" * 64, decision_id=decision_id,
+        commitment_id=f"commitment-{decision_id}", reservation_id=reservation_id,
         intent_id=None if environment == "PAPER" else "intent-1",
-        order_identity="101", symbol="BTCUSDC", strategy="RSI", interval="1m",
-        side="LONG", boundary_id=BOUNDARY_ID, boundary_policy_id="policy-1",
+        order_identity=order_identity, symbol="BTCUSDC", strategy="RSI", interval="1m",
+        side="LONG", boundary_id=boundary_id, boundary_policy_id="policy-1",
         boundary_policy_version="POSITION_RISK_BOUNDARY_AUTHORITY_V1",
         boundary_policy_fingerprint="b" * 64,
         boundary_distance_pct=Decimal("0.8"), proposed_boundary_price=boundary,
@@ -296,6 +306,106 @@ def test_concurrent_duplicate_freeze_is_single_event(disposable_postgres_v16):
         check.close()
 
 
+def test_concurrent_independent_commitments_do_not_cross_transfer(
+    disposable_postgres_v16,
+):
+    name, conn = database(disposable_postgres_v16)
+    apply(conn)
+    second_reservation = uuid.UUID("55555555-5555-4555-8555-555555555555")
+    second_boundary = uuid.UUID("66666666-6666-4666-8666-666666666666")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE v_position_risk_boundary_current_v1("
+                "reservation_id uuid,state text,position_id bigint,boundary_id uuid)"
+            )
+            cur.execute(
+                "INSERT INTO v_position_risk_boundary_current_v1 VALUES "
+                "(%s,'BOUNDARY_ACTIVATED',501,%s),"
+                "(%s,'BOUNDARY_ACTIVATED',502,%s)",
+                (
+                    str(RESERVATION_ID), str(BOUNDARY_ID),
+                    str(second_reservation), str(second_boundary),
+                ),
+            )
+            cur.execute(
+                "CREATE TABLE v_capital_reservation_current_v1("
+                "reservation_id uuid,state text)"
+            )
+            cur.execute(
+                "INSERT INTO v_capital_reservation_current_v1 VALUES "
+                "(%s,'DEPLOYED'),(%s,'DEPLOYED')",
+                (str(RESERVATION_ID), str(second_reservation)),
+            )
+            append_pre_entry_risk_event_cursor(cur, frozen_event())
+            append_pre_entry_risk_event_cursor(
+                cur, frozen_event(
+                    reservation_id=second_reservation,
+                    boundary_id=second_boundary, decision_id="decision-2",
+                    order_identity="102",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    barrier = Barrier(2)
+    errors = []
+
+    def transfer(reservation_id, boundary_id, position_id, fingerprint):
+        worker = disposable_postgres_v16.connect(name)
+        try:
+            barrier.wait()
+            with worker.cursor() as cur:
+                transition_pre_entry_risk_cursor(
+                    cur, reservation_id=reservation_id,
+                    source_event_identity=f"FILL:{position_id}",
+                    effective_at=NOW, transfer_quantity=Decimal("2"),
+                    open_risk_status="CANONICAL",
+                    open_risk_position_id=position_id,
+                    open_risk_boundary_id=boundary_id,
+                    open_risk_evidence_fingerprint=fingerprint * 64,
+                )
+            worker.commit()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            worker.close()
+
+    threads = [
+        Thread(
+            target=transfer,
+            args=(RESERVATION_ID, BOUNDARY_ID, 501, "7"),
+        ),
+        Thread(
+            target=transfer,
+            args=(second_reservation, second_boundary, 502, "8"),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+
+    check = disposable_postgres_v16.connect(name)
+    try:
+        with check.cursor() as cur:
+            cur.execute(
+                "SELECT reservation_id,lifecycle_state,transferred_quantity,"
+                "remaining_committed_quantity FROM v_pre_entry_risk_current_v1 "
+                "ORDER BY reservation_id"
+            )
+            rows = cur.fetchall()
+        assert len(rows) == 2
+        assert all(row[1:] == (
+            "REPLACED_BY_OPEN_RISK", Decimal("2.000000000000000000"),
+            Decimal("0E-18"),
+        ) for row in rows)
+    finally:
+        check.close()
+
+
 def test_paper_replay_freezes_before_fill_and_transfers_after_boundary_activation(disposable_postgres_v16, monkeypatch):
     monkeypatch.setenv("PAPER_SIMULATION_FEE_RATE", "0.0035")
     _, conn = database(disposable_postgres_v16)
@@ -323,7 +433,29 @@ def test_paper_replay_freezes_before_fill_and_transfers_after_boundary_activatio
             cur.execute(
                 "CREATE TABLE simulated_execution_fills_v1(id bigint PRIMARY KEY,"
                 "simulated_order_id bigint,position_id bigint,order_purpose text,"
-                "fill_qty numeric,fill_price numeric,execution_at timestamptz)"
+                "fill_qty numeric,fill_price numeric,execution_at timestamptz,"
+                "environment text,deployment_id text,simulation_model_version text,"
+                "simulation_fee_rate numeric,fee_model_version text)"
+            )
+            cur.execute(
+                "CREATE TABLE positions(id bigint PRIMARY KEY,status text,side text,"
+                "remaining_inventory_qty numeric,inventory_evidence_status text,"
+                "symbol text,interval text,entry_opportunity_snapshot_id uuid)"
+            )
+            cur.execute(
+                "CREATE TABLE entry_opportunity_evidence_v1("
+                "snapshot_id uuid PRIMARY KEY,fee_rate_exit_assumption numeric,"
+                "fee_model_version text)"
+            )
+            cur.execute(
+                "INSERT INTO entry_opportunity_evidence_v1 VALUES "
+                "('44444444-4444-4444-8444-444444444444',0.0035,"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2')"
+            )
+            cur.execute(
+                "INSERT INTO positions VALUES "
+                "(501,'OPEN','BUY',0.214,'COMPLETE','SOLUSDC','1m',"
+                "'44444444-4444-4444-8444-444444444444')"
             )
             _, reservation_id = accept_paper_simulated_order_cursor(
                 cur, simulated_order_id=101, deployment_id="local-paper",
@@ -344,25 +476,163 @@ def test_paper_replay_freezes_before_fill_and_transfers_after_boundary_activatio
             assert risk_id == deterministic_pre_entry_risk_id(reservation_id)
             cur.execute("SELECT lifecycle_state,total_pre_entry_risk FROM v_pre_entry_risk_current_v1")
             assert cur.fetchone() == ("ACTIVE_COMMITTED", Decimal("0.229199546880000000"))
-            cur.execute("INSERT INTO simulated_execution_fills_v1 VALUES (1,101,501,'ENTRY',0.214,93.36,%s)", (NOW,))
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=None, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "ZERO_FILL_NOOP"
+            cur.execute(
+                "INSERT INTO simulated_execution_fills_v1 VALUES "
+                "(1,101,501,'ENTRY',0.214,93.36,%s,'PAPER','local-paper',"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2',0.0035,"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2')",
+                (NOW,),
+            )
+            assert deploy_paper_simulated_fill_cursor(
+                cur, simulated_order_id=101, fill_id=1, position_id=501,
+                deployed_notional=Decimal("19.97904"), effective_at=NOW,
+            ) == "INSERTED"
             assert activate_boundary_for_position_cursor(
                 cur, position_id=501, environment="PAPER", deployment_id="local-paper",
                 effective_at=NOW, source_authority="TEST_PAPER_FILL",
             ) == "INSERTED"
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=1, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "INSERTED"
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=1, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "IDEMPOTENT"
             cur.execute(
-                "SELECT boundary_id FROM v_position_risk_boundary_current_v1 "
+                "SELECT lifecycle_state,original_quantity,transferred_quantity,"
+                "remaining_committed_quantity,released_quantity "
+                "FROM v_pre_entry_risk_current_v1"
+            )
+            assert cur.fetchone() == (
+                "REPLACED_BY_OPEN_RISK", Decimal("0.214000000000000000"),
+                Decimal("0.214000000000000000"), Decimal("0"), Decimal("0"),
+            )
+
+            cur.execute(
+                "INSERT INTO strategy_params VALUES "
+                "('BTCUSDC','RSI','1m','STOP_LOSS_PCT',0.8)"
+            )
+            cur.execute(
+                "INSERT INTO simulated_orders VALUES "
+                "(102,'BTCUSDC','RSI','1m',100,2,%s,'decision-2','local-paper')",
+                (NOW,),
+            )
+            cur.execute(
+                "INSERT INTO candles VALUES ('BTCUSDC','1m',%s,100)", (NOW,),
+            )
+            cur.execute(
+                "INSERT INTO positions VALUES "
+                "(502,'OPEN','BUY',0.5,'COMPLETE','BTCUSDC','1m',"
+                "'44444444-4444-4444-8444-444444444444')"
+            )
+            _, second_reservation_id = accept_paper_simulated_order_cursor(
+                cur, simulated_order_id=102, deployment_id="local-paper",
+                symbol="BTCUSDC", strategy="RSI", interval="1m",
+                requested_notional=Decimal("200"), effective_at=NOW,
+                decision_identity="decision-2",
+            )
+            assert accept_paper_boundary_cursor(
+                cur, simulated_order_id=102, deployment_id="local-paper",
+                decision_id="decision-2", symbol="BTCUSDC", strategy="RSI",
+                interval="1m", effective_at=NOW,
+            ) == "INSERTED"
+            assert freeze_paper_pre_entry_risk_cursor(
+                cur, simulated_order_id=102, deployment_id="local-paper",
+                effective_at=NOW, runtime_revision_value="f" * 40,
+            )[0] == "INSERTED"
+            cur.execute(
+                "INSERT INTO simulated_execution_fills_v1 VALUES "
+                "(2,102,502,'ENTRY',0.5,100,%s,'PAPER','local-paper',"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2',0.0035,"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2')",
+                (NOW,),
+            )
+            assert deploy_paper_simulated_fill_cursor(
+                cur, simulated_order_id=102, fill_id=2, position_id=502,
+                deployed_notional=Decimal("50"), effective_at=NOW,
+            ) == "INSERTED"
+            assert activate_boundary_for_position_cursor(
+                cur, position_id=502, environment="PAPER",
+                deployment_id="local-paper", effective_at=NOW,
+                source_authority="TEST_PAPER_PARTIAL_FILL",
+            ) == "INSERTED"
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=2, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "INSERTED"
+            cur.execute(
+                "SELECT lifecycle_state,transferred_quantity,"
+                "remaining_committed_quantity FROM v_pre_entry_risk_current_v1 "
+                "WHERE reservation_id=%s", (str(second_reservation_id),),
+            )
+            assert cur.fetchone() == (
+                "PARTIALLY_TRANSFERRED", Decimal("0.500000000000000000"),
+                Decimal("1.500000000000000000"),
+            )
+
+            cur.execute(
+                "UPDATE positions SET remaining_inventory_qty=2 WHERE id=502"
+            )
+            cur.execute(
+                "INSERT INTO simulated_execution_fills_v1 VALUES "
+                "(3,102,502,'ENTRY',1.5,100,%s,'PAPER','local-paper',"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2',0.0035,"
+                "'PAPER_SIMULATOR_FINANCIAL_MODEL_V2')",
+                (NOW,),
+            )
+            assert deploy_paper_simulated_fill_cursor(
+                cur, simulated_order_id=102, fill_id=3, position_id=502,
+                deployed_notional=Decimal("150"), effective_at=NOW,
+            ) == "INSERTED"
+            assert activate_boundary_for_position_cursor(
+                cur, position_id=502, environment="PAPER",
+                deployment_id="local-paper", effective_at=NOW,
+                source_authority="TEST_PAPER_FULL_FILL",
+            ) == "IDEMPOTENT"
+            cur.execute("DELETE FROM candles WHERE symbol='BTCUSDC'")
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=3, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "OPEN_RISK_INCOMPLETE:MISSING_MARK"
+            cur.execute(
+                "SELECT transferred_quantity,remaining_committed_quantity "
+                "FROM v_pre_entry_risk_current_v1 WHERE reservation_id=%s",
+                (str(second_reservation_id),),
+            )
+            assert cur.fetchone() == (
+                Decimal("0.500000000000000000"),
+                Decimal("1.500000000000000000"),
+            )
+            cur.execute(
+                "INSERT INTO candles VALUES ('BTCUSDC','1m',%s,100)", (NOW,),
+            )
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=3, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "INSERTED"
+            assert handoff_paper_fill_pre_entry_risk_cursor(
+                cur, fill_id=3, environment="PAPER",
+                deployment_id="local-paper",
+            ) == "IDEMPOTENT"
+            cur.execute(
+                "SELECT lifecycle_state,original_quantity,transferred_quantity,"
+                "remaining_committed_quantity FROM v_pre_entry_risk_current_v1 "
+                "WHERE reservation_id=%s", (str(second_reservation_id),),
+            )
+            assert cur.fetchone() == (
+                "REPLACED_BY_OPEN_RISK", Decimal("2.000000000000000000"),
+                Decimal("2.000000000000000000"), Decimal("0"),
+            )
+            cur.execute(
+                "SELECT lifecycle_state FROM v_pre_entry_risk_current_v1 "
                 "WHERE reservation_id=%s", (str(reservation_id),),
             )
-            paper_boundary_id = uuid.UUID(str(cur.fetchone()[0]))
-            _, transferred = transition_pre_entry_risk_cursor(
-                cur, reservation_id=reservation_id, source_event_identity="PAPER_FILL:1",
-                effective_at=NOW, transfer_quantity=Decimal("0.214"),
-                open_risk_status="CANONICAL", open_risk_position_id=501,
-                open_risk_boundary_id=paper_boundary_id,
-                open_risk_evidence_fingerprint="9" * 64,
-            )
-            assert transferred.lifecycle_state == "REPLACED_BY_OPEN_RISK"
-            assert transferred.remaining_committed_quantity == 0
+            assert cur.fetchone()[0] == "REPLACED_BY_OPEN_RISK"
         conn.rollback()
     finally:
         conn.close()

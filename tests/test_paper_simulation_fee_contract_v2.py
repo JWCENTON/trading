@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import common.simulated_execution_evidence as execution
 from common.financial_truth_calculator import FillEvidence, calculate_financial_truth
 from common.financial_truth_repository import CanonicalFinancialTruthWriteRepository
 from common.paper_simulation_fee_config import (
@@ -105,6 +106,33 @@ def test_configured_v2_entry_fee_and_stored_provenance(monkeypatch):
     assert params[16] == Decimal("0.0035")
     assert params[17] == FEE_MODEL_V2
     assert params[18] == "ENV:PAPER_SIMULATION_FEE_RATE"
+
+
+def test_entry_fill_handoff_runs_after_boundary_activation(monkeypatch):
+    monkeypatch.setenv("PAPER_SIMULATION_FEE_RATE", "0.0035")
+    calls = []
+    monkeypatch.setattr(
+        execution, "deploy_paper_simulated_fill_cursor",
+        lambda *args, **kwargs: calls.append("reservation_deployed"),
+    )
+    monkeypatch.setattr(
+        execution, "activate_boundary_for_position_cursor",
+        lambda *args, **kwargs: calls.append("boundary_activated") or "INSERTED",
+    )
+    monkeypatch.setattr(
+        execution, "handoff_paper_fill_pre_entry_risk_cursor",
+        lambda *args, **kwargs: calls.append("pre_entry_handoff") or "INSERTED",
+    )
+    monkeypatch.setattr(
+        execution, "link_entry_opportunity_position_fail_open_cursor",
+        lambda *args, **kwargs: calls.append("position_evidence_linked"),
+    )
+
+    assert _write(FillCursor(), "ENTRY") == 901
+    assert calls == [
+        "reservation_deployed", "boundary_activated", "position_evidence_linked",
+        "pre_entry_handoff",
+    ]
 
 
 def test_exit_uses_frozen_entry_fee_contract(monkeypatch):

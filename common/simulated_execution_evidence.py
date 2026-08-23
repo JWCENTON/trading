@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 import hashlib
@@ -31,6 +31,7 @@ from common.inventory_quantity import (
     project_inventory_from_execution_evidence,
 )
 from common.paper_simulation_fee_config import (
+    FEE_MODEL_V2,
     PaperSimulationFeeConfig,
     load_paper_simulation_fee_config,
 )
@@ -44,16 +45,22 @@ from common.capital_reservation import (
     deploy_paper_simulated_fill_cursor,
 )
 from common.position_risk_boundary import (
+    RiskBoundaryProjection,
     accept_paper_boundary_cursor,
     activate_boundary_for_position_cursor,
+    evaluate_position_risk,
 )
 from common.pre_entry_risk import (
     freeze_paper_pre_entry_risk_cursor,
+    load_current_pre_entry_risk_cursor,
+    pre_entry_risk_schema_available_cursor,
+    transition_pre_entry_risk_cursor,
 )
 
 
 SIMULATED_IDENTITY_VERSION = "SIMULATED_ACCOUNT_IDENTITY_V1"
 INSTRUMENT_METADATA_VERSION = "EXECUTION_INSTRUMENT_SNAPSHOT_V1"
+PAPER_OPEN_RISK_MARK_FRESHNESS = timedelta(minutes=20)
 
 
 @dataclass(frozen=True)
@@ -437,6 +444,223 @@ def _assets(symbol: str) -> tuple[str, str]:
         if symbol.endswith(quote):
             return symbol[:-len(quote)], quote
     raise ValueError("unsupported quote asset")
+
+
+def handoff_paper_fill_pre_entry_risk_cursor(
+    cur,
+    *,
+    fill_id: int | None,
+    environment: str,
+    deployment_id: str,
+) -> str:
+    """Transfer only a canonical PAPER entry fill into canonical Open Risk."""
+    if fill_id is None:
+        return "ZERO_FILL_NOOP"
+    if str(environment).upper() != "PAPER":
+        return "NOT_APPLICABLE"
+    if not pre_entry_risk_schema_available_cursor(cur):
+        return "SCHEMA_UNAVAILABLE"
+
+    cur.execute(
+        "SELECT simulated_order_id,position_id,fill_qty,fill_price,execution_at,"
+        "environment,deployment_id,simulation_model_version,simulation_fee_rate,"
+        "fee_model_version FROM simulated_execution_fills_v1 "
+        "WHERE id=%s AND order_purpose='ENTRY'",
+        (int(fill_id),),
+    )
+    fill = cur.fetchone()
+    if fill is None:
+        return "ENTRY_FILL_UNAVAILABLE"
+    (
+        simulated_order_id, position_id, fill_qty, fill_price, execution_at,
+        fill_environment, fill_deployment_id, simulation_model_version,
+        simulation_fee_rate, fee_model_version,
+    ) = fill
+    quantity = Decimal(str(fill_qty))
+    if quantity == 0:
+        return "ZERO_FILL_NOOP"
+    if quantity < 0:
+        return "INVALID_FILL_QUANTITY"
+    if (
+        str(fill_environment).upper() != "PAPER"
+        or str(fill_deployment_id).lower() != str(deployment_id).lower()
+    ):
+        return "FILL_SCOPE_MISMATCH"
+
+    cur.execute(
+        "SELECT reservation_id,boundary_id,position_id,state,environment,"
+        "deployment_id,account_identity_fingerprint,side,boundary_distance_pct,"
+        "entry_basis_price,entry_basis_authority,boundary_price,boundary_type,"
+        "execution_price_guarantee,policy_fingerprint,effective_at,event_fingerprint "
+        "FROM v_position_risk_boundary_current_v1 WHERE order_identity=%s "
+        "AND environment='PAPER' AND deployment_id=%s",
+        (str(simulated_order_id), str(deployment_id).lower()),
+    )
+    boundary = cur.fetchone()
+    if boundary is None:
+        return "OPEN_RISK_INCOMPLETE:MISSING_BOUNDARY"
+    (
+        reservation_id, boundary_id, boundary_position_id, boundary_state,
+        boundary_environment, boundary_deployment_id,
+        account_identity_fingerprint, boundary_side, boundary_distance_pct,
+        entry_basis_price, entry_basis_authority, boundary_price, boundary_type,
+        execution_price_guarantee, policy_fingerprint, boundary_effective_at,
+        boundary_event_fingerprint,
+    ) = boundary
+    current = load_current_pre_entry_risk_cursor(
+        cur, reservation_id=uuid.UUID(str(reservation_id)),
+    )
+    if current is None:
+        return "PRE_ENTRY_RISK_UNAVAILABLE"
+    source_event_identity = f"PAPER_FILL_HANDOFF:{int(fill_id)}"
+    cur.execute(
+        "SELECT 1 FROM pre_entry_risk_event_v1 WHERE pre_entry_risk_id=%s "
+        "AND source_event_identity=%s",
+        (str(current.pre_entry_risk_id), source_event_identity),
+    )
+    if cur.fetchone() is not None:
+        return "IDEMPOTENT"
+    if (
+        str(boundary_state) not in {
+            "BOUNDARY_ACTIVATED", "BOUNDARY_REVISED_ENTRY_BASIS"
+        }
+        or boundary_position_id is None
+        or int(boundary_position_id) != int(position_id)
+    ):
+        return "OPEN_RISK_INCOMPLETE:MISSING_BOUNDARY"
+    cur.execute(
+        "SELECT state,position_id FROM v_capital_reservation_current_v1 "
+        "WHERE reservation_id=%s",
+        (str(reservation_id),),
+    )
+    reservation = cur.fetchone()
+    if (
+        reservation is None
+        or str(reservation[0]) not in {"PARTIALLY_DEPLOYED", "DEPLOYED"}
+        or reservation[1] is None
+        or int(reservation[1]) != int(position_id)
+    ):
+        return "OPEN_RISK_INCOMPLETE:MISSING_DEPLOYED_RESERVATION"
+    if (
+        str(simulation_model_version) != FEE_MODEL_V2
+        or str(fee_model_version) != FEE_MODEL_V2
+        or str(current.exit_cost_snapshot_or_model_id) != FEE_MODEL_V2
+        or simulation_fee_rate is None
+        or Decimal(str(simulation_fee_rate)) != current.canonical_exit_fee_rate
+    ):
+        return "OPEN_RISK_INCOMPLETE:MISSING_COST_AUTHORITY"
+
+    cur.execute(
+        "SELECT p.status,p.side,p.remaining_inventory_qty,"
+        "p.inventory_evidence_status,p.symbol,p.interval,"
+        "p.entry_opportunity_snapshot_id,e.fee_rate_exit_assumption,"
+        "e.fee_model_version FROM positions p "
+        "LEFT JOIN entry_opportunity_evidence_v1 e "
+        "ON e.snapshot_id=p.entry_opportunity_snapshot_id WHERE p.id=%s",
+        (int(position_id),),
+    )
+    position = cur.fetchone()
+    if position is None:
+        return "OPEN_RISK_INCOMPLETE:INVENTORY_DATA_QUALITY_ERROR"
+    (
+        position_status, position_side, remaining_inventory_qty,
+        inventory_evidence_status, symbol, interval,
+        entry_opportunity_snapshot_id, exit_fee_rate, exit_fee_model,
+    ) = position
+    if (
+        str(position_status) != "OPEN"
+        or str(inventory_evidence_status) != "COMPLETE"
+        or remaining_inventory_qty is None
+        or Decimal(str(remaining_inventory_qty)) < quantity
+    ):
+        return "OPEN_RISK_INCOMPLETE:INVENTORY_DATA_QUALITY_ERROR"
+    if (
+        entry_opportunity_snapshot_id is None
+        or exit_fee_rate is None
+        or str(exit_fee_model) != FEE_MODEL_V2
+        or Decimal(str(exit_fee_rate)) != current.canonical_exit_fee_rate
+    ):
+        return "OPEN_RISK_INCOMPLETE:MISSING_COST_AUTHORITY"
+
+    cur.execute(
+        "SELECT close,open_time FROM candles WHERE symbol=%s AND interval=%s "
+        "AND open_time<=%s ORDER BY open_time DESC LIMIT 1",
+        (str(symbol), str(interval), execution_at),
+    )
+    mark = cur.fetchone()
+    if mark is None or mark[0] is None or mark[1] is None:
+        mark_price = None
+        mark_timestamp = None
+        mark_status = "PRICE_UNAVAILABLE"
+    else:
+        mark_price = Decimal(str(mark[0]))
+        mark_timestamp = mark[1]
+        mark_status = (
+            "PRICE_STALE"
+            if mark_timestamp < execution_at - PAPER_OPEN_RISK_MARK_FRESHNESS
+            else "CANONICAL"
+        )
+    projection = RiskBoundaryProjection(
+        boundary_id=uuid.UUID(str(boundary_id)),
+        position_id=int(boundary_position_id),
+        environment=str(boundary_environment),
+        deployment_id=str(boundary_deployment_id),
+        account_identity_fingerprint=str(account_identity_fingerprint),
+        side=str(boundary_side), state=str(boundary_state),
+        boundary_distance_pct=Decimal(str(boundary_distance_pct)),
+        entry_basis_price=Decimal(str(entry_basis_price)),
+        entry_basis_authority=str(entry_basis_authority),
+        boundary_price=Decimal(str(boundary_price)),
+        boundary_type=str(boundary_type),
+        execution_price_guarantee=str(execution_price_guarantee),
+        policy_fingerprint=str(policy_fingerprint),
+        effective_at=boundary_effective_at,
+        exit_fee_rate=current.canonical_exit_fee_rate,
+        exit_fee_model=str(current.exit_cost_snapshot_or_model_id),
+        exit_fee_status="CANONICAL",
+    )
+    open_risk = evaluate_position_risk(
+        position_id=int(position_id), side=str(position_side),
+        remaining_inventory_qty=Decimal(str(remaining_inventory_qty)),
+        mark_price=mark_price, mark_status=mark_status,
+        projection=projection, require_exit_cost=True,
+    )
+    if open_risk.status != "CANONICAL":
+        return f"OPEN_RISK_INCOMPLETE:{open_risk.status}"
+    open_risk_fingerprint = _hash({
+        "authority": "POSITION_RISK_BOUNDARY_AUTHORITY_V1_PLUS_"
+        "PAPER_SIMULATOR_FINANCIAL_MODEL_V2",
+        "boundary_event_fingerprint": str(boundary_event_fingerprint),
+        "boundary_id": str(boundary_id),
+        "fill_id": int(fill_id),
+        "fill_price": Decimal(str(fill_price)),
+        "filled_quantity": quantity,
+        "mark_price": mark_price,
+        "mark_timestamp": mark_timestamp,
+        "open_risk_to_trigger": open_risk.open_risk_to_trigger,
+        "position_id": int(position_id),
+        "remaining_inventory_qty": Decimal(str(remaining_inventory_qty)),
+    })
+    status, _ = transition_pre_entry_risk_cursor(
+        cur, reservation_id=uuid.UUID(str(reservation_id)),
+        source_event_identity=source_event_identity,
+        effective_at=execution_at, transfer_quantity=quantity,
+        open_risk_status="CANONICAL", open_risk_position_id=int(position_id),
+        open_risk_boundary_id=uuid.UUID(str(boundary_id)),
+        open_risk_evidence_fingerprint=open_risk_fingerprint,
+        source_authority="PAPER_CANONICAL_OPEN_RISK_HANDOFF",
+        provenance={
+            "fill_id": int(fill_id),
+            "simulated_order_id": int(simulated_order_id),
+            "position_id": int(position_id),
+            "filled_quantity": str(quantity),
+            "mark_timestamp": (
+                mark_timestamp.astimezone(timezone.utc).isoformat()
+                if mark_timestamp is not None else None
+            ),
+        },
+    )
+    return status
 
 
 def lock_simulated_exit_slot_cursor(
@@ -835,6 +1059,15 @@ def create_simulated_execution_fill_cursor(
             )
         except Exception:
             logging.exception("entry_opportunity_position_link_fail_open")
+        handoff_status = handoff_paper_fill_pre_entry_risk_cursor(
+            cur, fill_id=fill_id, environment=str(environment),
+            deployment_id=str(deployment_id),
+        )
+        if handoff_status not in {"INSERTED", "IDEMPOTENT"}:
+            logging.warning(
+                "paper pre-entry risk handoff status=%s fill_id=%s position_id=%s",
+                handoff_status, fill_id, position_id,
+            )
     return fill_id
 
 
