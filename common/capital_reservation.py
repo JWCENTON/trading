@@ -580,6 +580,96 @@ def reconcile_live_submission_cursor(
     return status
 
 
+def deploy_live_entry_fill_cursor(
+    cur: Any, *, intent_id: uuid.UUID | str,
+    fill_evidence_id: uuid.UUID | str, position_id: int,
+    filled_quantity: Decimal | str | int,
+    cumulative_filled_quantity: Decimal | str | int,
+    requested_quantity: Decimal | str | int, effective_at: datetime,
+) -> str:
+    """Move the exact immutable LIVE fill slice out of reserved capital.
+
+    Capital Reservation stores the notional accepted before submission.  A
+    fill therefore deploys the same proportion of that immutable commitment
+    as the fill quantity represents of the immutable requested quantity.  The
+    final slice consumes the exact remaining notional, avoiding price-slippage
+    guesses and Decimal rounding residue.
+    """
+    if not reservation_schema_available_cursor(cur):
+        return "SCHEMA_UNAVAILABLE"
+    canonical_intent_id = str(uuid.UUID(str(intent_id)))
+    canonical_fill_id = str(uuid.UUID(str(fill_evidence_id)))
+    quantity = _decimal(filled_quantity, field="filled_quantity")
+    cumulative = _decimal(
+        cumulative_filled_quantity, field="cumulative_filled_quantity"
+    )
+    requested_quantity_value = _decimal(
+        requested_quantity, field="requested_quantity"
+    )
+    if quantity == ZERO:
+        return "ZERO_FILL_NOOP"
+    if (
+        quantity < ZERO
+        or requested_quantity_value <= ZERO
+        or cumulative < quantity
+        or cumulative > requested_quantity_value
+    ):
+        raise ValueError("CAPITAL_RESERVATION_LIVE_FILL_QUANTITY_INVALID")
+    cur.execute(
+        "SELECT reservation_id FROM v_capital_reservation_current_v1 "
+        "WHERE environment='LIVE' AND intent_identity=%s",
+        (canonical_intent_id,),
+    )
+    reservations = list(cur.fetchall())
+    if len(reservations) != 1:
+        return "RESERVATION_NOT_FOUND" if not reservations else "RESERVATION_CONFLICT"
+    reservation_id = uuid.UUID(str(reservations[0][0]))
+    source_event_identity = f"LIVE_FILL_DEPLOYMENT:{canonical_fill_id}"
+    cur.execute(
+        "SELECT 1 FROM capital_reservation_event_v1 "
+        "WHERE reservation_id=%s AND source_event_identity=%s",
+        (str(reservation_id), source_event_identity),
+    )
+    if cur.fetchone() is not None:
+        return "IDEMPOTENT"
+    current = _current_event_cursor(cur, reservation_id)
+    if current is None:
+        return "RESERVATION_NOT_FOUND"
+    requested_notional = Decimal(str(current[13]))
+    remaining_notional = Decimal(str(current[14]))
+    deployed_delta = (
+        remaining_notional
+        if cumulative == requested_quantity_value
+        else requested_notional * quantity / requested_quantity_value
+    )
+    if deployed_delta > remaining_notional:
+        raise ValueError("CAPITAL_RESERVATION_DEPLOYMENT_DELTA_INVALID")
+    next_state = (
+        "DEPLOYED" if deployed_delta == remaining_notional
+        else "PARTIALLY_DEPLOYED"
+    )
+    status, _ = transition_reservation_cursor(
+        cur, reservation_id=reservation_id,
+        source_event_identity=source_event_identity,
+        state=next_state, effective_at=effective_at,
+        source_authority="LIVE_ENTRY_FILL_ATTRIBUTION_V1",
+        provenance={
+            "intent_id": canonical_intent_id,
+            "fill_evidence_id": canonical_fill_id,
+            "position_id": int(position_id),
+            "filled_quantity": str(quantity),
+            "cumulative_filled_quantity": str(cumulative),
+            "requested_quantity": str(requested_quantity_value),
+            "deployment_basis": "IMMUTABLE_COMMITMENT_QUANTITY_FRACTION",
+        },
+        deployed_notional_delta=deployed_delta,
+        reflection_state="EXCHANGE_REFLECTED",
+        reconciliation_status="CANONICAL",
+        position_id=int(position_id),
+    )
+    return status
+
+
 def accept_paper_simulated_order_cursor(
     cur: Any, *, simulated_order_id: int, deployment_id: str,
     symbol: str, strategy: str, interval: str,

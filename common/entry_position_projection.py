@@ -11,18 +11,30 @@ import json
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Mapping
 
+from common.capital_reservation import deploy_live_entry_fill_cursor
+from common.live_exit_cost import load_live_exit_cost_links_cursor
+from common.pre_entry_risk import (
+    load_current_pre_entry_risk_cursor,
+    pre_entry_risk_schema_available_cursor,
+    transition_pre_entry_risk_cursor,
+)
 from common.position_risk_boundary import activate_live_boundary_cursor
+from common.position_risk_boundary import (
+    RiskBoundaryProjection,
+    evaluate_position_risk,
+)
 
 
 ENTRY_POSITION_PROJECTION_MODE_ENV = "LIVE_ENTRY_POSITION_PROJECTION_MODE"
 PROJECTION_DIAGNOSTIC_NAMESPACE = uuid.UUID(
     "fcb026d2-93d2-5fce-9adb-a40dffb1f649"
 )
+LIVE_OPEN_RISK_MARK_FRESHNESS = timedelta(minutes=20)
 
 
 class EntryPositionProjectionMode(str, Enum):
@@ -61,6 +73,7 @@ class EntryProjectionResult:
     cumulative_eligible_entry_qty: Decimal = Decimal("0")
     event_inserted: bool = False
     detail: str | None = None
+    post_fill_risk_handoff: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +144,205 @@ def _diagnostic(cur, *, intent_id, fill_evidence_id, classification, detail, evi
     )
 
 
+def _live_post_fill_risk_handoff_cursor(
+    cur, *, intent_id: uuid.UUID, position_id: int, eligible: list[tuple],
+    cumulative_gross_quantity: Decimal, cumulative_net_quantity: Decimal,
+    weighted_entry_price: Decimal, projection_fingerprint: str,
+    as_of: datetime | None,
+) -> str:
+    """Converge LIVE fill ownership under the caller-owned transaction."""
+    if not pre_entry_risk_schema_available_cursor(cur):
+        return "SCHEMA_UNAVAILABLE"
+    canonical_as_of = as_of
+    if canonical_as_of is None:
+        cur.execute("SELECT clock_timestamp()")
+        canonical_as_of = cur.fetchone()[0]
+    if canonical_as_of.tzinfo is None:
+        canonical_as_of = canonical_as_of.replace(tzinfo=timezone.utc)
+
+    cur.execute(
+        "SELECT requested_qty FROM live_entry_intents_v1 "
+        "WHERE intent_id=%s AND environment='live'",
+        (str(intent_id),),
+    )
+    intent_row = cur.fetchone()
+    if intent_row is None:
+        return "FILL_ATTRIBUTION_INCOMPLETE"
+    requested_quantity = _decimal(intent_row[0])
+    if cumulative_gross_quantity > requested_quantity:
+        return "QUANTITY_ACCOUNTING_INCOMPLETE"
+
+    cumulative = Decimal("0")
+    for row in eligible:
+        fill_quantity = _decimal(row[11])
+        cumulative += fill_quantity
+        reservation_status = deploy_live_entry_fill_cursor(
+            cur, intent_id=intent_id, fill_evidence_id=row[0],
+            position_id=position_id, filled_quantity=fill_quantity,
+            cumulative_filled_quantity=cumulative,
+            requested_quantity=requested_quantity,
+            effective_at=row[15],
+        )
+        if reservation_status not in {"INSERTED", "IDEMPOTENT"}:
+            return f"RESERVATION_DEPLOYMENT_INCOMPLETE:{reservation_status}"
+
+    boundary_status = activate_live_boundary_cursor(
+        cur, intent_id=str(intent_id), position_id=position_id,
+        canonical_entry_basis=weighted_entry_price,
+        effective_at=canonical_as_of,
+    )
+    if boundary_status not in {"INSERTED", "IDEMPOTENT"}:
+        return f"BOUNDARY_INCOMPLETE:{boundary_status}"
+
+    cur.execute(
+        "SELECT boundary_id,environment,deployment_id,"
+        "account_identity_fingerprint,side,state,boundary_distance_pct,"
+        "entry_basis_price,entry_basis_authority,boundary_price,boundary_type,"
+        "execution_price_guarantee,policy_fingerprint,effective_at,"
+        "event_fingerprint,reservation_id "
+        "FROM v_position_risk_boundary_current_v1 "
+        "WHERE intent_id=%s AND position_id=%s",
+        (str(intent_id), int(position_id)),
+    )
+    boundary = cur.fetchone()
+    if boundary is None or str(boundary[5]) not in {
+        "BOUNDARY_ACTIVATED", "BOUNDARY_REVISED_ENTRY_BASIS"
+    }:
+        return "BOUNDARY_INCOMPLETE:MISSING_BOUNDARY"
+    boundary_id = uuid.UUID(str(boundary[0]))
+    deployment_id = str(boundary[2])
+    account_identity = str(boundary[3])
+    exit_costs = load_live_exit_cost_links_cursor(
+        cur, deployment_id=deployment_id,
+        account_identity_fingerprint=account_identity, as_of=canonical_as_of,
+    )
+    fee_rate, fee_status, fee_model = exit_costs.get(
+        int(position_id), (None, "MISSING_EXIT_COST_AUTHORITY", None)
+    )
+    if fee_status != "CANONICAL" or fee_rate is None or fee_model is None:
+        return f"EXIT_COST_INCOMPLETE:{fee_status}"
+    cur.execute(
+        "SELECT s.exit_cost_snapshot_id,s.snapshot_fingerprint "
+        "FROM live_position_exit_cost_link_v1 l "
+        "JOIN live_exit_cost_snapshot_v1 s USING(exit_cost_snapshot_id) "
+        "WHERE l.position_id=%s AND l.boundary_id=%s",
+        (int(position_id), str(boundary_id)),
+    )
+    exit_cost_evidence = cur.fetchone()
+    if exit_cost_evidence is None:
+        return "EXIT_COST_INCOMPLETE:MISSING_EXIT_COST_AUTHORITY"
+
+    cur.execute(
+        "SELECT status,side,remaining_inventory_qty,inventory_evidence_status,"
+        "symbol,interval FROM positions WHERE id=%s",
+        (int(position_id),),
+    )
+    position = cur.fetchone()
+    if (
+        position is None
+        or str(position[0]) != "OPEN"
+        or str(position[3]) != "COMPLETE"
+        or position[2] is None
+        or _decimal(position[2]) != cumulative_net_quantity
+    ):
+        return "POSITION_INVENTORY_INCOMPLETE"
+    cur.execute(
+        "SELECT close,open_time FROM candles WHERE symbol=%s AND interval=%s "
+        "AND open_time<=%s ORDER BY open_time DESC LIMIT 1",
+        (str(position[4]), str(position[5]), canonical_as_of),
+    )
+    mark = cur.fetchone()
+    if mark is None or mark[0] is None or mark[1] is None:
+        mark_price = None
+        mark_timestamp = None
+        mark_status = "PRICE_UNAVAILABLE"
+    else:
+        mark_price = _decimal(mark[0])
+        mark_timestamp = mark[1]
+        mark_status = (
+            "PRICE_STALE"
+            if mark_timestamp < canonical_as_of - LIVE_OPEN_RISK_MARK_FRESHNESS
+            else "CANONICAL"
+        )
+    projection = RiskBoundaryProjection(
+        boundary_id=boundary_id, position_id=int(position_id),
+        environment=str(boundary[1]), deployment_id=deployment_id,
+        account_identity_fingerprint=account_identity,
+        side=str(boundary[4]), state=str(boundary[5]),
+        boundary_distance_pct=_decimal(boundary[6]),
+        entry_basis_price=_decimal(boundary[7]),
+        entry_basis_authority=str(boundary[8]),
+        boundary_price=_decimal(boundary[9]),
+        boundary_type=str(boundary[10]),
+        execution_price_guarantee=str(boundary[11]),
+        policy_fingerprint=str(boundary[12]), effective_at=boundary[13],
+        exit_fee_rate=fee_rate, exit_fee_model=fee_model,
+        exit_fee_status=fee_status,
+    )
+    open_risk = evaluate_position_risk(
+        position_id=int(position_id), side=str(position[1]),
+        remaining_inventory_qty=_decimal(position[2]),
+        mark_price=mark_price, mark_status=mark_status,
+        projection=projection, require_exit_cost=True,
+    )
+    if open_risk.status != "CANONICAL":
+        return f"OPEN_RISK_INCOMPLETE:{open_risk.status}"
+
+    reservation_id = uuid.UUID(str(boundary[15]))
+    current = load_current_pre_entry_risk_cursor(
+        cur, reservation_id=reservation_id,
+    )
+    if current is None:
+        return "PRE_ENTRY_RISK_INCOMPLETE"
+    if current.transferred_quantity > cumulative_gross_quantity:
+        return "QUANTITY_ACCOUNTING_INCOMPLETE"
+    transfer_quantity = cumulative_gross_quantity - current.transferred_quantity
+    if transfer_quantity == 0:
+        return "IDEMPOTENT"
+    if transfer_quantity > current.remaining_committed_quantity:
+        return "QUANTITY_ACCOUNTING_INCOMPLETE"
+    open_risk_fingerprint = _fingerprint({
+        "authority": "POSITION_RISK_BOUNDARY_AUTHORITY_V1_PLUS_"
+        "LIVE_EXIT_COST_AUTHORITY_V1",
+        "boundary_event_fingerprint": str(boundary[14]),
+        "boundary_id": str(boundary_id),
+        "exit_cost_contract": fee_model,
+        "exit_cost_snapshot_id": str(exit_cost_evidence[0]),
+        "exit_cost_snapshot_fingerprint": str(exit_cost_evidence[1]),
+        "fill_evidence_ids": [str(row[0]) for row in eligible],
+        "mark_price": str(mark_price),
+        "mark_timestamp": mark_timestamp.astimezone(timezone.utc).isoformat(),
+        "open_risk_to_trigger": str(open_risk.open_risk_to_trigger),
+        "position_id": int(position_id),
+        "projection_fingerprint": projection_fingerprint,
+        "cumulative_gross_quantity": str(cumulative_gross_quantity),
+        "cumulative_net_quantity": str(cumulative_net_quantity),
+    })
+    status, _ = transition_pre_entry_risk_cursor(
+        cur, reservation_id=reservation_id,
+        source_event_identity=(
+            f"LIVE_OPEN_RISK_HANDOFF:{projection_fingerprint}"
+        ),
+        effective_at=canonical_as_of, transfer_quantity=transfer_quantity,
+        open_risk_status="CANONICAL", open_risk_position_id=int(position_id),
+        open_risk_boundary_id=boundary_id,
+        open_risk_evidence_fingerprint=open_risk_fingerprint,
+        source_authority="LIVE_CANONICAL_OPEN_RISK_HANDOFF",
+        provenance={
+            "intent_id": str(intent_id),
+            "position_id": int(position_id),
+            "fill_evidence_ids": [str(row[0]) for row in eligible],
+            "exit_cost_snapshot_id": str(exit_cost_evidence[0]),
+            "exit_cost_snapshot_fingerprint": str(exit_cost_evidence[1]),
+            "transferred_quantity": str(transfer_quantity),
+            "cumulative_gross_quantity": str(cumulative_gross_quantity),
+            "cumulative_net_inventory_quantity": str(cumulative_net_quantity),
+            "mark_timestamp": mark_timestamp.astimezone(timezone.utc).isoformat(),
+        },
+    )
+    return status
+
+
 _LATEST_FILL_ROWS_SQL = """
 WITH latest AS (
   SELECT DISTINCT ON (a.fill_evidence_id)
@@ -158,7 +370,9 @@ ORDER BY e.executed_at,e.fill_evidence_id
 """
 
 
-def project_entry_intent(cur, intent_id: uuid.UUID | str) -> EntryProjectionResult:
+def project_entry_intent(
+    cur, intent_id: uuid.UUID | str, *, as_of: datetime | None = None,
+) -> EntryProjectionResult:
     """Project one immutable intent under caller-owned transaction."""
     canonical_intent_id = uuid.UUID(str(intent_id))
     cur.execute(
@@ -472,9 +686,17 @@ def project_entry_intent(cur, intent_id: uuid.UUID | str) -> EntryProjectionResu
                  projection_fingerprint, projection_id),
             )
     if delta == 0:
+        handoff_status = _live_post_fill_risk_handoff_cursor(
+            cur, intent_id=canonical_intent_id,
+            position_id=int(projection[1]), eligible=eligible,
+            cumulative_gross_quantity=gross,
+            cumulative_net_quantity=net,
+            weighted_entry_price=weighted_price,
+            projection_fingerprint=projection_fingerprint, as_of=as_of,
+        )
         return EntryProjectionResult(
             EntryProjectionOutcome.NO_OP, canonical_intent_id, position_id,
-            delta, gross, False,
+            delta, gross, False, post_fill_risk_handoff=handoff_status,
         )
 
     cur.execute(
@@ -511,10 +733,11 @@ def project_entry_intent(cur, intent_id: uuid.UUID | str) -> EntryProjectionResu
     )
     if cur.rowcount != 1:
         raise RuntimeError("LEI1D_POSITION_UPDATE_LOST_OPEN_RACE")
-    activate_live_boundary_cursor(
-        cur, intent_id=str(canonical_intent_id), position_id=position_id,
-        canonical_entry_basis=weighted_price,
-        effective_at=max(row[15] for row in eligible),
+    handoff_status = _live_post_fill_risk_handoff_cursor(
+        cur, intent_id=canonical_intent_id, position_id=position_id,
+        eligible=eligible, cumulative_gross_quantity=gross,
+        cumulative_net_quantity=net, weighted_entry_price=weighted_price,
+        projection_fingerprint=projection_fingerprint, as_of=as_of,
     )
     for row in eligible:
         cur.execute(
@@ -575,6 +798,7 @@ def project_entry_intent(cur, intent_id: uuid.UUID | str) -> EntryProjectionResu
         EntryProjectionOutcome.POSITION_OPENED if previous == 0
         else EntryProjectionOutcome.POSITION_UPDATED,
         canonical_intent_id, position_id, delta, gross, event_inserted,
+        post_fill_risk_handoff=handoff_status,
     )
 
 

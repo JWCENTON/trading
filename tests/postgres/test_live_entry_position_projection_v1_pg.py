@@ -7,7 +7,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from common.capital_reservation import (
+    accept_live_entry_intent_cursor,
+    prepare_live_submission_cursor,
+    reconcile_live_submission_cursor,
+)
 from common.entry_fill_attribution import (
     EntryFillAttributionMode,
     EntryFillAttributionRepository,
@@ -20,6 +28,9 @@ from common.entry_position_projection import (
     EntryProjectionOutcome,
     project_entry_intent,
 )
+from common.live_exit_cost import capture_okx_exit_cost_snapshot_cursor
+from common.position_risk_boundary import accept_boundary_policy_cursor
+from common.pre_entry_risk import freeze_live_pre_entry_risk_cursor
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +41,10 @@ LEI1D_PATH = ROOT / "db/migrations/20260801_live_entry_position_projection_v1.sq
 LEI1D = LEI1D_PATH.read_text()
 ROLLBACK = (ROOT / "db/migrations/20260801_live_entry_position_projection_v1_rollback.sql").read_text()
 MANIFEST = json.loads((ROOT / "db/migrations/20260801_live_entry_position_projection_v1_manifest.json").read_text())
+CAPITAL = (ROOT / "db/migrations/20260821_capital_reservation_authority_v1.sql").read_text()
+BOUNDARY = (ROOT / "db/migrations/20260821_position_risk_boundary_authority_v1.sql").read_text()
+EXIT_COST = (ROOT / "db/migrations/20260821_z_live_exit_cost_authority_v1.sql").read_text()
+PRE_ENTRY_RISK = (ROOT / "db/migrations/20260822_pre_entry_risk_authority_v1.sql").read_text()
 
 GIT = "a" * 40
 INTENT = uuid.UUID("11111111-1111-5111-8111-111111111111")
@@ -38,6 +53,16 @@ ACK = uuid.UUID("33333333-3333-5333-8333-333333333333")
 CID = "ORC-L-BNBUSDC-TREN-1m-E-lei1d"
 ORDER = "okx-order-lei1d"
 START = datetime(2026, 8, 1, 8, 0, tzinfo=timezone.utc)
+IDENTITY = "a" * 64
+
+
+class _FeeClient:
+    def get_trade_fee(self, *, symbol, instrument_type):
+        return {"code": "0", "data": [{
+            "instType": instrument_type, "taker": "-0.001",
+            "maker": "-0.0005", "level": "Lv1", "ruleType": "normal",
+            "ts": str(int(START.timestamp() * 1000)),
+        }]}
 
 
 BASE = f"""
@@ -168,6 +193,79 @@ def _install(disposable_postgres_v16, purpose):
     return name, lambda: disposable_postgres_v16.connect(name)
 
 
+def _install_live_risk_authorities(
+    factory, *, include_exit_cost=True, include_boundary=True,
+):
+    intent = SimpleNamespace(
+        intent_id=INTENT,
+        deployment_id=SimpleNamespace(value="local-live"),
+        decision_id=uuid.UUID("44444444-4444-5444-8444-444444444444"),
+        symbol="BNBUSDC", strategy="TREND", interval="1m",
+        client_order_id=CID, content_fingerprint="c" * 64,
+        requested_qty=Decimal("1"), git_revision=GIT,
+    )
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(CAPITAL)
+            cur.execute(BOUNDARY)
+            cur.execute(EXIT_COST)
+            cur.execute(PRE_ENTRY_RISK)
+            cur.execute(
+                "CREATE TABLE candles(symbol text,interval text,"
+                "open_time timestamptz,close numeric)"
+            )
+            cur.execute(
+                "INSERT INTO candles VALUES ('BNBUSDC','1m',%s,100)",
+                (START,),
+            )
+            _, reservation_id = accept_live_entry_intent_cursor(
+                cur, intent=intent, account_identity_fingerprint=IDENTITY,
+                requested_notional=Decimal("100"), effective_at=START,
+            )
+            assert reservation_id is not None
+            if include_exit_cost:
+                capture_okx_exit_cost_snapshot_cursor(
+                    cur, exchange_client=_FeeClient(),
+                    deployment_id="local-live",
+                    account_identity_fingerprint=IDENTITY,
+                    symbol="BNBUSDC", observed_at=START,
+                )
+            if include_boundary:
+                assert accept_boundary_policy_cursor(
+                    cur, environment="LIVE", deployment_id="local-live",
+                    account_identity_fingerprint=IDENTITY,
+                    reservation_id=reservation_id,
+                    decision_id=str(intent.decision_id),
+                    intent_id=str(intent.intent_id),
+                    order_identity=str(intent.client_order_id),
+                    symbol=intent.symbol, strategy=intent.strategy,
+                    interval=intent.interval, effective_at=START,
+                    source_authority="TEST_LIVE_COMMITMENT",
+                    provenance={"test": True},
+                    boundary_distance_pct=Decimal("0.8"),
+                )[0] == "INSERTED"
+                assert freeze_live_pre_entry_risk_cursor(
+                    cur, intent=intent, reservation_id=reservation_id,
+                    account_identity_fingerprint=IDENTITY,
+                    reference_price_timestamp=START,
+                    effective_at=START,
+                )[0] == "INSERTED"
+            prepare_live_submission_cursor(
+                cur, reservation_id=reservation_id,
+                intent_identity=str(INTENT), effective_at=START,
+            )
+            reconcile_live_submission_cursor(
+                cur, reservation_id=reservation_id,
+                source_event_identity=f"ACK:{ACK}", accepted=True,
+                effective_at=START, order_identity=ORDER,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return intent
+
+
 def _seed_fill(factory, *, fill_id, trade_id, qty, price, fee, fee_asset, at):
     observation = EntryFillObservation.build(
         environment="live",deployment_id="local-live",adoption_id=1,generation=1,
@@ -242,11 +340,11 @@ def _seed_fill(factory, *, fill_id, trade_id, qty, price, fee, fee_asset, at):
     assert result.application_status is FillApplicationStatus.TRUE_DUPLICATE_APPLIED
 
 
-def _project(factory, *, commit=True):
+def _project(factory, *, commit=True, as_of=None):
     conn = factory()
     try:
         with conn.cursor() as cur:
-            result = project_entry_intent(cur, INTENT)
+            result = project_entry_intent(cur, INTENT, as_of=as_of)
         if commit:
             conn.commit()
         else:
@@ -274,6 +372,35 @@ def _state(factory):
                 (str(INTENT),),
             )
             return cur.fetchone()
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def _risk_state(factory):
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT lifecycle_state,original_quantity,"
+                "transferred_quantity,remaining_committed_quantity "
+                "FROM v_pre_entry_risk_current_v1 WHERE intent_id=%s",
+                (str(INTENT),),
+            )
+            pre = cur.fetchone()
+            cur.execute(
+                "SELECT state,remaining_reserved_notional,deployed_notional,"
+                "position_id FROM v_capital_reservation_current_v1 "
+                "WHERE intent_identity=%s",
+                (str(INTENT),),
+            )
+            reservation = cur.fetchone()
+            cur.execute(
+                "SELECT count(*) FROM pre_entry_risk_event_v1 "
+                "WHERE source_authority='LIVE_CANONICAL_OPEN_RISK_HANDOFF'"
+            )
+            handoffs = cur.fetchone()[0]
+            return pre, reservation, handoffs
     finally:
         conn.rollback()
         conn.close()
@@ -429,3 +556,211 @@ def test_correction_pending_blocks_further_trusted_projection(disposable_postgre
     blocked = _project(factory)
     assert blocked.outcome is EntryProjectionOutcome.BLOCKED
     assert _state(factory)[1:7] == before
+
+
+def test_live_partial_then_full_post_fill_risk_handoff_is_exact_and_idempotent(
+    disposable_postgres_v16,
+):
+    _name, factory = _install(disposable_postgres_v16, "live_risk_handoff")
+    _install_live_risk_authorities(factory)
+    _seed_fill(
+        factory, fill_id=60, trade_id=7501, qty="0.4", price="100",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=1),
+    )
+    first = _project(factory, as_of=START + timedelta(minutes=2))
+    assert first.post_fill_risk_handoff == "INSERTED"
+    assert _risk_state(factory) == (
+        (
+            "PARTIALLY_TRANSFERRED", Decimal("1.000000000000000000"),
+            Decimal("0.400000000000000000"), Decimal("0.600000000000000000"),
+        ),
+        (
+            "PARTIALLY_DEPLOYED", Decimal("60.000000000000000000"),
+            Decimal("40.000000000000000000"), first.position_id,
+        ),
+        1,
+    )
+    _seed_fill(
+        factory, fill_id=61, trade_id=7502, qty="0.6", price="101",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=3),
+    )
+    second = _project(factory, as_of=START + timedelta(minutes=4))
+    assert second.post_fill_risk_handoff == "INSERTED"
+    assert _risk_state(factory) == (
+        (
+            "REPLACED_BY_OPEN_RISK", Decimal("1.000000000000000000"),
+            Decimal("1.000000000000000000"), Decimal("0E-18"),
+        ),
+        (
+            "DEPLOYED", Decimal("0E-18"),
+            Decimal("100.000000000000000000"), first.position_id,
+        ),
+        2,
+    )
+    replay = _project(factory, as_of=START + timedelta(minutes=4))
+    assert replay.outcome is EntryProjectionOutcome.NO_OP
+    assert replay.post_fill_risk_handoff == "IDEMPOTENT"
+    assert _risk_state(factory)[2] == 2
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        ("reservation", "RESERVATION_DEPLOYMENT_INCOMPLETE:TEST_FAILURE"),
+        ("boundary", "BOUNDARY_INCOMPLETE:MISSING_BOUNDARY"),
+    ),
+)
+def test_live_post_fill_authority_failure_keeps_pre_entry_owner(
+    disposable_postgres_v16, monkeypatch, failure, expected,
+):
+    _name, factory = _install(disposable_postgres_v16, f"fail_{failure}")
+    _install_live_risk_authorities(factory)
+    if failure == "reservation":
+        monkeypatch.setattr(
+            "common.entry_position_projection.deploy_live_entry_fill_cursor",
+            lambda *args, **kwargs: "TEST_FAILURE",
+        )
+    else:
+        monkeypatch.setattr(
+            "common.entry_position_projection.activate_live_boundary_cursor",
+            lambda *args, **kwargs: "MISSING_BOUNDARY",
+        )
+    _seed_fill(
+        factory, fill_id=70, trade_id=7601, qty="0.4", price="100",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=1),
+    )
+    result = _project(factory, as_of=START + timedelta(minutes=2))
+    assert result.post_fill_risk_handoff == expected
+    assert _risk_state(factory)[0][0:4] == (
+        "ACTIVE_COMMITTED", Decimal("1.000000000000000000"),
+        Decimal("0E-18"), Decimal("1.000000000000000000"),
+    )
+    assert _risk_state(factory)[2] == 0
+
+
+def test_live_stale_exit_cost_and_incomplete_open_risk_fail_closed(
+    disposable_postgres_v16,
+):
+    _name, factory = _install(disposable_postgres_v16, "stale_exit")
+    _install_live_risk_authorities(factory)
+    _seed_fill(
+        factory, fill_id=80, trade_id=7701, qty="0.4", price="100",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=1),
+    )
+    stale = _project(factory, as_of=START + timedelta(hours=25))
+    assert stale.post_fill_risk_handoff == (
+        "EXIT_COST_INCOMPLETE:MISSING_EXIT_COST_AUTHORITY"
+    )
+    assert _risk_state(factory)[0][0] == "ACTIVE_COMMITTED"
+
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO candles VALUES ('BNBUSDC','1m',%s,99)",
+                (START + timedelta(minutes=5),),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    breached = _project(factory, as_of=START + timedelta(minutes=6))
+    assert breached.post_fill_risk_handoff == (
+        "OPEN_RISK_INCOMPLETE:BOUNDARY_BREACHED_UNRESOLVED"
+    )
+    assert _risk_state(factory)[0][0] == "ACTIVE_COMMITTED"
+    assert _risk_state(factory)[2] == 0
+
+
+def test_live_missing_mark_and_inventory_incomplete_converge_without_risk_gap(
+    disposable_postgres_v16,
+):
+    _name, factory = _install(disposable_postgres_v16, "mark_inventory_gate")
+    _install_live_risk_authorities(factory)
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM candles")
+        conn.commit()
+    finally:
+        conn.close()
+    _seed_fill(
+        factory, fill_id=85, trade_id=7751, qty="0.4", price="100",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=1),
+    )
+    missing_mark = _project(factory, as_of=START + timedelta(minutes=2))
+    assert missing_mark.post_fill_risk_handoff == (
+        "OPEN_RISK_INCOMPLETE:MISSING_MARK"
+    )
+    assert _risk_state(factory)[0][0] == "ACTIVE_COMMITTED"
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE positions SET inventory_evidence_status='INCOMPLETE' "
+                "WHERE id=%s", (missing_mark.position_id,),
+            )
+            cur.execute(
+                "INSERT INTO candles VALUES ('BNBUSDC','1m',%s,100)",
+                (START + timedelta(minutes=2),),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    inventory = _project(factory, as_of=START + timedelta(minutes=3))
+    assert inventory.post_fill_risk_handoff == "POSITION_INVENTORY_INCOMPLETE"
+    assert _risk_state(factory)[0][0] == "ACTIVE_COMMITTED"
+
+
+def test_live_projection_and_authority_writes_roll_back_atomically_on_exception(
+    disposable_postgres_v16, monkeypatch,
+):
+    _name, factory = _install(disposable_postgres_v16, "atomic_rollback")
+    _install_live_risk_authorities(factory)
+    _seed_fill(
+        factory, fill_id=86, trade_id=7752, qty="0.4", price="100",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=1),
+    )
+
+    def _deployment_failure(*args, **kwargs):
+        raise RuntimeError("TEST_RESERVATION_DEPLOYMENT_FAILURE")
+
+    monkeypatch.setattr(
+        "common.entry_position_projection.deploy_live_entry_fill_cursor",
+        _deployment_failure,
+    )
+    with pytest.raises(RuntimeError, match="TEST_RESERVATION_DEPLOYMENT_FAILURE"):
+        _project(factory, as_of=START + timedelta(minutes=2))
+    assert _state(factory) is None
+    pre, reservation, handoffs = _risk_state(factory)
+    assert pre[0] == "ACTIVE_COMMITTED"
+    assert reservation[0] == "EXCHANGE_ACK"
+    assert handoffs == 0
+
+
+def test_missing_fill_attribution_and_projection_conflict_never_release_pre_risk(
+    disposable_postgres_v16,
+):
+    _name, factory = _install(disposable_postgres_v16, "lineage_fail_closed")
+    _install_live_risk_authorities(factory)
+    assert _project(factory).outcome is EntryProjectionOutcome.NO_ELIGIBLE_FILL
+    assert _risk_state(factory)[0][0] == "ACTIVE_COMMITTED"
+    conn = factory()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO positions(symbol,strategy,\"interval\",status,side,qty,"
+                "entry_price,entry_time) VALUES "
+                "('BNBUSDC','TREND','1m','OPEN','LONG',1,100,now())"
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    _seed_fill(
+        factory, fill_id=90, trade_id=7801, qty="0.4", price="100",
+        fee="0.1", fee_asset="USDC", at=START + timedelta(minutes=1),
+    )
+    blocked = _project(factory, as_of=START + timedelta(minutes=2))
+    assert blocked.outcome is EntryProjectionOutcome.BLOCKED
+    assert blocked.detail == "OPEN_POSITION_WITHOUT_IMMUTABLE_INTENT_LINK"
+    assert _risk_state(factory)[0][0] == "ACTIVE_COMMITTED"
+    assert _risk_state(factory)[2] == 0
