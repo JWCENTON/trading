@@ -897,7 +897,12 @@ def create_simulated_order_cursor(
         if inserted is None:
             raise RuntimeError("SIMULATED_ORDER_INSERT_RETURNING_MISSING")
         inserted_order_id = int(inserted[0])
-        if order_class == FORWARD_ORDER_CLASS and not is_exit:
+        runtime_mode = str(os.getenv("TRADING_MODE", "PAPER")).strip().upper()
+        if (
+            order_class == FORWARD_ORDER_CLASS
+            and not is_exit
+            and runtime_mode == "PAPER"
+        ):
             commitment_effective_at = datetime.now(timezone.utc)
             paper_deployment = str(
                 os.getenv("DEPLOYMENT_ID")

@@ -6,6 +6,7 @@ import pytest
 from common.capital_reservation import (
     CapitalReservationEvidence,
     accepted_commitment_event,
+    deploy_live_entry_fill_cursor,
     paper_account_identity_fingerprint,
 )
 from common.live_managed_capital import LiveManagedCapitalEvidence
@@ -73,6 +74,30 @@ def test_entry_only_api_rejects_exit_purpose():
             requested_notional=Decimal("1"), effective_at=NOW,
             source_authority="TEST", provenance={}, purpose="EXIT",
         )
+
+
+def test_zero_live_fill_is_explicit_noop_without_deployment_write():
+    class Cursor:
+        def __init__(self):
+            self.queries = []
+            self.row = None
+
+        def execute(self, query, params=None):
+            self.queries.append(query)
+            self.row = ("capital_reservation_event_v1", "v_capital_reservation_current_v1")
+
+        def fetchone(self):
+            return self.row
+
+    cursor = Cursor()
+    assert deploy_live_entry_fill_cursor(
+        cursor, intent_id="11111111-1111-1111-1111-111111111111",
+        fill_evidence_id="22222222-2222-2222-2222-222222222222",
+        position_id=1, filled_quantity=Decimal("0"),
+        cumulative_filled_quantity=Decimal("0"),
+        requested_quantity=Decimal("1"), effective_at=NOW,
+    ) == "ZERO_FILL_NOOP"
+    assert len(cursor.queries) == 1
 
 
 def test_live_available_subtracts_only_internal_unreflected_once():

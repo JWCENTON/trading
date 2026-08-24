@@ -1035,21 +1035,18 @@ def insert_simulated_order(
     market_regime: str | None = None,
     regime_source_provenance: dict | None = None,
 ):
-    conn = get_db_conn()
-    cur = conn.cursor()
-    inserted = create_simulated_order_cursor(
-        cur, symbol=symbol, interval=interval, strategy=strategy, side=side,
-        price=Decimal(str(price)), quantity=Decimal(str(qty_btc)),
-        reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
-        market_regime=market_regime,
-        regime_source_provenance=regime_source_provenance,
-    )
-    if inserted:
-        conn.commit()
-    else:
-        conn.rollback()
-    cur.close()
-    conn.close()
+    with db_write_conn(get_db_conn) as (conn, cur):
+        inserted = create_simulated_order_cursor(
+            cur, symbol=symbol, interval=interval, strategy=strategy, side=side,
+            price=Decimal(str(price)), quantity=Decimal(str(qty_btc)),
+            reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
+            market_regime=market_regime,
+            regime_source_provenance=regime_source_provenance,
+        )
+        if inserted:
+            conn.commit()
+        else:
+            conn.rollback()
     return inserted
 
 

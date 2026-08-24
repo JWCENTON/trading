@@ -166,6 +166,8 @@ def _load_strategy(monkeypatch, strategy_dir):
         "DAILY_MAX_LOSS_PCT": "0",
         "DISABLE_HOURS": "",
         "ADAPTIVE_EARLY_CUT_SHADOW_ENABLED": "0",
+        "CAUSAL_DECISION_OBSERVATION_ENABLED": "0",
+        "FINAL_DECISION_PRODUCER_AUDIT_LEDGER_ENABLED": "0",
         "DEPLOYMENT_ID": "local-paper",
         "WALTRADE_DEPLOYMENT_ID": "local-paper",
     }
@@ -181,6 +183,68 @@ def _load_strategy(monkeypatch, strategy_dir):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _insert_simulated_order_kwargs(strategy_dir):
+    kwargs = {
+        "symbol": "BTCUSDC",
+        "interval": "1m",
+        "side": "BUY",
+        "price": 100,
+        "qty_btc": 0.1,
+        "reason": "TEST",
+        "candle_open_time": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "is_exit": False,
+    }
+    if strategy_dir != "bot_supertrend":
+        kwargs.update(rsi_14=50, ema_21=99)
+    return kwargs
+
+
+@pytest.mark.parametrize(
+    "strategy_dir", ["bot", "bot_bbrange", "bot_trend", "bot_supertrend"]
+)
+def test_simulated_order_writer_rolls_back_and_closes_after_body_exception(
+    monkeypatch, strategy_dir,
+):
+    module = _load_strategy(monkeypatch, strategy_dir)
+    events = []
+    conn = RecordingConnection("write", events)
+    monkeypatch.setattr(module, "get_db_conn", lambda: conn)
+    monkeypatch.setattr(
+        module,
+        "create_simulated_order_cursor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("hook failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="hook failed"):
+        module.insert_simulated_order(**_insert_simulated_order_kwargs(strategy_dir))
+
+    assert events == [
+        "write_rollback",
+        "write_cursor_close",
+        "write_close",
+    ]
+
+
+@pytest.mark.parametrize(
+    "strategy_dir", ["bot", "bot_bbrange", "bot_trend", "bot_supertrend"]
+)
+def test_simulated_order_writer_closes_after_guard_noop(monkeypatch, strategy_dir):
+    module = _load_strategy(monkeypatch, strategy_dir)
+    events = []
+    conn = RecordingConnection("write", events)
+    monkeypatch.setattr(module, "get_db_conn", lambda: conn)
+    monkeypatch.setattr(module, "create_simulated_order_cursor", lambda *_a, **_k: None)
+
+    assert module.insert_simulated_order(
+        **_insert_simulated_order_kwargs(strategy_dir)
+    ) is None
+    assert events == [
+        "write_rollback",
+        "write_cursor_close",
+        "write_close",
+    ]
 
 
 def _cleanup_case(
@@ -969,6 +1033,10 @@ def test_bbrange_run_strategy_uses_one_short_lived_candle_read(monkeypatch):
         },
     )
     monkeypatch.setattr(module, "get_open_position", lambda: None)
+    monkeypatch.setattr(
+        module, "evaluation_regime_fields",
+        lambda *_args, **_kwargs: (None, None, {}),
+    )
     monkeypatch.setattr(module, "heartbeat", lambda _info: None)
     monkeypatch.setattr(module, "emit_strategy_event", lambda **_event: None)
     monkeypatch.setattr(module, "emit_blocked", lambda **_event: None)

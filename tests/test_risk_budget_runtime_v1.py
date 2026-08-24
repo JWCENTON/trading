@@ -6,6 +6,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 import uuid
 
+import pytest
+
 from common.capital_reservation import paper_account_identity_fingerprint
 from common.live_drawdown_history import LiveDrawdownHistory
 from common.live_managed_capital import (
@@ -276,6 +278,94 @@ def test_shadow_hook_does_not_change_order_quantity_decision_or_reservation(
         "reservation", "boundary", "freeze", "shadow",
     ]
     assert calls[-1][1]["pre_entry_risk_id"] == risk_id
+
+
+def test_live_simulated_audit_order_skips_paper_reservation_wiring(monkeypatch):
+    import common.simulated_execution_evidence as execution
+
+    class Cursor:
+        connection = object()
+
+        def __init__(self):
+            self.next_row = None
+
+        def execute(self, query, params=None):
+            if "INSERT INTO simulated_orders" in query:
+                self.next_row = (43,)
+
+        def fetchone(self):
+            row, self.next_row = self.next_row, None
+            return row
+
+    monkeypatch.setattr(
+        execution, "detect_simulated_order_namespace",
+        lambda _conn: SimpleNamespace(
+            is_legacy=False, is_namespace_v1=True, issues=(),
+        ),
+    )
+    monkeypatch.setattr(
+        execution, "accept_paper_simulated_order_cursor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("LIVE must not invoke PAPER reservation wiring")
+        ),
+    )
+    monkeypatch.setattr(
+        execution, "capture_entry_opportunity_snapshot_fail_open_cursor",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setenv("TRADING_MODE", "LIVE")
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+
+    assert execution.create_simulated_order_cursor(
+        Cursor(), symbol="SOLUSDC", interval="5m", strategy="SUPERTREND",
+        side="BUY", price=Decimal("100"), quantity=Decimal("0.25"),
+        reason="LIVE_AUDIT", candle_open_time=NOW, is_exit=False,
+        market_regime=None, regime_source_provenance=None,
+    ) == 43
+
+
+def test_paper_reservation_rejects_live_deployment_identity(monkeypatch):
+    import common.simulated_execution_evidence as execution
+
+    class Cursor:
+        connection = object()
+
+        def __init__(self):
+            self.next_row = None
+
+        def execute(self, query, params=None):
+            if "INSERT INTO simulated_orders" in query:
+                self.next_row = (44,)
+            elif "to_regclass('public.capital_reservation_event_v1')" in query:
+                self.next_row = (
+                    "capital_reservation_event_v1",
+                    "v_capital_reservation_current_v1",
+                )
+
+        def fetchone(self):
+            row, self.next_row = self.next_row, None
+            return row
+
+    monkeypatch.setattr(
+        execution, "detect_simulated_order_namespace",
+        lambda _conn: SimpleNamespace(
+            is_legacy=False, is_namespace_v1=True, issues=(),
+        ),
+    )
+    monkeypatch.setattr(
+        execution, "capture_entry_opportunity_snapshot_fail_open_cursor",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setenv("TRADING_MODE", "PAPER")
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+
+    with pytest.raises(ValueError, match="CAPITAL_RESERVATION_PAPER_DEPLOYMENT_INVALID"):
+        execution.create_simulated_order_cursor(
+            Cursor(), symbol="SOLUSDC", interval="5m", strategy="SUPERTREND",
+            side="BUY", price=Decimal("100"), quantity=Decimal("0.25"),
+            reason="PAPER_ENTRY", candle_open_time=NOW, is_exit=False,
+            market_regime=None, regime_source_provenance=None,
+        )
 
 
 def _live_bundle(account="b" * 64):

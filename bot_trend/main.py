@@ -1278,21 +1278,20 @@ def insert_simulated_order(
     market_regime: str | None = None,
     regime_source_provenance: dict | None = None,
 ):
-    conn = get_db_conn()
-    cur = conn.cursor()
-    inserted = create_simulated_order_cursor(
-        cur, symbol=symbol, interval=interval, strategy=strategy, side=side,
-        price=Decimal(str(price)), quantity=Decimal(str(qty_btc)),
-        reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
-        rsi_14=None if rsi_14 is None else Decimal(str(rsi_14)),
-        ema_21=None if ema_21 is None else Decimal(str(ema_21)),
-        market_regime=market_regime,
-        regime_source_provenance=regime_source_provenance,
-    )
-    if inserted:
-        conn.commit()
-    else:
-        conn.rollback()
+    with db_write_conn(get_db_conn) as (conn, cur):
+        inserted = create_simulated_order_cursor(
+            cur, symbol=symbol, interval=interval, strategy=strategy, side=side,
+            price=Decimal(str(price)), quantity=Decimal(str(qty_btc)),
+            reason=reason, candle_open_time=candle_open_time, is_exit=is_exit,
+            rsi_14=None if rsi_14 is None else Decimal(str(rsi_14)),
+            ema_21=None if ema_21 is None else Decimal(str(ema_21)),
+            market_regime=market_regime,
+            regime_source_provenance=regime_source_provenance,
+        )
+        if inserted:
+            conn.commit()
+        else:
+            conn.rollback()
     if inserted:
         logging.info(
             "Simulated %s order at %.2f BTC qty=%.8f (reason=%s, strategy=%s)",
@@ -1303,8 +1302,6 @@ def insert_simulated_order(
             "Simulated order skipped by DB guard (symbol=%s interval=%s strategy=%s candle_open_time=%s is_exit=%s).",
             symbol, interval, strategy, candle_open_time, is_exit,
         )
-    cur.close()
-    conn.close()
     return inserted
 
 
