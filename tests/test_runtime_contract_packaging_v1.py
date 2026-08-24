@@ -11,6 +11,8 @@ REQUIRED_CONTRACTS = {
     "live_managed_capital_authority_v1_contract.json",
     "portfolio_state_v1_contract.json",
     "portfolio_state_v1_contract.sha256",
+    "risk_budget_authority_v1_contract.json",
+    "risk_budget_authority_v1_contract.sha256",
 }
 
 

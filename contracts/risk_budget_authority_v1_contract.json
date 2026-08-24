@@ -1,0 +1,104 @@
+{
+  "contract_version": "RISK_BUDGET_AUTHORITY_V1",
+  "mode": "READ_ONLY_SHADOW",
+  "execution_influence": false,
+  "policy": {
+    "semantic_version": "RISK_BUDGET_PRODUCT_POLICY_V1",
+    "states": ["NORMAL", "REDUCED", "NO_NEW_RISK", "PAUSED"],
+    "transition_model": "MULTI_FACTOR_RELATIVE_HISTORY",
+    "recovery_model": "PERSISTENCE_BASED_HYSTERESIS",
+    "numeric_calibration": "MISSING",
+    "numeric_calibration_source": "PAPER_EVIDENCE",
+    "missing_numeric_policy": "NULL_CAPACITY/MISSING_POLICY/BLOCK_NEW_RISK"
+  },
+  "required_inputs": [
+    "TOTAL_CAPITAL",
+    "OPEN_RISK",
+    "PRE_ENTRY_COMMITTED_RISK",
+    "CURRENT_DRAWDOWN_ABS",
+    "CURRENT_DRAWDOWN_PCT",
+    "MAX_DRAWDOWN_ABS",
+    "MAX_DRAWDOWN_PCT",
+    "RECOVERY_STATUS",
+    "CANONICAL_DRAWDOWN_HISTORY",
+    "ENVIRONMENT",
+    "DEPLOYMENT_ID",
+    "ACCOUNT_IDENTITY_FINGERPRINT",
+    "AS_OF",
+    "SOURCE_FINGERPRINTS",
+    "POLICY_VERSION",
+    "POLICY_FINGERPRINT"
+  ],
+  "excluded_inputs": [
+    "AVAILABLE_CAPITAL",
+    "PORTFOLIO_HEAT",
+    "CORRELATION",
+    "EXECUTABILITY",
+    "CAPITAL_ALLOCATION",
+    "DYNAMIC_SIZING"
+  ],
+  "source_fingerprint_keys": [
+    "portfolio_state",
+    "open_risk",
+    "pre_entry_risk",
+    "drawdown_history"
+  ],
+  "accounting": {
+    "used_risk": "OPEN_RISK + PRE_ENTRY_COMMITTED_RISK",
+    "available_risk_capacity": "max(0, TOTAL_RISK_CAPACITY - USED_RISK)",
+    "capital_reservation_is_risk": false,
+    "pre_entry_active_states": ["ACTIVE_COMMITTED", "PARTIALLY_TRANSFERRED"],
+    "risk_ownership": "ONE_RISK_OWNER_PER_QUANTITY_SLICE"
+  },
+  "statuses": [
+    "CANONICAL",
+    "MISSING_POLICY",
+    "INCOMPLETE_PORTFOLIO_STATE",
+    "INCOMPLETE_DRAWDOWN_HISTORY",
+    "INCOMPLETE_OPEN_RISK",
+    "INCOMPLETE_PRE_ENTRY_RISK",
+    "ACCOUNT_IDENTITY_MISMATCH",
+    "SOURCE_FINGERPRINT_MISMATCH",
+    "STALE_AUTHORITY",
+    "RISK_CAPACITY_EXHAUSTED"
+  ],
+  "advisory_results": ["ALLOW", "REDUCE", "BLOCK_NEW_RISK"],
+  "fail_closed": "Every non-CANONICAL required truth state returns advisory BLOCK_NEW_RISK",
+  "concurrency": {
+    "scope": "environment/deployment_id/account_identity_fingerprint",
+    "mechanism": "PostgreSQL transaction-scoped advisory lock",
+    "requirement": "re-read OPEN_RISK and PRE_ENTRY_COMMITTED_RISK after lock and before future commitment",
+    "active_execution_wiring": false
+  },
+  "storage": {
+    "event_table": "risk_budget_event_v1",
+    "current_view": "v_risk_budget_current_v1",
+    "event_types": ["STATE_EVALUATION", "PRE_ENTRY_GATE_DECISION"],
+    "append_only": true,
+    "historical_backfill": false,
+    "gate_event_identity": "canonical decision identity used to join later Financial Truth outcomes",
+    "migration": "db/migrations/20260824_risk_budget_authority_v1.sql"
+  },
+  "paper": {
+    "read_only_shadow_allowed": true,
+    "controlled_influence_ready": false,
+    "controlled_influence_gate": "Future approved numeric policy and history-sufficiency calibration contract required"
+  },
+  "live": {
+    "influence": false,
+    "promotion": "Separate Product Owner approval required"
+  },
+  "effectiveness_evidence": [
+    "NET_PNL_AFTER_FEES",
+    "EXPECTANCY",
+    "MAX_DRAWDOWN",
+    "FEE_PRESSURE",
+    "TRADES_ACCEPTED",
+    "TRADES_BLOCKED",
+    "LOSSES_AVOIDED",
+    "MISSED_WINNERS",
+    "CAPITAL_UTILIZATION",
+    "RISK_UTILIZATION",
+    "EQUITY_CURVE"
+  ]
+}
