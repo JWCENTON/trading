@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 import uuid
 
 from common.capital_reservation import paper_account_identity_fingerprint
+from common.live_drawdown_history import LiveDrawdownHistory
+from common.live_managed_capital import (
+    LiveManagedCapitalBaseline,
+    LiveManagedCapitalEvidence,
+    LiveManagedCapitalReadContext,
+    RawOkxAccountSnapshot,
+)
+from common.owner_capital_flow_sync import OwnerFlowHistoryAuthority
 from common.pre_entry_risk import CommittedPreEntryRiskEvidence
 from common.risk_budget import evaluate_state, missing_numeric_policy_evidence
 import common.risk_budget_runtime as runtime
@@ -169,10 +177,18 @@ def test_runtime_call_sites_are_shadow_only_and_packaged():
     root = Path(__file__).resolve().parents[1]
     automation = (root / "automation_runner/main.py").read_text()
     execution = (root / "common/simulated_execution_evidence.py").read_text()
+    live_execution = (root / "common/execution.py").read_text()
     dockerfile = (root / "automation_runner/Dockerfile").read_text()
-    assert "run_paper_risk_budget_state_evaluation_cycle()" in automation
+    assert "run_risk_budget_state_evaluation_cycle(" in automation
+    assert "exchange_client=(" in automation
     assert "record_paper_pre_entry_shadow_gate_fail_open_cursor" in execution
     assert "execution_effect=NONE" in execution
+    assert "record_live_pre_entry_shadow_gate_fail_open_cursor" in live_execution
+    assert live_execution.index("freeze_live_pre_entry_risk_cursor(") < live_execution.index(
+        "record_live_pre_entry_shadow_gate_fail_open_cursor("
+    ) < live_execution.index("prepare_live_submission_cursor(")
+    assert "risk_budget_live_pre_entry_shadow_v1" in live_execution
+    assert "execution_effect=NONE" in live_execution
     assert "COPY common /app/common" in dockerfile
 
 
@@ -260,3 +276,194 @@ def test_shadow_hook_does_not_change_order_quantity_decision_or_reservation(
         "reservation", "boundary", "freeze", "shadow",
     ]
     assert calls[-1][1]["pre_entry_risk_id"] == risk_id
+
+
+def _live_bundle(account="b" * 64):
+    capital = LiveManagedCapitalEvidence(
+        managed_equity=Decimal("99"), managed_equity_status="CANONICAL",
+        raw_usdc_avail_bal=Decimal("80"), available_capital=Decimal("80"),
+        available_capital_status="CANONICAL", reserved_capital=Decimal("1"),
+        reserved_capital_status="CANONICAL",
+        flow_adjusted_equity=Decimal("97"),
+        cumulative_flow_in_usdc=Decimal("3"),
+        cumulative_flow_out_usdc=Decimal("1"),
+        inventory_reconciliation_status="CANONICAL",
+        balance_observed_at=NOW, mark_oldest_at=NOW,
+        incomplete_reasons=(), flow_history_status="CANONICAL",
+        flow_sync_through=NOW,
+    )
+    baseline = LiveManagedCapitalBaseline(
+        accepted_at=NOW, account_identity_fingerprint=account,
+        baseline_managed_equity=Decimal("100"),
+        activation_fingerprint="d" * 64,
+    )
+    context = LiveManagedCapitalReadContext(
+        snapshot=RawOkxAccountSnapshot(account, NOW, ()),
+        marks={}, inventory_quantities={}, inventory_limits={},
+    )
+    return capital, baseline, Decimal("100"), context
+
+
+def _live_history(**changes):
+    value = LiveDrawdownHistory(
+        current_managed_equity=Decimal("99"),
+        current_flow_adjusted_equity=Decimal("97"),
+        peak_flow_adjusted_equity=Decimal("110"),
+        current_drawdown_abs=Decimal("-13"),
+        current_drawdown_pct=Decimal("-11.81818181818181818181818182"),
+        max_drawdown_abs=Decimal("-15"),
+        max_drawdown_pct=Decimal("-13.63636363636363636363636364"),
+        recovery_status="IN_DRAWDOWN", peak_timestamp=NOW,
+        drawdown_start=NOW, recovery_timestamp=None,
+        drawdown_duration=None, history_status="CANONICAL",
+        latest_observation_at=NOW,
+    )
+    return replace(value, **changes)
+
+
+def test_live_adapter_uses_canonical_authorities_and_missing_policy_is_advisory(monkeypatch):
+    account = "b" * 64
+    seen = {}
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda _cur, **kwargs: seen.update(kwargs) or CommittedPreEntryRiskEvidence(
+            Decimal("0.75"), 1, "CANONICAL"
+        ),
+    )
+    adapted = runtime.load_canonical_risk_budget_inputs_cursor(
+        object(), deployment_id="local-live", as_of=NOW,
+        runtime_revision=REVISION, exchange_client=object(),
+        live_managed_loader=lambda *args, **kwargs: _live_bundle(account),
+        live_drawdown_reader=lambda *args, **kwargs: _live_history(),
+        owner_flow_loader=lambda *args, **kwargs: OwnerFlowHistoryAuthority(
+            Decimal("3"), Decimal("1"), NOW, "CANONICAL", "run-1"
+        ),
+        portfolio_state_reader=lambda *args, **kwargs: State(),
+    )
+    snapshot = evaluate_state(adapted, missing_numeric_policy_evidence())
+    assert adapted.environment == "LIVE"
+    assert adapted.account_identity_fingerprint == account
+    assert adapted.current_drawdown_abs == Decimal("-13")
+    assert adapted.max_drawdown_abs == Decimal("-15")
+    assert adapted.drawdown_history_status == "CANONICAL"
+    assert adapted.open_risk == Decimal("2.25")
+    assert adapted.pre_entry_committed_risk == Decimal("0.75")
+    assert snapshot.used_risk == Decimal("3.00")
+    assert snapshot.authority_status == "MISSING_POLICY"
+    assert snapshot.total_risk_capacity is None
+    assert snapshot.available_risk_capacity is None
+    assert seen["environment"] == "LIVE"
+    assert set(adapted.source_fingerprints) == {
+        "portfolio_state", "open_risk", "pre_entry_risk", "drawdown_history",
+    }
+
+
+def test_live_adapter_fails_closed_for_stale_and_identity_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    bundle = _live_bundle("b" * 64)
+    mismatched_context = LiveManagedCapitalReadContext(
+        snapshot=RawOkxAccountSnapshot("c" * 64, NOW, ()),
+        marks={}, inventory_quantities={}, inventory_limits={},
+    )
+    adapted = runtime.load_canonical_risk_budget_inputs_cursor(
+        object(), deployment_id="local-live", as_of=NOW,
+        exchange_client=object(),
+        live_managed_loader=lambda *args, **kwargs: (*bundle[:3], mismatched_context),
+        live_drawdown_reader=lambda *args, **kwargs: _live_history(
+            history_status="STALE_HISTORY"
+        ),
+        owner_flow_loader=lambda *args, **kwargs: OwnerFlowHistoryAuthority(
+            None, None, NOW, "STALE_SYNC", "run-1"
+        ),
+        portfolio_state_reader=lambda *args, **kwargs: State(),
+    )
+    snapshot = evaluate_state(adapted, missing_numeric_policy_evidence())
+    assert adapted.identity_status == "ACCOUNT_IDENTITY_MISMATCH"
+    assert adapted.freshness_status == "STALE_AUTHORITY"
+    assert snapshot.authority_status == "ACCOUNT_IDENTITY_MISMATCH"
+    assert snapshot.total_risk_capacity is None
+
+
+def test_live_adapter_fails_closed_for_noncanonical_owner_flow(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    adapted = runtime.load_canonical_risk_budget_inputs_cursor(
+        object(), deployment_id="local-live", as_of=NOW,
+        exchange_client=object(),
+        live_managed_loader=lambda *args, **kwargs: _live_bundle(),
+        live_drawdown_reader=lambda *args, **kwargs: _live_history(),
+        owner_flow_loader=lambda *args, **kwargs: OwnerFlowHistoryAuthority(
+            None, None, NOW, "INCOMPLETE_CAPITAL_FLOW", "run-1"
+        ),
+        portfolio_state_reader=lambda *args, **kwargs: State(),
+    )
+    snapshot = evaluate_state(adapted, missing_numeric_policy_evidence())
+    assert adapted.drawdown_history_status == "INCOMPLETE_CAPITAL_FLOW"
+    assert snapshot.authority_status == "INCOMPLETE_DRAWDOWN_HISTORY"
+    assert snapshot.available_risk_capacity is None
+
+
+def test_all_live_incomplete_truth_states_block_advisory_without_capacity(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    canonical = runtime.load_canonical_risk_budget_inputs_cursor(
+        object(), deployment_id="local-live", as_of=NOW,
+        exchange_client=object(),
+        live_managed_loader=lambda *args, **kwargs: _live_bundle(),
+        live_drawdown_reader=lambda *args, **kwargs: _live_history(),
+        owner_flow_loader=lambda *args, **kwargs: OwnerFlowHistoryAuthority(
+            Decimal("3"), Decimal("1"), NOW, "CANONICAL", "run-1"
+        ),
+        portfolio_state_reader=lambda *args, **kwargs: State(),
+    )
+    cases = (
+        (replace(canonical, total_capital_status="INCOMPLETE"), "INCOMPLETE_PORTFOLIO_STATE"),
+        (replace(canonical, drawdown_history_status="INCOMPLETE"), "INCOMPLETE_DRAWDOWN_HISTORY"),
+        (replace(canonical, open_risk_status="INCOMPLETE"), "INCOMPLETE_OPEN_RISK"),
+        (replace(canonical, pre_entry_risk_status="INCOMPLETE"), "INCOMPLETE_PRE_ENTRY_RISK"),
+        (replace(canonical, identity_status="MISMATCH"), "ACCOUNT_IDENTITY_MISMATCH"),
+        (replace(canonical, source_fingerprint_status="MISMATCH"), "SOURCE_FINGERPRINT_MISMATCH"),
+        (replace(canonical, freshness_status="STALE"), "STALE_AUTHORITY"),
+    )
+    for inputs, expected in cases:
+        snapshot = evaluate_state(inputs, missing_numeric_policy_evidence())
+        assert snapshot.authority_status == expected
+        assert snapshot.total_risk_capacity is None
+        assert snapshot.available_risk_capacity is None
+
+
+def test_live_shadow_fail_open_isolated_by_savepoint(monkeypatch):
+    calls = []
+
+    class Cursor:
+        def execute(self, query, params=None):
+            calls.append(query)
+
+    monkeypatch.setattr(
+        runtime, "record_pre_entry_shadow_gate_cursor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("evidence only")),
+    )
+    result = runtime.record_live_pre_entry_shadow_gate_fail_open_cursor(
+        Cursor(), pre_entry_risk_id=uuid.uuid4(), deployment_id="local-live",
+        as_of=NOW, git_revision=REVISION, exchange_client=object(),
+    )
+    assert result.status == "EVIDENCE_FAILURE_EXECUTION_UNCHANGED"
+    assert calls == [
+        "SAVEPOINT risk_budget_live_shadow_gate_v1",
+        "ROLLBACK TO SAVEPOINT risk_budget_live_shadow_gate_v1",
+        "RELEASE SAVEPOINT risk_budget_live_shadow_gate_v1",
+    ]
+    assert runtime.RISK_BUDGET_EXECUTION_INFLUENCE is False

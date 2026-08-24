@@ -23,6 +23,7 @@ from common.risk_budget import (
     persist_event_cursor,
 )
 from common.risk_budget_runtime import (
+    PRODUCER_IDENTITY,
     persist_shadow_gate_evaluation_cursor,
     persist_state_evaluation_cursor,
 )
@@ -260,6 +261,61 @@ def test_runtime_producer_persists_incomplete_truth_before_missing_policy(dispos
             assert cur.fetchone() == (
                 "INCOMPLETE_DRAWDOWN_HISTORY", ["INCOMPLETE_DRAWDOWN_HISTORY"],
             )
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_live_runtime_state_and_shadow_gate_are_append_only_advisory(disposable_postgres_v16):
+    _, conn = database(disposable_postgres_v16)
+    try:
+        apply(conn)
+        live_inputs = inputs(
+            environment="LIVE", deployment_id="local-live",
+            account_identity_fingerprint=IDENTITY,
+        )
+
+        def loader(_cur, **kwargs):
+            assert kwargs.get("exchange_client") is not None
+            return live_inputs
+
+        candidate_id = uuid.uuid4()
+        exchange_client = object()
+        with conn.cursor() as cur:
+            state = persist_state_evaluation_cursor(
+                cur, deployment_id="local-live", boundary=NOW, as_of=NOW,
+                git_revision=REVISION, exchange_client=exchange_client,
+                input_loader=loader,
+            )
+            gate = persist_shadow_gate_evaluation_cursor(
+                cur, pre_entry_risk_id=candidate_id,
+                deployment_id="local-live", as_of=NOW,
+                git_revision=REVISION,
+                candidate_pre_entry_risk=Decimal("0.5"),
+                candidate_evidence_fingerprint="c" * 64,
+                candidate_account_identity_fingerprint=IDENTITY,
+                decision_identity="live-natural-decision-1",
+                exchange_client=exchange_client, input_loader=loader,
+            )
+            assert state.authority_status == "MISSING_POLICY"
+            assert gate.decision.result == "BLOCK_NEW_RISK"
+            assert gate.decision.authority_status == "MISSING_POLICY"
+            cur.execute(
+                "SELECT environment,deployment_id,producer_identity,"
+                "advisory_result,total_risk_capacity,available_risk_capacity "
+                "FROM risk_budget_event_v1 ORDER BY event_type"
+            )
+            assert cur.fetchall() == [
+                (
+                    "LIVE", "local-live",
+                    "live-entry:RISK_BUDGET_AUTHORITY_V1",
+                    "BLOCK_NEW_RISK", None, None,
+                ),
+                (
+                    "LIVE", "local-live", PRODUCER_IDENTITY,
+                    None, None, None,
+                ),
+            ]
         conn.rollback()
     finally:
         conn.close()

@@ -935,6 +935,9 @@ def place_live_order(
             )
             from common.position_risk_boundary import accept_boundary_policy_cursor
             from common.pre_entry_risk import freeze_live_pre_entry_risk_cursor
+            from common.risk_budget_runtime import (
+                record_live_pre_entry_shadow_gate_fail_open_cursor,
+            )
 
             clock = entry_submission_clock or (
                 lambda: datetime.now(timezone.utc)
@@ -1076,7 +1079,7 @@ def place_live_order(
                                                 "intent_fingerprint": intent.content_fingerprint,
                                             },
                                         )
-                                        freeze_live_pre_entry_risk_cursor(
+                                        _, pre_entry_risk_id = freeze_live_pre_entry_risk_cursor(
                                             reservation_cur, intent=intent,
                                             reservation_id=reservation_id,
                                             account_identity_fingerprint=str(identity_row[0]),
@@ -1084,6 +1087,20 @@ def place_live_order(
                                                 entry_reference_price_timestamp
                                             ), effective_at=clock(),
                                         )
+                                        if pre_entry_risk_id is not None:
+                                            shadow = record_live_pre_entry_shadow_gate_fail_open_cursor(
+                                                reservation_cur,
+                                                pre_entry_risk_id=pre_entry_risk_id,
+                                                deployment_id=deployment.value,
+                                                as_of=clock(),
+                                                git_revision=runtime_git_revision,
+                                                exchange_client=client,
+                                            )
+                                            logging.info(
+                                                "risk_budget_live_pre_entry_shadow_v1 "
+                                                "status=%s execution_effect=NONE",
+                                                shadow.status,
+                                            )
                                         prepare_live_submission_cursor(
                                             reservation_cur,
                                             reservation_id=reservation_id,

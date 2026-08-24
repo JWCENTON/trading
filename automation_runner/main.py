@@ -68,7 +68,7 @@ from common.live_drawdown_history import (
 )
 from common.portfolio_state import read_portfolio_state
 from common.risk_budget_runtime import (
-    run_paper_risk_budget_state_evaluation_cycle,
+    run_risk_budget_state_evaluation_cycle,
 )
 
 cfg = RuntimeConfig.from_env()
@@ -3853,17 +3853,20 @@ def main():
             except Exception:
                 logging.exception("thesis_evidence_bundle_v1 failed")
 
-            if cfg.trading_mode.upper() == "PAPER":
-                try:
-                    risk_budget = run_paper_risk_budget_state_evaluation_cycle()
-                    logging.info(
-                        "risk_budget_state_evaluation_v1 status=%s boundary=%s "
-                        "authority_status=%s execution_effect=NONE",
-                        risk_budget.status, risk_budget.boundary,
-                        risk_budget.authority_status,
+            try:
+                risk_budget = run_risk_budget_state_evaluation_cycle(
+                    exchange_client=(
+                        client if cfg.trading_mode.upper() == "LIVE" else None
                     )
-                except Exception:
-                    logging.exception("risk_budget_state_evaluation_v1 failed")
+                )
+                logging.info(
+                    "risk_budget_state_evaluation_v1 status=%s boundary=%s "
+                    "authority_status=%s execution_effect=NONE",
+                    risk_budget.status, risk_budget.boundary,
+                    risk_budget.authority_status,
+                )
+            except Exception:
+                logging.exception("risk_budget_state_evaluation_v1 failed")
 
             run_independent_refresh_job(
                 conn,

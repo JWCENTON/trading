@@ -729,6 +729,116 @@ def test_common_entry_gate_commits_before_wire_and_returns_linked_ack(
     ]
 
 
+def test_live_risk_budget_shadow_cannot_change_entry_submission(monkeypatch):
+    from common import capital_reservation, position_risk_boundary, pre_entry_risk
+    from common import risk_budget_runtime
+
+    repository = StubRepository()
+    repository.resolve_active_adoption = lambda **_: ActiveEntrySubmissionAdoption(
+        adoption_id=1, generation=1, environment="live",
+        deployment_id="local-live", git_revision=GIT_REVISION,
+    )
+    account = "a" * 64
+    reservation_id = uuid.uuid4()
+    risk_id = uuid.uuid4()
+    calls = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params=None):
+            calls.append(("sql", query, params))
+
+        def fetchone(self):
+            return (account,)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+    class Client:
+        def place_market_order(self, **kwargs):
+            calls.append(("network", kwargs))
+            return {"orderId": "okx-order-shadow", "status": "NEW", "executedQty": "0"}
+
+        def find_order_by_client_order_id(self, **_kwargs):
+            return {"outcome": "NOT_FOUND", "order": None}
+
+    monkeypatch.setenv("DEPLOYMENT_ID", "local-live")
+    monkeypatch.setenv("GIT_SHA", GIT_REVISION)
+    monkeypatch.setattr(
+        execution, "preflight_live_order",
+        lambda *_args, **_kwargs: {"ok": True, "qty_adj": 0.033895, "notional": Decimal("10")},
+    )
+    monkeypatch.setattr(
+        capital_reservation, "reservation_schema_available_cursor", lambda _cur: True,
+    )
+    monkeypatch.setattr(
+        capital_reservation, "accept_live_entry_intent_cursor",
+        lambda _cur, **kwargs: calls.append(("reservation", kwargs))
+        or ("INSERTED", reservation_id),
+    )
+    monkeypatch.setattr(
+        position_risk_boundary, "accept_boundary_policy_cursor",
+        lambda _cur, **kwargs: calls.append(("boundary", kwargs)) or "INSERTED",
+    )
+    monkeypatch.setattr(
+        pre_entry_risk, "freeze_live_pre_entry_risk_cursor",
+        lambda _cur, **kwargs: calls.append(("freeze", kwargs)) or ("INSERTED", risk_id),
+    )
+    monkeypatch.setattr(
+        risk_budget_runtime, "record_live_pre_entry_shadow_gate_fail_open_cursor",
+        lambda _cur, **kwargs: calls.append(("shadow", kwargs))
+        or risk_budget_runtime.ShadowGateResult("INSERTED"),
+    )
+    monkeypatch.setattr(
+        capital_reservation, "prepare_live_submission_cursor",
+        lambda _cur, **kwargs: calls.append(("prepare", kwargs)) or "INSERTED",
+    )
+    monkeypatch.setattr(
+        capital_reservation, "reconcile_live_submission_cursor",
+        lambda _cur, **kwargs: calls.append(("reconcile", kwargs)) or "INSERTED",
+    )
+
+    result = execution.place_live_order(
+        Client(), "BNBUSDC", "BUY", 0.033895,
+        trading_mode="LIVE", live_orders_enabled=True, quote_asset="USDC",
+        panic_disable_trading=False, live_max_notional=0.0,
+        client_order_id=_intent().client_order_id, strategy="TREND",
+        interval="1m", exchange_source="okx", order_purpose="ENTRY",
+        entry_submission_mode=EntrySubmissionMode.ENFORCE,
+        entry_submission_repository=repository,
+        entry_submission_connection_factory=Connection,
+        entry_submission_clock=lambda: ACKNOWLEDGED_AT,
+        entry_reference_price_timestamp=PREPARED_AT,
+    )
+    named = [call[0] for call in calls if call[0] != "sql"]
+    assert named == [
+        "reservation", "boundary", "freeze", "shadow", "prepare",
+        "network", "reconcile",
+    ]
+    assert result["ok"] is True
+    assert result["order_accepted"] is True
+    assert result["requested_qty"] == 0.033895
+    assert calls[[call[0] for call in calls].index("network")][1]["quantity"] == "0.033895"
+    shadow_kwargs = next(call[1] for call in calls if call[0] == "shadow")
+    assert shadow_kwargs["pre_entry_risk_id"] == risk_id
+    assert shadow_kwargs["exchange_client"].__class__ is Client
+
+
 def test_lei1d_enforce_never_projects_position_from_ack_execution_fields(
     monkeypatch,
 ):
