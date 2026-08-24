@@ -64,6 +64,22 @@
   ],
   "advisory_results": ["ALLOW", "REDUCE", "BLOCK_NEW_RISK"],
   "fail_closed": "Every non-CANONICAL required truth state returns advisory BLOCK_NEW_RISK",
+  "live_state_evaluation_boundary": {
+    "scheduler": "EXISTING_AUTOMATION_RUNNER_TICK",
+    "producer_order": [
+      "OWNER_CAPITAL_FLOW_SYNC_AUTHORITY_V1",
+      "LIVE_DRAWDOWN_HISTORY_AUTHORITY_V1",
+      "RISK_BUDGET_AUTHORITY_V1"
+    ],
+    "canonical_as_of": "LATEST_CANONICAL_LIVE_DRAWDOWN_OBSERVATION_COVERED_BY_CANONICAL_OWNER_FLOW_WATERMARK",
+    "portfolio_and_open_risk_source": "IMMUTABLE_PORTFOLIO_STATE_EVIDENCE_FROM_SELECTED_DRAWDOWN_OBSERVATION",
+    "pre_entry_risk_source": "APPEND_ONLY_PRE_ENTRY_RISK_EVENTS_EFFECTIVE_AT_OR_BEFORE_CANONICAL_AS_OF",
+    "owner_flow_safety_lag_seconds": 300,
+    "drawdown_cadence_seconds": 900,
+    "same_boundary_behavior": "EXPECTED_WAITING_FOR_UPSTREAM_BOUNDARY_NO_EVENT",
+    "actual_stale_behavior": "STALE_AUTHORITY_NO_FORWARD_FILL",
+    "forward_fill": false
+  },
   "concurrency": {
     "scope": "environment/deployment_id/account_identity_fingerprint",
     "mechanism": "PostgreSQL transaction-scoped advisory lock",

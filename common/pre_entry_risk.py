@@ -913,6 +913,7 @@ def load_committed_pre_entry_risk_evidence_cursor(
     cur: Any, *, environment: str, deployment_id: str,
     account_identity_fingerprint: str,
     exclude_pre_entry_risk_id: uuid.UUID | None = None,
+    as_of: datetime | None = None,
 ) -> CommittedPreEntryRiskEvidence:
     """Return the one canonical aggregate future Risk Budget may consume."""
     if not pre_entry_risk_schema_available_cursor(cur):
@@ -926,14 +927,25 @@ def load_committed_pre_entry_risk_evidence_cursor(
     )
     if exclude_pre_entry_risk_id is not None:
         params += (str(exclude_pre_entry_risk_id),)
+    if as_of is not None and as_of.tzinfo is None:
+        raise ValueError("PRE_ENTRY_RISK_AS_OF_TIMEZONE_REQUIRED")
+    source = "v_pre_entry_risk_current_v1"
+    as_of_params: tuple[Any, ...] = ()
+    if as_of is not None:
+        source = (
+            "(SELECT DISTINCT ON (pre_entry_risk_id) * "
+            "FROM pre_entry_risk_event_v1 WHERE effective_at<=%s "
+            "ORDER BY pre_entry_risk_id,event_sequence DESC) current_at_boundary"
+        )
+        as_of_params = (as_of,)
     cur.execute(
         "SELECT count(*),coalesce(sum(total_pre_entry_risk),0),"
         "count(*) FILTER (WHERE evidence_status<>'CANONICAL') "
-        "FROM v_pre_entry_risk_current_v1 WHERE environment=%s "
+        f"FROM {source} WHERE environment=%s "
         "AND deployment_id=%s AND account_identity_fingerprint=%s "
         "AND lifecycle_state IN ('ACTIVE_COMMITTED','PARTIALLY_TRANSFERRED')"
         + exclusion_sql,
-        params,
+        as_of_params + params,
     )
     count, total, incomplete = cur.fetchone()
     if int(incomplete or 0) != 0:

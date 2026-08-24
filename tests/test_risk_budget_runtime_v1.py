@@ -182,6 +182,9 @@ def test_runtime_call_sites_are_shadow_only_and_packaged():
     live_execution = (root / "common/execution.py").read_text()
     dockerfile = (root / "automation_runner/Dockerfile").read_text()
     assert "run_risk_budget_state_evaluation_cycle(" in automation
+    assert automation.rindex("run_owner_capital_flow_sync_if_due(") < automation.rindex(
+        "run_live_drawdown_history_cycle()"
+    ) < automation.rindex("run_risk_budget_state_evaluation_cycle(")
     assert "exchange_client=(" in automation
     assert "record_paper_pre_entry_shadow_gate_fail_open_cursor" in execution
     assert "execution_effect=NONE" in execution
@@ -192,6 +195,118 @@ def test_runtime_call_sites_are_shadow_only_and_packaged():
     assert "risk_budget_live_pre_entry_shadow_v1" in live_execution
     assert "execution_effect=NONE" in live_execution
     assert "COPY common /app/common" in dockerfile
+
+
+class BoundaryCursor:
+    def __init__(self, observation, flow):
+        self.rows = [
+            ("v_live_drawdown_history_observation_v1",
+             "v_owner_capital_flow_sync_authority_v1"),
+            observation,
+            flow,
+        ]
+
+    def execute(self, query, params=None):
+        pass
+
+    def fetchone(self):
+        return self.rows.pop(0)
+
+
+def test_live_boundary_waits_without_fabricating_when_owner_flow_is_behind():
+    observed = NOW - timedelta(minutes=4)
+    state = State().serializable()
+    result = runtime.resolve_live_canonical_risk_evaluation_boundary_cursor(
+        BoundaryCursor(
+            (observed, "b" * 64, "CANONICAL", state,
+             runtime.live_drawdown_fingerprint(state)),
+            ("CANONICAL", observed - timedelta(seconds=1)),
+        ),
+        deployment_id="local-live", scheduler_time=NOW,
+    )
+    assert result.status == "EXPECTED_WAITING_FOR_UPSTREAM_BOUNDARY"
+    assert result.as_of == observed
+    assert result.authority_status == "INCOMPLETE_CAPITAL_FLOW"
+
+
+def test_live_boundary_keeps_true_stale_authority_fail_closed(monkeypatch):
+    observed = NOW - timedelta(minutes=31)
+    state = State().serializable()
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    result = runtime.resolve_live_canonical_risk_evaluation_boundary_cursor(
+        BoundaryCursor(
+            (observed, "b" * 64, "CANONICAL", state,
+             runtime.live_drawdown_fingerprint(state)),
+            ("CANONICAL", observed),
+        ),
+        deployment_id="local-live", scheduler_time=NOW,
+    )
+    assert result.status == "ACTUAL_STALE_AUTHORITY"
+    assert result.authority_status == "STALE_AUTHORITY"
+
+
+def test_live_boundary_selects_latest_jointly_canonical_as_of(monkeypatch):
+    observed = NOW - timedelta(minutes=5)
+    state = State().serializable()
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    result = runtime.resolve_live_canonical_risk_evaluation_boundary_cursor(
+        BoundaryCursor(
+            (observed, "b" * 64, "CANONICAL", state,
+             runtime.live_drawdown_fingerprint(state)),
+            ("CANONICAL", observed + timedelta(seconds=1)),
+        ),
+        deployment_id="local-live", scheduler_time=NOW,
+    )
+    assert result == runtime.CanonicalRiskEvaluationBoundary(
+        "CANONICAL", observed, "b" * 64
+    )
+
+
+def test_live_common_boundary_uses_immutable_portfolio_and_reaches_missing_policy(
+    monkeypatch,
+):
+    account = "b" * 64
+    state_payload = State().serializable()
+    state_fingerprint = runtime.live_drawdown_fingerprint(state_payload)
+
+    class Cursor:
+        def execute(self, query, params=None):
+            pass
+
+        def fetchone(self):
+            return (account, state_payload, state_fingerprint, "CANONICAL")
+
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0.75"), 1, "CANONICAL"
+        ),
+    )
+    inputs = runtime.load_canonical_risk_budget_inputs_cursor(
+        Cursor(), deployment_id="local-live", as_of=NOW,
+        exchange_client=object(), canonical_live_observation=True,
+        live_drawdown_reader=lambda *args, **kwargs: _live_history(),
+        owner_flow_loader=lambda *args, **kwargs: OwnerFlowHistoryAuthority(
+            Decimal("3"), Decimal("1"), NOW, "CANONICAL", "run-1"
+        ),
+    )
+    snapshot = evaluate_state(inputs, missing_numeric_policy_evidence())
+    assert inputs.as_of == NOW
+    assert inputs.total_capital == Decimal("99")
+    assert inputs.open_risk == Decimal("2.25")
+    assert snapshot.authority_status == "MISSING_POLICY"
+    assert snapshot.total_risk_capacity is None
+    assert snapshot.available_risk_capacity is None
 
 
 def test_shadow_hook_does_not_change_order_quantity_decision_or_reservation(

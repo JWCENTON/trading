@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import Barrier, Thread
@@ -269,6 +269,40 @@ def test_paper_and_live_fee_authorities_are_preserved(disposable_postgres_v16, e
             )
             assert evidence.evidence_status == "CANONICAL"
             assert evidence.total_pre_entry_risk == expected
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_committed_risk_as_of_does_not_forward_fill_later_release(
+    disposable_postgres_v16,
+):
+    _, conn = database(disposable_postgres_v16)
+    try:
+        apply(conn)
+        frozen = frozen_event(environment="LIVE")
+        with conn.cursor() as cur:
+            setup_transition_authorities(cur)
+            append_pre_entry_risk_event_cursor(cur, frozen)
+            release_pre_entry_risk_cursor(
+                cur, reservation_id=RESERVATION_ID,
+                source_event_identity="CANCEL:AFTER_BOUNDARY",
+                effective_at=NOW + timedelta(minutes=10),
+                no_unattributed_fill_status="CANONICAL_NONE",
+            )
+            at_boundary = load_committed_pre_entry_risk_evidence_cursor(
+                cur, environment="LIVE", deployment_id="local-live",
+                account_identity_fingerprint="a" * 64,
+                as_of=NOW + timedelta(minutes=5),
+            )
+            current = load_committed_pre_entry_risk_evidence_cursor(
+                cur, environment="LIVE", deployment_id="local-live",
+                account_identity_fingerprint="a" * 64,
+            )
+            assert at_boundary.total_pre_entry_risk == frozen.total_pre_entry_risk
+            assert at_boundary.active_commitment_count == 1
+            assert current.total_pre_entry_risk == Decimal("0")
+            assert current.active_commitment_count == 0
         conn.rollback()
     finally:
         conn.close()
