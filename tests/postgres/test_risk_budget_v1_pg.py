@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from common.risk_budget import (
     evaluate_and_persist_account_scoped_shadow_gate_cursor,
     evaluate_account_scoped_shadow_gate_cursor,
     evaluate_state,
+    fingerprint,
     persist_event_cursor,
 )
 from common.risk_budget_runtime import (
@@ -317,6 +318,24 @@ def test_live_runtime_state_and_shadow_gate_are_append_only_advisory(disposable_
                 ),
             ]
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_duration_fingerprint_is_stable_after_postgres_interval_roundtrip(
+    disposable_postgres_v16,
+):
+    _, conn = database(disposable_postgres_v16)
+    try:
+        original = timedelta(days=3, seconds=17, microseconds=654321)
+        with conn.cursor() as cur:
+            cur.execute("SELECT %s::interval", (original,))
+            roundtripped = cur.fetchone()[0]
+        assert isinstance(roundtripped, timedelta)
+        assert roundtripped == original
+        assert fingerprint({"drawdown_duration": roundtripped}) == fingerprint(
+            {"drawdown_duration": original}
+        )
     finally:
         conn.close()
 

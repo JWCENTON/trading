@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from common.risk_budget import (
     evaluate_account_scoped_shadow_gate_cursor,
     evaluate_pre_entry_gate,
     evaluate_state,
+    fingerprint,
     paper_controlled_influence_readiness,
 )
 
@@ -205,6 +206,40 @@ def test_paper_controlled_influence_is_hard_off_and_float_is_forbidden():
     )
     with pytest.raises(RiskBudgetEvidenceError, match="BINARY_FLOAT_FORBIDDEN"):
         canonical_json({"risk": 0.1})
+
+
+def test_canonical_drawdown_duration_is_exact_deterministic_and_not_omitted():
+    duration = timedelta(days=2, seconds=3, microseconds=456789)
+    payload = {
+        "drawdown_duration": duration,
+        "drawdown": Decimal("-1.2300"),
+        "observed_at": NOW,
+        "observation_date": date(2026, 8, 24),
+    }
+    rendered = canonical_json(payload)
+    normalized = json.loads(rendered)
+    assert normalized["drawdown_duration"] == {
+        "duration_microseconds": 172803456789,
+    }
+    assert normalized["drawdown"] == "-1.2300"
+    assert normalized["observed_at"] == "2026-08-24T15:00:00+00:00"
+    assert normalized["observation_date"] == "2026-08-24"
+    assert fingerprint(payload) == fingerprint(dict(reversed(tuple(payload.items()))))
+
+
+def test_changed_duration_changes_fingerprint_without_float_seconds():
+    base = {"drawdown_duration": timedelta(seconds=1, microseconds=1)}
+    changed = {"drawdown_duration": timedelta(seconds=1, microseconds=2)}
+    assert fingerprint(base) != fingerprint(changed)
+    assert "1.000001" not in canonical_json(base)
+
+
+def test_unsupported_canonical_value_fails_closed_explicitly():
+    with pytest.raises(
+        RiskBudgetEvidenceError,
+        match="CANONICAL_SERIALIZATION_UNSUPPORTED_TYPE:object",
+    ):
+        canonical_json({"unsupported": object()})
 
 
 def test_contract_manifest_and_checksum_are_stable():

@@ -10,7 +10,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -67,6 +67,16 @@ def _canonical_value(value: Any) -> Any:
         if value.tzinfo is None:
             raise RiskBudgetEvidenceError("TIMEZONE_AWARE_TIMESTAMP_REQUIRED")
         return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        total_microseconds = (
+            (value.days * 86_400 + value.seconds) * 1_000_000
+            + value.microseconds
+        )
+        return {"duration_microseconds": total_microseconds}
+    if isinstance(value, uuid.UUID):
+        return str(value)
     if isinstance(value, Mapping):
         return {
             str(key): _canonical_value(item)
@@ -74,7 +84,11 @@ def _canonical_value(value: Any) -> Any:
         }
     if isinstance(value, (list, tuple)):
         return [_canonical_value(item) for item in value]
-    return value
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    raise RiskBudgetEvidenceError(
+        f"CANONICAL_SERIALIZATION_UNSUPPORTED_TYPE:{type(value).__name__}"
+    )
 
 
 def canonical_json(value: Any) -> str:

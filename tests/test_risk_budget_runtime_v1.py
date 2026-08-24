@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 import uuid
@@ -315,7 +315,8 @@ def _live_history(**changes):
         max_drawdown_pct=Decimal("-13.63636363636363636363636364"),
         recovery_status="IN_DRAWDOWN", peak_timestamp=NOW,
         drawdown_start=NOW, recovery_timestamp=None,
-        drawdown_duration=None, history_status="CANONICAL",
+        drawdown_duration=timedelta(hours=4, microseconds=7),
+        history_status="CANONICAL",
         latest_observation_at=NOW,
     )
     return replace(value, **changes)
