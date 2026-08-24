@@ -22,6 +22,7 @@ _CONTRACT_PATH = (
 )
 _CONTRACT = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
 CONTRACT_VERSION = str(_CONTRACT["contract_version"])
+POLICY_VERSION = str(_CONTRACT["policy"]["semantic_version"])
 POLICY_STATES = frozenset(_CONTRACT["policy"]["states"])
 AUTHORITY_STATUSES = frozenset(_CONTRACT["statuses"])
 ADVISORY_RESULTS = frozenset(_CONTRACT["advisory_results"])
@@ -85,6 +86,20 @@ def canonical_json(value: Any) -> str:
 
 def fingerprint(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+POLICY_FINGERPRINT = fingerprint(_CONTRACT["policy"])
+
+
+def missing_numeric_policy_evidence() -> "NumericPolicyEvidence":
+    """Return the approved semantic policy identity without invented numbers."""
+    return NumericPolicyEvidence(
+        policy_version=POLICY_VERSION,
+        policy_fingerprint=POLICY_FINGERPRINT,
+        status="MISSING_POLICY",
+        policy_state=None,
+        total_risk_capacity=None,
+    )
 
 
 def _is_fingerprint(value: object) -> bool:

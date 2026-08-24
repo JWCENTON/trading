@@ -22,6 +22,10 @@ from common.risk_budget import (
     evaluate_state,
     persist_event_cursor,
 )
+from common.risk_budget_runtime import (
+    persist_shadow_gate_evaluation_cursor,
+    persist_state_evaluation_cursor,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -161,6 +165,101 @@ def test_state_and_gate_events_are_idempotent_and_conflicts_fail(disposable_post
                     event_identity="state-1", producer_identity="pytest",
                     git_revision=REVISION,
                 )
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_runtime_state_producer_and_shadow_candidate_are_idempotent(disposable_postgres_v16):
+    _, conn = database(disposable_postgres_v16)
+    try:
+        apply(conn)
+
+        def loader(_cur, **kwargs):
+            return inputs()
+
+        candidate_id = uuid.uuid4()
+        with conn.cursor() as cur:
+            state_first = persist_state_evaluation_cursor(
+                cur, deployment_id="local-paper", boundary=NOW, as_of=NOW,
+                git_revision=REVISION, input_loader=loader,
+            )
+            state_replay = persist_state_evaluation_cursor(
+                cur, deployment_id="local-paper", boundary=NOW, as_of=NOW,
+                git_revision=REVISION, input_loader=loader,
+            )
+            assert state_first.status == "INSERTED"
+            assert state_first.authority_status == "MISSING_POLICY"
+            assert state_replay.status == "IDEMPOTENT"
+            with pytest.raises(RiskBudgetIdempotencyConflict):
+                persist_state_evaluation_cursor(
+                    cur, deployment_id="local-paper", boundary=NOW, as_of=NOW,
+                    git_revision=REVISION,
+                    input_loader=lambda _cur, **kwargs: replace(
+                        inputs(), total_capital=Decimal("101")
+                    ),
+                )
+
+            gate_first = persist_shadow_gate_evaluation_cursor(
+                cur, pre_entry_risk_id=candidate_id,
+                deployment_id="local-paper", as_of=NOW,
+                git_revision=REVISION,
+                candidate_pre_entry_risk=Decimal("0.5"),
+                candidate_evidence_fingerprint="c" * 64,
+                candidate_account_identity_fingerprint=IDENTITY,
+                decision_identity="natural-decision-1", input_loader=loader,
+            )
+            gate_replay = persist_shadow_gate_evaluation_cursor(
+                cur, pre_entry_risk_id=candidate_id,
+                deployment_id="local-paper", as_of=NOW,
+                git_revision=REVISION,
+                candidate_pre_entry_risk=Decimal("0.5"),
+                candidate_evidence_fingerprint="c" * 64,
+                candidate_account_identity_fingerprint=IDENTITY,
+                decision_identity="natural-decision-1", input_loader=loader,
+            )
+            assert gate_first.status == "INSERTED"
+            assert gate_first.decision.result == "BLOCK_NEW_RISK"
+            assert gate_first.decision.authority_status == "MISSING_POLICY"
+            assert gate_replay.status == "IDEMPOTENT"
+            cur.execute(
+                "SELECT event_type,advisory_result,authority_status,"
+                "total_risk_capacity,available_risk_capacity,policy_state "
+                "FROM risk_budget_event_v1 ORDER BY event_type"
+            )
+            assert cur.fetchall() == [
+                (
+                    "PRE_ENTRY_GATE_DECISION", "BLOCK_NEW_RISK", "MISSING_POLICY",
+                    None, None, None,
+                ),
+                ("STATE_EVALUATION", None, "MISSING_POLICY", None, None, None),
+            ]
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_runtime_producer_persists_incomplete_truth_before_missing_policy(disposable_postgres_v16):
+    _, conn = database(disposable_postgres_v16)
+    try:
+        apply(conn)
+        incomplete = replace(
+            inputs(), drawdown_history_status="INCOMPLETE",
+            max_drawdown_abs=None, max_drawdown_pct=None, recovery_status=None,
+        )
+        with conn.cursor() as cur:
+            result = persist_state_evaluation_cursor(
+                cur, deployment_id="local-paper", boundary=NOW, as_of=NOW,
+                git_revision=REVISION,
+                input_loader=lambda _cur, **kwargs: incomplete,
+            )
+            assert result.authority_status == "INCOMPLETE_DRAWDOWN_HISTORY"
+            cur.execute(
+                "SELECT authority_status,reason_codes FROM risk_budget_event_v1"
+            )
+            assert cur.fetchone() == (
+                "INCOMPLETE_DRAWDOWN_HISTORY", ["INCOMPLETE_DRAWDOWN_HISTORY"],
+            )
         conn.rollback()
     finally:
         conn.close()

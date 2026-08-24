@@ -67,6 +67,9 @@ from common.live_drawdown_history import (
     select_observation_trigger,
 )
 from common.portfolio_state import read_portfolio_state
+from common.risk_budget_runtime import (
+    run_paper_risk_budget_state_evaluation_cycle,
+)
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -3849,6 +3852,18 @@ def main():
                 run_thesis_evidence_bundle_v1()
             except Exception:
                 logging.exception("thesis_evidence_bundle_v1 failed")
+
+            if cfg.trading_mode.upper() == "PAPER":
+                try:
+                    risk_budget = run_paper_risk_budget_state_evaluation_cycle()
+                    logging.info(
+                        "risk_budget_state_evaluation_v1 status=%s boundary=%s "
+                        "authority_status=%s execution_effect=NONE",
+                        risk_budget.status, risk_budget.boundary,
+                        risk_budget.authority_status,
+                    )
+                except Exception:
+                    logging.exception("risk_budget_state_evaluation_v1 failed")
 
             run_independent_refresh_job(
                 conn,

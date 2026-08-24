@@ -912,20 +912,28 @@ class CommittedPreEntryRiskEvidence:
 def load_committed_pre_entry_risk_evidence_cursor(
     cur: Any, *, environment: str, deployment_id: str,
     account_identity_fingerprint: str,
+    exclude_pre_entry_risk_id: uuid.UUID | None = None,
 ) -> CommittedPreEntryRiskEvidence:
     """Return the one canonical aggregate future Risk Budget may consume."""
     if not pre_entry_risk_schema_available_cursor(cur):
         return CommittedPreEntryRiskEvidence(None, 0, "EVIDENCE_INCOMPLETE")
+    exclusion_sql = (
+        " AND pre_entry_risk_id<>%s" if exclude_pre_entry_risk_id is not None else ""
+    )
+    params: tuple[Any, ...] = (
+        str(environment).upper(), str(deployment_id).lower(),
+        str(account_identity_fingerprint),
+    )
+    if exclude_pre_entry_risk_id is not None:
+        params += (str(exclude_pre_entry_risk_id),)
     cur.execute(
         "SELECT count(*),coalesce(sum(total_pre_entry_risk),0),"
         "count(*) FILTER (WHERE evidence_status<>'CANONICAL') "
         "FROM v_pre_entry_risk_current_v1 WHERE environment=%s "
         "AND deployment_id=%s AND account_identity_fingerprint=%s "
-        "AND lifecycle_state IN ('ACTIVE_COMMITTED','PARTIALLY_TRANSFERRED')",
-        (
-            str(environment).upper(), str(deployment_id).lower(),
-            str(account_identity_fingerprint),
-        ),
+        "AND lifecycle_state IN ('ACTIVE_COMMITTED','PARTIALLY_TRANSFERRED')"
+        + exclusion_sql,
+        params,
     )
     count, total, incomplete = cur.fetchone()
     if int(incomplete or 0) != 0:

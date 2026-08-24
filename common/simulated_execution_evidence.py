@@ -928,11 +928,26 @@ def create_simulated_order_cursor(
                     interval=str(interval),
                     effective_at=commitment_effective_at,
                 )
-                freeze_paper_pre_entry_risk_cursor(
+                _risk_status, pre_entry_risk_id = freeze_paper_pre_entry_risk_cursor(
                     cur, simulated_order_id=inserted_order_id,
                     deployment_id=paper_deployment,
                     effective_at=commitment_effective_at,
                 )
+                if pre_entry_risk_id is not None:
+                    from common.risk_budget_runtime import (
+                        record_paper_pre_entry_shadow_gate_fail_open_cursor,
+                    )
+                    shadow = record_paper_pre_entry_shadow_gate_fail_open_cursor(
+                        cur, pre_entry_risk_id=pre_entry_risk_id,
+                        deployment_id=paper_deployment,
+                        as_of=commitment_effective_at,
+                        git_revision=os.getenv("GIT_SHA", ""),
+                    )
+                    logging.info(
+                        "risk_budget_shadow_gate status=%s risk_status=%s "
+                        "pre_entry_risk_id=%s execution_effect=NONE",
+                        shadow.status, _risk_status, pre_entry_risk_id,
+                    )
         if forward_decision_id is not None:
             try:
                 snapshot_id = capture_entry_opportunity_snapshot_fail_open_cursor(
