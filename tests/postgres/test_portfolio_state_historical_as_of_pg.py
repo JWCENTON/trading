@@ -7,6 +7,8 @@ from decimal import Decimal
 from pathlib import Path
 import uuid
 
+import pytest
+
 from common.capital_reservation import paper_account_identity_fingerprint
 from common.portfolio_state import read_portfolio_state
 from common.position_risk_boundary import (
@@ -22,6 +24,9 @@ RESERVATION_MIGRATION = (
 ).read_text()
 BOUNDARY_MIGRATION = (
     ROOT / "db/migrations/20260821_position_risk_boundary_authority_v1.sql"
+).read_text()
+REPLAY_CUTOVER_MIGRATION = (
+    ROOT / "db/migrations/20260825_paper_portfolio_replay_cutover_v1.sql"
 ).read_text()
 T = datetime(2026, 8, 25, 14, 0, tzinfo=timezone.utc)
 CLOSED_AT = datetime(2026, 8, 25, 14, 0, 28, 741911, tzinfo=timezone.utc)
@@ -72,6 +77,7 @@ def _database(disposable_postgres_v16):
         cur.execute(SCHEMA)
         cur.execute(RESERVATION_MIGRATION)
         cur.execute(BOUNDARY_MIGRATION)
+        cur.execute(REPLAY_CUTOVER_MIGRATION)
     conn.commit()
     return conn
 
@@ -113,6 +119,15 @@ def _prepare(cur):
     cur.execute(
         "INSERT INTO market_regime VALUES ('BTCUSDC','1m','TREND',%s)",
         (T - timedelta(seconds=5),),
+    )
+    cur.execute(
+        """INSERT INTO paper_portfolio_replay_cutover_v1(
+             deployment_id,cutover_at,git_revision,contract_version,
+             portfolio_state_fingerprint,cutover_fingerprint,
+             inventory_position_count,source_evidence)
+           VALUES ('local-paper',%s,%s,'PAPER_PORTFOLIO_REPLAY_CUTOVER_V1',
+                   %s,%s,0,'{"test":true}')""",
+        (T - timedelta(minutes=2), "b" * 40, "c" * 64, "d" * 64),
     )
 
     # Confirmed incident: current row is CLOSED, but 1.5 units existed at T.
@@ -182,7 +197,7 @@ def test_exact_position_8309_declared_as_of_and_post_close(disposable_postgres_v
             assert at_t.exposure_by_symbol[0].quantity == Decimal("1.5")
             assert at_t.open_risk == Decimal("3.2208000000000000000")
             assert at_t.open_risk_status == "CANONICAL"
-            assert "ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF" in (
+            assert "PAPER_PORTFOLIO_REPLAY_CUTOVER_V1" in (
                 at_t.source_authorities["inventory_quantity"]
             )
 
@@ -223,6 +238,139 @@ def test_boundary_projection_never_forward_fills_future_event(disposable_postgre
             assert set(before) == {8309}
             assert set(after) == {8309, 8310}
             assert before[8309].effective_at < T
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_pre_cutover_replay_fails_closed_explicitly(disposable_postgres_v16):
+    conn = _database(disposable_postgres_v16)
+    try:
+        with conn.cursor() as cur:
+            _prepare(cur)
+            with pytest.raises(RuntimeError, match="UNSUPPORTED_PRE_REPLAY_CUTOVER"):
+                read_portfolio_state(
+                    cur, environment="PAPER", deployment_id="local-paper",
+                    as_of=T - timedelta(minutes=3),
+                )
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_cutover_carry_forward_blocks_42_legacy_and_replays_post_cutover_exactly(
+    disposable_postgres_v16,
+):
+    conn = _database(disposable_postgres_v16)
+    try:
+        with conn.cursor() as cur:
+            _prepare(cur)
+            cur.execute(
+                "SELECT cutover_id,cutover_at FROM paper_portfolio_replay_cutover_v1"
+            )
+            cutover_id, cutover_at = cur.fetchone()
+
+            # Canonical carry-forward: its old ENTRY is intentionally before cutover.
+            cur.execute(
+                "INSERT INTO positions VALUES "
+                "(8401,'BTCUSDC','RSI','1m','BUY',100,0,'COMPLETE','CLOSED',%s,%s)",
+                (T + timedelta(seconds=10), str(SNAPSHOT)),
+            )
+            cur.execute(
+                "INSERT INTO simulated_execution_fills_v1 VALUES "
+                "(100,9101,8401,'ENTRY',2,100,%s,'PAPER','local-paper','SIMULATED_EXECUTION'),"
+                "(101,9102,8401,'EXIT',0.5,101,%s,'PAPER','local-paper','SIMULATED_EXECUTION'),"
+                "(102,9103,8401,'EXIT',1.5,102,%s,'PAPER','local-paper','SIMULATED_EXECUTION')",
+                (cutover_at - timedelta(days=1), T - timedelta(seconds=10),
+                 T + timedelta(seconds=10)),
+            )
+            _accept_and_activate(
+                cur, position_id=8401, order_id=9101,
+                at=cutover_at - timedelta(seconds=10),
+            )
+            cur.execute(
+                """SELECT boundary_id,policy_fingerprint,effective_at
+                   FROM position_risk_boundary_event_v1
+                   WHERE position_id=8401 ORDER BY event_sequence DESC LIMIT 1"""
+            )
+            boundary_id, policy_fp, boundary_at = cur.fetchone()
+            cur.execute(
+                """INSERT INTO paper_portfolio_replay_cutover_position_v1(
+                     cutover_id,position_id,symbol,strategy,interval,side,
+                     remaining_inventory_qty,entry_basis_price,
+                     inventory_evidence_status,entry_lineage,boundary_id,
+                     boundary_policy_fingerprint,boundary_effective_at,risk_owner,
+                     open_risk_evidence_fingerprint,position_evidence_fingerprint)
+                   VALUES (%s,8401,'BTCUSDC','RSI','1m','BUY',2,100,'COMPLETE',
+                           '{"entry_order_id":"9101"}',%s,%s,%s,
+                           'POSITION_OPEN_RISK',%s,%s)""",
+                (cutover_id, str(boundary_id), policy_fp, boundary_at,
+                 "e" * 64, "f" * 64),
+            )
+
+            # New post-cutover position with exact partial entry/exit through T.
+            cur.execute(
+                "INSERT INTO positions VALUES "
+                "(8402,'BTCUSDC','RSI','1m','BUY',120,1,'COMPLETE','OPEN',NULL,%s)",
+                (str(SNAPSHOT),),
+            )
+            cur.execute(
+                "INSERT INTO simulated_execution_fills_v1 VALUES "
+                "(110,9201,8402,'ENTRY',0.4,120,%s,'PAPER','local-paper','SIMULATED_EXECUTION'),"
+                "(111,9202,8402,'EXIT',0.1,121,%s,'PAPER','local-paper','SIMULATED_EXECUTION'),"
+                "(112,9203,8402,'ENTRY',0.6,122,%s,'PAPER','local-paper','SIMULATED_EXECUTION')",
+                (cutover_at + timedelta(seconds=10), T - timedelta(seconds=5),
+                 T + timedelta(seconds=5)),
+            )
+            _accept_and_activate(
+                cur, position_id=8402, order_id=9201, at=T - timedelta(seconds=20)
+            )
+
+            # Incident shape: 42 old entry-only rows are not cutover members.
+            legacy_values = []
+            fill_values = []
+            for offset in range(42):
+                position_id = 8500 + offset
+                legacy_values.append((
+                    position_id, "BTCUSDC", "RSI", "1m", "BUY", Decimal("90"),
+                    Decimal("0.07"), "COMPLETE", "OPEN", None, str(SNAPSHOT),
+                ))
+                fill_values.append((
+                    200 + offset, 9300 + offset, position_id, "ENTRY",
+                    Decimal("0.07"), Decimal("90"), cutover_at - timedelta(days=20),
+                    "PAPER", "local-paper", "SIMULATED_EXECUTION",
+                ))
+            cur.executemany(
+                "INSERT INTO positions VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                legacy_values,
+            )
+            cur.executemany(
+                "INSERT INTO simulated_execution_fills_v1 VALUES "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                fill_values,
+            )
+
+            at_t = read_portfolio_state(
+                cur, environment="PAPER", deployment_id="local-paper", as_of=T,
+            )
+            quantities = {bucket.key: bucket.quantity for bucket in at_t.exposure_by_symbol}
+            assert at_t.open_positions_count == 3
+            assert quantities["BTCUSDC"] == Decimal("3.3")
+            assert {item.position_id for item in at_t.position_risk} == {
+                8309, 8401, 8402
+            }
+            assert not ({8500 + offset for offset in range(42)} & {
+                item.position_id for item in at_t.position_risk
+            })
+
+            after = read_portfolio_state(
+                cur, environment="PAPER", deployment_id="local-paper",
+                as_of=T + timedelta(seconds=11),
+            )
+            assert {item.position_id for item in after.position_risk} == {
+                8309, 8310, 8402
+            }
+            assert after.exposure_by_symbol[0].quantity == Decimal("2.65")
         conn.rollback()
     finally:
         conn.close()

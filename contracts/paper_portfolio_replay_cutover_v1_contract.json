@@ -1,0 +1,41 @@
+{
+  "contract_version": "PAPER_PORTFOLIO_REPLAY_CUTOVER_V1",
+  "environment": "PAPER",
+  "forward_only": true,
+  "economic_baseline_reset": false,
+  "economic_baseline_authority": "PAPER_EQUITY_BASELINE_V2_UNCHANGED",
+  "pre_cutover_replay": "UNSUPPORTED_FAIL_CLOSED",
+  "post_cutover_replay": "CANONICAL_REQUIRED",
+  "legacy_reconstruction": false,
+  "historical_backfill": false,
+  "calibration_evidence_before_cutover": "INELIGIBLE",
+  "cutover_creation": {
+    "source": "CURRENT_PORTFOLIO_STATE_V1_CANONICAL",
+    "atomic": true,
+    "partial_snapshot": false,
+    "required_inventory_evidence": [
+      "position_identity",
+      "remaining_inventory_qty",
+      "entry_lineage",
+      "entry_basis_price",
+      "POSITION_RISK_BOUNDARY_AUTHORITY_V1",
+      "POSITION_OPEN_RISK_OWNER",
+      "portfolio_state_source_fingerprint"
+    ],
+    "incomplete_behavior": "FAIL_CLOSED_NO_ROWS"
+  },
+  "replay_equation": "cutover_remaining_qty + post_cutover_entry_fill_qty_through_declared_as_of - post_cutover_exit_fill_qty_through_declared_as_of",
+  "valid_replay_interval": "replay_cutover_at <= evidence_time <= declared_as_of",
+  "current_no_as_of_semantics": "UNCHANGED",
+  "live_semantics": "UNCHANGED",
+  "storage": {
+    "cutover_table": "paper_portfolio_replay_cutover_v1",
+    "position_table": "paper_portfolio_replay_cutover_position_v1",
+    "append_only": true,
+    "immutable": true,
+    "initial_generation": "ONE_DETERMINISTIC_CUTOVER_PER_DEPLOYMENT",
+    "migration": "db/migrations/20260825_paper_portfolio_replay_cutover_v1.sql"
+  },
+  "execution_influence": false,
+  "paper_controlled_influence": false
+}

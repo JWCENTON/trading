@@ -23,6 +23,7 @@ from common.position_risk_boundary import (
     load_boundary_projections_cursor,
 )
 from common.live_exit_cost import load_live_exit_cost_links_cursor
+from common.paper_portfolio_replay_cutover import require_replay_cutover_cursor
 
 
 PORTFOLIO_STATE_VERSION = "PORTFOLIO_STATE_V1"
@@ -513,6 +514,11 @@ def read_portfolio_state(
     as_of = as_of or datetime.now(timezone.utc)
     if as_of.tzinfo is None:
         raise ValueError("PORTFOLIO_STATE_AS_OF_MUST_BE_TIMEZONE_AWARE")
+    replay_cutover = None
+    if historical_paper_replay:
+        replay_cutover = require_replay_cutover_cursor(
+            cur, deployment_id=deployment, as_of=as_of,
+        )
     baseline = None
     if mode == "PAPER":
         cur.execute(
@@ -587,32 +593,53 @@ def read_portfolio_state(
     if historical_paper_replay:
         cur.execute(
             """
-            WITH fills_as_of AS (
+            WITH post_cutover_fills AS (
               SELECT f.position_id,
-                     SUM(f.fill_qty) FILTER (
-                       WHERE f.order_purpose='ENTRY') AS entry_qty,
-                     SUM(f.fill_qty*f.fill_price) FILTER (
-                       WHERE f.order_purpose='ENTRY') AS entry_notional,
+                     COALESCE(SUM(f.fill_qty) FILTER (
+                       WHERE f.order_purpose='ENTRY'),0) AS entry_qty,
+                     COALESCE(SUM(f.fill_qty*f.fill_price) FILTER (
+                       WHERE f.order_purpose='ENTRY'),0) AS entry_notional,
                      COALESCE(SUM(f.fill_qty) FILTER (
                        WHERE f.order_purpose='EXIT'),0) AS exit_qty
               FROM simulated_execution_fills_v1 f
-              WHERE f.execution_at<=%s
+              WHERE f.execution_at>%s AND f.execution_at<=%s
                 AND f.deployment_id=%s
                 AND upper(f.environment) IN ('PAPER','TRADING_PAPER')
                 AND f.source_authority='SIMULATED_EXECUTION'
                 AND f.order_purpose IN ('ENTRY','EXIT')
               GROUP BY f.position_id
-            ), inventory_as_of AS (
+            ), inventory_seed AS (
+              SELECT cp.position_id AS id,cp.symbol,cp.strategy,cp.interval,cp.side,
+                     cp.remaining_inventory_qty AS seed_qty,
+                     cp.remaining_inventory_qty*cp.entry_basis_price AS seed_notional,
+                     COALESCE(f.entry_qty,0) AS entry_qty,
+                     COALESCE(f.entry_notional,0) AS entry_notional,
+                     COALESCE(f.exit_qty,0) AS exit_qty
+              FROM paper_portfolio_replay_cutover_position_v1 cp
+              LEFT JOIN post_cutover_fills f ON f.position_id=cp.position_id
+              WHERE cp.cutover_id=%s
+              UNION ALL
               SELECT p.id,p.symbol,p.strategy,p.interval,p.side,
-                     CASE WHEN f.entry_qty>0
-                          THEN f.entry_notional/f.entry_qty END AS entry_price,
-                     CASE WHEN f.exit_qty<=f.entry_qty
-                          THEN f.entry_qty-f.exit_qty END AS remaining_qty,
-                     CASE WHEN f.entry_qty>0 AND f.exit_qty<=f.entry_qty
-                          THEN 'COMPLETE' ELSE 'INCOMPLETE' END AS evidence_status
-              FROM fills_as_of f
+                     0::numeric AS seed_qty,0::numeric AS seed_notional,
+                     f.entry_qty,f.entry_notional,f.exit_qty
+              FROM post_cutover_fills f
               JOIN positions p ON p.id=f.position_id
-              WHERE f.entry_qty>0 AND f.entry_qty<>f.exit_qty
+              WHERE NOT EXISTS (
+                SELECT 1 FROM paper_portfolio_replay_cutover_position_v1 cp
+                WHERE cp.cutover_id=%s AND cp.position_id=f.position_id
+              )
+            ), inventory_as_of AS (
+              SELECT i.id,i.symbol,i.strategy,i.interval,i.side,
+                     CASE WHEN i.seed_qty+i.entry_qty>0
+                          THEN (i.seed_notional+i.entry_notional)/
+                               (i.seed_qty+i.entry_qty) END AS entry_price,
+                     CASE WHEN i.exit_qty<=i.seed_qty+i.entry_qty
+                          THEN i.seed_qty+i.entry_qty-i.exit_qty END AS remaining_qty,
+                     CASE WHEN i.seed_qty+i.entry_qty>0
+                               AND i.exit_qty<=i.seed_qty+i.entry_qty
+                          THEN 'COMPLETE' ELSE 'INCOMPLETE' END AS evidence_status
+              FROM inventory_seed i
+              WHERE i.seed_qty+i.entry_qty<>i.exit_qty
             )
             SELECT p.id,p.symbol,p.strategy,p.interval,p.side,p.entry_price,
                    p.remaining_qty,p.evidence_status,
@@ -632,7 +659,11 @@ def read_portfolio_state(
             ) regime ON TRUE
             ORDER BY p.id
             """,
-            (as_of, deployment, as_of, as_of),
+            (
+                replay_cutover.cutover_at, as_of, deployment,
+                replay_cutover.cutover_id, replay_cutover.cutover_id,
+                as_of, as_of,
+            ),
         )
     else:
         cur.execute(
@@ -752,14 +783,17 @@ def read_portfolio_state(
             source_authorities={
                 **state.source_authorities,
                 "inventory_quantity": (
-                    "simulated_execution_fills_v1.ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF"
+                    "PAPER_PORTFOLIO_REPLAY_CUTOVER_V1_PLUS_POST_CUTOVER_"
+                    "SIMULATED_EXECUTION_ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF"
                 ),
                 "risk_quantity": (
-                    "simulated_execution_fills_v1.ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF"
+                    "PAPER_PORTFOLIO_REPLAY_CUTOVER_V1_PLUS_POST_CUTOVER_"
+                    "SIMULATED_EXECUTION_ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF"
                 ),
                 "position_membership": (
-                    "CANONICAL_SIMULATED_EXECUTION_FILL_LIFECYCLE_THROUGH_DECLARED_AS_OF"
+                    "PAPER_PORTFOLIO_REPLAY_CUTOVER_V1_FORWARD_ONLY"
                 ),
+                "replay_lower_boundary": replay_cutover.cutover_fingerprint,
                 "position_risk_boundary": (
                     "POSITION_RISK_BOUNDARY_AUTHORITY_V1_LATEST_EFFECTIVE_THROUGH_DECLARED_AS_OF"
                 ),
