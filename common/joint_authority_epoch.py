@@ -187,7 +187,8 @@ def load_active_epoch_cursor(cur: Any, *, deployment_id: str) -> AuthorityEpoch 
                   e.epoch_fingerprint,s.selection_fingerprint
            FROM joint_authority_epoch_selection_v1 s
            JOIN joint_authority_epoch_v1 e USING (authority_epoch_id)
-           JOIN paper_portfolio_replay_cutover_v1 r USING (replay_cutover_id)
+           JOIN paper_portfolio_replay_cutover_v1 r
+             ON e.replay_cutover_id=r.cutover_id
            LEFT JOIN joint_authority_epoch_selection_v1 successor
              ON successor.previous_selection_id=s.selection_id
            WHERE s.deployment_id=%s AND successor.selection_id IS NULL""",
