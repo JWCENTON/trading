@@ -33,6 +33,7 @@ from common.risk_budget import (
     evaluate_and_persist_account_scoped_shadow_gate_cursor,
     evaluate_state,
     fingerprint,
+    is_canonical_open_risk_status,
     missing_numeric_policy_evidence,
     persist_event_cursor,
 )
@@ -133,7 +134,7 @@ def resolve_live_canonical_risk_evaluation_boundary_cursor(
             "ACTUAL_STALE_AUTHORITY", observed_at, str(account),
             "INCOMPLETE_PORTFOLIO_STATE",
         )
-    if str(state_payload.get("open_risk_status")) != "CANONICAL":
+    if not is_canonical_open_risk_status(state_payload.get("open_risk_status")):
         return CanonicalRiskEvaluationBoundary(
             "ACTUAL_STALE_AUTHORITY", observed_at, str(account),
             "INCOMPLETE_OPEN_RISK",

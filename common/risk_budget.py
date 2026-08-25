@@ -29,6 +29,7 @@ ADVISORY_RESULTS = frozenset(_CONTRACT["advisory_results"])
 REQUIRED_SOURCE_FINGERPRINTS = frozenset(_CONTRACT["source_fingerprint_keys"])
 PAPER_CONTROLLED_INFLUENCE_READY = False
 ZERO = Decimal("0")
+OPEN_RISK_CANONICAL_STATUSES = frozenset({"CANONICAL", "CANONICAL_EMPTY"})
 _EVENT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "waltrade:risk-budget:v1")
 _DEPLOYMENT_MODES = {
     "local-paper": "PAPER",
@@ -114,6 +115,11 @@ def missing_numeric_policy_evidence() -> "NumericPolicyEvidence":
         policy_state=None,
         total_risk_capacity=None,
     )
+
+
+def is_canonical_open_risk_status(status: object) -> bool:
+    """Return whether Open Risk has one of the exact canonical V1 statuses."""
+    return str(status) in OPEN_RISK_CANONICAL_STATUSES
 
 
 def _is_fingerprint(value: object) -> bool:
@@ -242,7 +248,10 @@ def _required_truth_status(inputs: RiskBudgetInputs) -> str:
         or not inputs.recovery_status
     ):
         return "INCOMPLETE_DRAWDOWN_HISTORY"
-    if inputs.open_risk_status not in {"CANONICAL", "CANONICAL_EMPTY"} or inputs.open_risk is None:
+    if (
+        not is_canonical_open_risk_status(inputs.open_risk_status)
+        or inputs.open_risk is None
+    ):
         return "INCOMPLETE_OPEN_RISK"
     if inputs.pre_entry_risk_status != "CANONICAL" or inputs.pre_entry_committed_risk is None:
         return "INCOMPLETE_PRE_ENTRY_RISK"

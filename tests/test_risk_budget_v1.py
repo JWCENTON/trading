@@ -81,6 +81,18 @@ def test_active_risk_is_exact_decimal_sum_and_reservation_is_not_an_input():
     assert not hasattr(inputs(), "reserved_capital")
 
 
+def test_canonical_empty_open_risk_is_complete_zero_not_inferred_from_value():
+    snapshot = evaluate_state(
+        inputs(open_risk=Decimal("0"), open_risk_status="CANONICAL_EMPTY"),
+        policy(),
+    )
+    assert snapshot.authority_status == "MISSING_POLICY"
+    assert snapshot.open_risk == Decimal("0")
+    assert snapshot.used_risk == Decimal("0.229434428049600")
+    assert snapshot.total_risk_capacity is None
+    assert snapshot.available_risk_capacity is None
+
+
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [

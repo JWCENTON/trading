@@ -18,7 +18,12 @@ from common.live_managed_capital import (
 )
 from common.owner_capital_flow_sync import OwnerFlowHistoryAuthority
 from common.pre_entry_risk import CommittedPreEntryRiskEvidence
-from common.risk_budget import evaluate_state, missing_numeric_policy_evidence
+from common.risk_budget import (
+    OPEN_RISK_CANONICAL_STATUSES,
+    evaluate_state,
+    is_canonical_open_risk_status,
+    missing_numeric_policy_evidence,
+)
 import common.risk_budget_runtime as runtime
 
 
@@ -49,9 +54,11 @@ class State:
 
     def serializable(self):
         return {
-            "as_of": self.as_of.isoformat(), "total_capital": "99",
+            "as_of": self.as_of.isoformat(),
+            "total_capital": str(self.total_capital),
             "total_capital_status": self.total_capital_status,
-            "open_risk": "2.25", "open_risk_status": self.open_risk_status,
+            "open_risk": str(self.open_risk),
+            "open_risk_status": self.open_risk_status,
             "drawdown": "-10", "drawdown_status": self.drawdown_status,
         }
 
@@ -229,9 +236,16 @@ def test_live_boundary_waits_without_fabricating_when_owner_flow_is_behind():
     assert result.authority_status == "INCOMPLETE_CAPITAL_FLOW"
 
 
-def test_live_boundary_keeps_true_stale_authority_fail_closed(monkeypatch):
+@pytest.mark.parametrize("open_risk_status", sorted(OPEN_RISK_CANONICAL_STATUSES))
+def test_live_boundary_keeps_true_stale_authority_fail_closed(
+    monkeypatch, open_risk_status,
+):
     observed = NOW - timedelta(minutes=31)
-    state = State().serializable()
+    state = replace(
+        State(), open_risk=Decimal("0") if open_risk_status == "CANONICAL_EMPTY"
+        else Decimal("2.25"),
+        open_risk_status=open_risk_status,
+    ).serializable()
     monkeypatch.setattr(
         runtime, "load_committed_pre_entry_risk_evidence_cursor",
         lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
@@ -248,6 +262,67 @@ def test_live_boundary_keeps_true_stale_authority_fail_closed(monkeypatch):
     )
     assert result.status == "ACTUAL_STALE_AUTHORITY"
     assert result.authority_status == "STALE_AUTHORITY"
+
+
+@pytest.mark.parametrize(
+    ("open_risk", "open_risk_status"),
+    (
+        (Decimal("2.25"), "CANONICAL"),
+        (Decimal("0"), "CANONICAL_EMPTY"),
+        (Decimal("0"), "CANONICAL"),
+    ),
+)
+def test_live_boundary_accepts_exact_canonical_open_risk_statuses(
+    monkeypatch, open_risk, open_risk_status,
+):
+    observed = NOW - timedelta(minutes=5)
+    state = replace(
+        State(), open_risk=open_risk, open_risk_status=open_risk_status,
+    ).serializable()
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    result = runtime.resolve_live_canonical_risk_evaluation_boundary_cursor(
+        BoundaryCursor(
+            (observed, "b" * 64, "CANONICAL", state,
+             runtime.live_drawdown_fingerprint(state)),
+            ("CANONICAL", observed),
+        ),
+        deployment_id="local-live", scheduler_time=NOW,
+    )
+    assert result == runtime.CanonicalRiskEvaluationBoundary(
+        "CANONICAL", observed, "b" * 64
+    )
+
+
+@pytest.mark.parametrize(
+    ("open_risk", "open_risk_status"),
+    (
+        (Decimal("0"), "INCOMPLETE"),
+        (Decimal("2.25"), "STALE"),
+        (Decimal("2.25"), "UNKNOWN"),
+    ),
+)
+def test_live_boundary_rejects_noncanonical_open_risk_regardless_of_value(
+    open_risk, open_risk_status,
+):
+    observed = NOW - timedelta(minutes=5)
+    state = replace(
+        State(), open_risk=open_risk, open_risk_status=open_risk_status,
+    ).serializable()
+    result = runtime.resolve_live_canonical_risk_evaluation_boundary_cursor(
+        BoundaryCursor(
+            (observed, "b" * 64, "CANONICAL", state,
+             runtime.live_drawdown_fingerprint(state)),
+            ("CANONICAL", observed),
+        ),
+        deployment_id="local-live", scheduler_time=NOW,
+    )
+    assert result.status == "ACTUAL_STALE_AUTHORITY"
+    assert result.authority_status == "INCOMPLETE_OPEN_RISK"
 
 
 def test_live_boundary_selects_latest_jointly_canonical_as_of(monkeypatch):
@@ -276,7 +351,9 @@ def test_live_common_boundary_uses_immutable_portfolio_and_reaches_missing_polic
     monkeypatch,
 ):
     account = "b" * 64
-    state_payload = State().serializable()
+    state_payload = replace(
+        State(), open_risk=Decimal("0"), open_risk_status="CANONICAL_EMPTY",
+    ).serializable()
     state_fingerprint = runtime.live_drawdown_fingerprint(state_payload)
 
     class Cursor:
@@ -303,10 +380,53 @@ def test_live_common_boundary_uses_immutable_portfolio_and_reaches_missing_polic
     snapshot = evaluate_state(inputs, missing_numeric_policy_evidence())
     assert inputs.as_of == NOW
     assert inputs.total_capital == Decimal("99")
-    assert inputs.open_risk == Decimal("2.25")
+    assert inputs.open_risk == Decimal("0")
+    assert inputs.open_risk_status == "CANONICAL_EMPTY"
+    assert inputs.source_fingerprints["open_risk"] == runtime.fingerprint({
+        "authority": "PORTFOLIO_STATE_V1.OPEN_RISK",
+        "value": Decimal("0"), "status": "CANONICAL_EMPTY", "as_of": NOW,
+    })
     assert snapshot.authority_status == "MISSING_POLICY"
     assert snapshot.total_risk_capacity is None
     assert snapshot.available_risk_capacity is None
+
+
+def test_resolver_and_evaluator_share_exact_open_risk_status_semantics(monkeypatch):
+    assert OPEN_RISK_CANONICAL_STATUSES == frozenset({
+        "CANONICAL", "CANONICAL_EMPTY",
+    })
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    canonical = runtime.load_canonical_risk_budget_inputs_cursor(
+        object(), deployment_id="local-live", as_of=NOW,
+        exchange_client=object(),
+        live_managed_loader=lambda *args, **kwargs: _live_bundle(),
+        live_drawdown_reader=lambda *args, **kwargs: _live_history(),
+        owner_flow_loader=lambda *args, **kwargs: OwnerFlowHistoryAuthority(
+            Decimal("3"), Decimal("1"), NOW, "CANONICAL", "run-1"
+        ),
+        portfolio_state_reader=lambda *args, **kwargs: State(),
+    )
+    cases = (
+        ("CANONICAL", Decimal("2.25"), "MISSING_POLICY"),
+        ("CANONICAL_EMPTY", Decimal("0"), "MISSING_POLICY"),
+        ("INCOMPLETE", Decimal("0"), "INCOMPLETE_OPEN_RISK"),
+        ("STALE", Decimal("2.25"), "INCOMPLETE_OPEN_RISK"),
+        ("UNKNOWN", Decimal("2.25"), "INCOMPLETE_OPEN_RISK"),
+    )
+    for status, value, expected in cases:
+        assert is_canonical_open_risk_status(status) is (
+            status in OPEN_RISK_CANONICAL_STATUSES
+        )
+        snapshot = evaluate_state(
+            replace(canonical, open_risk=value, open_risk_status=status),
+            missing_numeric_policy_evidence(),
+        )
+        assert snapshot.authority_status == expected
 
 
 def test_shadow_hook_does_not_change_order_quantity_decision_or_reservation(
