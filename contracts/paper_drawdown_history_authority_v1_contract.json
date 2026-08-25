@@ -40,7 +40,14 @@
   "generations_immutable": true,
   "active_generation_selection": "SOLE_VALID_APPEND_ONLY_SELECTION_CHAIN_HEAD",
   "active_generation_ambiguity_policy": "FAIL_CLOSED",
-  "approved_supersession_reasons": ["FAILED_INITIAL_FORWARD_ACTIVATION_AFTER_PRECISION_DEFECT"],
+  "approved_supersession_reasons": [
+    "FAILED_INITIAL_FORWARD_ACTIVATION_AFTER_PRECISION_DEFECT",
+    "PRECISION_DEFECT_RECOVERY",
+    "UPSTREAM_REPLAY_CUTOVER_EPOCH_CHANGE",
+    "AUTHORITY_ACTIVATION_FAILURE_RECOVERY"
+  ],
+  "joint_authority_epoch_contract": "JOINT_AUTHORITY_EPOCH_V1",
+  "new_generation_activation_atomicity": "GENERATION_PLUS_CANONICAL_SEED_PLUS_SELECTION_PLUS_EPOCH_SELECTION",
   "cross_generation_history_merge": false,
   "observation_backfill": false,
   "baseline_reset_required_for_generation_switch": false,

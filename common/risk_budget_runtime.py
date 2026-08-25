@@ -22,6 +22,11 @@ from common.live_drawdown_history import (
     read_live_drawdown_history,
 )
 from common.live_managed_capital import load_live_managed_capital_evidence
+from common.joint_authority_epoch import (
+    RiskBudgetEpochBoundary,
+    bind_risk_budget_event_cursor,
+    resolve_risk_budget_boundary_cursor,
+)
 from common.owner_capital_flow_sync import load_owner_flow_history_authority
 from common.paper_drawdown_history import read_paper_drawdown_history
 from common.portfolio_state import PortfolioStateV1, read_portfolio_state
@@ -475,11 +480,14 @@ def persist_state_evaluation_cursor(
     exchange_client: Any | None = None,
     input_loader: Callable[..., RiskBudgetInputs] = load_canonical_risk_budget_inputs_cursor,
     canonical_live_observation: bool = False,
+    paper_epoch_boundary: RiskBudgetEpochBoundary | None = None,
 ) -> StateEvaluationResult:
     if not risk_budget_schema_available_cursor(cur):
         return StateEvaluationResult("SCHEMA_UNAVAILABLE", boundary)
     identity_source = (
-        "CANONICAL_UPSTREAM" if canonical_live_observation else "AUTOMATION_5M"
+        "CANONICAL_UPSTREAM" if canonical_live_observation
+        else "JOINT_AUTHORITY_EPOCH" if paper_epoch_boundary is not None
+        else "AUTOMATION_5M"
     )
     identity = f"{identity_source}:{boundary.astimezone(timezone.utc).isoformat()}"
     loader_kwargs = dict(
@@ -492,11 +500,25 @@ def persist_state_evaluation_cursor(
         loader_kwargs["canonical_live_observation"] = True
     inputs = input_loader(cur, **loader_kwargs)
     snapshot = evaluate_state(inputs, missing_numeric_policy_evidence())
+    if paper_epoch_boundary is not None and snapshot.authority_status not in {
+        "CANONICAL", "MISSING_POLICY", "RISK_CAPACITY_EXHAUSTED",
+    }:
+        return StateEvaluationResult(
+            snapshot.authority_status, boundary, snapshot.authority_status,
+        )
     persisted = persist_event_cursor(
         cur, snapshot, event_type="STATE_EVALUATION",
         event_identity=identity, producer_identity=PRODUCER_IDENTITY,
         git_revision=git_revision,
     )
+    if paper_epoch_boundary is not None:
+        if paper_epoch_boundary.epoch is None:
+            raise ValueError("RISK_BUDGET_AUTHORITY_EPOCH_REQUIRED")
+        bind_risk_budget_event_cursor(
+            cur, event_id=persisted.event_id,
+            epoch=paper_epoch_boundary.epoch, evaluation_as_of=boundary,
+            risk_budget_source_fingerprint=persisted.event_fingerprint,
+        )
     return StateEvaluationResult(
         persisted.status, boundary, snapshot.authority_status, persisted,
     )
@@ -537,6 +559,21 @@ def run_risk_budget_state_evaluation_cycle(
                     )
                 boundary = upstream.as_of
                 canonical_live_observation = True
+            paper_epoch_boundary = None
+            if mode == "PAPER":
+                paper_epoch_boundary = resolve_risk_budget_boundary_cursor(
+                    cur, deployment_id=deployment, scheduler_time=observed_at,
+                )
+                if (
+                    paper_epoch_boundary.status != "CANONICAL"
+                    or paper_epoch_boundary.as_of is None
+                ):
+                    conn.rollback()
+                    return StateEvaluationResult(
+                        paper_epoch_boundary.status,
+                        paper_epoch_boundary.as_of or boundary,
+                    )
+                boundary = paper_epoch_boundary.as_of
             if boundary == _last_state_evaluation_cutoff:
                 conn.rollback()
                 return StateEvaluationResult(
@@ -549,6 +586,7 @@ def run_risk_budget_state_evaluation_cycle(
                 as_of=boundary, git_revision=revision,
                 exchange_client=exchange_client,
                 canonical_live_observation=canonical_live_observation,
+                paper_epoch_boundary=paper_epoch_boundary,
             )
         if result.status == "SCHEMA_UNAVAILABLE":
             conn.rollback()

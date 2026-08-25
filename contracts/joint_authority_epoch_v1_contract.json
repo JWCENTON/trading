@@ -1,0 +1,83 @@
+{
+  "contract_version": "JOINT_AUTHORITY_EPOCH_V1",
+  "scope": "PRE_CALIBRATION_AUTHORITY_LIFECYCLE",
+  "environments": ["local-paper", "vps-paper"],
+  "ordering_invariant": "B <= R <= D < C1 <= Q0 <= CALIBRATION_DATASET_AS_OF",
+  "boundaries": {
+    "B": "accepted PAPER_EQUITY_BASELINE_V2 timestamp",
+    "R": "active PAPER_PORTFOLIO_REPLAY_CUTOVER_V1 timestamp",
+    "D": "canonical 15-minute Drawdown generation activation boundary at or after R",
+    "C1": "D + 15 minutes; first mandatory canonical Drawdown cadence",
+    "Q0": "first immutable complete same-epoch Risk Budget STATE_EVALUATION at or after C1"
+  },
+  "activation_boundary": {
+    "replay_exactly_on_boundary": "D = R",
+    "replay_between_boundaries": "D = ceil15(R)",
+    "delayed_operational_recovery": "D is the first future canonical 15-minute boundary after recovery time",
+    "historical_activation": "REJECT"
+  },
+  "epoch_model": {
+    "ledger": "joint_authority_epoch_v1",
+    "selection_ledger": "joint_authority_epoch_selection_v1",
+    "append_only": true,
+    "mutable_lifecycle_state": false,
+    "economic_baseline_preserved": true,
+    "active_generation_history_reset": true,
+    "cross_generation_history_merge": false,
+    "cross_epoch_causal_aggregation": false
+  },
+  "activation_attempt_model": {
+    "ledger": "joint_authority_activation_attempt_v1",
+    "terminal_statuses": ["PREPARED", "FAILED", "ACTIVATED"],
+    "rows_immutable": true,
+    "retry": "new attempt linked to previous FAILED attempt",
+    "partial_selection": "FORBIDDEN"
+  },
+  "drawdown_activation": {
+    "transaction": "generation + canonical seed + generation selection + epoch + epoch selection are atomic",
+    "seed_failure": "record FAILED attempt separately; never select generation",
+    "approved_supersession_reasons": [
+      "PRECISION_DEFECT_RECOVERY",
+      "UPSTREAM_REPLAY_CUTOVER_EPOCH_CHANGE",
+      "AUTHORITY_ACTIVATION_FAILURE_RECOVERY"
+    ],
+    "backward_activation": false,
+    "observation_backfill": false
+  },
+  "risk_budget": {
+    "boundary_source": "selected JOINT_AUTHORITY_EPOCH_V1 plus canonical Drawdown cadence",
+    "independent_wall_clock_floor": false,
+    "wait_before_c1": true,
+    "binding_ledger": "risk_budget_authority_epoch_binding_v1",
+    "q0_deterministic": true,
+    "source_time_after_evaluation_as_of": "REJECT",
+    "wrong_epoch_or_generation": "REJECT",
+    "missing_policy_only_after_complete_truth": true,
+    "execution_influence": false,
+    "paper_controlled_influence": false
+  },
+  "restart_idempotency": {
+    "state_source": "DATABASE_ONLY",
+    "before_d": "WAIT_FAIL_CLOSED",
+    "during_activation": "NO_DUPLICATE_GENERATION_OR_PARTIAL_SELECTION",
+    "between_d_and_c1": "NO_CALIBRATION_ELIGIBLE_EVENT",
+    "at_c1": "AT_MOST_ONE_BYTE_IDENTICAL_EVENT",
+    "conflicting_fingerprint": "FAIL_CLOSED",
+    "bot_runner_activation_authority": false
+  },
+  "failure_model": "EXPLICIT_FAIL_CLOSED_NO_BACKFILL_NO_GUESS_NO_FUTURE_OR_CURRENT_STATE_LEAKAGE",
+  "local_vps_parity": {
+    "identical": [
+      "ordering invariants", "contract versions", "schema", "failure semantics",
+      "restart idempotency", "epoch model", "calibration eligibility"
+    ],
+    "data_dependent": [
+      "epoch IDs", "generation numbers", "timestamps", "position IDs",
+      "equity values", "drawdown values", "risk values", "derived fingerprints"
+    ]
+  },
+  "migration": "db/migrations/20260825_pre_calibration_joint_authority_epoch_v1.sql",
+  "historical_backfill": false,
+  "numeric_risk_policy": false,
+  "treatment": false
+}

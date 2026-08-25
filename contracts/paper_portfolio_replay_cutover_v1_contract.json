@@ -9,6 +9,8 @@
   "legacy_reconstruction": false,
   "historical_backfill": false,
   "calibration_evidence_before_cutover": "INELIGIBLE",
+  "calibration_evidence_at_or_after_cutover": "REQUIRES_SELECTED_JOINT_AUTHORITY_EPOCH_V1_CANONICAL_DRAWDOWN_C1_AND_COMPLETE_SAME_EPOCH_RISK_BUDGET_STATE_EVALUATION",
+  "cross_epoch_causal_aggregation": false,
   "cutover_creation": {
     "source": "CURRENT_PORTFOLIO_STATE_V1_CANONICAL",
     "atomic": true,

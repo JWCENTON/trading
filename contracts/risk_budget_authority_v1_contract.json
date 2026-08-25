@@ -80,6 +80,15 @@
     "actual_stale_behavior": "STALE_AUTHORITY_NO_FORWARD_FILL",
     "forward_fill": false
   },
+  "paper_state_evaluation_boundary": {
+    "authority": "JOINT_AUTHORITY_EPOCH_V1",
+    "independent_wall_clock_floor": false,
+    "minimum_boundary": "C1",
+    "q0": "FIRST_COMPLETE_IMMUTABLE_SAME_EPOCH_STATE_EVALUATION_AT_OR_AFTER_C1",
+    "calibration_binding_table": "risk_budget_authority_epoch_binding_v1",
+    "cross_epoch_causal_aggregation": false,
+    "future_source_evidence": "REJECT"
+  },
   "concurrency": {
     "scope": "environment/deployment_id/account_identity_fingerprint",
     "mechanism": "PostgreSQL transaction-scoped advisory lock",
