@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from common.live_drawdown_history import (
     CONTRACT_VERSION,
     DrawdownObservation,
@@ -102,6 +104,14 @@ def test_fail_closed_gap_zero_peak_and_incomplete_rows():
         failed = history(observation(15, "100", status=status), as_of_minutes=15)
         assert failed.history_status == status
         assert failed.current_drawdown_abs is None
+
+
+def test_live_decimal_validation_error_contract_is_unchanged():
+    with pytest.raises(ValueError, match="LIVE_DRAWDOWN_DECIMAL_REQUIRED"):
+        calculate_drawdown_history(
+            baseline_managed_equity=100.0, baseline_at=T0,
+            observations=(), as_of=T0,
+        )
 
 
 class State:

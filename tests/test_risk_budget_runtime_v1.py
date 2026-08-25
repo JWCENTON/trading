@@ -17,6 +17,7 @@ from common.live_managed_capital import (
     RawOkxAccountSnapshot,
 )
 from common.owner_capital_flow_sync import OwnerFlowHistoryAuthority
+from common.paper_drawdown_history import PaperDrawdownHistory
 from common.pre_entry_risk import CommittedPreEntryRiskEvidence
 from common.risk_budget import (
     OPEN_RISK_CANONICAL_STATUSES,
@@ -29,6 +30,25 @@ import common.risk_budget_runtime as runtime
 
 NOW = datetime(2026, 8, 24, 16, 7, tzinfo=timezone.utc)
 REVISION = "a" * 40
+
+
+def paper_history(status="CANONICAL"):
+    canonical = status == "CANONICAL"
+    return PaperDrawdownHistory(
+        current_managed_equity=Decimal("99") if canonical else None,
+        current_flow_adjusted_equity=Decimal("99") if canonical else None,
+        peak_flow_adjusted_equity=Decimal("110") if canonical else None,
+        current_drawdown_abs=Decimal("-11") if canonical else None,
+        current_drawdown_pct=Decimal("-10") if canonical else None,
+        max_drawdown_abs=Decimal("-20") if canonical else None,
+        max_drawdown_pct=Decimal("-18.18181818181818181818181818") if canonical else None,
+        recovery_status="IN_DRAWDOWN" if canonical else "NO_HISTORY",
+        peak_timestamp=NOW - timedelta(hours=2) if canonical else None,
+        drawdown_start=NOW - timedelta(hours=1) if canonical else None,
+        recovery_timestamp=None, drawdown_duration=timedelta(hours=1) if canonical else None,
+        history_status=status, latest_observation_at=NOW if canonical else None,
+        source_fingerprint="f" * 64 if canonical else None,
+    )
 
 
 class PeakCursor:
@@ -81,6 +101,7 @@ def test_canonical_adapter_uses_open_and_pre_entry_risk_without_reservation(monk
         runtime_revision=REVISION,
         exclude_pre_entry_risk_id=excluded,
         portfolio_state_reader=lambda *args, **kwargs: State(),
+        paper_drawdown_reader=lambda *args, **kwargs: paper_history(),
     )
     snapshot = evaluate_state(adapted, missing_numeric_policy_evidence())
     assert adapted.total_capital == Decimal("99")
@@ -94,7 +115,7 @@ def test_canonical_adapter_uses_open_and_pre_entry_risk_without_reservation(monk
     }
 
 
-def test_paper_current_drawdown_is_exact_but_full_history_stays_incomplete(monkeypatch):
+def test_paper_adapter_consumes_canonical_forward_history(monkeypatch):
     monkeypatch.setattr(
         runtime, "load_committed_pre_entry_risk_evidence_cursor",
         lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
@@ -105,17 +126,40 @@ def test_paper_current_drawdown_is_exact_but_full_history_stays_incomplete(monke
         PeakCursor(), deployment_id="local-paper", as_of=NOW,
         runtime_revision=REVISION,
         portfolio_state_reader=lambda *args, **kwargs: State(),
+        paper_drawdown_reader=lambda *args, **kwargs: paper_history(),
     )
     assert adapted.current_drawdown_abs == Decimal("-11")
     assert adapted.current_drawdown_pct == Decimal("-10")
-    assert adapted.max_drawdown_abs is None
-    assert adapted.max_drawdown_pct is None
-    assert adapted.recovery_status is None
-    assert adapted.drawdown_history_status == "INCOMPLETE_DRAWDOWN_HISTORY"
+    assert adapted.max_drawdown_abs == Decimal("-20")
+    assert adapted.max_drawdown_pct == Decimal("-18.18181818181818181818181818")
+    assert adapted.recovery_status == "IN_DRAWDOWN"
+    assert adapted.drawdown_history_status == "CANONICAL"
     snapshot = evaluate_state(adapted, missing_numeric_policy_evidence())
-    assert snapshot.authority_status == "INCOMPLETE_DRAWDOWN_HISTORY"
+    assert snapshot.authority_status == "MISSING_POLICY"
     assert snapshot.total_risk_capacity is None
     assert snapshot.available_risk_capacity is None
+
+
+def test_paper_adapter_remains_incomplete_until_forward_history_is_canonical(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    adapted = runtime.load_canonical_risk_budget_inputs_cursor(
+        PeakCursor(), deployment_id="local-paper", as_of=NOW,
+        runtime_revision=REVISION,
+        portfolio_state_reader=lambda *args, **kwargs: State(),
+        paper_drawdown_reader=lambda *args, **kwargs: paper_history("NO_HISTORY"),
+    )
+    assert adapted.current_drawdown_abs is None
+    assert adapted.max_drawdown_abs is None
+    assert adapted.recovery_status is None
+    assert adapted.drawdown_history_status == "INCOMPLETE_DRAWDOWN_HISTORY"
+    assert evaluate_state(
+        adapted, missing_numeric_policy_evidence()
+    ).authority_status == "INCOMPLETE_DRAWDOWN_HISTORY"
 
 
 def test_fail_open_shadow_savepoint_never_propagates_or_changes_execution(monkeypatch):
@@ -189,6 +233,9 @@ def test_runtime_call_sites_are_shadow_only_and_packaged():
     live_execution = (root / "common/execution.py").read_text()
     dockerfile = (root / "automation_runner/Dockerfile").read_text()
     assert "run_risk_budget_state_evaluation_cycle(" in automation
+    assert automation.rindex("run_paper_drawdown_history_cycle()") < automation.rindex(
+        "run_risk_budget_state_evaluation_cycle("
+    )
     assert automation.rindex("run_owner_capital_flow_sync_if_due(") < automation.rindex(
         "run_live_drawdown_history_cycle()"
     ) < automation.rindex("run_risk_budget_state_evaluation_cycle(")

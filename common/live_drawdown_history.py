@@ -10,6 +10,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from common.drawdown_history import (
+    DrawdownHistory as LiveDrawdownHistory,
+    DrawdownObservation,
+    calculate_drawdown_history as _calculate_drawdown_history,
+)
+
 from common.live_managed_capital import (
     LiveManagedCapitalBaseline,
     LiveManagedCapitalEvidence,
@@ -69,34 +75,6 @@ def cadence_bucket(at: datetime) -> datetime:
 
 
 @dataclass(frozen=True)
-class DrawdownObservation:
-    observed_at: datetime
-    observation_bucket_at: datetime
-    observation_trigger: str
-    managed_equity: Decimal
-    flow_adjusted_equity: Decimal
-    history_status: str = "CANONICAL"
-
-
-@dataclass(frozen=True)
-class LiveDrawdownHistory:
-    current_managed_equity: Decimal | None
-    current_flow_adjusted_equity: Decimal | None
-    peak_flow_adjusted_equity: Decimal | None
-    current_drawdown_abs: Decimal | None
-    current_drawdown_pct: Decimal | None
-    max_drawdown_abs: Decimal | None
-    max_drawdown_pct: Decimal | None
-    recovery_status: str
-    peak_timestamp: datetime | None
-    drawdown_start: datetime | None
-    recovery_timestamp: datetime | None
-    drawdown_duration: timedelta | None
-    history_status: str
-    latest_observation_at: datetime | None
-
-
-@dataclass(frozen=True)
 class ObservationCandidate:
     baseline_id: int
     deployment_id: str
@@ -139,116 +117,14 @@ def calculate_drawdown_history(
     observations: Iterable[DrawdownObservation],
     as_of: datetime,
 ) -> LiveDrawdownHistory:
-    """Calculate signed drawdown and recovery from canonical timestamps only."""
-    if as_of.tzinfo is None:
-        raise ValueError("LIVE_DRAWDOWN_AS_OF_REQUIRED")
-    if baseline_managed_equity is None or baseline_at is None:
-        return LiveDrawdownHistory(
-            None, None, None, None, None, None, None, "NO_HISTORY",
-            None, None, None, None, "NO_BASELINE", None,
-        )
-    baseline = _decimal(baseline_managed_equity)
-    rows = sorted(
-        tuple(observations),
-        key=lambda row: (row.observed_at, row.observation_bucket_at),
-    )
-    for failure in FAILURE_PRIORITY:
-        if any(row.history_status == failure for row in rows):
-            latest = max((row.observed_at for row in rows), default=None)
-            return LiveDrawdownHistory(
-                None, None, None, None, None, None, None, "NO_HISTORY",
-                None, None, None, None, failure, latest,
-            )
-    canonical = [row for row in rows if row.history_status == "CANONICAL"]
-    if not canonical:
-        return LiveDrawdownHistory(
-            None, None, baseline, None, None, None, None, "NO_HISTORY",
-            baseline_at, None, None, None, "NO_HISTORY", None,
-        )
-    cadence_rows = sorted(
-        (row for row in canonical if row.observation_trigger == "CADENCE_15M"),
-        key=lambda row: row.observation_bucket_at,
-    )
-    if any(
-        current.observation_bucket_at - previous.observation_bucket_at > CADENCE
-        for previous, current in zip(cadence_rows, cadence_rows[1:])
-    ):
-        return LiveDrawdownHistory(
-            None, None, None, None, None, None, None, "NO_HISTORY",
-            None, None, None, None, "OBSERVATION_GAP",
-            canonical[-1].observed_at,
-        )
-    if as_of - canonical[-1].observed_at > STALE_AFTER:
-        return LiveDrawdownHistory(
-            None, None, None, None, None, None, None, "NO_HISTORY",
-            None, None, None, None, "STALE_HISTORY",
-            canonical[-1].observed_at,
-        )
-
-    peak = baseline
-    peak_at = baseline_at
-    max_abs = ZERO
-    max_pct: Decimal | None = ZERO if peak != ZERO else None
-    episode_peak = peak
-    episode_peak_at = peak_at
-    active_start: datetime | None = None
-    last_episode: tuple[datetime, datetime, datetime, timedelta] | None = None
-
-    for row in canonical:
-        adjusted = _decimal(row.flow_adjusted_equity)
-        if adjusted > peak:
-            peak = adjusted
-            peak_at = row.observed_at
-        drawdown_abs = adjusted - peak
-        if drawdown_abs < max_abs:
-            max_abs = drawdown_abs
-        if peak != ZERO:
-            drawdown_pct = drawdown_abs / peak * HUNDRED
-            if max_pct is None or drawdown_pct < max_pct:
-                max_pct = drawdown_pct
-        elif drawdown_abs != ZERO:
-            max_pct = None
-
-        if active_start is None and adjusted < episode_peak:
-            active_start = row.observed_at
-        elif active_start is not None and adjusted >= episode_peak:
-            recovered_at = row.observed_at
-            last_episode = (
-                episode_peak_at, active_start, recovered_at,
-                recovered_at - active_start,
-            )
-            active_start = None
-            episode_peak = adjusted
-            episode_peak_at = row.observed_at
-        elif active_start is None and adjusted >= episode_peak:
-            episode_peak = adjusted
-            episode_peak_at = row.observed_at
-
-    current = canonical[-1]
-    current_adjusted = _decimal(current.flow_adjusted_equity)
-    current_abs = current_adjusted - peak
-    current_pct = None if peak == ZERO else current_abs / peak * HUNDRED
-    history_status = (
-        "ZERO_PEAK_PERCENT_UNAVAILABLE" if peak == ZERO else "CANONICAL"
-    )
-    if active_start is not None:
-        recovery_status = "IN_DRAWDOWN"
-        drawdown_start = active_start
-        recovery_at = None
-        duration = current.observed_at - active_start
-        applicable_peak_at = episode_peak_at
-    elif last_episode is not None:
-        recovery_status = "RECOVERED"
-        applicable_peak_at, drawdown_start, recovery_at, duration = last_episode
-    else:
-        recovery_status = "NO_DRAWDOWN"
-        applicable_peak_at = peak_at
-        drawdown_start = recovery_at = duration = None
-    return LiveDrawdownHistory(
-        _decimal(current.managed_equity), current_adjusted, peak,
-        current_abs, current_pct, max_abs, max_pct, recovery_status,
-        applicable_peak_at, drawdown_start, recovery_at, duration,
-        history_status, current.observed_at,
+    """Compatibility wrapper preserving the frozen LIVE contract."""
+    return _calculate_drawdown_history(
+        baseline_managed_equity=baseline_managed_equity,
+        baseline_at=baseline_at, observations=observations, as_of=as_of,
+        cadence=CADENCE, stale_after=STALE_AFTER,
+        failure_priority=FAILURE_PRIORITY,
+        timestamp_error="LIVE_DRAWDOWN_AS_OF_REQUIRED",
+        decimal_error="LIVE_DRAWDOWN_DECIMAL_REQUIRED",
     )
 
 

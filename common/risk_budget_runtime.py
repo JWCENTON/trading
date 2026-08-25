@@ -23,6 +23,7 @@ from common.live_drawdown_history import (
 )
 from common.live_managed_capital import load_live_managed_capital_evidence
 from common.owner_capital_flow_sync import load_owner_flow_history_authority
+from common.paper_drawdown_history import read_paper_drawdown_history
 from common.portfolio_state import PortfolioStateV1, read_portfolio_state
 from common.pre_entry_risk import load_committed_pre_entry_risk_evidence_cursor
 from common.risk_budget import (
@@ -177,52 +178,21 @@ def resolve_live_canonical_risk_evaluation_boundary_cursor(
 def _paper_current_drawdown_evidence_cursor(
     cur: Any, *, deployment_id: str, as_of: datetime,
     state: PortfolioStateV1,
-) -> tuple[Decimal | None, Decimal | None, str, dict[str, Any]]:
-    """Expose current PAPER drawdown and state missing forward history exactly."""
-    cur.execute(
-        """
-        SELECT b.baseline_managed_equity,
-               (SELECT MAX(s.waltrade_managed_equity_usdc)
-                  FROM equity_daily_snapshot_v1 s
-                 WHERE s.deployment_id=b.deployment_id
-                   AND s.evidence_status='COMPLETE'
-                   AND s.source_timestamp>=b.baseline_timestamp
-                   AND s.source_timestamp<=%s)
-          FROM paper_equity_baseline_v2 b
-         WHERE b.deployment_id=%s
-           AND b.baseline_version='PAPER_EQUITY_BASELINE_V2'
-           AND b.evidence_status='COMPLETE'
-           AND b.baseline_timestamp<=%s
-        """,
-        (as_of, deployment_id, as_of),
-    )
-    row = cur.fetchone()
-    current_abs = None
-    peak = None
-    if (
-        row is not None and row[0] is not None
-        and state.total_capital_status == "CANONICAL"
-        and state.total_capital is not None
-        and state.drawdown_status == "CANONICAL"
-    ):
-        peak = max(
-            Decimal(str(row[0])),
-            Decimal(str(row[1])) if row[1] is not None else Decimal(str(row[0])),
-            state.total_capital,
-        )
-        current_abs = state.total_capital - peak
-    evidence = {
-        "authority": "PORTFOLIO_STATE_V1/PAPER_EQUITY_BASELINE_V2",
-        "current_drawdown_abs": current_abs,
-        "current_drawdown_pct": state.drawdown,
-        "current_peak": peak,
-        "full_forward_history": "UNAVAILABLE",
-        "max_drawdown_abs": None,
-        "max_drawdown_pct": None,
-        "recovery_status": None,
-        "status": PAPER_DRAWDOWN_HISTORY_STATUS,
+    history_reader: Callable[..., Any] = read_paper_drawdown_history,
+) -> tuple[Any, str, dict[str, Any]]:
+    """Consume only the immutable forward PAPER drawdown authority."""
+    history = history_reader(cur, deployment_id=deployment_id, as_of=as_of)
+    canonical = str(history.history_status) in {
+        "CANONICAL", "ZERO_PEAK_PERCENT_UNAVAILABLE"
     }
-    return current_abs, state.drawdown, PAPER_DRAWDOWN_HISTORY_STATUS, evidence
+    status = str(history.history_status) if canonical else PAPER_DRAWDOWN_HISTORY_STATUS
+    evidence = {
+        "authority": "PAPER_DRAWDOWN_HISTORY_AUTHORITY_V1",
+        "history": asdict(history),
+        "status": status,
+        "portfolio_state_total_capital_status": state.total_capital_status,
+    }
+    return history, status, evidence
 
 
 def load_canonical_risk_budget_inputs_cursor(
@@ -233,6 +203,7 @@ def load_canonical_risk_budget_inputs_cursor(
     exchange_client: Any | None = None,
     live_managed_loader: Callable[..., Any] = load_live_managed_capital_evidence,
     live_drawdown_reader: Callable[..., Any] = read_live_drawdown_history,
+    paper_drawdown_reader: Callable[..., Any] = read_paper_drawdown_history,
     owner_flow_loader: Callable[..., Any] = load_owner_flow_history_authority,
     canonical_live_observation: bool = False,
 ) -> RiskBudgetInputs:
@@ -344,9 +315,10 @@ def load_canonical_risk_budget_inputs_cursor(
         exclude_pre_entry_risk_id=exclude_pre_entry_risk_id,
         as_of=as_of,
     )
-    current_abs, current_pct, history_status, history_evidence = (
+    history, history_status, history_evidence = (
         _paper_current_drawdown_evidence_cursor(
             cur, deployment_id=deployment, as_of=as_of, state=state,
+            history_reader=paper_drawdown_reader,
         )
     )
     state_payload = state.serializable()
@@ -360,11 +332,14 @@ def load_canonical_risk_budget_inputs_cursor(
         open_risk_status=state.open_risk_status,
         pre_entry_committed_risk=committed.total_pre_entry_risk,
         pre_entry_risk_status=committed.evidence_status,
-        current_drawdown_abs=current_abs,
-        current_drawdown_pct=current_pct,
-        max_drawdown_abs=None,
-        max_drawdown_pct=None,
-        recovery_status=None,
+        current_drawdown_abs=history.current_drawdown_abs,
+        current_drawdown_pct=history.current_drawdown_pct,
+        max_drawdown_abs=history.max_drawdown_abs,
+        max_drawdown_pct=history.max_drawdown_pct,
+        recovery_status=(
+            history.recovery_status
+            if history_status != PAPER_DRAWDOWN_HISTORY_STATUS else None
+        ),
         drawdown_history_status=history_status,
         source_fingerprints=_source_fingerprints(
             state, state_payload, committed, exclude_pre_entry_risk_id,

@@ -66,6 +66,9 @@ from common.live_drawdown_history import (
     reemit_late_event_history,
     select_observation_trigger,
 )
+from common.paper_drawdown_history import (
+    run_paper_drawdown_history_cycle as produce_paper_drawdown_history_cycle,
+)
 from common.portfolio_state import read_portfolio_state
 from common.risk_budget_runtime import (
     run_risk_budget_state_evaluation_cycle,
@@ -102,6 +105,20 @@ ORC_LEDGER_OBSERVE_ONLY_ENABLED = _env_bool(
 CAUSAL_TRANSPORT_METRICS = TransportMetrics()
 _last_thesis_evidence_cutoff = None
 _live_drawdown_pending = {}
+
+
+def run_paper_drawdown_history_cycle():
+    """PAPER Portfolio State observation -> immutable drawdown history."""
+    if cfg.trading_mode.upper() != "PAPER":
+        return {"status": "ENVIRONMENT_FENCE"}
+    deployment_id = os.getenv("DEPLOYMENT_ID", "").strip().lower()
+    if deployment_id not in {"local-paper", "vps-paper"}:
+        raise RuntimeError("PAPER_DRAWDOWN_DEPLOYMENT_INVALID")
+    return produce_paper_drawdown_history_cycle(
+        connection_factory=get_db_conn,
+        deployment_id=deployment_id,
+        git_revision=os.getenv("GIT_SHA", "").strip().lower(),
+    )
 
 
 def run_live_drawdown_history_cycle():
@@ -3852,6 +3869,17 @@ def main():
                 run_thesis_evidence_bundle_v1()
             except Exception:
                 logging.exception("thesis_evidence_bundle_v1 failed")
+
+            if cfg.trading_mode == "PAPER":
+                try:
+                    paper_drawdown = run_paper_drawdown_history_cycle()
+                    logging.info(
+                        "paper_drawdown_history_v1 status=%s persisted=%s",
+                        paper_drawdown.get("status"),
+                        paper_drawdown.get("persisted"),
+                    )
+                except Exception:
+                    logging.exception("paper_drawdown_history_v1 failed")
 
             try:
                 risk_budget = run_risk_budget_state_evaluation_cycle(
