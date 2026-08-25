@@ -500,7 +500,8 @@ def build_portfolio_state(
 
 
 def read_portfolio_state(
-    cur: Any, *, environment: str, deployment_id: str, as_of: datetime,
+    cur: Any, *, environment: str, deployment_id: str,
+    as_of: datetime | None = None,
     runtime_revision: str | None = None,
     exchange_client: Any | None = None,
     live_managed_bundle: tuple[
@@ -508,6 +509,10 @@ def read_portfolio_state(
     ] | None = None,
 ) -> PortfolioStateV1:
     mode, deployment = validate_identity(environment, deployment_id)
+    historical_paper_replay = mode == "PAPER" and as_of is not None
+    as_of = as_of or datetime.now(timezone.utc)
+    if as_of.tzinfo is None:
+        raise ValueError("PORTFOLIO_STATE_AS_OF_MUST_BE_TIMEZONE_AWARE")
     baseline = None
     if mode == "PAPER":
         cur.execute(
@@ -545,17 +550,23 @@ def read_portfolio_state(
     reservation_evidence = load_capital_reservation_evidence(
         cur, environment=mode, deployment_id=deployment,
         account_identity_fingerprint=reservation_account_identity,
+        as_of=as_of if historical_paper_replay else None,
     )
     risk_boundaries, boundary_status = load_boundary_projections_cursor(
         cur, environment=mode, deployment_id=deployment,
         account_identity_fingerprint=reservation_account_identity,
+        as_of=as_of if historical_paper_replay else None,
     )
     boundary = (
         baseline.timestamp if baseline else
         live_baseline.accepted_at if live_baseline else as_of
     )
+    realized_position_predicate = (
+        "p.exit_time IS NOT NULL" if historical_paper_replay
+        else "p.status='CLOSED'"
+    )
     cur.execute(
-        """
+        f"""
         SELECT COUNT(*),
                COUNT(*) FILTER (WHERE ft.financial_truth_status='COMPLETE'
                  AND ft.authoritative_net_pnl IS NOT NULL),
@@ -565,15 +576,67 @@ def read_portfolio_state(
                  WHERE ft.financial_truth_status='COMPLETE')
         FROM positions p
         LEFT JOIN canonical_financial_truth_v1 ft ON ft.position_id=p.id
-        WHERE p.status='CLOSED' AND p.exit_time>%s AND p.exit_time<=%s
+        WHERE {realized_position_predicate}
+          AND p.exit_time>%s AND p.exit_time<=%s
         """,
         (boundary, as_of),
     )
     row = cur.fetchone()
     realized = RealizedEvidence(int(row[0]), int(row[1]), row[2], row[3])
 
-    cur.execute(
-        """
+    if historical_paper_replay:
+        cur.execute(
+            """
+            WITH fills_as_of AS (
+              SELECT f.position_id,
+                     SUM(f.fill_qty) FILTER (
+                       WHERE f.order_purpose='ENTRY') AS entry_qty,
+                     SUM(f.fill_qty*f.fill_price) FILTER (
+                       WHERE f.order_purpose='ENTRY') AS entry_notional,
+                     COALESCE(SUM(f.fill_qty) FILTER (
+                       WHERE f.order_purpose='EXIT'),0) AS exit_qty
+              FROM simulated_execution_fills_v1 f
+              WHERE f.execution_at<=%s
+                AND f.deployment_id=%s
+                AND upper(f.environment) IN ('PAPER','TRADING_PAPER')
+                AND f.source_authority='SIMULATED_EXECUTION'
+                AND f.order_purpose IN ('ENTRY','EXIT')
+              GROUP BY f.position_id
+            ), inventory_as_of AS (
+              SELECT p.id,p.symbol,p.strategy,p.interval,p.side,
+                     CASE WHEN f.entry_qty>0
+                          THEN f.entry_notional/f.entry_qty END AS entry_price,
+                     CASE WHEN f.exit_qty<=f.entry_qty
+                          THEN f.entry_qty-f.exit_qty END AS remaining_qty,
+                     CASE WHEN f.entry_qty>0 AND f.exit_qty<=f.entry_qty
+                          THEN 'COMPLETE' ELSE 'INCOMPLETE' END AS evidence_status
+              FROM fills_as_of f
+              JOIN positions p ON p.id=f.position_id
+              WHERE f.entry_qty>0 AND f.entry_qty<>f.exit_qty
+            )
+            SELECT p.id,p.symbol,p.strategy,p.interval,p.side,p.entry_price,
+                   p.remaining_qty,p.evidence_status,
+                   mark.close,mark.open_time,regime.regime,regime.ts
+            FROM inventory_as_of p
+            LEFT JOIN LATERAL (
+              SELECT c.close,c.open_time FROM candles c
+              WHERE c.symbol=p.symbol AND c.interval=p.interval
+                AND c.open_time<=%s
+              ORDER BY c.open_time DESC LIMIT 1
+            ) mark ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT r.regime,r.ts FROM market_regime r
+              WHERE r.symbol=p.symbol AND r.interval=p.interval AND r.ts<=%s
+                AND r.regime IS NOT NULL
+              ORDER BY r.ts DESC LIMIT 1
+            ) regime ON TRUE
+            ORDER BY p.id
+            """,
+            (as_of, deployment, as_of, as_of),
+        )
+    else:
+        cur.execute(
+            """
         SELECT p.id,p.symbol,p.strategy,p.interval,p.side,p.entry_price,
                p.remaining_inventory_qty,p.inventory_evidence_status,
                mark.close,mark.open_time,regime.regime,regime.ts
@@ -592,9 +655,9 @@ def read_portfolio_state(
         ) regime ON TRUE
         WHERE p.status='OPEN'
         ORDER BY p.id
-        """,
-        (as_of, as_of),
-    )
+            """,
+            (as_of, as_of),
+        )
     marks = tuple(
         OpenInventoryMark(
             int(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4]),
@@ -606,16 +669,35 @@ def read_portfolio_state(
         for row in cur.fetchall()
     )
     if mode == "PAPER" and risk_boundaries:
-        cur.execute(
-            """
+        position_ids = tuple(mark.position_id for mark in marks)
+        if historical_paper_replay:
+            if position_ids:
+                cur.execute(
+                    """
+                    SELECT p.id,e.fee_rate_exit_assumption,e.fee_model_version
+                    FROM positions p
+                    LEFT JOIN entry_opportunity_evidence_v1 e
+                      ON e.snapshot_id=p.entry_opportunity_snapshot_id
+                     AND e.decision_created_at<=%s AND e.captured_at<=%s
+                    WHERE p.id=ANY(%s)
+                    """,
+                    (as_of, as_of, list(position_ids)),
+                )
+                paper_fee_rows = cur.fetchall()
+            else:
+                paper_fee_rows = ()
+        else:
+            cur.execute(
+                """
             SELECT p.id,e.fee_rate_exit_assumption,e.fee_model_version
             FROM positions p
             LEFT JOIN entry_opportunity_evidence_v1 e
               ON e.snapshot_id=p.entry_opportunity_snapshot_id
             WHERE p.status='OPEN'
-            """
-        )
-        for position_id, fee_rate, fee_model in cur.fetchall():
+                """
+            )
+            paper_fee_rows = cur.fetchall()
+        for position_id, fee_rate, fee_model in paper_fee_rows:
             projection = risk_boundaries.get(int(position_id))
             if projection is not None and fee_rate is not None and fee_model:
                 risk_boundaries[int(position_id)] = replace(
@@ -650,7 +732,7 @@ def read_portfolio_state(
         )
         peak_row = cur.fetchone()
         peak = None if not peak_row or peak_row[0] is None else _decimal(peak_row[0])
-    return build_portfolio_state(
+    state = build_portfolio_state(
         environment=mode, deployment_id=deployment, as_of=as_of,
         baseline=baseline, realized=realized, open_marks=marks,
         historical_peak_managed_equity=peak,
@@ -664,3 +746,26 @@ def read_portfolio_state(
         risk_boundaries=risk_boundaries,
         risk_boundary_source_status=boundary_status,
     )
+    if historical_paper_replay:
+        state = replace(
+            state,
+            source_authorities={
+                **state.source_authorities,
+                "inventory_quantity": (
+                    "simulated_execution_fills_v1.ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF"
+                ),
+                "risk_quantity": (
+                    "simulated_execution_fills_v1.ENTRY_MINUS_EXIT_THROUGH_DECLARED_AS_OF"
+                ),
+                "position_membership": (
+                    "CANONICAL_SIMULATED_EXECUTION_FILL_LIFECYCLE_THROUGH_DECLARED_AS_OF"
+                ),
+                "position_risk_boundary": (
+                    "POSITION_RISK_BOUNDARY_AUTHORITY_V1_LATEST_EFFECTIVE_THROUGH_DECLARED_AS_OF"
+                ),
+                "paper_exit_cost": (
+                    "IMMUTABLE_ENTRY_OPPORTUNITY_EVIDENCE_CAPTURED_THROUGH_DECLARED_AS_OF"
+                ),
+            },
+        )
+    return state

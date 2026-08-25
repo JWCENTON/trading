@@ -573,19 +573,34 @@ def _event_from_row(row: tuple[Any, ...]) -> BoundaryEvent:
 def load_boundary_projections_cursor(
     cur: Any, *, environment: str, deployment_id: str,
     account_identity_fingerprint: str | None,
+    as_of: datetime | None = None,
 ) -> tuple[dict[int, RiskBoundaryProjection], str]:
     if not account_identity_fingerprint or not boundary_schema_available_cursor(cur):
         return {}, "MISSING_BOUNDARY"
+    source = "v_position_risk_boundary_current_v1"
+    params: tuple[Any, ...] = (
+        str(environment).upper(), str(deployment_id).lower(),
+        str(account_identity_fingerprint),
+    )
+    if as_of is not None:
+        if as_of.tzinfo is None:
+            raise ValueError("RISK_BOUNDARY_AS_OF_MUST_BE_TIMEZONE_AWARE")
+        source = """(
+            SELECT DISTINCT ON (boundary_id) *
+            FROM position_risk_boundary_event_v1
+            WHERE effective_at<=%s
+            ORDER BY boundary_id,event_sequence DESC
+        ) boundary_as_of"""
+        params = (as_of, *params)
     cur.execute(
         "SELECT boundary_id,position_id,environment,deployment_id,"
         "account_identity_fingerprint,side,state,boundary_distance_pct,"
         "entry_basis_price,entry_basis_authority,boundary_price,boundary_type,"
         "execution_price_guarantee,policy_fingerprint,effective_at "
-        "FROM v_position_risk_boundary_current_v1 WHERE environment=%s "
+        f"FROM {source} WHERE environment=%s "
         "AND deployment_id=%s AND account_identity_fingerprint=%s "
         "AND position_id IS NOT NULL",
-        (str(environment).upper(), str(deployment_id).lower(),
-         str(account_identity_fingerprint)),
+        params,
     )
     result: dict[int, RiskBoundaryProjection] = {}
     for row in cur.fetchall():

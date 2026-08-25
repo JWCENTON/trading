@@ -453,6 +453,7 @@ def _event_from_row(row: tuple[Any, ...]) -> CapitalReservationEvent:
 def load_capital_reservation_evidence(
     cur: Any, *, environment: str, deployment_id: str,
     account_identity_fingerprint: str | None,
+    as_of: datetime | None = None,
 ) -> CapitalReservationEvidence:
     if not account_identity_fingerprint:
         return CapitalReservationEvidence(
@@ -465,18 +466,30 @@ def load_capital_reservation_evidence(
             str(account_identity_fingerprint),
             ("CAPITAL_RESERVATION_SCHEMA_UNAVAILABLE",),
         )
+    source = "v_capital_reservation_current_v1"
+    params: tuple[Any, ...] = (
+        str(environment).upper(), str(deployment_id).lower(),
+        str(account_identity_fingerprint),
+    )
+    if as_of is not None:
+        if as_of.tzinfo is None:
+            raise ValueError("CAPITAL_RESERVATION_AS_OF_MUST_BE_TIMEZONE_AWARE")
+        source = """(
+            SELECT DISTINCT ON (reservation_id) *
+            FROM capital_reservation_event_v1
+            WHERE effective_at<=%s
+            ORDER BY reservation_id,event_sequence DESC
+        ) reservation_as_of"""
+        params = (as_of, *params)
     cur.execute(
-        """
+        f"""
         SELECT state,reflection_state,reconciliation_status,
                remaining_reserved_notional,effective_at
-        FROM v_capital_reservation_current_v1
+        FROM {source}
         WHERE environment=%s AND deployment_id=%s
           AND account_identity_fingerprint=%s AND purpose='ENTRY'
         """,
-        (
-            str(environment).upper(), str(deployment_id).lower(),
-            str(account_identity_fingerprint),
-        ),
+        params,
     )
     rows = list(cur.fetchall())
     active = [row for row in rows if str(row[0]) in ACTIVE_STATES]
