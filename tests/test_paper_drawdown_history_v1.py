@@ -269,6 +269,12 @@ def test_contract_and_migration_are_forward_only_without_daily_snapshot_reuse():
     assert contract["exact_equality_after_canonicalization"] is True
     assert contract["float_allowed"] is False
     assert contract["tolerance_comparison"] is False
+    assert contract["activation_generations_supported"] is True
+    assert contract["generations_immutable"] is True
+    assert contract["active_generation_ambiguity_policy"] == "FAIL_CLOSED"
+    assert contract["cross_generation_history_merge"] is False
+    assert contract["observation_backfill"] is False
+    assert contract["risk_budget_consumes_active_generation_only"] is True
     expected = (ROOT / "contracts/paper_drawdown_history_authority_v1_contract.sha256").read_text().strip()
     assert hashlib.sha256(contract_path.read_bytes()).hexdigest() == expected
     migration = (ROOT / "db/migrations/20260825_paper_drawdown_history_authority_v1.sql").read_text().upper()
@@ -285,3 +291,11 @@ def test_contract_and_migration_are_forward_only_without_daily_snapshot_reuse():
     assert "INSERT INTO" not in corrective
     assert "UPDATE PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in corrective
     assert "DELETE FROM" not in corrective
+    generations = (
+        ROOT / "db/migrations/20260825_paper_drawdown_history_activation_generations_v1.sql"
+    ).read_text().upper()
+    assert "GENERATION_SELECTION" in generations
+    assert "ACTIVATION_GENERATION" in generations
+    assert "INSERT INTO PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in generations
+    assert "UPDATE PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in generations
+    assert "DELETE FROM PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in generations

@@ -11,14 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from common.drawdown_history import canonical_numeric_38_18
+from common.drawdown_history import canonical_json, canonical_numeric_38_18, fingerprint
 from common.paper_drawdown_history import (
     CONTRACT_VERSION,
-    ensure_activation_cursor,
     capture_observation_candidate,
+    create_activation_generation_cursor,
+    ensure_activation_cursor,
+    get_active_paper_drawdown_history_generation_cursor,
     persist_observation_candidate,
     read_paper_drawdown_history,
     select_observation_triggers_cursor,
+    _legacy_final_evidence_payload,
 )
 from common.paper_equity_baseline_v2 import fetch_paper_equity_baseline_v2
 
@@ -27,6 +30,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = (ROOT / "db/migrations/20260825_paper_drawdown_history_authority_v1.sql").read_text()
 CORRECTIVE_MIGRATION = (
     ROOT / "db/migrations/20260825_paper_drawdown_history_numeric_scale_v1.sql"
+).read_text()
+GENERATION_MIGRATION = (
+    ROOT / "db/migrations/20260825_paper_drawdown_history_activation_generations_v1.sql"
 ).read_text()
 T0 = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
 D = Decimal
@@ -75,6 +81,7 @@ def database(disposable_postgres_v16, prefix):
         cur.execute(BASELINE_SCHEMA)
         cur.execute(MIGRATION)
         cur.execute(CORRECTIVE_MIGRATION)
+        cur.execute(GENERATION_MIGRATION)
     conn.commit()
     return conn
 
@@ -154,6 +161,38 @@ def candidate(activation, baseline, minutes, equity, trigger="CADENCE_15M"):
     return result.candidate
 
 
+def insert_legacy_generation_one_candidate(cur, item):
+    legacy_fingerprint = fingerprint(_legacy_final_evidence_payload(item))
+    cur.execute(
+        """INSERT INTO paper_managed_equity_observation_v1(
+             activation_id,baseline_id,deployment_id,observed_at,
+             observation_bucket_at,observation_trigger,trigger_reference,
+             observation_identity,managed_equity,managed_equity_status,
+             realized_pnl,realized_pnl_status,unrealized_pnl,
+             unrealized_pnl_status,baseline_activation_fingerprint,
+             portfolio_state_fingerprint,source_fingerprints,
+             portfolio_state_evidence,evidence_fingerprint,
+             history_evidence_status,producer_identity,git_revision,
+             contract_version,activation_generation
+           ) VALUES (
+             %s,%s,%s,%s,%s,%s,%s,%s,%s,'CANONICAL',%s,'CANONICAL',
+             %s,'CANONICAL',%s,%s,%s::jsonb,%s::jsonb,%s,'CANONICAL',%s,%s,%s,1
+           )""",
+        (
+            item.activation_id, item.baseline_id, item.deployment_id,
+            item.observed_at, item.observation_bucket_at,
+            item.observation_trigger, item.trigger_reference,
+            item.observation_identity, item.managed_equity, item.realized_pnl,
+            item.unrealized_pnl, item.baseline_activation_fingerprint,
+            item.portfolio_state_fingerprint,
+            canonical_json(item.source_fingerprints),
+            canonical_json(item.portfolio_state_evidence), legacy_fingerprint,
+            item.producer_identity, item.git_revision, CONTRACT_VERSION,
+        ),
+    )
+    return legacy_fingerprint
+
+
 def test_migration_is_empty_idempotent_additive_and_append_only(disposable_postgres_v16):
     conn = database(disposable_postgres_v16, "waltrade_baseline_test_paper_dd_schema_")
     try:
@@ -161,6 +200,8 @@ def test_migration_is_empty_idempotent_additive_and_append_only(disposable_postg
             cur.execute(MIGRATION)
             cur.execute(CORRECTIVE_MIGRATION)
             cur.execute(CORRECTIVE_MIGRATION)
+            cur.execute(GENERATION_MIGRATION)
+            cur.execute(GENERATION_MIGRATION)
             cur.execute("SELECT count(*) FROM paper_managed_equity_observation_v1")
             assert cur.fetchone()[0] == 0
             cur.execute(
@@ -168,10 +209,16 @@ def test_migration_is_empty_idempotent_additive_and_append_only(disposable_postg
                    WHERE tgname IN (
                      'trg_paper_drawdown_activation_v1_append_only',
                      'trg_paper_managed_equity_observation_v1_append_only',
-                     'trg_paper_managed_equity_observation_v1_validate'
+                     'trg_paper_managed_equity_observation_v1_validate',
+                     'trg_paper_drawdown_generation_selection_v1_validate',
+                     'trg_paper_drawdown_generation_selection_v1_append_only'
                    ) AND NOT tgisinternal"""
             )
-            assert cur.fetchone()[0] == 3
+            assert cur.fetchone()[0] == 5
+            cur.execute(
+                "SELECT count(*) FROM paper_drawdown_history_generation_selection_v1"
+            )
+            assert cur.fetchone()[0] == 0
         conn.commit()
         activation, baseline = prepare(conn)
         item = candidate(activation, baseline, 0, "100", "BASELINE_ACTIVATION")
@@ -280,6 +327,37 @@ def test_numeric_38_18_roundtrip_and_confirmed_natural_first_observation(
             stored, raw_source = cur.fetchone()
             assert stored == D("785.153275660783716231")
             assert raw_source == "785.153275660783716231082848"
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_existing_generation_one_fingerprint_remains_readable_without_rewrite(
+    disposable_postgres_v16,
+):
+    conn = database(
+        disposable_postgres_v16,
+        "waltrade_baseline_test_paper_dd_legacy_generation_one_",
+    )
+    try:
+        activation, baseline = prepare(conn)
+        item = candidate(
+            activation, baseline, 0, "100", "BASELINE_ACTIVATION"
+        )
+        with conn.cursor() as cur:
+            legacy_fingerprint = insert_legacy_generation_one_candidate(cur, item)
+        conn.commit()
+        with conn.cursor() as cur:
+            history = read_paper_drawdown_history(
+                cur, deployment_id="local-paper", as_of=T0, generation=1,
+            )
+            assert history.history_status == "CANONICAL"
+            assert history.activation_generation == 1
+            cur.execute(
+                """SELECT evidence_fingerprint
+                   FROM paper_managed_equity_observation_v1"""
+            )
+            assert cur.fetchone()[0] == legacy_fingerprint
         conn.rollback()
     finally:
         conn.close()
@@ -411,6 +489,177 @@ def test_gap_does_not_bridge_and_no_legacy_backfill_source_exists(disposable_pos
             assert history.history_status == "OBSERVATION_GAP"
             cur.execute("SELECT to_regclass('public.equity_daily_snapshot_v1')")
             assert cur.fetchone()[0] is None
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_immutable_generation_supersession_isolated_active_only_and_fail_closed(
+    disposable_postgres_v16,
+):
+    conn = database(
+        disposable_postgres_v16,
+        "waltrade_baseline_test_paper_dd_generation_",
+    )
+    try:
+        generation_one, baseline = prepare(conn)
+        assert generation_one.generation == 1
+        with conn.cursor() as cur:
+            for item in (
+                candidate(
+                    generation_one, baseline, 0, "100", "BASELINE_ACTIVATION"
+                ),
+                candidate(generation_one, baseline, 30, "99"),
+            ):
+                assert persist_observation_candidate(cur, item).status == "CANONICAL"
+        conn.commit()
+        with conn.cursor() as cur:
+            old_history = read_paper_drawdown_history(
+                cur, deployment_id="local-paper",
+                as_of=T0 + timedelta(minutes=45), generation=1,
+            )
+            assert old_history.history_status == "OBSERVATION_GAP"
+            cur.execute(
+                """SELECT activation_evidence_fingerprint,activation_evidence
+                   FROM paper_drawdown_history_activation_v1
+                   WHERE activation_id=%s""",
+                (generation_one.activation_id,),
+            )
+            old_activation_evidence = cur.fetchone()
+            cur.execute(
+                """SELECT observation_id,evidence_fingerprint
+                   FROM paper_managed_equity_observation_v1
+                   WHERE activation_id=%s ORDER BY observation_id""",
+                (generation_one.activation_id,),
+            )
+            old_observations = cur.fetchall()
+            generation_two = create_activation_generation_cursor(
+                cur, deployment_id="local-paper",
+                cutover_at=T0 + timedelta(minutes=45),
+                selection_reason=(
+                    "FAILED_INITIAL_FORWARD_ACTIVATION_AFTER_PRECISION_DEFECT"
+                ),
+                approval_evidence={
+                    "approved": True,
+                    "approved_by": "Product Owner",
+                    "incident": "NUMERIC_SCALE_PRECISION_DEFECT",
+                },
+                expected_previous_status="OBSERVATION_GAP",
+                producer_identity="test", git_revision=REVISION,
+            )
+            assert generation_two.generation == 2
+            assert generation_two.baseline_id == generation_one.baseline_id
+            active = get_active_paper_drawdown_history_generation_cursor(
+                cur, baseline_id=baseline.baseline_id
+            )
+            assert active.status == "CANONICAL"
+            assert active.activation.activation_id == generation_two.activation_id
+            producer_active = ensure_activation_cursor(
+                cur, deployment_id="local-paper",
+                now=T0 + timedelta(minutes=60),
+                producer_identity="test", git_revision=REVISION,
+            )
+            assert producer_active.activation_id == generation_two.activation_id
+            assert producer_active.generation == 2
+            cur.execute(
+                """SELECT count(*) FROM paper_managed_equity_observation_v1
+                   WHERE activation_id=%s""",
+                (generation_two.activation_id,),
+            )
+            assert cur.fetchone()[0] == 0
+            for item in (
+                candidate(
+                    producer_active, baseline, 45, "101", "BASELINE_ACTIVATION"
+                ),
+                candidate(producer_active, baseline, 60, "102"),
+                candidate(generation_one, baseline, 60, "80"),
+            ):
+                assert persist_observation_candidate(cur, item).status == "CANONICAL"
+        conn.commit()
+
+        with conn.cursor() as cur:
+            active_history = read_paper_drawdown_history(
+                cur, deployment_id="local-paper",
+                as_of=T0 + timedelta(minutes=60),
+            )
+            historical = read_paper_drawdown_history(
+                cur, deployment_id="local-paper",
+                as_of=T0 + timedelta(minutes=60), generation=1,
+            )
+            assert active_history.history_status == "CANONICAL"
+            assert active_history.activation_generation == 2
+            assert active_history.current_managed_equity == D("102")
+            assert historical.history_status == "OBSERVATION_GAP"
+            assert historical.activation_generation == 1
+            assert active_history.source_fingerprint != historical.source_fingerprint
+            cur.execute(
+                """SELECT count(DISTINCT activation_id),count(*)
+                   FROM paper_managed_equity_observation_v1
+                   WHERE observation_bucket_at=%s""",
+                (T0 + timedelta(minutes=60),),
+            )
+            assert cur.fetchone() == (2, 2)
+            cur.execute(
+                """SELECT activation_evidence_fingerprint,activation_evidence
+                   FROM paper_drawdown_history_activation_v1
+                   WHERE activation_id=%s""",
+                (generation_one.activation_id,),
+            )
+            assert cur.fetchone() == old_activation_evidence
+            cur.execute(
+                """SELECT observation_id,evidence_fingerprint
+                   FROM paper_managed_equity_observation_v1
+                   WHERE activation_id=%s AND observation_id<=%s
+                   ORDER BY observation_id""",
+                (generation_one.activation_id, old_observations[-1][0]),
+            )
+            assert cur.fetchall() == old_observations
+            cur.execute(
+                """SELECT baseline_id,count(*) FROM paper_equity_baseline_v2
+                   GROUP BY baseline_id"""
+            )
+            assert cur.fetchall() == [(baseline.baseline_id, 1)]
+            with pytest.raises(Exception, match="APPEND_ONLY"):
+                cur.execute(
+                    """UPDATE paper_drawdown_history_generation_selection_v1
+                       SET selection_reason='FORBIDDEN' WHERE generation=1"""
+                )
+        conn.rollback()
+        with conn.cursor() as cur:
+            with pytest.raises(Exception, match="APPEND_ONLY"):
+                cur.execute(
+                    """UPDATE paper_drawdown_history_activation_v1
+                       SET generation=7 WHERE activation_id=%s""",
+                    (generation_one.activation_id,),
+                )
+        conn.rollback()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO paper_drawdown_history_activation_v1(
+                     baseline_id,deployment_id,activated_at,activation_bucket_at,
+                     baseline_activation_fingerprint,activation_identity,
+                     activation_evidence_fingerprint,activation_evidence,
+                     producer_identity,git_revision,contract_version,generation
+                   ) VALUES (%s,'local-paper',%s,%s,%s,%s,%s,%s::jsonb,
+                     'test',%s,%s,3)""",
+                (
+                    baseline.baseline_id, T0 + timedelta(minutes=75),
+                    T0 + timedelta(minutes=75), ACTIVATION_FP, "9" * 64,
+                    "8" * 64, json.dumps({"unselected": True}), REVISION,
+                    CONTRACT_VERSION,
+                ),
+            )
+            ambiguous = get_active_paper_drawdown_history_generation_cursor(
+                cur, baseline_id=baseline.baseline_id
+            )
+            assert ambiguous.status == "AMBIGUOUS_ACTIVE_GENERATION"
+            failed = read_paper_drawdown_history(
+                cur, deployment_id="local-paper",
+                as_of=T0 + timedelta(minutes=75),
+            )
+            assert failed.history_status == "AMBIGUOUS_ACTIVE_GENERATION"
+            assert failed.current_managed_equity is None
         conn.rollback()
     finally:
         conn.close()

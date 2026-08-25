@@ -140,6 +140,39 @@ def test_paper_adapter_consumes_canonical_forward_history(monkeypatch):
     assert snapshot.available_risk_capacity is None
 
 
+def test_paper_risk_budget_fingerprint_is_bound_to_active_generation(monkeypatch):
+    monkeypatch.setattr(
+        runtime, "load_committed_pre_entry_risk_evidence_cursor",
+        lambda *args, **kwargs: CommittedPreEntryRiskEvidence(
+            Decimal("0"), 0, "CANONICAL"
+        ),
+    )
+    generation_one = replace(
+        paper_history(), activation_id=10, activation_generation=1,
+        activation_selection_fingerprint="1" * 64,
+        source_fingerprint="a" * 64,
+    )
+    generation_two = replace(
+        paper_history(), activation_id=11, activation_generation=2,
+        activation_selection_fingerprint="2" * 64,
+        source_fingerprint="b" * 64,
+    )
+    def adapted(history):
+        return runtime.load_canonical_risk_budget_inputs_cursor(
+            PeakCursor(), deployment_id="local-paper", as_of=NOW,
+            runtime_revision=REVISION,
+            portfolio_state_reader=lambda *args, **kwargs: State(),
+            paper_drawdown_reader=lambda *args, **kwargs: history,
+        )
+
+    first = adapted(generation_one)
+    second = adapted(generation_two)
+    assert first.drawdown_history_status == second.drawdown_history_status == "CANONICAL"
+    assert first.source_fingerprints["drawdown_history"] != (
+        second.source_fingerprints["drawdown_history"]
+    )
+
+
 def test_paper_adapter_remains_incomplete_until_forward_history_is_canonical(monkeypatch):
     monkeypatch.setattr(
         runtime, "load_committed_pre_entry_risk_evidence_cursor",
