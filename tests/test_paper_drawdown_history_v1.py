@@ -7,7 +7,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from common.drawdown_history import DrawdownObservation, calculate_drawdown_history
+import pytest
+
+from common.drawdown_history import (
+    DrawdownObservation,
+    calculate_drawdown_history,
+    canonical_numeric_38_18,
+)
 from common.paper_drawdown_history import (
     CADENCE,
     CONTRACT_VERSION,
@@ -100,6 +106,69 @@ def capture(state=None):
         trigger_reference=(T0 + timedelta(minutes=15)).isoformat(),
         producer_identity="test", git_revision="d" * 40,
     )
+
+
+def test_numeric_38_18_canonicalization_matches_frozen_postgres_semantics():
+    exact = D("785.153275660783716231")
+    assert canonical_numeric_38_18(exact) == exact
+    assert canonical_numeric_38_18(
+        D("785.153275660783716231082848")
+    ) == D("785.153275660783716231")
+    assert canonical_numeric_38_18(D("1.0000000000000000005")) == D(
+        "1.000000000000000001"
+    )
+    assert canonical_numeric_38_18(D("-1.0000000000000000005")) == D(
+        "-1.000000000000000001"
+    )
+    assert canonical_numeric_38_18(D("0.0000000000000000004")) == D("0")
+    assert canonical_numeric_38_18(D("-0.0000000000000000005")) == D(
+        "-0.000000000000000001"
+    )
+    with pytest.raises(ValueError, match="DRAWDOWN_DECIMAL_REQUIRED"):
+        canonical_numeric_38_18(1.25)
+
+
+def test_confirmed_natural_capital_basis_canonicalizes_before_exact_equality():
+    natural_baseline = replace(
+        baseline(),
+        baseline_managed_equity=D("925.729373904606433753"),
+        baseline_unrealized_pnl=D("0.197552812000000000"),
+    )
+    raw_total = D("785.153275660783716231082848")
+    raw_realized = D("-139.783285143822717521917152")
+    raw_unrealized = D("-0.595260288")
+
+    def natural_capture(total):
+        return capture_observation_candidate(
+            state=State(
+                total_capital=total,
+                realized_pnl=raw_realized,
+                unrealized_pnl=raw_unrealized,
+            ),
+            baseline=natural_baseline, activation=activation(),
+            observed_at=T0 + timedelta(minutes=15),
+            observation_trigger="CADENCE_15M",
+            trigger_reference=(T0 + timedelta(minutes=15)).isoformat(),
+            producer_identity="test", git_revision="d" * 40,
+        )
+
+    raw = natural_capture(raw_total)
+    canonical = natural_capture(D("785.153275660783716231"))
+    assert raw.status == canonical.status == "CANONICAL"
+    assert raw.candidate.managed_equity == D("785.153275660783716231")
+    assert raw.candidate.portfolio_state_evidence["total_capital"] == str(raw_total)
+    assert raw.candidate.portfolio_state_fingerprint != (
+        canonical.candidate.portfolio_state_fingerprint
+    )
+    assert raw.candidate.source_fingerprints["managed_equity_canonical"] == (
+        canonical.candidate.source_fingerprints["managed_equity_canonical"]
+    )
+    assert raw.candidate.observation_identity == canonical.candidate.observation_identity
+    assert natural_capture(D("785.153275660783716230")).status == (
+        "SOURCE_FINGERPRINT_MISMATCH"
+    )
+    rounded_up = natural_capture(D("785.1532756607837162315"))
+    assert rounded_up.status == "SOURCE_FINGERPRINT_MISMATCH"
 
 
 def test_first_forward_observation_new_peak_and_decimal_exactness():
@@ -195,6 +264,11 @@ def test_contract_and_migration_are_forward_only_without_daily_snapshot_reuse():
     assert contract["contract_version"] == CONTRACT_VERSION
     assert contract["historical_policy"] == "FORWARD_ONLY_NO_BACKFILL"
     assert contract["numeric_sufficiency_thresholds"] is False
+    assert contract["managed_equity_precision"] == "NUMERIC(38,18)"
+    assert contract["canonical_scale"] == 18
+    assert contract["exact_equality_after_canonicalization"] is True
+    assert contract["float_allowed"] is False
+    assert contract["tolerance_comparison"] is False
     expected = (ROOT / "contracts/paper_drawdown_history_authority_v1_contract.sha256").read_text().strip()
     assert hashlib.sha256(contract_path.read_bytes()).hexdigest() == expected
     migration = (ROOT / "db/migrations/20260825_paper_drawdown_history_authority_v1.sql").read_text().upper()
@@ -203,3 +277,11 @@ def test_contract_and_migration_are_forward_only_without_daily_snapshot_reuse():
     assert "UPDATE PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in migration
     assert "DELETE FROM PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in migration
     assert "DROP TABLE" not in migration
+    corrective = (
+        ROOT / "db/migrations/20260825_paper_drawdown_history_numeric_scale_v1.sql"
+    ).read_text().upper()
+    assert "ROUND(" in corrective
+    assert "NUMERIC(38,18)" in corrective
+    assert "INSERT INTO" not in corrective
+    assert "UPDATE PUBLIC.PAPER_MANAGED_EQUITY_OBSERVATION_V1" not in corrective
+    assert "DELETE FROM" not in corrective

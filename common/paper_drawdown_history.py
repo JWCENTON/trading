@@ -13,6 +13,7 @@ from common.drawdown_history import (
     DrawdownHistory,
     DrawdownObservation,
     cadence_bucket as shared_cadence_bucket,
+    canonical_numeric_38_18,
     canonical_json,
     calculate_drawdown_history,
     decimal_text,
@@ -256,6 +257,19 @@ def _final_evidence_payload(candidate: ObservationCandidate) -> dict[str, Any]:
     }
 
 
+def _canonical_managed_equity_fingerprint(
+    *, baseline_activation_fingerprint: str, managed_equity: Decimal,
+) -> str:
+    return fingerprint({
+        "contract_version": CONTRACT_VERSION,
+        "baseline_activation_fingerprint": baseline_activation_fingerprint,
+        "authority_canonical_managed_equity": decimal_text(
+            canonical_numeric_38_18(managed_equity)
+        ),
+        "managed_equity_precision": "NUMERIC(38,18)",
+    })
+
+
 def _portfolio_state_capital_payload(state: PortfolioStateV1) -> dict[str, Any]:
     """Freeze only capital-basis fields; legacy diagnostic drawdown is excluded."""
     payload = state.serializable()
@@ -318,20 +332,27 @@ def capture_observation_candidate(
         return CandidateResult("INCOMPLETE_MARK", None)
     if state.unrealized_pnl_status != "CANONICAL" or state.unrealized_pnl is None:
         return CandidateResult("INCOMPLETE_PORTFOLIO_STATE", None)
-    expected_equity = (
+    expected_equity_raw = (
         baseline.baseline_managed_equity
         + decimal_value(state.realized_pnl)
         + decimal_value(state.unrealized_pnl)
         - baseline.baseline_unrealized_pnl
     )
-    if decimal_value(state.total_capital) != expected_equity:
+    canonical_expected_equity = canonical_numeric_38_18(expected_equity_raw)
+    canonical_state_equity = canonical_numeric_38_18(state.total_capital)
+    if canonical_state_equity != canonical_expected_equity:
         return CandidateResult("SOURCE_FINGERPRINT_MISMATCH", None)
     bucket = cadence_bucket(observed_at)
     state_payload = _portfolio_state_capital_payload(state)
     state_fp = fingerprint(state_payload)
+    managed_equity_fp = _canonical_managed_equity_fingerprint(
+        baseline_activation_fingerprint=baseline.activation_fingerprint,
+        managed_equity=canonical_state_equity,
+    )
     source_fingerprints = {
         "baseline": baseline.activation_fingerprint,
         "portfolio_state": state_fp,
+        "managed_equity_canonical": managed_equity_fp,
     }
     identity = fingerprint({
         "contract_version": CONTRACT_VERSION,
@@ -339,13 +360,14 @@ def capture_observation_candidate(
         "observation_bucket_at": bucket,
         "observation_trigger": observation_trigger,
         "trigger_reference": trigger_reference,
-        "portfolio_state_fingerprint": state_fp,
+        "managed_equity_canonical_fingerprint": managed_equity_fp,
     })
     provisional = ObservationCandidate(
         activation.activation_id, baseline.baseline_id, baseline.deployment_id,
         observed_at.astimezone(timezone.utc), bucket, observation_trigger,
-        str(trigger_reference), identity, decimal_value(state.total_capital),
-        decimal_value(state.realized_pnl), decimal_value(state.unrealized_pnl),
+        str(trigger_reference), identity, canonical_state_equity,
+        canonical_numeric_38_18(state.realized_pnl),
+        canonical_numeric_38_18(state.unrealized_pnl),
         baseline.activation_fingerprint, state_payload, state_fp,
         source_fingerprints, "", producer_identity, git_revision,
     )
@@ -537,12 +559,17 @@ def read_paper_drawdown_history(
             evidence_fp, row_baseline_fp, portfolio_fp, sources,
             portfolio_payload, realized, unrealized,
         ) = row
+        expected_managed_fp = _canonical_managed_equity_fingerprint(
+            baseline_activation_fingerprint=str(row_baseline_fp),
+            managed_equity=decimal_value(managed),
+        )
         valid = (
             str(row_baseline_fp) == str(baseline_fp) == baseline.activation_fingerprint
             and fingerprint(portfolio_payload) == str(portfolio_fp)
             and dict(sources) == {
                 "baseline": str(row_baseline_fp),
                 "portfolio_state": str(portfolio_fp),
+                "managed_equity_canonical": expected_managed_fp,
             }
         )
         probe = ObservationCandidate(

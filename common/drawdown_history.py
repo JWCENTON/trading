@@ -6,12 +6,16 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from typing import Any, Iterable, Mapping
 
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
+NUMERIC_38_18_SCALE = 18
+NUMERIC_38_18_QUANTUM = Decimal("1e-18")
+NUMERIC_38_18_INTEGER_LIMIT = Decimal("1e20")
+NUMERIC_38_18_ROUNDING = ROUND_HALF_UP
 
 
 def decimal_value(value: object) -> Decimal:
@@ -19,6 +23,24 @@ def decimal_value(value: object) -> Decimal:
     if value is None or isinstance(value, float):
         raise ValueError("DRAWDOWN_DECIMAL_REQUIRED")
     return Decimal(str(value))
+
+
+def canonical_numeric_38_18(value: object) -> Decimal:
+    """Match PostgreSQL NUMERIC(38,18) coercion without binary float."""
+    exact = decimal_value(value)
+    with localcontext() as context:
+        context.prec = max(120, len(exact.as_tuple().digits) + 40)
+        context.rounding = NUMERIC_38_18_ROUNDING
+        try:
+            canonical = exact.quantize(
+                NUMERIC_38_18_QUANTUM,
+                rounding=NUMERIC_38_18_ROUNDING,
+            )
+        except InvalidOperation as exc:
+            raise ValueError("DRAWDOWN_NUMERIC_38_18_REQUIRED") from exc
+    if not canonical.is_finite() or abs(canonical) >= NUMERIC_38_18_INTEGER_LIMIT:
+        raise ValueError("DRAWDOWN_NUMERIC_38_18_REQUIRED")
+    return canonical
 
 
 def decimal_text(value: object) -> str:

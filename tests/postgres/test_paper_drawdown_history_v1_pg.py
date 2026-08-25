@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from common.drawdown_history import canonical_numeric_38_18
 from common.paper_drawdown_history import (
     CONTRACT_VERSION,
     ensure_activation_cursor,
@@ -24,6 +25,9 @@ from common.paper_equity_baseline_v2 import fetch_paper_equity_baseline_v2
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = (ROOT / "db/migrations/20260825_paper_drawdown_history_authority_v1.sql").read_text()
+CORRECTIVE_MIGRATION = (
+    ROOT / "db/migrations/20260825_paper_drawdown_history_numeric_scale_v1.sql"
+).read_text()
 T0 = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
 D = Decimal
 REVISION = "d" * 40
@@ -70,6 +74,7 @@ def database(disposable_postgres_v16, prefix):
     with conn.cursor() as cur:
         cur.execute(BASELINE_SCHEMA)
         cur.execute(MIGRATION)
+        cur.execute(CORRECTIVE_MIGRATION)
     conn.commit()
     return conn
 
@@ -120,7 +125,8 @@ class State:
             "total_capital_status": self.total_capital_status,
             "realized_pnl": str(self.realized_pnl),
             "realized_pnl_status": self.realized_pnl_status,
-            "unrealized_pnl": "1", "unrealized_pnl_status": "CANONICAL",
+            "unrealized_pnl": str(self.unrealized_pnl),
+            "unrealized_pnl_status": "CANONICAL",
         }
 
 
@@ -153,6 +159,8 @@ def test_migration_is_empty_idempotent_additive_and_append_only(disposable_postg
     try:
         with conn.cursor() as cur:
             cur.execute(MIGRATION)
+            cur.execute(CORRECTIVE_MIGRATION)
+            cur.execute(CORRECTIVE_MIGRATION)
             cur.execute("SELECT count(*) FROM paper_managed_equity_observation_v1")
             assert cur.fetchone()[0] == 0
             cur.execute(
@@ -201,6 +209,77 @@ def test_migration_is_empty_idempotent_additive_and_append_only(disposable_postg
                 cur.execute(
                     "UPDATE paper_managed_equity_observation_v1 SET managed_equity=101"
                 )
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_numeric_38_18_roundtrip_and_confirmed_natural_first_observation(
+    disposable_postgres_v16,
+):
+    conn = database(
+        disposable_postgres_v16,
+        "waltrade_baseline_test_paper_dd_numeric_scale_",
+    )
+    try:
+        values = (
+            "785.153275660783716231082848",
+            "1.0000000000000000005",
+            "-1.0000000000000000005",
+            "0.0000000000000000004",
+            "-0.0000000000000000005",
+        )
+        with conn.cursor() as cur:
+            for raw in values:
+                cur.execute("SELECT %s::NUMERIC(38,18)", (raw,))
+                assert cur.fetchone()[0] == canonical_numeric_38_18(D(raw))
+
+            cur.execute(
+                """INSERT INTO paper_equity_baseline_v2(
+                     deployment_id,baseline_version,baseline_timestamp,
+                     baseline_account_total,baseline_managed_equity,
+                     baseline_external_manual,baseline_available,
+                     baseline_inventory_value,baseline_realized_net_pnl,
+                     baseline_unrealized_pnl,baseline_fees,baseline_open_positions,
+                     frozen_pre_baseline_unresolved_count,evidence_status,
+                     source_authority,approved_by,approval_provenance,
+                     activation_fingerprint
+                   ) VALUES (
+                     'local-paper','PAPER_EQUITY_BASELINE_V2',%s,1000,
+                     925.729373904606433753,0,1000,0,0,
+                     0.197552812000000000,0,0,0,'COMPLETE','CANONICAL',
+                     'PO',%s::jsonb,%s
+                   )""",
+                (T0 - timedelta(days=1), json.dumps({"approved": True}), ACTIVATION_FP),
+            )
+            activation = ensure_activation_cursor(
+                cur, deployment_id="local-paper", now=T0,
+                producer_identity="test", git_revision=REVISION,
+            )
+            baseline = fetch_paper_equity_baseline_v2(
+                cur, deployment_id="local-paper"
+            )
+            state = State(T0, "785.153275660783716231082848")
+            state.realized_pnl = D("-139.783285143822717521917152")
+            state.unrealized_pnl = D("-0.595260288")
+            captured = capture_observation_candidate(
+                state=state, baseline=baseline, activation=activation,
+                observed_at=T0, observation_trigger="BASELINE_ACTIVATION",
+                trigger_reference="natural-first-observation",
+                producer_identity="test", git_revision=REVISION,
+            )
+            assert captured.status == "CANONICAL"
+            persisted = persist_observation_candidate(cur, captured.candidate)
+            assert persisted.status == "CANONICAL"
+            cur.execute(
+                """SELECT managed_equity,portfolio_state_evidence->>'total_capital'
+                   FROM paper_managed_equity_observation_v1
+                   WHERE observation_id=%s""",
+                (persisted.observation_id,),
+            )
+            stored, raw_source = cur.fetchone()
+            assert stored == D("785.153275660783716231")
+            assert raw_source == "785.153275660783716231082848"
         conn.rollback()
     finally:
         conn.close()
