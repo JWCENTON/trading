@@ -56,6 +56,14 @@ from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_loc
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
+from common.bbrange_paper_treatment import (
+    CONTRACT_VERSION as BBRANGE_TREATMENT_CONTRACT_VERSION,
+    EntryEvidence,
+    TreatmentConfig,
+    evaluate_entry_treatment,
+    load_entry_treatment_evidence,
+    load_profit_lock_economic_state,
+)
 
 
 # =========================
@@ -71,6 +79,7 @@ if not SYMBOL.endswith(QUOTE_ASSET):
 
 STRATEGY_NAME = os.environ.get("STRATEGY_NAME", "BBRANGE").upper()
 PROFIT_LOCK_CONFIG = ProfitLockConfig.from_env()
+BBRANGE_TREATMENT_CONFIG = TreatmentConfig.from_env()
 INTERVAL = os.environ.get("INTERVAL", "1m")
 LIVE_TARGET_NOTIONAL = float(os.environ.get("LIVE_TARGET_NOTIONAL", "6.0"))
 
@@ -138,8 +147,16 @@ def get_exchange_client():
     return _exchange_client
 
 logging.info(
-    "CONFIG|SYMBOL=%s|INTERVAL=%s|SPOT_MODE=%s|cfg_trading_mode=%s",
-    SYMBOL, INTERVAL, cfg.spot_mode, cfg.trading_mode
+    "CONFIG|SYMBOL=%s|INTERVAL=%s|SPOT_MODE=%s|cfg_trading_mode=%s|"
+    "BBRANGE_PAPER_TREATMENT_V1_REQUESTED=%s|"
+    "BBRANGE_PAPER_TREATMENT_V1_EFFECTIVE=%s|"
+    "BBRANGE_PAPER_TREATMENT_V1_STATUS=%s|"
+    "BBRANGE_PAPER_TREATMENT_V1_STARTED_AT=%s",
+    SYMBOL, INTERVAL, cfg.spot_mode, cfg.trading_mode,
+    BBRANGE_TREATMENT_CONFIG.requested,
+    BBRANGE_TREATMENT_CONFIG.effective,
+    BBRANGE_TREATMENT_CONFIG.runtime_status,
+    BBRANGE_TREATMENT_CONFIG.started_at,
 )
 
 # =========================
@@ -1873,6 +1890,18 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
             "min_qty_btc": float(MIN_QTY_BTC),
             "qty_step_btc": float(QTY_STEP_BTC),
             "min_notional_buffer_pct": float(MIN_NOTIONAL_BUFFER_PCT),
+            "bbrange_paper_treatment_v1_requested": bool(
+                BBRANGE_TREATMENT_CONFIG.requested
+            ),
+            "bbrange_paper_treatment_v1_effective": bool(
+                BBRANGE_TREATMENT_CONFIG.effective
+            ),
+            "bbrange_paper_treatment_v1_status": (
+                BBRANGE_TREATMENT_CONFIG.runtime_status
+            ),
+            "bbrange_paper_treatment_v1_started_at": (
+                BBRANGE_TREATMENT_CONFIG.started_at
+            ),
         })
 
         # hard stop
@@ -2063,6 +2092,23 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                     asof_open_time=open_time,
                     entry_price=entry_f,
                 )
+                treatment_profit_lock_state = None
+                if BBRANGE_TREATMENT_CONFIG.effective:
+                    try:
+                        treatment_profit_lock_state = load_profit_lock_economic_state(
+                            get_db_conn,
+                            position_id=int(_pos_id),
+                            symbol=SYMBOL,
+                            interval=INTERVAL,
+                            current_price=Decimal(str(price)),
+                            observed_at=open_time,
+                        )
+                    except Exception as exc:
+                        logging.exception(
+                            "BBRANGE_PAPER_TREATMENT_V1 Profit Lock state failed; "
+                            "base exit behavior preserved"
+                        )
+                        treatment_profit_lock_state = None
                 profit_lock_decision = evaluate_profit_lock(
                     strategy=STRATEGY_NAME,
                     side=side_u,
@@ -2088,7 +2134,32 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                     "bars_seen": int(path.bars_seen),
                     "max_high": float(path.max_high),
                     "min_low": float(path.min_low),
+                    "treatment_contract_version": (
+                        BBRANGE_TREATMENT_CONTRACT_VERSION
+                    ),
+                    "treatment_effective": bool(
+                        BBRANGE_TREATMENT_CONFIG.effective
+                    ),
+                    "treatment_behavior": (
+                        "EVIDENCE_ONLY_NO_EXECUTION_CHANGE"
+                    ),
                 }
+                if treatment_profit_lock_state is not None:
+                    profit_lock_info["economic_state"] = (
+                        treatment_profit_lock_state.event_fields()
+                    )
+                    emit_profit_lock_event_once(
+                        symbol=SYMBOL,
+                        interval=INTERVAL,
+                        strategy=STRATEGY_NAME,
+                        event_type="PROFIT_LOCK_ECONOMIC_STATE",
+                        decision="OBSERVE",
+                        reason=treatment_profit_lock_state.status,
+                        price=price,
+                        candle_open_time=open_time,
+                        position_entry_time=pos_entry_time,
+                        info=profit_lock_info,
+                    )
                 profit_lock_event_type = None
                 profit_lock_event_decision = "HOLD"
                 if profit_lock_decision.triggered:
@@ -2517,6 +2588,65 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                 reference_price=Decimal(str(price)), side=decision,
                 details={"why": gate_entry.why, "regime": gate_entry.regime},
             ))
+
+        # BBRANGE PAPER Treatment V1: the baseline BUY is already fully formed.
+        # The treatment may only turn it into canonical NO_TRADE before sizing
+        # and execution. OFF/non-PAPER preserves the exact legacy path.
+        if BBRANGE_TREATMENT_CONFIG.effective:
+            try:
+                treatment_evidence = load_entry_treatment_evidence(
+                    get_db_conn,
+                    symbol=SYMBOL,
+                    interval=INTERVAL,
+                    decision_candle_timestamp=open_time,
+                )
+            except Exception as exc:
+                logging.exception(
+                    "BBRANGE_PAPER_TREATMENT_V1 entry evidence unavailable; "
+                    "missing evidence remains neutral"
+                )
+                treatment_evidence = EntryEvidence(
+                    observed_at=open_time,
+                    realtime_status=f"MISSING_AT_ENTRY:{type(exc).__name__}",
+                    primary_driver=None,
+                    realtime_score=None,
+                    mme_status=f"MISSING_AT_ENTRY:{type(exc).__name__}",
+                    orc_hint=None,
+                    mme_refreshed_at=None,
+                )
+            treatment_decision = evaluate_entry_treatment(
+                config=BBRANGE_TREATMENT_CONFIG,
+                strategy=STRATEGY_NAME,
+                interval=INTERVAL,
+                evidence=treatment_evidence,
+            )
+            treatment_details = treatment_decision.details()
+            emit_strategy_event(
+                event_type="BBRANGE_PAPER_TREATMENT_V1",
+                decision=treatment_decision.treatment_decision,
+                reason=treatment_decision.reason,
+                price=price,
+                candle_open_time=open_time,
+                info=treatment_details,
+            )
+            if treatment_decision.blocked:
+                emit_blocked(
+                    reason="BBRANGE_PAPER_TREATMENT_V1_ENTRY_BLOCK",
+                    decision="BUY",
+                    price=price,
+                    candle_open_time=open_time,
+                    info=treatment_details,
+                )
+                return finish(FinalDecision.entry_blocked(
+                    evaluation,
+                    DecisionReason.POLICY_BLOCK,
+                    DecisionSubtype.READINESS_BLOCKED,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)),
+                    side="BUY",
+                    signal_detected=True,
+                    details=treatment_details,
+                ))
 
         emit_strategy_event(
             event_type="SIGNAL",
