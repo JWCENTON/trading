@@ -14,6 +14,10 @@ from enum import Enum
 from typing import Any, Protocol
 
 from common.decision_contract import FinalDecision
+from common.paper_opportunity_observation import (
+    PaperOpportunityEnvelope,
+    build_paper_opportunity_envelope,
+)
 
 SCHEMA_VERSION = "CAUSAL_DECISION_OBSERVATION_V1"
 VALID_DEPLOYMENTS = frozenset({"local-live", "local-paper", "vps-live", "vps-paper"})
@@ -107,6 +111,7 @@ class DecisionObservationEvent:
     regime_source_created_at: datetime | None = None
     regime_source_confidence: Decimal | None = None
     regime_attribution_version: str | None = None
+    paper_opportunity: PaperOpportunityEnvelope | None = None
     schema_version: str = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -314,4 +319,5 @@ def event_from_final_decision(decision: FinalDecision, *, event_id: str,
         regime_attribution_version=ctx.context.get(
             "regime_attribution_version"
         ),
+        paper_opportunity=build_paper_opportunity_envelope(decision),
     )

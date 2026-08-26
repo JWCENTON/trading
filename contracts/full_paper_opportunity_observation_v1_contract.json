@@ -1,0 +1,47 @@
+{
+  "contract": "FULL_PAPER_OPPORTUNITY_OBSERVATION_V1",
+  "environment": "PAPER_ONLY",
+  "execution_influence": "OFF",
+  "source_decision_contract": "CAUSAL_DECISION_OBSERVATION_V1",
+  "transport": "CAUSAL_DECISION_OBSERVATION_TRANSPORT_V1",
+  "observation_identity": [
+    "deployment_id",
+    "environment",
+    "strategy",
+    "symbol",
+    "interval",
+    "candle_open_time",
+    "observation_type",
+    "decision_reason",
+    "reason_text"
+  ],
+  "observation_types": [
+    "EXECUTED",
+    "SIGNAL_REJECTED",
+    "GATE_BLOCKED",
+    "NO_SIGNAL",
+    "ALREADY_OPEN_BLOCK",
+    "CONTAINMENT_BLOCK",
+    "POLICY_BLOCK",
+    "DATA_NOT_READY",
+    "INDICATOR_NOT_READY",
+    "NO_NEW_CANDLE"
+  ],
+  "strategies": ["RSI", "TREND", "SUPERTREND", "BBRANGE"],
+  "intervals": ["1m", "5m"],
+  "symbols": ["BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC"],
+  "outcome_horizons_minutes": [15, 30, 60, 240],
+  "economic_labels": [
+    "ECONOMICALLY_VIABLE",
+    "NEVER_COVERED_FULL_COSTS",
+    "EVIDENCE_INCOMPLETE",
+    "NOT_YET_MATURE"
+  ],
+  "fee_authority": "PAPER_SIMULATOR_FINANCIAL_MODEL_V2",
+  "future_path_authority": "canonical candles/1m",
+  "observation_mutates_inventory": false,
+  "observation_places_orders": false,
+  "live_enabled": false,
+  "bbrange_paper_treatment_v1": "ACTIVE_UNCHANGED_FROZEN",
+  "schema_migration": "db/migrations/20260826_full_paper_opportunity_observation_v1.sql"
+}

@@ -20,6 +20,9 @@ from common.decision_observation import (
     DecisionObservationEvent, FailureCode, IdempotencyConflict, VALID_DEPLOYMENTS,
     event_from_final_decision, stable_hash,
 )
+from common.paper_opportunity_observation import (
+    persist_paper_opportunity_observation_cursor,
+)
 
 TRANSPORT_SCHEMA_VERSION = "CAUSAL_DECISION_OBSERVATION_TRANSPORT_V1"
 STATUSES = frozenset({"PENDING", "PROCESSING", "RETRY", "PROCESSED",
@@ -99,6 +102,10 @@ class ProducerObservationResult:
 
 def _payload(event: DecisionObservationEvent) -> dict[str, Any]:
     def value(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {str(key): value(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [value(child) for child in item]
         if isinstance(item, datetime):
             return item.isoformat()
         return str(item) if item.__class__.__name__ == "Decimal" else item
@@ -408,6 +415,7 @@ class DecisionObservationOutboxConsumer:
                     (payload["deployment_id"], payload["decision_key"]))
         if cur.fetchone()[0] != event_digest:
             raise IdempotencyConflict("different observation payload for decision key")
+        persist_paper_opportunity_observation_cursor(cur, payload)
         # Baseline-only projections. They carry no attribution or recommendation context.
         projection = json.dumps({
             "decision_kind": payload["decision_kind"],

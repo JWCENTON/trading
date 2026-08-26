@@ -46,6 +46,9 @@ from common.learning_evidence_context import (
 from common.bounded_horizon_label_automation import (
     run_bounded_horizon_label_automation,
 )
+from common.paper_opportunity_outcome_automation import (
+    run_paper_opportunity_outcome_automation,
+)
 from common.thesis_evidence_bundle import (
     canonical_evidence_cutoff,
     capture_thesis_evidence_bundle_cycle,
@@ -4015,6 +4018,11 @@ def main():
                     conn,
                     run_bounded_horizon_label_automation,
                     "bounded_horizon_label_automation failed",
+                )
+                run_independent_refresh_job(
+                    conn,
+                    run_paper_opportunity_outcome_automation,
+                    "full_paper_opportunity_outcome_v1 failed",
                 )
 
             try:
