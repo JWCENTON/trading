@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -27,10 +28,22 @@ ACTIVE = (
 
 
 class Cursor:
-    def __init__(self, *, position, active=ACTIVE, compatible=False):
+    def __init__(
+        self, *, position, active=ACTIVE, compatible=False,
+        entry_contract_rows=None,
+    ):
         self.position = position
         self.active = active
         self.compatible = compatible
+        self.entry_contract_rows = (
+            [(
+                "PAPER_SIMULATOR_FINANCIAL_MODEL_V2", Decimal("0.0035"),
+                "PAPER_SIMULATOR_FINANCIAL_MODEL_V2",
+                "ENV:PAPER_SIMULATION_FEE_RATE", Decimal("100"),
+                Decimal("0.3500"),
+            )]
+            if entry_contract_rows is None else list(entry_contract_rows)
+        )
         self.result = None
 
     def execute(self, sql, _params=None):
@@ -43,11 +56,18 @@ class Cursor:
             self.result = self.active
         elif "is_existing_projected_c2_2_compatible" in normalized:
             self.result = (self.compatible,)
+        elif "FROM simulated_execution_fills_v1" in normalized:
+            self.result = list(self.entry_contract_rows)
         else:
             raise AssertionError(normalized)
 
     def fetchone(self):
+        if isinstance(self.result, list):
+            return self.result[0] if self.result else None
         return self.result
+
+    def fetchall(self):
+        return list(self.result) if isinstance(self.result, list) else []
 
 
 def classify(monkeypatch, *, position, active=ACTIVE, compatible=False):
@@ -108,6 +128,43 @@ def test_existing_guard_allow_semantics_are_preserved(
     assert result.active_adoption_git_revision == ADOPTION_SHA
     assert result.runtime_git_revision == RUNTIME_SHA
     assert result.runtime_revision_matches_adoption_provenance is False
+
+
+def test_forward_exit_without_frozen_entry_fee_contract_fails_closed(monkeypatch):
+    monkeypatch.setenv("GIT_SHA", RUNTIME_SHA)
+    result = paper_exit_preflight_cursor(
+        Cursor(
+            position=(77, "OPEN", None, None, ADOPTED + timedelta(seconds=1)),
+            entry_contract_rows=(),
+        ),
+        deployment_id="local-paper", symbol="BTCUSDC", strategy="RSI",
+        interval="1m",
+    )
+
+    assert result.allowed is False
+    assert result.reason_code == "PAPER_EXIT_ENTRY_FEE_CONTRACT_MISSING"
+    assert result.detail == "PAPER_EXIT_REQUIRES_FROZEN_ENTRY_FEE_CONTRACT"
+
+
+def test_legacy_entry_contract_is_preserved_without_current_config_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("GIT_SHA", RUNTIME_SHA)
+    monkeypatch.setenv("PAPER_SIMULATION_FEE_RATE", "0.0035")
+    result = paper_exit_preflight_cursor(
+        Cursor(
+            position=(77, "OPEN", None, None, ADOPTED + timedelta(seconds=1)),
+            entry_contract_rows=((
+                "PAPER_SIMULATOR_FINANCIAL_MODEL_V1", None, None, None,
+                Decimal("100"), Decimal("0.0400"),
+            ),),
+        ),
+        deployment_id="local-paper", symbol="BTCUSDC", strategy="RSI",
+        interval="1m",
+    )
+
+    assert result.allowed is True
+    assert result.reason_code == "FORWARD_ENTRY_COMPATIBLE"
 
 
 @pytest.mark.parametrize(

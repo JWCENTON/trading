@@ -74,6 +74,21 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
             state["position_id"] = None
         return True
 
+    def atomic_entry(*_args, **_kwargs):
+        assert state["position_id"] is None
+        state["next_order"] += 1
+        state["position_id"] = 77
+        evidence.append({
+            "position_id": 77,
+            "simulated_order_id": state["next_order"],
+            "environment": "paper",
+            "require_terminal_close": False,
+        })
+        return SimpleNamespace(
+            persisted=True, status="INSERTED",
+            position_id=77, simulated_order_id=state["next_order"],
+        )
+
     def open_position(*_args, **_kwargs):
         assert state["position_id"] is None
         state["position_id"] = 77
@@ -91,6 +106,7 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
 
     monkeypatch.setattr(module, "insert_simulated_order", insert_order)
     monkeypatch.setattr(module, "record_simulated_fill_evidence", record)
+    monkeypatch.setattr(module, "record_forward_paper_entry_atomic", atomic_entry)
     monkeypatch.setattr(module, "get_exchange_client", lambda: object())
     monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
     if strategy == "SUPERTREND":
@@ -171,6 +187,31 @@ def test_four_strategy_paper_entry_exit_has_direct_position_evidence(
     assert evidence[-1]["exit_reason"] == "parity"
     assert entry["ledger_ok"] is True
     assert exit_result["ledger_ok"] is True
+
+
+@pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))
+def test_live_entry_does_not_enter_paper_atomic_boundary(monkeypatch, strategy):
+    module = load_strategy(monkeypatch, strategy)
+    monkeypatch.setattr(module, "insert_simulated_order", lambda **_kwargs: 701)
+    monkeypatch.setattr(module, "emit_strategy_event", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        module, "record_forward_paper_entry_atomic",
+        lambda *_args, **_kwargs: pytest.fail("PAPER atomic path used by LIVE"),
+    )
+    config = SimpleNamespace(
+        symbol="BTCUSDC", interval="1m", trading_mode="LIVE",
+        live_orders_enabled=False, quote_asset="USDC",
+    )
+    kwargs = dict(
+        side="BUY", price=100.0, qty_btc=0.1, reason="live-parity",
+        candle_open_time=NOW, is_exit=False, cfg_used=config,
+        allow_live_orders=False, allow_meta={"why": "test"},
+    )
+    if strategy in {"TREND", "BBRANGE"}:
+        kwargs.update(rsi_14=50.0, ema_21=100.0)
+    result = module.execute_and_record(**kwargs)
+    assert result["ledger_ok"] is True
+    assert result["live_attempted"] is False
 
 
 @pytest.mark.parametrize("strategy", tuple(MODULE_PATHS))

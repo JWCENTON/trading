@@ -74,6 +74,7 @@ from common.simulated_execution_evidence import (
     create_simulated_order_cursor,
     execute_paper_exit_after_preflight,
     paper_position_mutation_allowed_cursor,
+    record_forward_paper_entry_atomic,
     record_simulated_fill_evidence,
     simulated_order_write_status,
 )
@@ -1157,6 +1158,57 @@ def _execute_and_record_after_paper_exit_preflight(
                 "blocked_reason": "PAPER_SUPERTREND_ENTRY_CONTAINED",
                 "client_order_id": None, "resp": None,
             }
+
+    if trading_mode == "PAPER" and not is_exit:
+        atomic = record_forward_paper_entry_atomic(
+            get_db_conn,
+            client=get_exchange_client(),
+            symbol=cfg_used.symbol, interval=cfg_used.interval,
+            strategy=STRATEGY_NAME, side=side, price=Decimal(str(price)),
+            quantity=Decimal(str(qty_btc)), reason=str(reason),
+            candle_open_time=candle_open_time,
+            deployment_id=os.environ.get(
+                "DEPLOYMENT_ID",
+                os.environ.get("WALTRADE_DEPLOYMENT_ID", "local-paper"),
+            ),
+            market_regime=(evaluation.market_regime if evaluation else None),
+            regime_source_provenance=(
+                frozen_regime_provenance(evaluation) if evaluation else None
+            ),
+            position_entry_time=candle_open_time,
+        )
+        if not atomic:
+            emit_strategy_event(
+                event_type="BLOCKED", decision=side, reason=atomic.status,
+                price=price, candle_open_time=candle_open_time,
+                info={"is_exit": False, "qty_btc": float(qty_btc)},
+            )
+            return {
+                "ledger_ok": False, "live_attempted": False,
+                "live_ok": False, "paper_executed": False,
+                "blocked_reason": atomic.status,
+                "client_order_id": None, "resp": None,
+            }
+        emit_strategy_event(
+            event_type="SIM_ORDER_CREATED", decision=side,
+            reason="LEDGER_OK_ATOMIC", price=price,
+            candle_open_time=candle_open_time,
+            info={"simulated_order_id": atomic.simulated_order_id},
+        )
+        emit_strategy_event(
+            event_type="PAPER_POSITION_OPENED", decision=side,
+            reason="POSITIONS_OPEN_OK_ATOMIC", price=price,
+            candle_open_time=candle_open_time,
+            info={"pos_id": atomic.position_id},
+        )
+        return {
+            "ledger_ok": True, "live_attempted": False, "live_ok": True,
+            "paper_executed": True, "blocked_reason": None,
+            "client_order_id": None, "resp": None,
+            "position_id": atomic.position_id,
+            "simulated_order_id": atomic.simulated_order_id,
+            "terminal_outcome_reconciled": False,
+        }
 
     inserted = insert_simulated_order(
         symbol=cfg_used.symbol,

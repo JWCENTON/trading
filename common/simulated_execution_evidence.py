@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, dataclass
+from contextlib import nullcontext
 from decimal import Decimal
 import hashlib
 import json
@@ -70,6 +71,23 @@ class SimulatedOrderWriteBlocked:
 
     def __bool__(self) -> bool:
         return False
+
+
+@dataclass(frozen=True)
+class PaperEntryAtomicResult:
+    persisted: bool
+    status: str
+    simulated_order_id: int | None = None
+    position_id: int | None = None
+
+    def __bool__(self) -> bool:
+        return self.persisted
+
+
+class _PaperEntryAtomicBlocked(RuntimeError):
+    def __init__(self, result: PaperEntryAtomicResult):
+        super().__init__(result.status)
+        self.result = result
 
 
 def simulated_order_write_status(value) -> str:
@@ -248,10 +266,38 @@ def paper_exit_preflight_cursor(
     adoption_id, generation, entry_time = position[2], position[3], position[4]
     active_adoption_id, active_generation, adopted_at = active[:3]
 
+    def fee_contract_denial() -> PaperExitPreflightResult | None:
+        try:
+            _fee_contract_for_fill(
+                cur, purpose="EXIT", position_id=int(position[0]),
+            )
+        except RuntimeError as exc:
+            reason = str(exc)
+            if reason not in {
+                "PAPER_EXIT_ENTRY_FEE_CONTRACT_MISSING",
+                "LEGACY_ENTRY_FEE_CONTRACT_UNRESOLVED",
+                "PAPER_ENTRY_FEE_CONTRACT_CONFLICT",
+            }:
+                raise
+            return _paper_exit_result(
+                allowed=False,
+                reason_code=reason,
+                position=position,
+                active=active,
+                legacy_compatibility=compatible,
+                runtime_git_revision=revision,
+                runtime_revision_matches_adoption_provenance=revision_matches,
+                detail="PAPER_EXIT_REQUIRES_FROZEN_ENTRY_FEE_CONTRACT",
+            )
+        return None
+
     if (
         adoption_id == active_adoption_id
         and generation == active_generation
     ):
+        denial = fee_contract_denial()
+        if denial is not None:
+            return denial
         return _paper_exit_result(
             allowed=True, reason_code="ACTIVE_GENERATION_MATCH",
             position=position, active=active,
@@ -259,6 +305,9 @@ def paper_exit_preflight_cursor(
             runtime_revision_matches_adoption_provenance=revision_matches,
         )
     if compatible:
+        denial = fee_contract_denial()
+        if denial is not None:
+            return denial
         return _paper_exit_result(
             allowed=True, reason_code="LEGACY_COMPATIBLE",
             position=position, active=active, legacy_compatibility=True,
@@ -276,6 +325,9 @@ def paper_exit_preflight_cursor(
             reason = "ENTRY_BEFORE_ACTIVE_ADOPTION"
         else:
             # Preserve the existing guard's forward-position compatibility rule.
+            denial = fee_contract_denial()
+            if denial is not None:
+                return denial
             return _paper_exit_result(
                 allowed=True, reason_code="FORWARD_ENTRY_COMPATIBLE",
                 position=position, active=active,
@@ -702,6 +754,7 @@ def create_simulated_order_cursor(
     deployment_id: str | None = None,
     market_regime: str | None = None,
     regime_source_provenance: dict | None = None,
+    failure_injector=None,
 ) -> int | SimulatedOrderWriteBlocked:
     """Canonical transaction-bound simulated-order writer.
 
@@ -780,6 +833,8 @@ def create_simulated_order_cursor(
             raise RuntimeError("FORWARD_DECISION_REGISTRY_REQUIRED")
         forward_decision_id = registered[0]
         forward_contract_version = "CANONICAL_REGIME_ATTRIBUTION_V1"
+        if failure_injector is not None:
+            failure_injector("AFTER_DECISION_BEFORE_ORDER")
 
     if is_exit:
         lock_simulated_exit_slot_cursor(
@@ -897,6 +952,8 @@ def create_simulated_order_cursor(
         if inserted is None:
             raise RuntimeError("SIMULATED_ORDER_INSERT_RETURNING_MISSING")
         inserted_order_id = int(inserted[0])
+        if failure_injector is not None:
+            failure_injector("AFTER_ORDER_BEFORE_COMMITMENT")
         runtime_mode = str(os.getenv("TRADING_MODE", "PAPER")).strip().upper()
         if (
             order_class == FORWARD_ORDER_CLASS
@@ -953,6 +1010,8 @@ def create_simulated_order_cursor(
                         "pre_entry_risk_id=%s execution_effect=NONE",
                         shadow.status, _risk_status, pre_entry_risk_id,
                     )
+            if failure_injector is not None:
+                failure_injector("AFTER_COMMITMENT_BEFORE_FILL")
         if forward_decision_id is not None:
             try:
                 snapshot_id = capture_entry_opportunity_snapshot_fail_open_cursor(
@@ -1161,20 +1220,26 @@ def record_simulated_fill_evidence(
     *,
     client,
     simulated_order_id: int,
-    position_id: int,
+    position_id: int | None,
     environment: str,
     deployment_id: str,
     exit_reason: str | None = None,
     require_terminal_close: bool = False,
-) -> bool:
+    connection=None,
+    position_market_regime: str | None = None,
+    position_entry_time=None,
+    require_atomic_entry: bool = False,
+    failure_injector=None,
+) -> bool | PaperEntryAtomicResult:
     """Atomically persist one PAPER fill and its inventory lifecycle mutation."""
     if str(environment).lower() != "paper":
         return False
     if require_terminal_close and exit_reason is None:
         raise ValueError("TERMINAL_CLOSE_EXIT_REASON_REQUIRED")
-    conn = connection_factory()
+    owns_connection = connection is None
+    conn = connection if connection is not None else connection_factory()
     try:
-        with conn:
+        with (conn if owns_connection else nullcontext(conn)):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -1191,6 +1256,90 @@ def record_simulated_fill_evidence(
                     symbol, side, price, qty, is_exit, execution_at,
                     interval, strategy, order_reason,
                 ) = order
+                if position_id is None:
+                    if is_exit or not require_atomic_entry:
+                        raise ValueError("ATOMIC_ENTRY_POSITION_REQUIRED")
+                    slot = (
+                        "PAPER_FORWARD_ENTRY_ATOMIC_V1:"
+                        f"{str(symbol).upper()}:{interval}:{strategy}"
+                    )
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                        (slot,),
+                    )
+                    if failure_injector is not None:
+                        failure_injector("AFTER_ORDER_BEFORE_POSITION")
+                    cur.execute(
+                        """
+                        SELECT p.id,f.id,
+                               f.simulation_fee_rate,f.fee_model_version,
+                               f.authoritative_fee_usdc,
+                               o.entry_opportunity_snapshot_id,
+                               p.entry_opportunity_snapshot_id,
+                               f.entry_opportunity_snapshot_id
+                        FROM positions p
+                        LEFT JOIN simulated_execution_fills_v1 f
+                          ON f.position_id=p.id
+                         AND f.simulated_order_id=%s
+                         AND f.order_purpose='ENTRY'
+                        JOIN simulated_orders o ON o.id=%s
+                        WHERE p.symbol=%s AND p.strategy=%s AND p.interval=%s
+                          AND p.status='OPEN'
+                        ORDER BY p.entry_time DESC,p.id DESC
+                        LIMIT 1
+                        FOR UPDATE OF p
+                        """,
+                        (
+                            int(simulated_order_id), int(simulated_order_id),
+                            str(symbol), str(strategy), str(interval),
+                        ),
+                    )
+                    open_row = cur.fetchone()
+                    if open_row is not None:
+                        if open_row[1] is not None:
+                            canonical_existing = bool(
+                                open_row[2] is not None
+                                and open_row[3] is not None
+                                and open_row[4] is not None
+                                and open_row[5] is not None
+                                and open_row[6] == open_row[5]
+                                and open_row[7] == open_row[5]
+                            )
+                            if not canonical_existing:
+                                return PaperEntryAtomicResult(
+                                    False, "PAPER_EXISTING_ENTRY_INCOMPLETE",
+                                    int(simulated_order_id), int(open_row[0]),
+                                )
+                            return PaperEntryAtomicResult(
+                                True, "IDEMPOTENT", int(simulated_order_id),
+                                int(open_row[0]),
+                            )
+                        return PaperEntryAtomicResult(
+                            False, "PAPER_POSITION_ALREADY_OPEN",
+                            int(simulated_order_id), int(open_row[0]),
+                        )
+                    cur.execute(
+                        """
+                        INSERT INTO positions(
+                          symbol,strategy,interval,status,side,qty,entry_price,
+                          entry_time,entry_client_order_id,market_regime
+                        ) VALUES (
+                          %s,%s,%s,'OPEN',%s,%s,%s,COALESCE(%s,now()),NULL,%s
+                        ) RETURNING id
+                        """,
+                        (
+                            str(symbol), str(strategy), str(interval),
+                            "LONG" if str(side).upper() == "BUY" else "SHORT",
+                            Decimal(str(qty)), Decimal(str(price)),
+                            position_entry_time, position_market_regime,
+                        ),
+                    )
+                    created = cur.fetchone()
+                    if created is None:
+                        raise RuntimeError("PAPER_ATOMIC_POSITION_INSERT_FAILED")
+                    position_id = int(created[0])
+                    if failure_injector is not None:
+                        failure_injector("AFTER_POSITION_PREPARED")
                 cur.execute(
                     """
                     SELECT
@@ -1234,6 +1383,8 @@ def record_simulated_fill_evidence(
                 )
                 generation_gate = cur.fetchone()
                 if generation_gate is None:
+                    if require_atomic_entry:
+                        raise RuntimeError("PAPER_ATOMIC_GENERATION_GATE_MISSING")
                     return False
                 (
                     adoption_id,
@@ -1244,6 +1395,11 @@ def record_simulated_fill_evidence(
                 if classification not in (
                     "FORWARD_C2_2", "EXISTING_PROJECTED_C2_2"
                 ):
+                    if require_atomic_entry:
+                        raise RuntimeError(
+                            "PAPER_ATOMIC_GENERATION_GATE_REJECTED:"
+                            + str(classification)
+                        )
                     return False
                 log_runtime_revision_provenance_diagnostic(
                     adoption_id=int(adoption_id),
@@ -1367,8 +1523,12 @@ def record_simulated_fill_evidence(
                     instrument_metadata_fingerprint=metadata_fingerprint,
                 )
                 if fill_id is None:
+                    if require_atomic_entry:
+                        raise RuntimeError("PAPER_ATOMIC_ENTRY_FILL_NOT_INSERTED")
                     return False
                 fill_inserted = True
+                if require_atomic_entry and failure_injector is not None:
+                    failure_injector("AFTER_ENTRY_FILL")
 
                 cur.execute(
                     """
@@ -1451,13 +1611,13 @@ def record_simulated_fill_evidence(
                     ),
                 )
                 if not is_exit:
-                    deploy_paper_simulated_fill_cursor(
+                    deployment_status = deploy_paper_simulated_fill_cursor(
                         cur, simulated_order_id=int(simulated_order_id),
                         fill_id=fill_id, position_id=int(position_id),
                         deployed_notional=quantity * fill_price,
                         effective_at=execution_at,
                     )
-                    activate_boundary_for_position_cursor(
+                    boundary_status = activate_boundary_for_position_cursor(
                         cur, position_id=int(position_id),
                         environment=str(environment),
                         deployment_id=str(deployment_id),
@@ -1475,10 +1635,53 @@ def record_simulated_fill_evidence(
                         logging.exception(
                             "entry_opportunity_position_link_fail_open"
                         )
+                    if require_atomic_entry and failure_injector is not None:
+                        failure_injector("AFTER_POSITION_LINKAGE")
                     handoff_status = handoff_paper_fill_pre_entry_risk_cursor(
                         cur, fill_id=fill_id, environment=str(environment),
                         deployment_id=str(deployment_id),
                     )
+                    if require_atomic_entry:
+                        if deployment_status not in {"INSERTED", "IDEMPOTENT"}:
+                            raise RuntimeError(
+                                "PAPER_ATOMIC_RESERVATION_DEPLOY_FAILED:"
+                                + str(deployment_status)
+                            )
+                        if boundary_status not in {
+                            "INSERTED", "IDEMPOTENT", "BOUNDARY_ACTIVATED",
+                            "BOUNDARY_REVISED_ENTRY_BASIS",
+                        }:
+                            raise RuntimeError(
+                                "PAPER_ATOMIC_BOUNDARY_ACTIVATION_FAILED:"
+                                + str(boundary_status)
+                            )
+                        if handoff_status not in {"INSERTED", "IDEMPOTENT"}:
+                            raise RuntimeError(
+                                "PAPER_ATOMIC_RISK_HANDOFF_FAILED:"
+                                + str(handoff_status)
+                            )
+                        cur.execute(
+                            """
+                            SELECT o.entry_opportunity_snapshot_id,
+                                   p.entry_opportunity_snapshot_id,
+                                   f.entry_opportunity_snapshot_id
+                            FROM simulated_orders o
+                            JOIN positions p ON p.id=%s
+                            JOIN simulated_execution_fills_v1 f ON f.id=%s
+                            WHERE o.id=%s
+                            """,
+                            (int(position_id), int(fill_id), int(simulated_order_id)),
+                        )
+                        linkage = cur.fetchone()
+                        if (
+                            linkage is None
+                            or linkage[0] is None
+                            or linkage[1] != linkage[0]
+                            or linkage[2] != linkage[0]
+                        ):
+                            raise RuntimeError(
+                                "PAPER_ATOMIC_OPPORTUNITY_LINKAGE_INCOMPLETE"
+                            )
                     if handoff_status not in {"INSERTED", "IDEMPOTENT"}:
                         logging.warning(
                             "paper pre-entry risk handoff status=%s fill_id=%s "
@@ -1509,6 +1712,107 @@ def record_simulated_fill_evidence(
                             + str(int(simulated_order_id))
                         ),
                     )
+                if require_atomic_entry:
+                    return PaperEntryAtomicResult(
+                        bool(fill_inserted), "INSERTED",
+                        int(simulated_order_id), int(position_id),
+                    )
                 return fill_inserted
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+def record_forward_paper_entry_atomic(
+    connection_factory,
+    *,
+    client,
+    symbol: str,
+    interval: str,
+    strategy: str,
+    side: str,
+    price: Decimal,
+    quantity: Decimal,
+    reason: str,
+    candle_open_time,
+    deployment_id: str,
+    market_regime: str | None,
+    regime_source_provenance: dict | None,
+    rsi_14: Decimal | None = None,
+    ema_21: Decimal | None = None,
+    position_entry_time=None,
+    failure_injector=None,
+) -> PaperEntryAtomicResult:
+    """Commit a complete forward PAPER entry, or commit none of it.
+
+    The decision, order, accepted commitments, position, fill, fee contract,
+    inventory, opportunity linkage, boundary, and risk handoff all use one
+    caller-owned PostgreSQL transaction.  The canonical order identity makes a
+    retry return the one already-complete entry instead of duplicating it.
+    """
+    conn = connection_factory()
+    try:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    written = create_simulated_order_cursor(
+                        cur,
+                        symbol=str(symbol), interval=str(interval),
+                        strategy=str(strategy), side=str(side),
+                        price=Decimal(str(price)),
+                        quantity=Decimal(str(quantity)), reason=str(reason),
+                        candle_open_time=candle_open_time, is_exit=False,
+                        rsi_14=(
+                            None if rsi_14 is None else Decimal(str(rsi_14))
+                        ),
+                        ema_21=(
+                            None if ema_21 is None else Decimal(str(ema_21))
+                        ),
+                        market_regime=market_regime,
+                        regime_source_provenance=(
+                            None if regime_source_provenance is None
+                            else dict(regime_source_provenance)
+                        ),
+                        failure_injector=failure_injector,
+                    )
+                if isinstance(written, SimulatedOrderWriteBlocked):
+                    if (
+                        written.status != "IDEMPOTENT_EXISTING_FORWARD_ORDER"
+                        or written.existing_order_id is None
+                    ):
+                        raise _PaperEntryAtomicBlocked(PaperEntryAtomicResult(
+                            False, written.status, written.existing_order_id, None,
+                        ))
+                    simulated_order_id = int(written.existing_order_id)
+                else:
+                    simulated_order_id = int(written)
+
+                result = record_simulated_fill_evidence(
+                    connection_factory,
+                    client=client,
+                    simulated_order_id=simulated_order_id,
+                    position_id=None,
+                    environment="paper",
+                    deployment_id=str(deployment_id),
+                    connection=conn,
+                    position_market_regime=market_regime,
+                    position_entry_time=position_entry_time,
+                    require_atomic_entry=True,
+                    failure_injector=failure_injector,
+                )
+                if not isinstance(result, PaperEntryAtomicResult) or not result:
+                    blocked = (
+                        result if isinstance(result, PaperEntryAtomicResult)
+                        else PaperEntryAtomicResult(
+                            False, "PAPER_ATOMIC_ENTRY_EVIDENCE_FAILED",
+                            simulated_order_id, None,
+                        )
+                    )
+                    raise _PaperEntryAtomicBlocked(blocked)
+                if failure_injector is not None:
+                    failure_injector("BEFORE_ENTRY_COMMIT")
+                return result
+        except _PaperEntryAtomicBlocked as exc:
+            return exc.result
     finally:
         conn.close()
