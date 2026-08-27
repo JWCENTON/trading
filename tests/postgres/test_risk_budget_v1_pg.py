@@ -133,8 +133,15 @@ def test_state_and_gate_events_are_idempotent_and_conflicts_fail(disposable_post
                 event_identity="state-1", producer_identity="pytest",
                 git_revision=REVISION,
             )
+            revision_replay = persist_event_cursor(
+                cur, snapshot, event_type="STATE_EVALUATION",
+                event_identity="state-1", producer_identity="pytest-restarted",
+                git_revision="7" * 40,
+            )
             assert first.status == "INSERTED"
             assert second.status == "IDEMPOTENT"
+            assert revision_replay.status == "IDEMPOTENT"
+            assert revision_replay.event_fingerprint == first.event_fingerprint
             _, decision, gate_first = (
                 evaluate_and_persist_account_scoped_shadow_gate_cursor(
                     cur, environment="PAPER", deployment_id="local-paper",

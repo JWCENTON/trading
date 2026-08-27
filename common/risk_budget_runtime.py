@@ -35,6 +35,7 @@ from common.risk_budget import (
     AdvisoryDecision,
     PersistResult,
     RiskBudgetInputs,
+    RiskBudgetIdempotencyConflict,
     RiskBudgetSnapshot,
     evaluate_and_persist_account_scoped_shadow_gate_cursor,
     evaluate_state,
@@ -454,8 +455,12 @@ def _source_fingerprints(
     state: Any, state_payload: Any, committed: Any,
     excluded_candidate: uuid.UUID | None, history_evidence: Any,
 ) -> dict[str, str]:
+    semantic_state_payload = dict(state_payload)
+    # Runtime revision is retained in Portfolio State provenance, but a deploy
+    # alone cannot change the semantic identity of the same historical state.
+    semantic_state_payload.pop("runtime_revision", None)
     return {
-        "portfolio_state": fingerprint(state_payload),
+        "portfolio_state": fingerprint(semantic_state_payload),
         "open_risk": fingerprint({
             "authority": "PORTFOLIO_STATE_V1.OPEN_RISK",
             "value": state.open_risk, "status": state.open_risk_status,
@@ -489,6 +494,48 @@ def persist_state_evaluation_cursor(
         else "JOINT_AUTHORITY_EPOCH" if paper_epoch_boundary is not None
         else "AUTOMATION_5M"
     )
+    if isinstance(paper_epoch_boundary, RiskBudgetEpochBoundary):
+        if paper_epoch_boundary.epoch is None:
+            raise ValueError("RISK_BUDGET_AUTHORITY_EPOCH_REQUIRED")
+        cur.execute(
+            """SELECT event.event_id,event.event_fingerprint,event.authority_status
+               FROM risk_budget_event_v1 event
+               JOIN risk_budget_authority_epoch_binding_v1 binding
+                 ON binding.event_id=event.event_id
+               WHERE event.event_type='STATE_EVALUATION'
+                 AND event.deployment_id=%s
+                 AND binding.authority_epoch_id=%s
+                 AND binding.evaluation_as_of=%s
+               ORDER BY event.created_at,event.event_id""",
+            (
+                deployment_id,
+                paper_epoch_boundary.epoch.authority_epoch_id,
+                boundary,
+            ),
+        )
+        existing = cur.fetchall()
+        if len(existing) > 1:
+            raise RiskBudgetIdempotencyConflict(
+                "RISK_BUDGET_STATE_EVALUATION_BOUNDARY_CARDINALITY_CONFLICT"
+            )
+        if existing:
+            event_id, event_fingerprint, authority_status = existing[0]
+            persisted = PersistResult(
+                "IDEMPOTENT", uuid.UUID(str(event_id)), str(event_fingerprint),
+            )
+            return StateEvaluationResult(
+                "IDEMPOTENT", boundary, str(authority_status), persisted,
+            )
+        observation = str(
+            paper_epoch_boundary.drawdown_observation_fingerprint or ""
+        )
+        if len(observation) != 64:
+            raise ValueError("RISK_BUDGET_IMMUTABLE_OBSERVATION_REQUIRED")
+        identity_source = (
+            f"JOINT_AUTHORITY_EPOCH_V2:"
+            f"{paper_epoch_boundary.epoch.authority_epoch_id}:"
+            f"{paper_epoch_boundary.epoch.drawdown_generation}:{observation}"
+        )
     identity = f"{identity_source}:{boundary.astimezone(timezone.utc).isoformat()}"
     loader_kwargs = dict(
         deployment_id=deployment_id, as_of=as_of,
@@ -594,6 +641,13 @@ def run_risk_budget_state_evaluation_cycle(
             conn.commit()
         _last_state_evaluation_cutoff = boundary
         return result
+    except RiskBudgetIdempotencyConflict:
+        conn.rollback()
+        _last_state_evaluation_cutoff = boundary
+        logging.exception(
+            "risk_budget_state_evaluation_conflict boundary=%s", boundary,
+        )
+        return StateEvaluationResult("CONFLICT", boundary)
     except Exception:
         conn.rollback()
         raise

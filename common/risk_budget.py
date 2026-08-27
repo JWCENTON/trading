@@ -495,6 +495,20 @@ def _event_payload(
     return payload
 
 
+def _semantic_event_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return immutable event meaning without writer provenance.
+
+    Producer and Git revisions explain who materialized an event, but they do
+    not change the Risk Budget observation itself.  They remain stored in the
+    append-only evidence payload and dedicated columns while replay equality
+    is evaluated only over semantic fields.
+    """
+    return {
+        str(key): value for key, value in payload.items()
+        if key not in {"producer_identity", "git_revision"}
+    }
+
+
 _INSERT_COLUMNS = """
 event_id,event_type,event_identity,environment,deployment_id,
 account_identity_fingerprint,event_at,policy_version,policy_fingerprint,
@@ -559,7 +573,7 @@ def persist_event_cursor(
     if inserted:
         return PersistResult("INSERTED", event_id, event_fp)
     cur.execute(
-        "SELECT event_id,event_fingerprint FROM risk_budget_event_v1 "
+        "SELECT event_id,event_fingerprint,evidence FROM risk_budget_event_v1 "
         "WHERE environment=%s AND deployment_id=%s "
         "AND account_identity_fingerprint=%s AND event_type=%s "
         "AND event_identity=%s",
@@ -569,8 +583,12 @@ def persist_event_cursor(
         ),
     )
     existing = cur.fetchone()
-    if existing and uuid.UUID(str(existing[0])) == event_id and str(existing[1]) == event_fp:
-        return PersistResult("IDEMPOTENT", event_id, event_fp)
+    if existing and uuid.UUID(str(existing[0])) == event_id:
+        existing_payload = dict(existing[2])
+        if fingerprint(_semantic_event_payload(existing_payload)) == fingerprint(
+            _semantic_event_payload(payload)
+        ):
+            return PersistResult("IDEMPOTENT", event_id, str(existing[1]))
     raise RiskBudgetIdempotencyConflict("RISK_BUDGET_EVENT_IDEMPOTENCY_CONFLICT")
 
 
