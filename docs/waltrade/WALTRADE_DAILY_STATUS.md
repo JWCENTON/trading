@@ -2,11 +2,11 @@
 
 LAST_UPDATED=2026-08-28
 
-CURRENT_GIT_SHA=2e8880140730ce1848f008b89a6200030f43402c
+CURRENT_GIT_SHA=d8ebe52a18312a1c6d7294ab160340a88f2d84d3
 
 CURRENT_PHASE=STOP_LOSING
 
-CURRENT_P0=FREEZE_AND_REPLICATE_RSI_AFTER_BBRANGE_OWNERSHIP_ON_VPS_PAPER
+CURRENT_P0=VPS_PAPER_INDEPENDENT_REPLICATION_OF_FROZEN_RSI_AFTER_BBRANGE_OWNERSHIP_V1
 
 This document is current truth only. Git history retains prior states.
 
@@ -22,7 +22,7 @@ This document is current truth only. Git history retains prior states.
 | Risk Budget Contract | `PASS_4_4`; immutable-event commit `f965a0b35f8be1b900cbd0e73332c653b003ca0a` |
 | Risk Budget Influence | OFF |
 | Learning | Auto-apply OFF |
-| Strategy Ownership | `PROMISING_INITIAL_CAUSAL_EVIDENCE`; final policy not proven |
+| Strategy Ownership | `PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`; candidate `FROZEN` |
 | Movement vs Cost | Primary defect: insufficient movement relative to full cost |
 | Fee Velocity | High fee velocity / same-thesis duplication is a leading mechanism |
 | New Risk vs Keep Risk | Strong diagnostic candidate; policy not yet proven |
@@ -34,9 +34,9 @@ This document is current truth only. Git history retains prior states.
 | LOCAL PAPER | HEALTHY / OWNERSHIP EXPERIMENT TERMINAL |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Independent acceptance / forensic environment; no active treatment authorized by this document |
-| LOCAL LIVE | Non-experimental / frozen unless separately approved |
+| LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Equity UI canonical authority | `VPS_LIVE_COMPLETE`; Git, contract, direct-schema, and runtime-semantic parity PASS |
-| VPS LIVE | Production; no discovery experiment |
+| VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
 
@@ -78,7 +78,17 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 - `TESTS=40_PASS`; `FAIL_CLOSED_BEHAVIOR_WEAKENED=NO`.
 - `MATURE_240M=4`; `PENDING_240M=0`; `BAD_AVOIDED=4`; `GOOD_MISSED=0`.
 - `OWNERSHIP_ECONOMIC_VERDICT=PROMISING_INITIAL_CAUSAL_EVIDENCE`; ownership is not proven.
+- `OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`.
+- `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE`.
+- `OWNERSHIP_CANDIDATE=FROZEN` (`RSI_AFTER_BBRANGE_OWNERSHIP_V1`).
 - `LIVE_ELIGIBILITY=NOT_COMPLETE`.
+
+## Capital preservation
+
+- `LOCAL_LIVE_CAPITAL_PRESERVATION_MODE=ACTIVE`.
+- `VPS_LIVE_CAPITAL_PRESERVATION_MODE=ACTIVE`.
+- `NEW_LIVE_ENTRY_ALLOWED=NO`.
+- `EXIT_CLOSE_CAPABILITY_AVAILABLE=YES`.
 
 ## Current economic baseline
 
@@ -90,12 +100,12 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 ## NOW
 
 - `LOCAL_DISCOVERY_NEXT_ACTION=NO_ARBITRARY_SAMPLE_WAIT`.
-- Freeze the same ownership candidate and its unchanged semantics.
+- Preserve the frozen ownership candidate and its unchanged semantics.
 - Preserve the completed LOCAL evidence and safety artifacts.
 
 ## NEXT
 
-- `NEXT_STAGE=FREEZE_SAME_OWNERSHIP_CANDIDATE_AND_REPLICATE_ON_VPS_PAPER`.
+- `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`.
 - Require independent VPS PAPER acceptance before any LIVE eligibility decision.
 
 ## DO_NOT_DO

@@ -34,6 +34,8 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] `EQUITY_UI_CONTRACT_PARITY=PASS` — COMPLETE
 - [x] `EQUITY_UI_DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS` — COMPLETE
 - [x] `EQUITY_UI_RUNTIME_SEMANTIC_PARITY=PASS` — COMPLETE
+- [x] LOCAL LIVE Capital Preservation Mode — ACTIVE: new entries NO; exit/close YES
+- [x] VPS LIVE Capital Preservation Mode — ACTIVE: new entries NO; exit/close YES
 
 ## B. Economic baseline and initial forensics
 
@@ -108,7 +110,7 @@ Supporting classifications:
 - [x] `MATURE_240M=4`; `BAD_AVOIDED=4`; `GOOD_MISSED=0` — COMPLETE
 - [x] `BAD_AVOIDED > GOOD_MISSED` — PROMISING INITIAL CAUSAL EVIDENCE
 - [x] Longer LOCAL discovery wait — NOT REQUIRED: `NO_ARBITRARY_SAMPLE_WAIT`
-- [ ] Candidate freeze — NOT COMPLETE
+- [x] `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate freeze — COMPLETE
 - [ ] VPS PAPER treatment replication — NOT COMPLETE
 - [ ] LIVE eligibility — NOT COMPLETE
 
@@ -119,6 +121,11 @@ failed closed. The diagnostic gap is closed without weakening genuine DB
 protection or changing trading semantics. Four of four mature blocked
 opportunities were `BAD_AVOIDED`, with zero `GOOD_MISSED`; this is promising
 initial causal evidence, not proof of a final ownership policy.
+
+`OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`;
+`LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE`;
+`OWNERSHIP_CANDIDATE=FROZEN`; `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`;
+`LIVE_ELIGIBILITY=NOT_COMPLETE`. VPS PAPER replication has not started.
 
 ## E. Interval, crowding, and duplication
 
@@ -155,8 +162,8 @@ No sizing or capital-allocation change is authorized during STOP LOSING causal w
 
 ## H. Decision gate
 
-1. Freeze the same RSI-after-BBRANGE ownership candidate and semantics.
-2. `NEXT_STAGE=FREEZE_SAME_OWNERSHIP_CANDIDATE_AND_REPLICATE_ON_VPS_PAPER`.
+1. Preserve the frozen RSI-after-BBRANGE ownership candidate and semantics.
+2. `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`.
 3. Use VPS PAPER only for independent acceptance, not discovery or semantic expansion.
 4. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until VPS PAPER replication passes.
 

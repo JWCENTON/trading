@@ -19,6 +19,8 @@ The North Star is frozen in [WALTRADE_CONSTITUTION.md](WALTRADE_CONSTITUTION.md)
 | Learning auto-apply | `OFF` |
 | Fee V2 | `0.35% per side` |
 | Full roundtrip break-even movement | `~0.7024586051%` |
+| LOCAL LIVE capital preservation | `ACTIVE`; new entries `NO`; exit/close `YES` |
+| VPS LIVE capital preservation | `ACTIVE`; new entries `NO`; exit/close `YES` |
 
 PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen Fee V2 contract are atomic across all four strategies. Missing or conflicting frozen ENTRY fee evidence fails closed before PAPER exit intent. The Risk Budget STATE_EVALUATION immutable-event contract is deployed with stable semantic equality, frozen upstream evidence, provenance normalization, idempotent same-cutoff retry, and true-conflict fail-closed behavior.
 
@@ -148,21 +150,25 @@ trading semantics were unchanged.
 
 All four preserved treatment counterfactuals have matured:
 `MATURE_240M=4`, `PENDING_240M=0`, `BAD_AVOIDED=4`, and `GOOD_MISSED=0`.
-This is `OWNERSHIP_ECONOMIC_VERDICT=PROMISING_INITIAL_CAUSAL_EVIDENCE`, not
-proof of a final ownership policy.
+This is
+`OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`, not proof of
+a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
+the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is now `FROZEN` for
+independent VPS PAPER replication. Replication has not started, and
+`LIVE_ELIGIBILITY=NOT_COMPLETE`.
 
 ## 8. Ordered execution plan
 
 ### Now
 
 1. `LOCAL_DISCOVERY_NEXT_ACTION=NO_ARBITRARY_SAMPLE_WAIT`.
-2. Freeze the same RSI-after-BBRANGE ownership candidate and its semantics.
+2. Preserve the frozen RSI-after-BBRANGE ownership candidate and its exact semantics.
 3. Preserve the completed LOCAL evidence and safety artifacts unchanged.
 4. Replicate the frozen candidate on VPS PAPER as an independent acceptance test.
 
 ### Next
 
-1. `NEXT_STAGE=FREEZE_SAME_OWNERSHIP_CANDIDATE_AND_REPLICATE_ON_VPS_PAPER`.
+1. `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`.
 2. Require independent VPS PAPER causal acceptance before any LIVE decision.
 3. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until replication and its safety/economic gates pass.
 4. After ownership replication, consider the small canonical regime-source rewire, then continue 1m/5m counterfactual work.

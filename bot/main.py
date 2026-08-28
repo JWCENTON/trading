@@ -50,6 +50,7 @@ from common.canonical_regime import evaluation_regime_fields, frozen_regime_prov
 from common.partial_exit import apply_partial_exit_result
 from common.final_decision_observation_sink import finalize_decision_observation
 from common.position_risk_boundary import load_frozen_boundary_price
+from common.ownership_rsi_after_bbrange_v1 import evaluate_ownership_admission
 from common.execution import (
     place_live_order,
     place_live_exit_maker_then_market as exchange_place_live_exit_maker_then_market,
@@ -3699,6 +3700,41 @@ def _run_strategy(row, prev_row=None):
                 reference_price=Decimal(str(price)), side=decision,
                 reason_text="REGIME_BLOCK",
                 details={"why": gate_entry.why, "regime": gate_entry.regime},
+            )
+
+        ownership = evaluate_ownership_admission(
+            get_db_conn,
+            trading_mode=cfg_effective.trading_mode,
+            symbol=SYMBOL,
+            strategy=STRATEGY_NAME,
+            observed_at=open_time,
+            market_regime=evaluation.market_regime,
+        )
+        if ownership.affected:
+            details = ownership.details()
+            if ownership.blocked:
+                emit_blocked(
+                    reason=ownership.reason,
+                    decision=decision,
+                    price=price,
+                    candle_open_time=open_time,
+                    info=details,
+                )
+                return FinalDecision.entry_blocked(
+                    evaluation, DecisionReason.POLICY_BLOCK,
+                    DecisionSubtype.READINESS_BLOCKED,
+                    finished_at=datetime.now(timezone.utc),
+                    reference_price=Decimal(str(price)), side=decision,
+                    signal_detected=True,
+                    reason_text=ownership.reason, details=details,
+                )
+            emit_strategy_event(
+                event_type="SIGNAL",
+                decision=decision,
+                reason=ownership.reason,
+                price=price,
+                candle_open_time=open_time,
+                info=details,
             )
         
         emit_strategy_event(
