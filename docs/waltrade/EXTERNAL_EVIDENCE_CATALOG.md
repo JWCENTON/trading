@@ -10,7 +10,7 @@ EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
 SOURCE_REFERENCE=TO_BE_CURATED
 WALTRADE_EQUIVALENT=Fee V2, full-cost hurdle, canonical net PnL, cost-cover evidence.
 CURRENT_WALTRADE_SUPPORT=YES
-OUR_EVIDENCE=0.35% per side; ~0.7024586051% roundtrip hurdle; 78.2178% insufficient-movement rate in the latest VPS PAPER forensic.
+OUR_EVIDENCE=0.35% per side; ~0.7024586051% roundtrip hurdle; 78.2178% insufficient-movement rate in the latest VPS PAPER trade-level forensic; separately, 689/1,517 canonical LOCAL opportunities did not reach the hurdle through 240-minute MFE, and only 172/1,517 finished net-positive.
 NEXT_ACTION=KEEP
 
 ## ECONOMIC_NO_TRADE_REGION
@@ -21,7 +21,7 @@ EXTERNAL_SUPPORT=STRONGLY_SUPPORTED
 SOURCE_REFERENCE=TO_BE_CURATED
 WALTRADE_EQUIVALENT=No-trade decisions, Full PAPER Opportunity Observation, movement-versus-cost evidence.
 CURRENT_WALTRADE_SUPPORT=PARTIAL
-OUR_EVIDENCE=Insufficient movement is the primary economic defect; causal threshold/policy is not proven.
+OUR_EVIDENCE=Insufficient movement is the primary economic defect. Existing ATR, BBRANGE width, EMA slope, realtime, and momentum evidence predicts 240-minute movement capacity, but the frozen temporal-holdout rule has weak generalization because major strategy/interval behavior is asymmetric. A causal threshold/policy is not proven.
 NEXT_ACTION=TEST
 
 ## THRESHOLD / BAND REBALANCING
@@ -43,7 +43,7 @@ EXTERNAL_SUPPORT=STRONGLY_SUPPORTED
 SOURCE_REFERENCE=TO_BE_CURATED
 WALTRADE_EQUIVALENT=Ordered strategy ownership and current RSI-after-BBRANGE treatment.
 CURRENT_WALTRADE_SUPPORT=PARTIAL
-OUR_EVIDENCE=868/965 additional admissions were non-value-add; ordered strategy-pair asymmetry is material.
+OUR_EVIDENCE=868/965 in the existing VPS forensic and 822/923 in the canonical LOCAL movement cohort were non-value-add; ordered strategy-pair asymmetry is material. Pre-entry separation of final non-value-add remains weak.
 NEXT_ACTION=TEST
 
 ## MARGINAL_PORTFOLIO_CONTRIBUTION
@@ -54,7 +54,7 @@ EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
 SOURCE_REFERENCE=TO_BE_CURATED
 WALTRADE_EQUIVALENT=Marginal Portfolio Value forensic and counterfactual opportunity outcomes.
 CURRENT_WALTRADE_SUPPORT=PARTIAL
-OUR_EVIDENCE=Non-value-add admissions produced -122.770951 USDC net and 121.513802 USDC fees.
+OUR_EVIDENCE=Non-value-add admissions produced -122.770951 USDC net and 121.513802 USDC fees in the existing forensic. In the canonical LOCAL movement cohort, all 923 additional admissions contributed -103.994083 USDC net; the temporal-holdout movement rule added +6.132816 USDC diagnostically after ownership but missed 11 cost-covering opportunities.
 NEXT_ACTION=REUSE
 
 ## TURNOVER_CONTROL

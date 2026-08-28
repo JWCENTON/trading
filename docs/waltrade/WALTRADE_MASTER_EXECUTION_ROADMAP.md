@@ -71,15 +71,34 @@ Latest VPS PAPER forensic baseline:
 
 The immediate goal is to lose less, then reach break-even after all costs, then demonstrate a repeatable positive edge. Risk Budget numeric influence, dynamic sizing, Capital Allocation, and Learning authority remain premature.
 
+LOCAL PAPER movement-capacity research uses a different, explicitly bounded
+economic concept and does not overwrite the VPS baseline above. In the
+canonical 1,517-trade LOCAL cohort, 828 opportunities (54.581%) reached the
+0.7024586051% full-cost hurdle through maximum favorable excursion during the
+next 240 minutes; 689 (45.419%) did not. Only 172/1,517 finished with positive
+authoritative net PnL, and aggregate final net was -177.145833 USDC.
+`240M_MFE_FULL_COST_COVER` is counterfactual movement capacity, not final
+realized profitability. The earlier 78.2178% figure belongs to its recorded
+VPS cohort and trade-level forensic definition; the two rates must not be
+merged.
+
+Existing pre-entry evidence predicts movement capacity strongly, led by
+`ATR_PCT`, BBRANGE `BB_WIDTH_PCT`, and absolute EMA slope. It separates final
+non-value-add admissions only weakly. For 923 admissions made while
+same-symbol risk already existed, marginal portfolio value was -103.994083
+USDC and 822/923 (89.057%) were non-value-add. No new score or engine is
+required.
+
 ## 3. Ranked STOP LOSING mechanisms
 
-Current strongest mechanisms:
+Ranked next mechanisms, separate from the already-frozen ownership candidate:
 
-1. `INSUFFICIENT_MOVEMENT_VS_COST`
-2. `STRATEGY_PAIR_OWNERSHIP`
+1. `MOVEMENT_CAPACITY`
+2. `ECONOMIC_NO_TRADE`
 3. `NEW_RISK_VS_KEEP_EXISTING_RISK`
-4. `HIGH_FEE_VELOCITY / SAME_THESIS_DUPLICATION`
-5. `1m/5m MIXED DUPLICATION`
+4. `SAME_THESIS_CONTROL`
+5. `FEE_VELOCITY`
+6. `1m/5m MIXED_DUPLICATION`
 
 Additional-admission economics:
 
@@ -172,6 +191,32 @@ the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is now `FROZEN` for
 independent VPS PAPER replication. Replication has not started, and
 `LIVE_ELIGIBILITY=NOT_COMPLETE`.
 
+### Movement-capacity candidate qualification
+
+A chronological split was locked before holdout evaluation:
+
+- DEVELOPMENT: 1,062 trades from 2026-08-14 09:32:52Z through 2026-08-24 18:36:10Z.
+- HOLDOUT: 455 trades from 2026-08-24 18:36:29Z through 2026-08-28 14:25:37Z.
+
+Three interpretable existing-field rule families were evaluated on DEVELOPMENT
+only. The frozen research candidate blocks when both
+`ATR_PCT <= 0.05275618624106265` and `REALTIME_SCORE <= 18.24315`; missing ATR
+is allowed. DEVELOPMENT bad rejection was 17.687% with 92.110% good retention.
+Unchanged on HOLDOUT, it blocked 68/455, avoided 49 insufficient-movement
+cases, missed 19 cost-covering cases, retained 90.821% of good cases, rejected
+19.758% of bad cases, and improved diagnostic allowed-cohort net from
+-58.776807 to -48.945039 USDC while remaining materially negative.
+
+Aggregate behavior reproduced, but subgroup behavior did not satisfy the
+candidate gate: RSI good retention was 46.67%, and 5m bad rejection was only
+1.41%. After counterfactually applying the unchanged frozen ownership rule
+first, 29 movement blocks overlapped ownership and 39 were incremental;
+incremental movement blocks avoided 28 bad cases, missed 11 good cases, and
+had -6.132816 USDC realized net. Therefore
+`HOLDOUT_GENERALIZATION=WEAK_GENERALIZATION`,
+`NO_TRADE_INTERPRETATION=PARTIAL`, and
+`CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`. No second treatment is authorized.
+
 ## 8. Ordered execution plan
 
 ### Now
@@ -213,6 +258,17 @@ Every experiment longer than 30 minutes requires all of:
 - `MANUAL_READ_ONLY_STATUS_PATH=PASS`
 
 Do not fix only the last observed error and restart blindly. Preflight the complete known terminal surface while preserving fail-closed protection for genuine risk.
+
+For every material producer/consumer pipeline, independent acceptance also
+requires all of:
+
+- `FUNCTIONAL_CORRECTNESS=PASS`
+- `EFFECTIVE_SERVICE_RATE > OBSERVED_SOURCE_ARRIVAL_RATE`
+- after each completed consumer cycle, every eligible source event through the cycle-start cutoff has exactly one canonical observation
+- the canonical watermark reaches the cycle-start cutoff with no eligible gaps
+
+Healthy workers, fresh heartbeats, zero DB blockers, or individual successful
+inserts alone do not prove forward health.
 
 ## 10. Hard scope control
 

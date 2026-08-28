@@ -54,6 +54,32 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] Post-cost-cover giveback — COMPLETE / PROVEN SECONDARY LEAK
 - [ ] Economic No-Trade causal treatment — NOT COMPLETE
 
+### Movement-capacity qualification
+
+- [x] Canonical LOCAL cohort — COMPLETE: 1,517 mature trades
+- [x] `240M_MFE_FULL_COST_COVER=828/1517` (54.581%) — COMPLETE
+- [x] `INSUFFICIENT_MOVEMENT_240M=689/1517` (45.419%) — COMPLETE
+- [x] `FINAL_NET_POSITIVE=172/1517`; final net -177.145833 USDC — COMPLETE
+- [x] Metric reconciliation — COMPLETE: bounded 240m MFE viability is not final realized profitability and does not overwrite the differently defined VPS forensic
+- [x] `MOVEMENT_CAPACITY_PREDICTABILITY=STRONG` — COMPLETE
+- [x] `PRE_ENTRY_NON_VALUE_ADD_SEPARABILITY=WEAK` — COMPLETE
+- [x] `ECONOMIC_NO_TRADE_REGION_SUPPORTED=PARTIAL` — COMPLETE
+- [x] `MARGINAL_PORTFOLIO_VALUE=-103.994083_USDC_FOR_923_ADDITIONAL_ADMISSIONS` — COMPLETE
+- [x] `NO_NEW_SCORE_REQUIRED=YES`; `NEW_ENGINE_REQUIRED=NO` — COMPLETE
+- [x] Chronological DEVELOPMENT/HOLDOUT split — COMPLETE: 1,062 / 455
+- [x] Three-rule maximum and DEVELOPMENT-only selection — PASS
+- [x] Candidate frozen before HOLDOUT — `ATR_PCT <= 0.05275618624106265 AND REALTIME_SCORE <= 18.24315`; missing ATR allowed
+- [x] HOLDOUT aggregate reproduction — 49 bad avoided; 19 good missed; 90.821% good retention; 19.758% bad rejection
+- [x] Ownership ordering — 29 overlapping blocks; 39 incremental; +6.132816 USDC diagnostic incremental value
+- [x] Major subgroup gate — FAIL: RSI good retention 46.67%; 5m bad rejection 1.41%
+- [x] `HOLDOUT_GENERALIZATION=WEAK_GENERALIZATION`
+- [x] `CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`
+- [ ] Movement-capacity shadow counterfactual treatment — NOT AUTHORIZED
+
+Ranked next mechanisms: `MOVEMENT_CAPACITY`, `ECONOMIC_NO_TRADE`,
+`NEW_RISK_VS_KEEP`, `SAME_THESIS_CONTROL`, `FEE_VELOCITY`, then
+`1m/5m_DUPLICATION`.
+
 Latest VPS PAPER baseline:
 
 | Metric | Value |
@@ -188,3 +214,13 @@ For every experiment longer than 30 minutes, require before launch:
 - [x] `MANUAL_READ_ONLY_STATUS_PATH=PASS`
 
 Do not fix only the most recently observed error and restart blindly. Re-run this complete gate for each new long-running experiment context.
+
+For every material producer/consumer pipeline before independent acceptance:
+
+- [ ] `FUNCTIONAL_CORRECTNESS=PASS`
+- [ ] `EFFECTIVE_SERVICE_RATE > OBSERVED_SOURCE_ARRIVAL_RATE`
+- [ ] after each completed consumer cycle, every eligible source event through the cycle-start cutoff has exactly one canonical observation
+- [ ] canonical watermark reaches the cycle-start cutoff with no eligible gaps
+
+Healthy workers, fresh heartbeats, zero DB blockers, and individual successful
+inserts alone are not sufficient forward-health proof.

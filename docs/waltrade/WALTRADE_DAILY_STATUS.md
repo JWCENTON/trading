@@ -23,7 +23,7 @@ This document is current truth only. Git history retains prior states.
 | Risk Budget Influence | OFF |
 | Learning | Auto-apply OFF |
 | Strategy Ownership | `PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`; candidate `FROZEN` |
-| Movement vs Cost | Primary defect: insufficient movement relative to full cost |
+| Movement vs Cost | Predictability `STRONG`; temporal-holdout candidate `NEEDS_MORE_RESEARCH` |
 | Fee Velocity | High fee velocity / same-thesis duplication is a leading mechanism |
 | New Risk vs Keep Risk | Strong diagnostic candidate; policy not yet proven |
 | Same-Thesis Duplication | 572 admissions; net -69.028271 USDC |
@@ -102,12 +102,41 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 - `VPS_PAPER_ACCEPTANCE=BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`.
 - VPS PAPER acceptance has not started.
 
+Permanent pipeline acceptance invariant: functional correctness must pass,
+effective service rate must exceed observed source arrival rate, each completed
+consumer cycle must produce exactly one canonical observation for every
+eligible event through its cycle-start cutoff, and the canonical watermark
+must reach that cutoff with no eligible gaps. Worker health, heartbeat
+freshness, zero blockers, and isolated successful inserts are insufficient by
+themselves.
+
 ## Current economic baseline
 
 - Fee V2: 0.35% per side.
 - Full roundtrip break-even movement: approximately 0.7024586051%.
 - Latest VPS PAPER forensic: 1,515 trades, net -183.346579 USDC, fees 212.195019 USDC, insufficient-movement rate 78.2178%.
 - Additional admissions: 965; non-value-add admissions: 868 (89.948%); fees 121.513802 USDC; net -122.770951 USDC.
+
+## Movement-capacity qualification
+
+- Canonical LOCAL cohort: 1,517 mature trades; full-cost hurdle 0.7024586051%.
+- `240M_MFE_FULL_COST_COVER=828/1517` (54.581%); insufficient 689/1,517 (45.419%).
+- `FINAL_NET_POSITIVE=172/1517`; final net -177.145833 USDC.
+- 240-minute MFE cost-cover viability is not final realized profitability and does not replace the differently defined 78.2178% VPS forensic.
+- `MOVEMENT_CAPACITY_PREDICTABILITY=STRONG`.
+- `PRE_ENTRY_NON_VALUE_ADD_SEPARABILITY=WEAK`.
+- `ECONOMIC_NO_TRADE_REGION_SUPPORTED=PARTIAL`.
+- `MARGINAL_PORTFOLIO_VALUE=-103.994083_USDC_FOR_923_ADDITIONAL_ADMISSIONS`.
+- Existing evidence is sufficient; `NO_NEW_SCORE_REQUIRED=YES`; `NEW_ENGINE_REQUIRED=NO`.
+- Temporal split: DEVELOPMENT 1,062; HOLDOUT 455.
+- Frozen research rule: block only when `ATR_PCT <= 0.05275618624106265` and `REALTIME_SCORE <= 18.24315`; missing ATR is allowed.
+- HOLDOUT: 68 blocked; 49 bad avoided; 19 good missed; good retention 90.821%; bad rejection 19.758%.
+- HOLDOUT final net baseline -58.776807 USDC; allowed cohort -48.945039 USDC; fees avoided 9.518102 USDC.
+- After ownership: 29 overlapping blocks; 39 incremental blocks; 28 incremental bad avoided; 11 incremental good missed; diagnostic incremental value +6.132816 USDC.
+- `HOLDOUT_GENERALIZATION=WEAK_GENERALIZATION`: RSI good retention 46.67%; 5m bad rejection 1.41%.
+- `NO_TRADE_INTERPRETATION=PARTIAL`; `CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`.
+- No movement treatment is active or authorized. The frozen ownership candidate remains unchanged and first in causal order.
+- Ranked next mechanisms: movement capacity; economic no-trade; new risk vs keep; same-thesis control; fee velocity; 1m/5m duplication.
 
 ## NOW
 
