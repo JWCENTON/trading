@@ -19,6 +19,13 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] Deployment parity invariant: Git + contract + direct schema dependency + runtime semantics — COMPLETE
 - [x] Attributed LOCAL experiment DB safety and background false-positive correction — COMPLETE
 - [x] Read-only manual experiment observability and terminal artifacts — COMPLETE
+- [x] LOCAL harness PostgreSQL client-disconnect RCA — COMPLETE: `HARNESS_FALSE_POSITIVE_CRITICAL_CLASSIFICATION`
+- [x] LOCAL harness critical classifier correction — COMPLETE: expected attributed recreation disconnect is WARNING / CONTINUE
+- [x] Terminal-condition catalog — COMPLETE
+- [x] Recent LOCAL PAPER log replay against terminal catalog — COMPLETE / PASS
+- [x] `FALSE_POSITIVE_TERMINAL_EVENTS=0` — COMPLETE
+- [x] `UNKNOWN_TERMINAL_CLASSIFICATIONS=0` — COMPLETE
+- [x] Harness validation — COMPLETE: 18 classifier tests + 14 attributed DB safety tests = 32 PASS
 
 ## B. Economic baseline and initial forensics
 
@@ -81,10 +88,13 @@ Supporting classifications:
 ## D. Current ownership causal experiment
 
 - [ ] RSI-after-BBRANGE LOCAL PAPER causal experiment — IN_PROGRESS
-- [x] First CONTROL completed — COMPLETE
-- [ ] Current TREATMENT — IN_PROGRESS
-- [ ] Second CONTROL — NOT COMPLETE
-- [ ] 240-minute blocked-opportunity maturity — NOT COMPLETE
+- [x] Previous valid sequence exposure — COMPLETE: two CONTROL runs and one TREATMENT run
+- [x] Previous treatment counterfactuals retained after harness abort — COMPLETE
+- [ ] Current restart CONTROL `CONTROL-118a765af6` — IN_PROGRESS
+- [ ] Current restart TREATMENT — NOT COMPLETE
+- [ ] Current restart second CONTROL — NOT COMPLETE
+- [ ] 240-minute blocked-opportunity maturity — 4 PENDING
+- [ ] `MATURE_240M=0`; `BAD_AVOIDED=0`; `GOOD_MISSED=0` — NOT COMPLETE
 - [ ] `BAD_AVOIDED > GOOD_MISSED` — NOT PROVEN
 - [ ] Longer LOCAL proof — CONDITIONAL / NOT COMPLETE
 - [ ] Candidate freeze — NOT COMPLETE
@@ -92,6 +102,8 @@ Supporting classifications:
 - [ ] LIVE eligibility — NOT COMPLETE
 
 Treatment semantics remain one variable: block only an RSI PAPER admission when the same symbol already has an OPEN BBRANGE position with positive remaining inventory. Do not infer success from fewer trades alone.
+
+The previous run's terminal state was a LOCAL experiment-harness false positive, not a treatment or shared runtime defect. PostgreSQL logged `FATAL: connection to client lost` when experiment-controlled recreation interrupted a read-only BTCUSDC 1m query. Trading impact was NONE. The terminal classifier and full preflight are now validated; the current restart must remain undisturbed.
 
 ## E. Interval, crowding, and duplication
 
@@ -134,3 +146,17 @@ After the current LOCAL experiment:
 2. Rank mechanisms by economic magnitude, evidence strength, observability, implementation size, and `GOOD_MISSED` risk.
 3. Select exactly one next intervention.
 4. Replicate a successful LOCAL candidate on VPS PAPER before any LIVE eligibility decision.
+
+## I. Permanent long-run experiment gate
+
+For every experiment longer than 30 minutes, require before launch:
+
+- [x] `TERMINAL_CONDITION_CATALOG_COMPLETE=YES`
+- [x] `RECENT_LOG_REPLAY_AGAINST_TERMINAL_CATALOG=PASS`
+- [x] `KNOWN_BACKGROUND_ERRORS_CLASSIFIED=YES`
+- [x] `TASK_ATTRIBUTION_RULES_TESTED=YES`
+- [x] `GENUINE_DANGEROUS_CONDITIONS_FAIL_CLOSED=YES`
+- [x] `RESTORE_PATH=PASS`
+- [x] `MANUAL_READ_ONLY_STATUS_PATH=PASS`
+
+Do not fix only the most recently observed error and restart blindly. Re-run this complete gate for each new long-running experiment context.

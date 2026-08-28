@@ -2,9 +2,11 @@
 
 LAST_UPDATED=2026-08-28
 
-CURRENT_GIT_SHA=f965a0b35f8be1b900cbd0e73332c653b003ca0a
+CURRENT_GIT_SHA=ecc40102f6760c8f1257b4ac4be4ee248fc74171
 
 CURRENT_PHASE=STOP_LOSING
+
+CURRENT_P0=RSI_AFTER_BBRANGE_OWNERSHIP_CAUSAL_EXPERIMENT
 
 This document is current truth only. Git history retains prior states.
 
@@ -29,7 +31,8 @@ This document is current truth only. Git history retains prior states.
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
 | Exit Giveback | Proven secondary leak; immediate tiny-positive exit rejected |
-| LOCAL PAPER | Healthy; active RSI-after-BBRANGE ownership experiment |
+| LOCAL PAPER | HEALTHY / EXPERIMENT ACTIVE |
+| Harness Safety | `TERMINAL_CONDITION_PREFLIGHT_PASS`; 32 tests passed; recent-log replay passed |
 | VPS PAPER | Independent acceptance / forensic environment; no active treatment authorized by this document |
 | LOCAL LIVE | Non-experimental / frozen unless separately approved |
 | VPS LIVE | Production; no discovery experiment |
@@ -43,16 +46,27 @@ This document is current truth only. Git history retains prior states.
 | Environment | LOCAL PAPER |
 | Treatment | RSI-after-BBRANGE ownership admission |
 | Status | IN_PROGRESS |
-| Phase | TREATMENT |
-| Run ID | `TREATMENT-7d6c50828c` |
-| Completed CONTROL runs | 1 |
+| Phase | CONTROL |
+| Run ID | `CONTROL-118a765af6` |
+| Completed CONTROL runs | 0 in the current restart |
 | Completed TREATMENT runs | 0 |
 | Runner/watchdog | Independent and running |
 | Manual checks | Read-only observability enabled |
 | Experiment health | PASS |
-| Last progress | `2026-08-28T08:39:04.965661+00:00` |
+| DB safety | WARNING_BACKGROUND; no task-attributable or global DB safety failure |
+| Last progress | `2026-08-28T12:30:49.978151+00:00` |
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
+
+## Harness closure and preserved counterfactuals
+
+- Previous run: `TERMINAL_FAIL_FROM_HARNESS_FALSE_POSITIVE`.
+- Root cause: an expected PostgreSQL client disconnect during experiment-controlled bot-runner recreation was misclassified as critical.
+- Interrupted operation: read-only BTCUSDC 1m candle query.
+- Trading impact: NONE; no treatment, ownership, entry-atomicity, Risk Budget, or Full Opportunity Observation defect.
+- Harness closure: `TESTS=32_PASS`; terminal-condition catalog and recent real-log replay PASS; zero false-positive terminal events and zero unknown terminal classifications.
+- `CURRENT_PENDING_COUNTERFACTUALS=4`; `MATURE_240M=0`; `BAD_AVOIDED=0`; `GOOD_MISSED=0`.
+- The four prior valid treatment observations remain preserved and continue maturing independently.
 
 ## Current economic baseline
 
@@ -63,9 +77,9 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 
 ## NOW
 
-- Finish the current LOCAL ownership causal experiment.
-- Do not interfere while its health remains PASS.
-- Evaluate `BAD_AVOIDED` versus `GOOD_MISSED` after 240-minute maturity.
+- Allow the current ownership experiment to run.
+- Use manual read-only observation every 30–60 minutes.
+- Wait for additional causal exposure and the four preserved 240-minute outcomes to mature.
 
 ## NEXT
 
