@@ -2,7 +2,7 @@
 
 LAST_UPDATED=2026-08-28
 
-CURRENT_GIT_SHA=d8ebe52a18312a1c6d7294ab160340a88f2d84d3
+CURRENT_GIT_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 CURRENT_PHASE=STOP_LOSING
 
@@ -34,6 +34,7 @@ This document is current truth only. Git history retains prior states.
 | LOCAL PAPER | HEALTHY / OWNERSHIP EXPERIMENT TERMINAL |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Independent acceptance / forensic environment; no active treatment authorized by this document |
+| Full Opportunity throughput | LOCAL fix PASS; VPS validation still required |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Equity UI canonical authority | `VPS_LIVE_COMPLETE`; Git, contract, direct-schema, and runtime-semantic parity PASS |
 | VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
@@ -89,6 +90,17 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 - `VPS_LIVE_CAPITAL_PRESERVATION_MODE=ACTIVE`.
 - `NEW_LIVE_ENTRY_ALLOWED=NO`.
 - `EXIT_CLOSE_CAPABILITY_AVAILABLE=YES`.
+
+## Full PAPER Opportunity Observation throughput
+
+- `VPS_PAPER_DIRECT_SCHEMA_DEPENDENCY_REPAIR=COMPLETE`.
+- `VPS_PAPER_FULL_OPPORTUNITY_OBSERVATION_BLOCKER=THROUGHPUT_BELOW_ARRIVAL_RATE`.
+- `ROOT_CAUSE=EXPENSIVE_PROJECTION_LOOKUPS_PLUS_FIFO_SINGLE_CONSUMER`.
+- `LOCAL_THROUGHPUT_FIX=PASS`.
+- The exact projection lookup indexes preserve FIFO, observation identity, Fee V2 evidence, and 240-minute outcome linkage.
+- `OWNERSHIP_CANDIDATE=FROZEN_UNCHANGED`.
+- `VPS_PAPER_ACCEPTANCE=BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`.
+- VPS PAPER acceptance has not started.
 
 ## Current economic baseline
 

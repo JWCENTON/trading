@@ -21,6 +21,7 @@ The North Star is frozen in [WALTRADE_CONSTITUTION.md](WALTRADE_CONSTITUTION.md)
 | Full roundtrip break-even movement | `~0.7024586051%` |
 | LOCAL LIVE capital preservation | `ACTIVE`; new entries `NO`; exit/close `YES` |
 | VPS LIVE capital preservation | `ACTIVE`; new entries `NO`; exit/close `YES` |
+| LOCAL full-opportunity throughput fix | `PASS`; exact projection indexes |
 
 PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen Fee V2 contract are atomic across all four strategies. Missing or conflicting frozen ENTRY fee evidence fails closed before PAPER exit intent. The Risk Budget STATE_EVALUATION immutable-event contract is deployed with stable semantic equality, frozen upstream evidence, provenance normalization, idempotent same-cutoff retry, and true-conflict fail-closed behavior.
 
@@ -40,6 +41,20 @@ a legacy fallback or fabricated period history. Closure evidence is:
 No new schema, engine, endpoint, frontend model, or data repair was required.
 PAPER does not consume the LIVE managed-capital authority and was not rolled
 out for this change.
+
+### Full PAPER Opportunity Observation throughput
+
+- `VPS_PAPER_DIRECT_SCHEMA_DEPENDENCY_REPAIR=COMPLETE`.
+- `VPS_PAPER_FULL_OPPORTUNITY_OBSERVATION_BLOCKER=THROUGHPUT_BELOW_ARRIVAL_RATE`.
+- `ROOT_CAUSE=EXPENSIVE_PROJECTION_LOOKUPS_PLUS_FIFO_SINGLE_CONSUMER`.
+- `LOCAL_THROUGHPUT_FIX=PASS`: exact indexes now serve the evidence and entry-trace projection lookups without changing FIFO or canonical payload semantics.
+- `OWNERSHIP_CANDIDATE=FROZEN_UNCHANGED`.
+- `VPS_PAPER_ACCEPTANCE=BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`.
+
+LOCAL proof exceeded the observed VPS source rate with objective cutoff
+freshness and no logical-key gaps. This authorizes VPS PAPER rollout and
+validation of the shared lookup indexes; it does not claim VPS acceptance has
+started or passed.
 
 ## 2. Current economic reality
 

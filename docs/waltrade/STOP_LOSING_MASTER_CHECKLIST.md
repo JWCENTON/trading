@@ -36,6 +36,10 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] `EQUITY_UI_RUNTIME_SEMANTIC_PARITY=PASS` — COMPLETE
 - [x] LOCAL LIVE Capital Preservation Mode — ACTIVE: new entries NO; exit/close YES
 - [x] VPS LIVE Capital Preservation Mode — ACTIVE: new entries NO; exit/close YES
+- [x] VPS PAPER direct schema dependency repair — COMPLETE
+- [x] Full Opportunity projection lookup RCA — COMPLETE: expensive lookups plus FIFO single consumer
+- [x] LOCAL Full Opportunity throughput optimization — PASS
+- [ ] VPS PAPER Full Opportunity throughput validation — NOT COMPLETE / ACCEPTANCE BLOCKED
 
 ## B. Economic baseline and initial forensics
 
@@ -126,6 +130,10 @@ initial causal evidence, not proof of a final ownership policy.
 `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE`;
 `OWNERSHIP_CANDIDATE=FROZEN`; `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`;
 `LIVE_ELIGIBILITY=NOT_COMPLETE`. VPS PAPER replication has not started.
+
+The frozen candidate is unchanged. VPS PAPER acceptance remains
+`BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`; no queue-lane architecture is
+authorized while the proven exact-index optimization remains sufficient.
 
 ## E. Interval, crowding, and duplication
 
