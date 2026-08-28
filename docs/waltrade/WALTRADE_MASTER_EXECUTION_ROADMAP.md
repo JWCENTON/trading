@@ -24,6 +24,19 @@ PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen
 
 Git SHA alone is insufficient: relevant rollouts require Git, contract, direct schema dependency, and runtime/semantic parity.
 
+### Equity UI canonical read authority
+
+LOCAL validation established `CANONICAL_EQUITY_AUTHORITY=HEALTHY`,
+`UI_API_READ_AUTHORITY=LEGACY_DEFECT`, and `FRONTEND=VALID`. The minimum
+shared fix is `FIX_CLASS=REWIRE_EXISTING_AUTHORITY`: LIVE `/ui/equity` reads
+the accepted managed-capital baseline plus canonical managed-equity history,
+without a new schema, engine, endpoint, frontend model, or data repair.
+
+LOCAL LIVE validation is PASS. The change is not complete until it is promoted
+to GitHub, rolled out to VPS LIVE, and Git/contract/direct-schema/runtime
+semantic parity is verified. PAPER does not consume the LIVE managed-capital
+authority and must not be rolled out for this change.
+
 ## 2. Current economic reality
 
 PRIMARY_ECONOMIC_DEFECT=`INSUFFICIENT_MOVEMENT_RELATIVE_TO_FULL_COST`

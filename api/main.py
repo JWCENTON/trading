@@ -3301,7 +3301,7 @@ def ui_equity_history(
     try:
         with db_cursor() as (_conn, cur):
             items, metrics = fetch_equity_history(
-                cur, deployment_id=deployment_id
+                cur, deployment_id=deployment_id, trading_mode=TRADING_MODE
             )
         days = {"7D": 7, "30D": 30}.get(range)
         if days is not None:

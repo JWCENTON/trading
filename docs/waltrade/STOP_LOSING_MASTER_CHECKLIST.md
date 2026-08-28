@@ -26,6 +26,10 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] `FALSE_POSITIVE_TERMINAL_EVENTS=0` — COMPLETE
 - [x] `UNKNOWN_TERMINAL_CLASSIFICATIONS=0` — COMPLETE
 - [x] Harness validation — COMPLETE: 18 classifier tests + 14 attributed DB safety tests = 32 PASS
+- [x] Equity UI canonical read authority LOCAL LIVE validation — COMPLETE / PASS
+- [x] Equity UI RCA — `CANONICAL_EQUITY_AUTHORITY=HEALTHY`; `UI_API_READ_AUTHORITY=LEGACY_DEFECT`; `FRONTEND=VALID`
+- [x] Equity UI minimum fix — `FIX_CLASS=REWIRE_EXISTING_AUTHORITY`; no new schema, engine, frontend model, or data repair
+- [ ] Equity UI shared promotion and VPS LIVE validation — NOT COMPLETE
 
 ## B. Economic baseline and initial forensics
 

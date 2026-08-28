@@ -2228,8 +2228,14 @@ def run_daily_report(conn):
 
 
 def run_daily_equity_snapshot(conn):
-    """Capture one forward-only equity observation at the existing UTC cadence."""
+    """Capture the legacy daily snapshot for PAPER only.
+
+    LIVE equity history is produced by ``run_live_drawdown_history_cycle`` and
+    read from the canonical managed-capital authority.
+    """
     if os.getenv("EQUITY_SNAPSHOT_ENABLED", "1") != "1":
+        return
+    if cfg.trading_mode.upper() == "LIVE":
         return
     deployment_id = os.getenv("DEPLOYMENT_ID", "").strip().lower()
     if deployment_id not in {

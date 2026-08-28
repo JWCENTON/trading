@@ -35,6 +35,7 @@ This document is current truth only. Git history retains prior states.
 | Harness Safety | `TERMINAL_CONDITION_PREFLIGHT_PASS`; 32 tests passed; recent-log replay passed |
 | VPS PAPER | Independent acceptance / forensic environment; no active treatment authorized by this document |
 | LOCAL LIVE | Non-experimental / frozen unless separately approved |
+| Equity UI canonical authority | LOCAL LIVE PASS; shared promotion and VPS LIVE validation pending |
 | VPS LIVE | Production; no discovery experiment |
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
@@ -57,6 +58,18 @@ This document is current truth only. Git history retains prior states.
 | Last progress | `2026-08-28T12:30:49.978151+00:00` |
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
+
+## Equity UI canonical read authority
+
+- `CANONICAL_EQUITY_AUTHORITY=HEALTHY`
+- `UI_API_READ_AUTHORITY=LEGACY_DEFECT`
+- `FRONTEND=VALID`
+- `NEW_SCHEMA=NO`; `NEW_ENGINE=NO`
+- `FIX_CLASS=REWIRE_EXISTING_AUTHORITY`
+- LOCAL LIVE validation PASS using `.env.okx.live`: accepted baseline and canonical managed-equity observations now populate current equity, account total, external/manual value, drawdown, since-baseline, and chart history.
+- Period metrics remain unavailable when their exact canonical history window is not present; unrelated current metrics remain populated.
+- The legacy LIVE daily writer is disabled; PAPER behavior is unchanged.
+- Status remains `NOT_COMPLETE`: GitHub promotion, VPS LIVE rollout, and parity validation are still required.
 
 ## Harness closure and preserved counterfactuals
 

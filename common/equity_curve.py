@@ -537,7 +537,173 @@ def upsert_daily_snapshot(cur: Any, *, deployment_id: str, trading_mode: str, ob
     return int(cur.fetchone()[0])
 
 
-def fetch_equity_history(cur: Any, *, deployment_id: str, days: int | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def fetch_equity_history(
+    cur: Any, *, deployment_id: str, trading_mode: str = "PAPER",
+    days: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return fetch_equity_history_for_mode(
+        cur, deployment_id=deployment_id, trading_mode=trading_mode, days=days,
+    )
+
+
+def _empty_equity_metrics() -> dict[str, Any]:
+    return calculate_equity_metrics(())
+
+
+def _live_period_change(
+    observations: list[tuple[datetime, Decimal, Decimal]],
+    *,
+    baseline_at: datetime,
+    baseline_equity: Decimal,
+    current_equity: Decimal,
+    cutoff: datetime,
+) -> dict[str, Decimal | None]:
+    if baseline_at > cutoff:
+        return {"abs": None, "pct": None}
+    candidates = [
+        (observed_at, adjusted)
+        for observed_at, _raw, adjusted in observations
+        if observed_at <= cutoff
+    ]
+    if baseline_at <= cutoff:
+        candidates.insert(0, (baseline_at, baseline_equity))
+    if not candidates:
+        return {"abs": None, "pct": None}
+    anchor_at, anchor = candidates[-1]
+    if cutoff - anchor_at > timedelta(minutes=30):
+        return {"abs": None, "pct": None}
+    return _change(current_equity, anchor)
+
+
+def _fetch_live_canonical_equity_history(
+    cur: Any, *, deployment_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read LIVE equity only from the accepted managed-capital authority."""
+    cur.execute(
+        """SELECT baseline_id,accepted_at,baseline_managed_equity,
+                  activation_fingerprint
+           FROM live_managed_capital_baseline_v1
+           WHERE environment='LIVE' AND deployment_id=%s
+             AND account_scope='DEDICATED_WALTRADE_MANAGED_ACCOUNT'
+             AND ownership_reconciliation_status='CANONICAL'
+           ORDER BY accepted_at DESC LIMIT 1""",
+        (deployment_id,),
+    )
+    baseline = cur.fetchone()
+    if not baseline:
+        return [], _empty_equity_metrics()
+    baseline_id, baseline_at, baseline_equity, activation_fingerprint = baseline
+    baseline_value = Decimal(str(baseline_equity))
+    cur.execute(
+        """SELECT observed_at,raw_managed_equity,
+                  effective_flow_adjusted_equity,available_capital,
+                  deployed_capital,realized_pnl,unrealized_pnl,
+                  portfolio_state_evidence
+           FROM v_live_drawdown_history_observation_v1
+           WHERE baseline_id=%s AND deployment_id=%s
+             AND baseline_activation_fingerprint=%s
+             AND observed_at>=%s
+             AND evidence_status='COMPLETE'
+             AND managed_equity_status='CANONICAL'
+             AND available_capital_status='CANONICAL'
+             AND deployed_capital_status='CANONICAL'
+             AND realized_pnl_status='CANONICAL'
+             AND unrealized_pnl_status='CANONICAL'
+             AND effective_history_status='CANONICAL'
+           ORDER BY observed_at,observation_id""",
+        (baseline_id, deployment_id, activation_fingerprint, baseline_at),
+    )
+    rows = cur.fetchall()
+    items: list[dict[str, Any]] = []
+    observations: list[tuple[datetime, Decimal, Decimal]] = []
+    for row in rows:
+        (
+            observed_at, raw_equity, adjusted_equity, available_capital,
+            deployed_capital, realized_pnl, unrealized_pnl,
+            portfolio_evidence,
+        ) = row
+        raw = Decimal(str(raw_equity))
+        adjusted = Decimal(str(adjusted_equity))
+        evidence = dict(portfolio_evidence or {})
+        observations.append((observed_at, raw, adjusted))
+        items.append({
+            "snapshot_date": observed_at.date(),
+            "account_total_value_usdc": raw,
+            "external_manual_value_usdc": ZERO,
+            "waltrade_managed_equity_usdc": raw,
+            "available_usdc": Decimal(str(available_capital)),
+            "bot_inventory_value_usdc": Decimal(str(deployed_capital)),
+            "realized_net_pnl_usdc": Decimal(str(realized_pnl)),
+            "unrealized_pnl_usdc": Decimal(str(unrealized_pnl)),
+            "fees_usdc": None,
+            "open_positions": int(evidence.get("open_positions_count", 0)),
+            "evidence_status": "COMPLETE",
+            "source_timestamp": observed_at,
+        })
+    if not observations:
+        metrics = _empty_equity_metrics()
+        metrics.update({
+            "baseline_date": baseline_at.date(),
+            "baseline_equity": baseline_value,
+            "peak_equity": baseline_value,
+        })
+        return items, metrics
+
+    current_at, current_raw, current_adjusted = observations[-1]
+    seven = _live_period_change(
+        observations, baseline_at=baseline_at, baseline_equity=baseline_value,
+        current_equity=current_adjusted,
+        cutoff=current_at - timedelta(days=7),
+    )
+    thirty = _live_period_change(
+        observations, baseline_at=baseline_at, baseline_equity=baseline_value,
+        current_equity=current_adjusted,
+        cutoff=current_at - timedelta(days=30),
+    )
+    month_start = current_at.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0,
+    )
+    month = _live_period_change(
+        observations, baseline_at=baseline_at, baseline_equity=baseline_value,
+        current_equity=current_adjusted,
+        cutoff=month_start,
+    )
+    peak = max([baseline_value] + [row[2] for row in observations])
+    since_baseline = _change(current_adjusted, baseline_value)
+    metrics = {
+        "current_waltrade_equity": current_raw,
+        "current_account_total": current_raw,
+        "change_7d_abs": seven["abs"],
+        "change_7d_pct": seven["pct"],
+        "change_30d_abs": thirty["abs"],
+        "change_30d_pct": thirty["pct"],
+        "month_open_equity": (
+            None if month["abs"] is None
+            else current_adjusted - month["abs"]
+        ),
+        "month_change_abs": month["abs"],
+        "month_change_pct": month["pct"],
+        "peak_equity": peak,
+        "drawdown_from_peak_pct": (
+            None if peak == ZERO
+            else (current_adjusted - peak) / peak * Decimal("100")
+        ),
+        "baseline_date": baseline_at.date(),
+        "baseline_equity": baseline_value,
+        "since_baseline_abs": since_baseline["abs"],
+        "since_baseline_pct": since_baseline["pct"],
+    }
+    return items, metrics
+
+
+def fetch_equity_history_for_mode(
+    cur: Any, *, deployment_id: str, trading_mode: str,
+    days: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if str(trading_mode).upper() == "LIVE":
+        return _fetch_live_canonical_equity_history(
+            cur, deployment_id=deployment_id,
+        )
     params: list[Any] = [deployment_id]
     day_filter = ""
     if days is not None:
