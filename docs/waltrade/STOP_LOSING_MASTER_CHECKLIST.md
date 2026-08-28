@@ -29,7 +29,11 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] Equity UI canonical read authority LOCAL LIVE validation — COMPLETE / PASS
 - [x] Equity UI RCA — `CANONICAL_EQUITY_AUTHORITY=HEALTHY`; `UI_API_READ_AUTHORITY=LEGACY_DEFECT`; `FRONTEND=VALID`
 - [x] Equity UI minimum fix — `FIX_CLASS=REWIRE_EXISTING_AUTHORITY`; no new schema, engine, frontend model, or data repair
-- [ ] Equity UI shared promotion and VPS LIVE validation — NOT COMPLETE
+- [x] Equity UI shared promotion and VPS LIVE validation — COMPLETE
+- [x] `EQUITY_UI_GIT_PARITY=PASS` — COMPLETE
+- [x] `EQUITY_UI_CONTRACT_PARITY=PASS` — COMPLETE
+- [x] `EQUITY_UI_DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS` — COMPLETE
+- [x] `EQUITY_UI_RUNTIME_SEMANTIC_PARITY=PASS` — COMPLETE
 
 ## B. Economic baseline and initial forensics
 
@@ -91,23 +95,30 @@ Supporting classifications:
 
 ## D. Current ownership causal experiment
 
-- [ ] RSI-after-BBRANGE LOCAL PAPER causal experiment — IN_PROGRESS
+- [x] RSI-after-BBRANGE LOCAL PAPER causal experiment — TERMINAL / EVIDENCE PRESERVED
 - [x] Previous valid sequence exposure — COMPLETE: two CONTROL runs and one TREATMENT run
 - [x] Previous treatment counterfactuals retained after harness abort — COMPLETE
-- [ ] Current restart CONTROL `CONTROL-118a765af6` — IN_PROGRESS
-- [ ] Current restart TREATMENT — NOT COMPLETE
-- [ ] Current restart second CONTROL — NOT COMPLETE
-- [ ] 240-minute blocked-opportunity maturity — 4 PENDING
-- [ ] `MATURE_240M=0`; `BAD_AVOIDED=0`; `GOOD_MISSED=0` — NOT COMPLETE
-- [ ] `BAD_AVOIDED > GOOD_MISSED` — NOT PROVEN
-- [ ] Longer LOCAL proof — CONDITIONAL / NOT COMPLETE
+- [x] Current restart CONTROL `CONTROL-118a765af6` — TERMINAL: `GLOBAL_DB_SAFETY_FAIL`
+- [x] `GLOBAL_DB_RISK_ACTUALLY_PRESENT=YES` — COMPLETE
+- [x] `SAFETY_ABORT_CLASSIFICATION=CORRECT_REAL_GLOBAL_DB_RISK` — COMPLETE
+- [x] `TRADING_IMPACT=NONE` — COMPLETE
+- [x] Blocked-session atomic diagnostic capture — COMPLETE: `TESTS=40_PASS`
+- [x] `FAIL_CLOSED_BEHAVIOR_WEAKENED=NO` — COMPLETE
+- [x] 240-minute blocked-opportunity maturity — COMPLETE: 4 MATURE / 0 PENDING
+- [x] `MATURE_240M=4`; `BAD_AVOIDED=4`; `GOOD_MISSED=0` — COMPLETE
+- [x] `BAD_AVOIDED > GOOD_MISSED` — PROMISING INITIAL CAUSAL EVIDENCE
+- [x] Longer LOCAL discovery wait — NOT REQUIRED: `NO_ARBITRARY_SAMPLE_WAIT`
 - [ ] Candidate freeze — NOT COMPLETE
 - [ ] VPS PAPER treatment replication — NOT COMPLETE
 - [ ] LIVE eligibility — NOT COMPLETE
 
 Treatment semantics remain one variable: block only an RSI PAPER admission when the same symbol already has an OPEN BBRANGE position with positive remaining inventory. Do not infer success from fewer trades alone.
 
-The previous run's terminal state was a LOCAL experiment-harness false positive, not a treatment or shared runtime defect. PostgreSQL logged `FATAL: connection to client lost` when experiment-controlled recreation interrupted a read-only BTCUSDC 1m query. Trading impact was NONE. The terminal classifier and full preflight are now validated; the current restart must remain undisturbed.
+The latest restart terminated on a real blocked-session condition and correctly
+failed closed. The diagnostic gap is closed without weakening genuine DB
+protection or changing trading semantics. Four of four mature blocked
+opportunities were `BAD_AVOIDED`, with zero `GOOD_MISSED`; this is promising
+initial causal evidence, not proof of a final ownership policy.
 
 ## E. Interval, crowding, and duplication
 
@@ -144,12 +155,10 @@ No sizing or capital-allocation change is authorized during STOP LOSING causal w
 
 ## H. Decision gate
 
-After the current LOCAL experiment:
-
-1. Combine mature LOCAL causal evidence with VPS independent forensics.
-2. Rank mechanisms by economic magnitude, evidence strength, observability, implementation size, and `GOOD_MISSED` risk.
-3. Select exactly one next intervention.
-4. Replicate a successful LOCAL candidate on VPS PAPER before any LIVE eligibility decision.
+1. Freeze the same RSI-after-BBRANGE ownership candidate and semantics.
+2. `NEXT_STAGE=FREEZE_SAME_OWNERSHIP_CANDIDATE_AND_REPLICATE_ON_VPS_PAPER`.
+3. Use VPS PAPER only for independent acceptance, not discovery or semantic expansion.
+4. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until VPS PAPER replication passes.
 
 ## I. Permanent long-run experiment gate
 

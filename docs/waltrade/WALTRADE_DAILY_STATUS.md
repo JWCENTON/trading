@@ -2,11 +2,11 @@
 
 LAST_UPDATED=2026-08-28
 
-CURRENT_GIT_SHA=ecc40102f6760c8f1257b4ac4be4ee248fc74171
+CURRENT_GIT_SHA=2e8880140730ce1848f008b89a6200030f43402c
 
 CURRENT_PHASE=STOP_LOSING
 
-CURRENT_P0=RSI_AFTER_BBRANGE_OWNERSHIP_CAUSAL_EXPERIMENT
+CURRENT_P0=FREEZE_AND_REPLICATE_RSI_AFTER_BBRANGE_OWNERSHIP_ON_VPS_PAPER
 
 This document is current truth only. Git history retains prior states.
 
@@ -22,7 +22,7 @@ This document is current truth only. Git history retains prior states.
 | Risk Budget Contract | `PASS_4_4`; immutable-event commit `f965a0b35f8be1b900cbd0e73332c653b003ca0a` |
 | Risk Budget Influence | OFF |
 | Learning | Auto-apply OFF |
-| Strategy Ownership | Strong ordered-pair evidence; causal policy not yet proven |
+| Strategy Ownership | `PROMISING_INITIAL_CAUSAL_EVIDENCE`; final policy not proven |
 | Movement vs Cost | Primary defect: insufficient movement relative to full cost |
 | Fee Velocity | High fee velocity / same-thesis duplication is a leading mechanism |
 | New Risk vs Keep Risk | Strong diagnostic candidate; policy not yet proven |
@@ -31,11 +31,11 @@ This document is current truth only. Git history retains prior states.
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
 | Exit Giveback | Proven secondary leak; immediate tiny-positive exit rejected |
-| LOCAL PAPER | HEALTHY / EXPERIMENT ACTIVE |
-| Harness Safety | `TERMINAL_CONDITION_PREFLIGHT_PASS`; 32 tests passed; recent-log replay passed |
+| LOCAL PAPER | HEALTHY / OWNERSHIP EXPERIMENT TERMINAL |
+| Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Independent acceptance / forensic environment; no active treatment authorized by this document |
 | LOCAL LIVE | Non-experimental / frozen unless separately approved |
-| Equity UI canonical authority | LOCAL LIVE PASS; shared promotion and VPS LIVE validation pending |
+| Equity UI canonical authority | `VPS_LIVE_COMPLETE`; Git, contract, direct-schema, and runtime-semantic parity PASS |
 | VPS LIVE | Production; no discovery experiment |
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
@@ -46,40 +46,39 @@ This document is current truth only. Git history retains prior states.
 | --- | --- |
 | Environment | LOCAL PAPER |
 | Treatment | RSI-after-BBRANGE ownership admission |
-| Status | IN_PROGRESS |
-| Phase | CONTROL |
+| Status | TERMINAL |
+| Phase | TERMINAL |
 | Run ID | `CONTROL-118a765af6` |
 | Completed CONTROL runs | 0 in the current restart |
 | Completed TREATMENT runs | 0 |
-| Runner/watchdog | Independent and running |
-| Manual checks | Read-only observability enabled |
-| Experiment health | PASS |
-| DB safety | WARNING_BACKGROUND; no task-attributable or global DB safety failure |
-| Last progress | `2026-08-28T12:30:49.978151+00:00` |
+| Terminal reason | `GLOBAL_DB_SAFETY_FAIL` |
+| Safety classification | `CORRECT_REAL_GLOBAL_DB_RISK` |
+| Trading impact | NONE |
+| Baseline restore | PASS |
+| Economic verdict | `PROMISING_INITIAL_CAUSAL_EVIDENCE`; NOT PROVEN |
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 
 ## Equity UI canonical read authority
 
-- `CANONICAL_EQUITY_AUTHORITY=HEALTHY`
-- `UI_API_READ_AUTHORITY=LEGACY_DEFECT`
-- `FRONTEND=VALID`
-- `NEW_SCHEMA=NO`; `NEW_ENGINE=NO`
-- `FIX_CLASS=REWIRE_EXISTING_AUTHORITY`
-- LOCAL LIVE validation PASS using `.env.okx.live`: accepted baseline and canonical managed-equity observations now populate current equity, account total, external/manual value, drawdown, since-baseline, and chart history.
-- Period metrics remain unavailable when their exact canonical history window is not present; unrelated current metrics remain populated.
+- `EQUITY_UI_CANONICAL_AUTHORITY=VPS_LIVE_COMPLETE`
+- `EQUITY_UI_GIT_PARITY=PASS`
+- `EQUITY_UI_CONTRACT_PARITY=PASS`
+- `EQUITY_UI_DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS`
+- `EQUITY_UI_RUNTIME_SEMANTIC_PARITY=PASS`
+- LIVE reads the accepted baseline and canonical managed-equity history without legacy fallback or fabricated period history.
 - The legacy LIVE daily writer is disabled; PAPER behavior is unchanged.
-- Status remains `NOT_COMPLETE`: GitHub promotion, VPS LIVE rollout, and parity validation are still required.
 
-## Harness closure and preserved counterfactuals
+## Ownership terminal result and diagnostic closure
 
-- Previous run: `TERMINAL_FAIL_FROM_HARNESS_FALSE_POSITIVE`.
-- Root cause: an expected PostgreSQL client disconnect during experiment-controlled bot-runner recreation was misclassified as critical.
-- Interrupted operation: read-only BTCUSDC 1m candle query.
-- Trading impact: NONE; no treatment, ownership, entry-atomicity, Risk Budget, or Full Opportunity Observation defect.
-- Harness closure: `TESTS=32_PASS`; terminal-condition catalog and recent real-log replay PASS; zero false-positive terminal events and zero unknown terminal classifications.
-- `CURRENT_PENDING_COUNTERFACTUALS=4`; `MATURE_240M=0`; `BAD_AVOIDED=0`; `GOOD_MISSED=0`.
-- The four prior valid treatment observations remain preserved and continue maturing independently.
+- `GLOBAL_DB_RISK_ACTUALLY_PRESENT=YES`; the safety decision was correct and failed closed.
+- `SAFETY_ABORT_CLASSIFICATION=CORRECT_REAL_GLOBAL_DB_RISK`.
+- Trading impact: NONE.
+- `BLOCKED_SESSION_DIAGNOSTIC_CAPTURE=COMPLETE`; coherent blocked-session, blocker, relationship, query, transaction-age, application/client, and lock evidence is persisted before failure.
+- `TESTS=40_PASS`; `FAIL_CLOSED_BEHAVIOR_WEAKENED=NO`.
+- `MATURE_240M=4`; `PENDING_240M=0`; `BAD_AVOIDED=4`; `GOOD_MISSED=0`.
+- `OWNERSHIP_ECONOMIC_VERDICT=PROMISING_INITIAL_CAUSAL_EVIDENCE`; ownership is not proven.
+- `LIVE_ELIGIBILITY=NOT_COMPLETE`.
 
 ## Current economic baseline
 
@@ -90,15 +89,14 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 
 ## NOW
 
-- Allow the current ownership experiment to run.
-- Use manual read-only observation every 30–60 minutes.
-- Wait for additional causal exposure and the four preserved 240-minute outcomes to mature.
+- `LOCAL_DISCOVERY_NEXT_ACTION=NO_ARBITRARY_SAMPLE_WAIT`.
+- Freeze the same ownership candidate and its unchanged semantics.
+- Preserve the completed LOCAL evidence and safety artifacts.
 
 ## NEXT
 
-- Combine LOCAL causal evidence with VPS independent forensics.
-- Rank the strongest mechanisms.
-- Select exactly one next intervention.
+- `NEXT_STAGE=FREEZE_SAME_OWNERSHIP_CANDIDATE_AND_REPLICATE_ON_VPS_PAPER`.
+- Require independent VPS PAPER acceptance before any LIVE eligibility decision.
 
 ## DO_NOT_DO
 
