@@ -17,6 +17,19 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] Learning auto-apply OFF — COMPLETE
 - [x] Explicit environments: `PAPER=.env.okx.paper`, `LIVE=.env.okx.live` — COMPLETE
 - [x] Deployment parity invariant: Git + contract + direct schema dependency + runtime semantics — COMPLETE
+- [x] LOCAL/VPS authority model — COMPLETE: shared promoted contract; isolated runtime/data histories
+- [x] LOCAL-only implementation, commit, push, and canonical-doc promotion authority — COMPLETE
+- [x] VPS pull-only authority — COMPLETE: fetch, `pull --ff-only`, deploy, independently validate
+- [x] VPS-only shared-code fixes, schema magic, pushes, and frozen-semantic changes — FORBIDDEN
+- [x] Promotion path `LOCAL → GitHub → VPS pull --ff-only → independent validation` — COMPLETE
+- [x] PAPER research universe may intentionally remain aggregate-negative — COMPLETE
+- [x] `TOTAL_PAPER_PNL > 0` is not a universal progress prerequisite — COMPLETE
+- [x] Qualified universe requires frozen policy plus independent validation — COMPLETE
+- [x] LIVE universe contains only explicitly approved qualified decisions — COMPLETE
+- [x] Positive expected net after all costs with acceptable uncertainty is required for potential LIVE eligibility — COMPLETE
+- [x] `EXPECTED_NET_AFTER_ALL_COSTS > 0` potential-LIVE gate — COMPLETE
+- [x] Acceptable good-missed, drawdown/risk, execution, Financial Truth, auditability, and Product Owner approval gates — COMPLETE
+- [x] Hindsight winner selection / cherry-picked LIVE cohort — FORBIDDEN
 - [x] Attributed LOCAL experiment DB safety and background false-positive correction — COMPLETE
 - [x] Read-only manual experiment observability and terminal artifacts — COMPLETE
 - [x] LOCAL harness PostgreSQL client-disconnect RCA — COMPLETE: `HARNESS_FALSE_POSITIVE_CRITICAL_CLASSIFICATION`
@@ -49,6 +62,8 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] `DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS` — COMPLETE
 - [x] Service rate 25.400 > arrival 25.300 rows/minute — PASS
 - [ ] Throughput headroom monitoring — IN_PROGRESS: narrow +0.100 rows/minute margin
+- [ ] Periodic PAPER cost-model calibration against authoritative LIVE fees, maker/taker behavior, spread, slippage, partial fills, latency, and execution path — REQUIRED BEFORE MEANINGFUL LIVE RE-ENABLEMENT
+- [x] Fee V2 remains canonical pending separately validated model change — COMPLETE
 
 ## B. Economic baseline and initial forensics
 
@@ -83,11 +98,15 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] Major subgroup gate — FAIL: RSI good retention 46.67%; 5m bad rejection 1.41%
 - [x] `HOLDOUT_GENERALIZATION=WEAK_GENERALIZATION`
 - [x] `CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`
+- [x] `GLOBAL_MOVEMENT_GATE_READY=NO`
+- [x] `CURRENT_HOLDOUT_BURNED=YES`; 455-trade holdout cannot tune a revised ATR/realtime rule
+- [ ] `NEXT_MOVEMENT_RESEARCH=CONTEXT_SPECIFIC_ON_NEW_DATA_ONLY`
 - [ ] Movement-capacity shadow counterfactual treatment — NOT AUTHORIZED
 
-Ranked next mechanisms: `MOVEMENT_CAPACITY`, `ECONOMIC_NO_TRADE`,
-`NEW_RISK_VS_KEEP`, `SAME_THESIS_CONTROL`, `FEE_VELOCITY`, then
-`1m/5m_DUPLICATION`.
+Ordered economic work after ownership reaches its decision gate:
+`ECONOMIC_FLOOR_AFTER_COST_COVER_V1`, context-specific `MOVEMENT_CAPACITY` on
+new data, `ECONOMIC_NO_TRADE / NEW_RISK_VS_KEEP`, `SAME_THESIS_CONTROL`,
+`FEE_VELOCITY`, then `1m/5m_DUPLICATION`.
 
 Latest VPS PAPER baseline:
 
@@ -190,11 +209,17 @@ queue change or second causal treatment is authorized.
 
 - [x] Immediate tiny-positive exit — REJECTED
 - [x] `112/115` tiny-positive-to-loss outcomes via `PROFIT_LOCK_TRAIL_DROP` — COMPLETE
+- [x] `PROVEN_SECONDARY_LEAK=POST_COST_COVER_GIVEBACK` — COMPLETE
+- [x] `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` moved to first post-ownership economic priority — COMPLETE
 - [ ] `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` design — NOT COMPLETE
 - [ ] Exit-only LOCAL PAPER treatment — NOT COMPLETE
 - [ ] VPS PAPER exit replication — NOT COMPLETE
 
-Entry and exit treatments must not be mixed.
+Future objective: after authoritative full economic cost is covered, test a
+bounded floor that reduces giveback while leaving winner upside open. This
+does not authorize a fixed take-profit, immediate tiny-positive exit, or
+`TIME_EXIT` as an economic exit. Entry and exit treatments must not be mixed,
+and no exit treatment starts before the current ownership decision gate.
 
 ## G. Future risk and allocation work
 
@@ -206,6 +231,11 @@ Entry and exit treatments must not be mixed.
 - [ ] Edge-dependent sizing — NOT COMPLETE
 - [ ] Portfolio-impact and correlation-aware sizing — NOT COMPLETE
 - [ ] Limited Learning authority — NOT COMPLETE
+- [ ] Read-only risk-normalization evidence — FUTURE: volatility-normalized risk, risk contribution, correlation concentration, MAE/exposure normalization
+- [x] `RISK_NORMALIZATION_RESEARCH` is separate from `DYNAMIC_CAPITAL_ALLOCATION_AUTHORITY` — COMPLETE
+- [x] Fixed 20 USDC sizing remains appropriate during current causal decision-quality research — COMPLETE
+- [x] BTC/ETH/SOL/BNB are a correlated crypto complex, not institutional-quality diversification — STRATEGIC CONSTRAINT
+- [ ] Broader markets / asset classes / independent return drivers — LONG-TERM ONLY; must not delay OKX-core proof
 
 No sizing or capital-allocation change is authorized during STOP LOSING causal work.
 
@@ -215,9 +245,10 @@ No sizing or capital-allocation change is authorized during STOP LOSING causal w
 2. `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
 3. Allow acceptance to run naturally and use read-only status checks.
 4. Review `BAD_AVOIDED` versus `GOOD_MISSED` when `MATURE_240M >= 5`, or earlier if good-missed risk becomes concerning.
-5. Use VPS PAPER only for independent acceptance, not discovery or semantic expansion.
-6. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until VPS PAPER replication passes.
-7. Keep movement capacity at `NEEDS_MORE_RESEARCH`; no second causal treatment.
+5. Treat `MATURE_240M >= 5` as first review, not proof or automatic LIVE eligibility; 5/5 alone cannot authorize LIVE.
+6. Use VPS PAPER only for independent acceptance, not discovery or semantic expansion.
+7. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until VPS PAPER replication passes and positive expected-net plus all risk/authority gates pass.
+8. Keep movement capacity at `NEEDS_MORE_RESEARCH`; no second causal treatment.
 
 ## I. Permanent long-run experiment gate
 
@@ -242,3 +273,36 @@ For every material producer/consumer pipeline before independent acceptance:
 
 Healthy workers, fresh heartbeats, zero DB blockers, and individual successful
 inserts alone are not sufficient forward-health proof.
+
+## J. Permanent research trial discipline
+
+Before final evaluation, every material candidate cycle records:
+
+- [ ] `HYPOTHESIS_ID`
+- [ ] `ECONOMIC_MECHANISM`
+- [ ] `PRIMARY_METRIC` and `SECONDARY_METRICS`
+- [ ] `CANDIDATE_FAMILY_COUNT`
+- [ ] `PARAMETER_OR_RULE_VARIANTS_TRIED`
+- [ ] `DEVELOPMENT_WINDOW` and `HOLDOUT_WINDOW`
+- [ ] `CANDIDATE_FREEZE_TIMESTAMP_OR_STATE`
+- [ ] `STOP_RULE` and `GOOD_MISSED_RULE`
+- [ ] `RESULT=ACCEPTED|NEEDS_MORE_RESEARCH|REJECTED`
+
+- [x] Methodology invariant only; no new DB table or application module required
+- [x] Inspected holdout is burned for further tuning of the same candidate family
+- [x] Holdout-driven redesign requires new natural data or another genuinely untouched set
+- [x] Candidate/threshold/parameter alternative count must be reported
+- [x] Best historical result is not treated as unbiased evidence
+- [ ] For sufficiently broad future searches, consider Deflated Sharpe Ratio, Probability of Backtest Overfitting, or equivalent justified diagnostics
+- [x] Multiple-testing diagnostics are not mechanically required for every small causal experiment
+
+## K. Separate success ladders
+
+Research quality:
+`UNKNOWN → MEASURED → BAD MECHANISM IDENTIFIED → CANDIDATE → LOCAL CAUSAL EVIDENCE → FROZEN → VPS INDEPENDENT VALIDATION → QUALIFIED COHORT`.
+
+Capital / LIVE:
+`NO LIVE AUTHORITY → QUALIFIED POSITIVE EXPECTED-NET COHORT → BOUNDED LIVE ELIGIBILITY → POSITIVE DAYS → POSITIVE WEEKS → POSITIVE MONTHS → BETTER DRAWDOWN → BETTER CAPITAL EFFICIENCY`.
+
+Total PAPER PnL may remain negative while the research universe remains broad.
+The LIVE equity curve is the ultimate capital KPI.

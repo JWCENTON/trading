@@ -1,6 +1,84 @@
 # External Evidence Catalog
 
-This catalog prevents WalTrade from reinventing established portfolio, risk, and execution concepts. It records known methods, not automatic implementation requirements. Exact external references have not yet been curated in repository documentation; no citation below is fabricated.
+This catalog prevents WalTrade from reinventing established portfolio, risk,
+execution, and research-validation concepts. It records prior art, not automatic
+implementation requirements. Entries with an explicit source below were
+curated during the 2026-08-29 Architect review; `TO_BE_CURATED` remains honest
+for entries without a verified reference. External support never substitutes
+for WalTrade evidence or authority.
+
+## WALK_FORWARD_OUT_OF_SAMPLE_VALIDATION
+
+MECHANISM=WALK_FORWARD_OUT_OF_SAMPLE_VALIDATION
+PROBLEM_SOLVED=Separate candidate development from evaluation and expose temporal instability.
+EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
+SOURCE_REFERENCE=Robert Pardo, The Evaluation and Optimization of Trading Strategies, Wiley.
+METHOD_REFERENCE=Walk-Forward Analysis.
+METHOD_RELEVANCE=Performance must be evaluated on data not used to optimize the candidate; an inspected holdout cannot remain out-of-sample for retuning the same family.
+WALTRADE_EQUIVALENT=Chronological DEVELOPMENT/HOLDOUT split, candidate freeze, VPS PAPER independent validation, and holdout burn rule.
+CURRENT_WALTRADE_SUPPORT=YES
+OUR_EVIDENCE=The movement-capacity candidate was frozen before a 455-trade temporal holdout; aggregate behavior reproduced weakly, but major subgroup asymmetry prevented causal eligibility.
+NEXT_ACTION=KEEP
+
+## BACKTEST_OVERFITTING_MULTIPLE_TESTING
+
+MECHANISM=BACKTEST_OVERFITTING_MULTIPLE_TESTING
+PROBLEM_SOLVED=Make selection bias visible when many strategies, rules, thresholds, or parameters are tried.
+EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
+SOURCE_REFERENCE=David H. Bailey, Marcos López de Prado, et al., The Probability of Backtest Overfitting, Journal of Computational Finance / SSRN 2326253; The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting and Non-Normality, Journal of Portfolio Management / SSRN 2460551.
+METHOD_RELEVANCE=The number of trials and the selection process affect how much confidence can be placed in reported historical performance.
+WALTRADE_EQUIVALENT=Research Trial record, candidate-family and variant counts, burned holdouts, and multiple-testing-aware diagnostics for sufficiently broad searches.
+CURRENT_WALTRADE_SUPPORT=PARTIAL
+OUR_EVIDENCE=The movement qualification limited itself to three interpretable families; future broad searches must report alternatives and cannot treat the best historical result as unbiased.
+NEXT_ACTION=REUSE
+
+## VOLATILITY_MANAGEMENT
+
+MECHANISM=VOLATILITY_MANAGEMENT
+PROBLEM_SOLVED=Recognize that risk exposure and volatility normalization can materially affect portfolio economics.
+EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
+SOURCE_REFERENCE=Alan Moreira and Tyler Muir, Volatility-Managed Portfolios, Journal of Finance; NBER Working Paper 22208.
+METHOD_RELEVANCE=Supports read-only investigation of volatility-normalized risk; it does not authorize WalTrade sizing, Risk Budget influence, or Capital Allocation.
+WALTRADE_EQUIVALENT=Future read-only risk-normalization evidence separated from dynamic allocation authority.
+CURRENT_WALTRADE_SUPPORT=PARTIAL
+OUR_EVIDENCE=ATR predicts movement capacity, but the global movement gate failed holdout subgroup requirements and fixed sizing remains appropriate for current causal work.
+NEXT_ACTION=BACKLOG
+
+## SYSTEMATIC_TRADING_DESIGN
+
+MECHANISM=SYSTEMATIC_TRADING_DESIGN
+PROBLEM_SOLVED=Integrate volatility, sizing, portfolio construction, trading speed, and transaction cost into one governed systematic process.
+EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
+SOURCE_REFERENCE=Robert Carver, Systematic Trading, Harriman House.
+METHOD_RELEVANCE=Risk normalization and costs are design inputs rather than afterthoughts; no external design is copied directly into WalTrade.
+WALTRADE_EQUIVALENT=Fee V2, fixed-size causal research, future risk normalization, and gated Capital Allocation.
+CURRENT_WALTRADE_SUPPORT=PARTIAL
+OUR_EVIDENCE=WalTrade has canonical cost and risk evidence, while dynamic sizing and allocation authority remain unproven and OFF.
+NEXT_ACTION=REUSE
+
+## TREND_FOLLOWING_EXTERNAL_PRIOR
+
+MECHANISM=TREND_FOLLOWING_EXTERNAL_PRIOR
+PROBLEM_SOLVED=Establish prior evidence that trend following has persisted across long histories and diverse markets.
+EXTERNAL_SUPPORT=STRONGLY_SUPPORTED
+SOURCE_REFERENCE=Brian Hurst, Yao Hua Ooi, and Lasse Heje Pedersen, A Century of Evidence on Trend-Following Investing, Journal of Portfolio Management / AQR.
+METHOD_RELEVANCE=External breadth justifies research attention, not local trading authority.
+WALTRADE_EQUIVALENT=TREND and SUPERTREND evidence evaluated on WalTrade horizons, markets, execution, and full costs.
+CURRENT_WALTRADE_SUPPORT=NO_LOCAL_EDGE_INFERENCE
+OUR_EVIDENCE=External trend-following evidence does not prove WalTrade TREND/SUPERTREND edge on 1m/5m crypto; WalTrade must independently prove its own cost-adjusted economics.
+NEXT_ACTION=RESEARCH_ONLY
+
+## FAST_TREND_EXECUTION_COSTS
+
+MECHANISM=FAST_TREND_EXECUTION_COSTS
+PROBLEM_SOLVED=Account for the disproportionate transaction-cost and execution sensitivity of faster systematic strategies.
+EXTERNAL_SUPPORT=ESTABLISHED_STANDARD
+SOURCE_REFERENCE=Man AHL / Man Group, The Need for Speed in Trend-Following Strategies.
+METHOD_RELEVANCE=Faster strategies face materially greater turnover and transaction-cost impact; execution quality is a gatekeeper.
+WALTRADE_EQUIVALENT=Fee V2, spread/slippage/execution calibration, and independent proof for 1m/5m TREND/SUPERTREND.
+CURRENT_WALTRADE_SUPPORT=PARTIAL
+OUR_EVIDENCE=WalTrade 1m/5m semantics are mixed and negative after costs; external evidence does not authorize the implementations.
+NEXT_ACTION=KEEP
 
 ## TRANSACTION_COST_AWARENESS
 
@@ -187,4 +265,4 @@ SOURCE_REFERENCE=TO_BE_CURATED
 WALTRADE_EQUIVALENT=Profit lock, MFE/giveback analytics, and future economic floor after cost cover.
 CURRENT_WALTRADE_SUPPORT=PARTIAL
 OUR_EVIDENCE=112/115 tiny-positive-to-loss outcomes ended through `PROFIT_LOCK_TRAIL_DROP`; leak is secondary but proven.
-NEXT_ACTION=TEST
+NEXT_ACTION=PRIORITIZE_AFTER_CURRENT_OWNERSHIP_GATE

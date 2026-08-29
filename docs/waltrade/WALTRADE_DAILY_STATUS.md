@@ -41,6 +41,23 @@ This document is current truth only. Git history retains prior states.
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
 
+## Authority and research methodology
+
+- LOCAL and VPS share promoted contracts but have independent runtime and data histories.
+- `LOCAL_GIT_PROMOTION_AUTHORITY=ONLY`; implementation, tests, commits, pushes, and canonical doc updates originate on LOCAL.
+- `VPS_GIT_AUTHORITY=PULL_ONLY`; VPS may fetch, pull `--ff-only`, deploy, and validate, but never commit, push, patch shared code/schema locally, or change frozen semantics.
+- Promotion path: `LOCAL → GitHub → VPS pull --ff-only → independent validation`.
+- `RESEARCH_UNIVERSE` is broad PAPER evidence and may remain aggregate-negative.
+- `PAPER_RESEARCH_UNIVERSE_MAY_BE_NET_NEGATIVE=YES`.
+- `QUALIFIED_UNIVERSE` contains frozen policies that survived independent validation.
+- `LIVE_UNIVERSE` contains only explicitly approved qualified decisions; it never inherits all PAPER decisions automatically.
+- Less-negative is research progress and near-zero is promising, but potential LIVE eligibility requires independently validated positive expected net after all costs, acceptable uncertainty, good-missed and risk/drawdown, execution/Financial Truth/auditability PASS, and explicit Product Owner approval.
+- `EXPECTED_NET_AFTER_ALL_COSTS > 0` is a mandatory potential-LIVE gate.
+- Historical winners cannot be selected after outcome to define a LIVE cohort; selection semantics must exist before outcome.
+- Every material research trial records its hypothesis, mechanism, metrics, candidate-family and variant counts, development/holdout windows, freeze state, stop and good-missed rules, and final disposition.
+- An inspected holdout is burned for further tuning of that candidate family. A redesign requires new natural data or another untouched validation set.
+- Multiple alternatives increase overfitting risk; the best historical result is not unbiased evidence.
+
 ## Active experiment
 
 `OWNERSHIP_ACCEPTANCE_STARTED=YES`;
@@ -146,8 +163,10 @@ themselves.
 - After ownership: 29 overlapping blocks; 39 incremental blocks; 28 incremental bad avoided; 11 incremental good missed; diagnostic incremental value +6.132816 USDC.
 - `HOLDOUT_GENERALIZATION=WEAK_GENERALIZATION`: RSI good retention 46.67%; 5m bad rejection 1.41%.
 - `NO_TRADE_INTERPRETATION=PARTIAL`; `CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`.
+- `GLOBAL_MOVEMENT_GATE_READY=NO`; `CURRENT_HOLDOUT_BURNED=YES`.
+- `NEXT_MOVEMENT_RESEARCH=CONTEXT_SPECIFIC_ON_NEW_DATA_ONLY`.
 - No movement treatment is active or authorized. The frozen ownership candidate remains unchanged and first in causal order.
-- Ranked next mechanisms: movement capacity; economic no-trade; new risk vs keep; same-thesis control; fee velocity; 1m/5m duplication.
+- After the ownership decision gate, ordered work is: economic floor after cost cover; context-specific movement capacity on new data; economic no-trade/new risk versus keep; same-thesis control; fee velocity; 1m/5m duplication.
 
 ## NOW
 
@@ -161,9 +180,11 @@ themselves.
 
 - `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
 - First formal economic review at `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes materially concerning earlier.
+- `MATURE_240M >= 5` is first review, not proof or automatic LIVE eligibility; 5/5 alone cannot authorize LIVE.
 - No arbitrary N=20 or N=30 requirement.
 - Require independent VPS PAPER acceptance before any LIVE eligibility decision.
 - Movement capacity remains `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
+- Do not start `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` until ownership reaches its decision gate; it remains future exit-only research, not an authorized exit rule.
 
 ## DO_NOT_DO
 

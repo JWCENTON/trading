@@ -27,6 +27,21 @@ PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen
 
 Git SHA alone is insufficient: relevant rollouts require Git, contract, direct schema dependency, and runtime/semantic parity.
 
+### LOCAL / VPS governance
+
+LOCAL and VPS consume the same promoted shared software contract, but they are
+operationally isolated and retain independent runtime and data histories.
+LOCAL is the only implementation and Git promotion authority: implementation,
+tests, commits, pushes, and canonical documentation updates originate on
+LOCAL. VPS is strictly pull-only. It may `git fetch`, `git pull --ff-only`,
+deploy promoted artifacts, and validate them independently. VPS must never
+commit, push, create VPS-only shared-code fixes or schema magic, or change
+frozen candidate semantics.
+
+Canonical promotion path:
+
+`LOCAL → GitHub → VPS pull --ff-only → independent validation`
+
 ### Equity UI canonical read authority
 
 `EQUITY_UI_CANONICAL_AUTHORITY=VPS_LIVE_COMPLETE`. LIVE `/ui/equity` reads the
@@ -96,13 +111,39 @@ same-symbol risk already existed, marginal portfolio value was -103.994083
 USDC and 822/923 (89.057%) were non-value-add. No new score or engine is
 required.
 
+### PAPER research and LIVE economic authority
+
+PAPER is the `RESEARCH_UNIVERSE`, not a portfolio that must be net-profitable
+as a whole. It may intentionally contain bad and blocked opportunities, failed
+hypotheses, counterfactuals, exploratory decisions, and negative aggregate
+PnL. `TOTAL_PAPER_PNL > 0` is not a universal progress gate.
+`PAPER_RESEARCH_UNIVERSE_MAY_BE_NET_NEGATIVE=YES`.
+
+- `RESEARCH_UNIVERSE`: the broad PAPER opportunity set.
+- `QUALIFIED_UNIVERSE`: frozen candidate policies that survived independent validation.
+- `LIVE_UNIVERSE`: only explicitly approved decisions from the qualified universe.
+
+LIVE never inherits the full PAPER universe automatically. `LESS_NEGATIVE` is
+research progress and `NEAR_ZERO` is promising; neither grants LIVE authority.
+Potential LIVE eligibility requires a frozen class, cohort, or policy with
+LOCAL PAPER PASS, VPS PAPER independent validation PASS, positive expected net
+after all costs with acceptable uncertainty, acceptable `GOOD_MISSED` and
+drawdown/risk, execution/Financial Truth/auditability PASS, and explicit
+Product Owner approval. No individual trade is presumed profitable in advance.
+`EXPECTED_NET_AFTER_ALL_COSTS > 0` is mandatory for potential LIVE eligibility.
+
+Historical winners may not be selected after outcome to define the LIVE
+cohort. Selection semantics must precede outcomes:
+`candidate frozen → independent PAPER evidence → qualified cohort economics → risk review → LIVE eligibility`.
+
 ## 3. Ranked STOP LOSING mechanisms
 
-Ranked next mechanisms, separate from the already-frozen ownership candidate:
+Ordered economic work after the current frozen ownership acceptance reaches
+its decision gate:
 
-1. `MOVEMENT_CAPACITY`
-2. `ECONOMIC_NO_TRADE`
-3. `NEW_RISK_VS_KEEP_EXISTING_RISK`
+1. `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` — exit-only causal research
+2. `MOVEMENT_CAPACITY` — context-specific research on new, untouched data
+3. `ECONOMIC_NO_TRADE / NEW_RISK_VS_KEEP_EXISTING_RISK`
 4. `SAME_THESIS_CONTROL`
 5. `FEE_VELOCITY`
 6. `1m/5m MIXED_DUPLICATION`
@@ -236,7 +277,46 @@ had -6.132816 USDC realized net. Therefore
 `NO_TRADE_INTERPRETATION=PARTIAL`, and
 `CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`. No second treatment is authorized.
 
-## 8. Ordered execution plan
+`GLOBAL_MOVEMENT_GATE_READY=NO`; `CURRENT_HOLDOUT_BURNED=YES`. The 455-trade
+holdout is burned for further tuning of this candidate family. Any redesigned
+or context-specific ATR/realtime hypothesis must use new natural data or
+another genuinely untouched validation set. `NEXT_MOVEMENT_RESEARCH` is
+`CONTEXT_SPECIFIC_ON_NEW_DATA_ONLY`.
+
+## 8. Permanent research and LIVE authority gates
+
+Every material research cycle records before final evaluation:
+
+- `HYPOTHESIS_ID`
+- `ECONOMIC_MECHANISM`
+- `PRIMARY_METRIC` and `SECONDARY_METRICS`
+- `CANDIDATE_FAMILY_COUNT`
+- `PARAMETER_OR_RULE_VARIANTS_TRIED`
+- `DEVELOPMENT_WINDOW` and `HOLDOUT_WINDOW`
+- `CANDIDATE_FREEZE_TIMESTAMP_OR_STATE`
+- `STOP_RULE` and `GOOD_MISSED_RULE`
+- `RESULT=ACCEPTED|NEEDS_MORE_RESEARCH|REJECTED`
+
+This is a methodology and documentation invariant; it requires no new DB
+table or application module. The number of material alternatives tried must
+be reported because selection among more rules or thresholds increases the
+risk of choosing a statistical fluke. The best historical result is not
+unbiased evidence. Sufficiently broad future optimization should consider the
+Deflated Sharpe Ratio, Probability of Backtest Overfitting, or an equivalent
+statistically justified diagnostic; these are not mechanical requirements for
+every small causal experiment.
+
+Once a holdout has been inspected for a candidate, it is burned for further
+tuning of that candidate family. Inspecting it, changing the rule, and
+retesting on the same observations is not out-of-sample validation.
+
+The ownership gate `MATURE_240M >= 5` means first formal review, not proof and
+not automatic LIVE eligibility. Subsequent review is sequential and considers
+effect magnitude, `BAD_AVOIDED`, `GOOD_MISSED`, economic value, avoided fees,
+uncertainty, and stability across natural exposure. Five of five alone cannot
+authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
+
+## 9. Ordered execution plan
 
 ### Now
 
@@ -254,6 +334,18 @@ had -6.132816 USDC realized net. Therefore
 4. Require independent VPS PAPER causal acceptance before any LIVE decision.
 5. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until replication and its safety/economic gates pass.
 6. Keep movement capacity at `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
+7. After the ownership decision gate, prioritize `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` as separate exit-only causal research.
+8. Then perform context-specific movement-capacity research on new, untouched data only.
+9. Then evaluate economic no-trade / new-risk-versus-keep, same-thesis control, fee velocity, and finally 1m/5m semantic duplication.
+
+The economic-floor priority follows a proven secondary leak: 115
+tiny-positive-to-final-loss cases, of which 112 ended through
+`PROFIT_LOCK_TRAIL_DROP`. Future research may test whether a bounded economic
+floor, armed only after authoritative full cost is covered, reduces giveback
+while keeping winner upside open. This does not authorize a final exit rule,
+fixed take-profit, immediate tiny-positive exit, or `TIME_EXIT` as an economic
+exit. Entry and exit treatments must not be mixed, and the exit candidate must
+not start before current ownership acceptance reaches its decision gate.
 
 ### Only after economic proof
 
@@ -266,7 +358,7 @@ had -6.132816 USDC realized net. Therefore
 - limited Learning authority
 - bounded LIVE eligibility with Product Owner approval
 
-## 9. Permanent long-run experiment standard
+## 10. Permanent long-run experiment standard
 
 Every experiment longer than 30 minutes requires all of:
 
@@ -291,12 +383,40 @@ requires all of:
 Healthy workers, fresh heartbeats, zero DB blockers, or individual successful
 inserts alone do not prove forward health.
 
-## 10. Hard scope control
+## 11. Hard scope control
 
 Do not add a new engine, brain, strategy family, ML classifier, portfolio framework, parameter sweep, DCA, campaign, averaging down, hold-until-green policy, global 1m/5m suppression, or blind one-strategy-per-symbol rule. Do not enable Risk Budget influence, Capital Allocation, or Learning auto-apply. Do not run discovery experiments on LIVE or use VPS PAPER to discover rather than independently accept a LOCAL candidate.
 
-## 11. Success ladder
+Fixed 20 USDC sizing remains appropriate during current causal alpha and
+admission research because it isolates decision quality. Read-only
+`RISK_NORMALIZATION_RESEARCH` may nevertheless measure volatility-normalized
+risk, risk contribution, correlation concentration, and MAE/exposure
+normalization without changing sizing. This is distinct from
+`DYNAMIC_CAPITAL_ALLOCATION_AUTHORITY`, which remains unauthorized together
+with dynamic sizing and Risk Budget influence until economic proof.
 
-`CURRENT LARGE NEGATIVE → SMALLER NEGATIVE → NET ≈ 0 → +0.01 CAUSAL/REPEATABLE → POSITIVE DAYS → POSITIVE WEEKS → POSITIVE MONTHS → BETTER EXPECTANCY → BETTER DRAWDOWN → BETTER CAPITAL EFFICIENCY`
+Before meaningful LIVE re-enablement, PAPER execution economics must be
+periodically calibrated against authoritative LIVE execution evidence where
+available: actual exchange fees, maker/taker behavior, spread, slippage,
+partial fills, latency, and economically relevant execution paths. LIVE is not
+used for strategy discovery; its evidence improves PAPER cost realism. Fee V2
+remains canonical until a separately validated model change.
 
-Capital Allocation follows economic proof; it does not create it.
+BTC, ETH, SOL, and BNB are multiple instruments but remain a correlated crypto
+complex. Institutional-quality diversification will likely require broader
+markets, asset classes, or independent return drivers. This is a long-term
+constraint, not current scope, and must not delay proof of the OKX core.
+
+## 12. Success ladders
+
+Research quality ladder:
+
+`UNKNOWN → MEASURED → BAD MECHANISM IDENTIFIED → CANDIDATE → LOCAL CAUSAL EVIDENCE → FROZEN → VPS INDEPENDENT VALIDATION → QUALIFIED COHORT`
+
+Capital / LIVE ladder:
+
+`NO LIVE AUTHORITY → QUALIFIED POSITIVE EXPECTED-NET COHORT → BOUNDED LIVE ELIGIBILITY → POSITIVE DAYS → POSITIVE WEEKS → POSITIVE MONTHS → BETTER DRAWDOWN → BETTER CAPITAL EFFICIENCY`
+
+Total PAPER PnL may remain negative while its research universe remains broad.
+Capital Allocation follows economic proof; it does not create it. The LIVE
+equity curve remains the ultimate capital KPI.
