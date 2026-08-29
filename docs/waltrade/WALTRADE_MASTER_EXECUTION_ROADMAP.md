@@ -45,16 +45,23 @@ out for this change.
 ### Full PAPER Opportunity Observation throughput
 
 - `VPS_PAPER_DIRECT_SCHEMA_DEPENDENCY_REPAIR=COMPLETE`.
-- `VPS_PAPER_FULL_OPPORTUNITY_OBSERVATION_BLOCKER=THROUGHPUT_BELOW_ARRIVAL_RATE`.
 - `ROOT_CAUSE=EXPENSIVE_PROJECTION_LOOKUPS_PLUS_FIFO_SINGLE_CONSUMER`.
 - `LOCAL_THROUGHPUT_FIX=PASS`: exact indexes now serve the evidence and entry-trace projection lookups without changing FIFO or canonical payload semantics.
 - `OWNERSHIP_CANDIDATE=FROZEN_UNCHANGED`.
-- `VPS_PAPER_ACCEPTANCE=BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`.
+- `FUNCTIONAL_CORRECTNESS=PASS`.
+- `FULL_PAPER_OPPORTUNITY_OBSERVATION_HEALTH=PASS`.
+- `FORWARD_CANONICAL_FRESHNESS=PASS`.
+- `CUTOFF_MISSING_LOGICAL_KEYS=0`; missing 1m keys `0`; missing 5m keys `0`.
+- `NOT_EXACTLY_ONE_KEYS=0`; duplicate observation keys `0`; duplicate causal event IDs `0`.
+- `ELIGIBLE_UNPROCESSED_THROUGH_CUTOFF=0`.
+- `DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS`.
+- `ROWS_PER_MINUTE_EFFECTIVE=25.400`; `FORWARD_SOURCE_ARRIVAL_RATE=25.300`.
+- `SERVICE_RATE_ABOVE_ARRIVAL=YES`; headroom `+0.100_ROWS_PER_MINUTE`.
+- `THROUGHPUT_HEADROOM_MONITORING_REQUIRED=YES` because the passing margin is narrow.
 
-LOCAL proof exceeded the observed VPS source rate with objective cutoff
-freshness and no logical-key gaps. This authorizes VPS PAPER rollout and
-validation of the shared lookup indexes; it does not claim VPS acceptance has
-started or passed.
+The forward-health contract is PASS and VPS PAPER ownership acceptance has
+started. The narrow positive service-rate margin is a monitoring requirement,
+not a failure. No queue change is authorized.
 
 ## 2. Current economic reality
 
@@ -156,7 +163,7 @@ Its intended semantics are upside-open with downside protection only after full 
 
 ## 7. Current causal work
 
-The active LOCAL PAPER experiment tests one unchanged rule:
+The frozen ownership candidate has one unchanged rule:
 
 > If an RSI admission candidate has a same-symbol OPEN BBRANGE position with positive remaining inventory, block only that additional RSI PAPER admission.
 
@@ -187,9 +194,21 @@ All four preserved treatment counterfactuals have matured:
 This is
 `OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`, not proof of
 a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
-the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is now `FROZEN` for
-independent VPS PAPER replication. Replication has not started, and
-`LIVE_ELIGIBILITY=NOT_COMPLETE`.
+the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
+Independent VPS PAPER acceptance started at
+`2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Initial counters are
+`AFFECTED_RSI_AFTER_BBRANGE=0`, `BLOCKED_RSI_ENTRIES=0`, `MATURE_240M=0`,
+`PENDING_240M=0`, `BAD_AVOIDED=0`, and `GOOD_MISSED=0`. Zero initial exposure
+does not imply economic success. `LIVE_ELIGIBILITY=NOT_COMPLETE`.
+
+`OWNERSHIP_ACCEPTANCE_STARTED=YES`;
+`OWNERSHIP_TREATMENT_MODE=TREATMENT`;
+`OWNERSHIP_CANDIDATE=RSI_AFTER_BBRANGE_OWNERSHIP_V1`.
+
+`LONG_RUN_SAFETY_PREFLIGHT=PASS`: the terminal-condition catalog is complete,
+recent logs pass replay against it, background errors are classified, task
+attribution rules are tested, genuine dangerous conditions fail closed, and
+restore plus manual read-only status paths pass.
 
 ### Movement-capacity candidate qualification
 
@@ -221,18 +240,20 @@ had -6.132816 USDC realized net. Therefore
 
 ### Now
 
-1. `LOCAL_DISCOVERY_NEXT_ACTION=NO_ARBITRARY_SAMPLE_WAIT`.
-2. Preserve the frozen RSI-after-BBRANGE ownership candidate and its exact semantics.
-3. Preserve the completed LOCAL evidence and safety artifacts unchanged.
-4. Replicate the frozen candidate on VPS PAPER as an independent acceptance test.
+1. Allow VPS PAPER ownership acceptance to run naturally.
+2. Perform read-only status checks only.
+3. Preserve the frozen RSI-after-BBRANGE candidate and its exact semantics.
+4. Monitor forward canonical freshness and the narrow throughput headroom.
+5. Wait for mature VPS blocked opportunities and review `BAD_AVOIDED` versus `GOOD_MISSED` first.
 
 ### Next
 
-1. `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`.
-2. Require independent VPS PAPER causal acceptance before any LIVE decision.
-3. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until replication and its safety/economic gates pass.
-4. After ownership replication, consider the small canonical regime-source rewire, then continue 1m/5m counterfactual work.
-5. Run `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` only as a separate future exit experiment.
+1. `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
+2. Perform the first formal economic review when `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes materially concerning earlier.
+3. Do not impose an arbitrary N=20 or N=30 requirement.
+4. Require independent VPS PAPER causal acceptance before any LIVE decision.
+5. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until replication and its safety/economic gates pass.
+6. Keep movement capacity at `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
 
 ### Only after economic proof
 

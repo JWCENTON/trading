@@ -39,7 +39,16 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] VPS PAPER direct schema dependency repair — COMPLETE
 - [x] Full Opportunity projection lookup RCA — COMPLETE: expensive lookups plus FIFO single consumer
 - [x] LOCAL Full Opportunity throughput optimization — PASS
-- [ ] VPS PAPER Full Opportunity throughput validation — NOT COMPLETE / ACCEPTANCE BLOCKED
+- [x] VPS PAPER Full Opportunity throughput validation — COMPLETE / PASS
+- [x] `FUNCTIONAL_CORRECTNESS=PASS` — COMPLETE
+- [x] `FULL_PAPER_OPPORTUNITY_OBSERVATION_HEALTH=PASS` — COMPLETE
+- [x] `FORWARD_CANONICAL_FRESHNESS=PASS` — COMPLETE
+- [x] Cutoff missing logical / 1m / 5m keys `0 / 0 / 0` — COMPLETE
+- [x] Not-exactly-one / duplicate observation / duplicate causal IDs `0 / 0 / 0` — COMPLETE
+- [x] `ELIGIBLE_UNPROCESSED_THROUGH_CUTOFF=0` — COMPLETE
+- [x] `DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS` — COMPLETE
+- [x] Service rate 25.400 > arrival 25.300 rows/minute — PASS
+- [ ] Throughput headroom monitoring — IN_PROGRESS: narrow +0.100 rows/minute margin
 
 ## B. Economic baseline and initial forensics
 
@@ -106,7 +115,7 @@ Winner-tail result: `WINNER_TAIL_DEPENDENCE=LOW`; top 10% winners offset 1.875% 
 - [x] Regime Transition vs Routing — COMPLETE FORENSIC
 - [x] New Risk vs Keep Existing Risk diagnostic — COMPLETE
 - [ ] Final ownership policy — NOT COMPLETE; causal evidence required
-- [ ] VPS ownership treatment replication — NOT COMPLETE
+- [ ] VPS ownership treatment replication — IN_PROGRESS
 
 Key ordered-pair evidence:
 
@@ -141,7 +150,11 @@ Supporting classifications:
 - [x] `BAD_AVOIDED > GOOD_MISSED` — PROMISING INITIAL CAUSAL EVIDENCE
 - [x] Longer LOCAL discovery wait — NOT REQUIRED: `NO_ARBITRARY_SAMPLE_WAIT`
 - [x] `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate freeze — COMPLETE
-- [ ] VPS PAPER treatment replication — NOT COMPLETE
+- [x] VPS PAPER ownership acceptance start — COMPLETE: `2026-08-29T07:36:49.339989Z`
+- [x] `OWNERSHIP_ACCEPTANCE_STARTED=YES`; `OWNERSHIP_TREATMENT_MODE=TREATMENT` — COMPLETE
+- [x] `LONG_RUN_SAFETY_PREFLIGHT=PASS` — COMPLETE
+- [ ] VPS PAPER treatment replication — IN_PROGRESS / `TREATMENT`
+- [ ] Initial VPS exposure — 0 affected; 0 blocked; 0 mature; 0 pending; 0 bad avoided; 0 good missed
 - [ ] LIVE eligibility — NOT COMPLETE
 
 Treatment semantics remain one variable: block only an RSI PAPER admission when the same symbol already has an OPEN BBRANGE position with positive remaining inventory. Do not infer success from fewer trades alone.
@@ -154,12 +167,14 @@ initial causal evidence, not proof of a final ownership policy.
 
 `OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`;
 `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE`;
-`OWNERSHIP_CANDIDATE=FROZEN`; `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`;
-`LIVE_ELIGIBILITY=NOT_COMPLETE`. VPS PAPER replication has not started.
+`OWNERSHIP_CANDIDATE=FROZEN`; `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`;
+`LIVE_ELIGIBILITY=NOT_COMPLETE`.
 
-The frozen candidate is unchanged. VPS PAPER acceptance remains
-`BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`; no queue-lane architecture is
-authorized while the proven exact-index optimization remains sufficient.
+Initial zero exposure does not imply economic success. The first formal
+economic review occurs at `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes
+materially concerning earlier. No arbitrary N=20 or N=30 is required. The
+frozen candidate is unchanged, throughput headroom remains monitored, and no
+queue change or second causal treatment is authorized.
 
 ## E. Interval, crowding, and duplication
 
@@ -197,9 +212,12 @@ No sizing or capital-allocation change is authorized during STOP LOSING causal w
 ## H. Decision gate
 
 1. Preserve the frozen RSI-after-BBRANGE ownership candidate and semantics.
-2. `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`.
-3. Use VPS PAPER only for independent acceptance, not discovery or semantic expansion.
-4. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until VPS PAPER replication passes.
+2. `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
+3. Allow acceptance to run naturally and use read-only status checks.
+4. Review `BAD_AVOIDED` versus `GOOD_MISSED` when `MATURE_240M >= 5`, or earlier if good-missed risk becomes concerning.
+5. Use VPS PAPER only for independent acceptance, not discovery or semantic expansion.
+6. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until VPS PAPER replication passes.
+7. Keep movement capacity at `NEEDS_MORE_RESEARCH`; no second causal treatment.
 
 ## I. Permanent long-run experiment gate
 
@@ -217,10 +235,10 @@ Do not fix only the most recently observed error and restart blindly. Re-run thi
 
 For every material producer/consumer pipeline before independent acceptance:
 
-- [ ] `FUNCTIONAL_CORRECTNESS=PASS`
-- [ ] `EFFECTIVE_SERVICE_RATE > OBSERVED_SOURCE_ARRIVAL_RATE`
-- [ ] after each completed consumer cycle, every eligible source event through the cycle-start cutoff has exactly one canonical observation
-- [ ] canonical watermark reaches the cycle-start cutoff with no eligible gaps
+- [x] `FUNCTIONAL_CORRECTNESS=PASS`
+- [x] `EFFECTIVE_SERVICE_RATE > OBSERVED_SOURCE_ARRIVAL_RATE`
+- [x] after each completed consumer cycle, every eligible source event through the cycle-start cutoff has exactly one canonical observation
+- [x] canonical watermark reaches the cycle-start cutoff with no eligible gaps
 
 Healthy workers, fresh heartbeats, zero DB blockers, and individual successful
 inserts alone are not sufficient forward-health proof.

@@ -1,6 +1,6 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-08-28
+LAST_UPDATED=2026-08-29
 
 CURRENT_GIT_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
@@ -33,8 +33,8 @@ This document is current truth only. Git history retains prior states.
 | Exit Giveback | Proven secondary leak; immediate tiny-positive exit rejected |
 | LOCAL PAPER | HEALTHY / OWNERSHIP EXPERIMENT TERMINAL |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
-| VPS PAPER | Independent acceptance / forensic environment; no active treatment authorized by this document |
-| Full Opportunity throughput | LOCAL fix PASS; VPS validation still required |
+| VPS PAPER | Ownership independent acceptance `IN_PROGRESS`; frozen candidate in `TREATMENT` mode |
+| Full Opportunity throughput | VPS functional correctness and forward canonical freshness PASS; narrow headroom monitored |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Equity UI canonical authority | `VPS_LIVE_COMPLETE`; Git, contract, direct-schema, and runtime-semantic parity PASS |
 | VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
@@ -43,20 +43,23 @@ This document is current truth only. Git history retains prior states.
 
 ## Active experiment
 
+`OWNERSHIP_ACCEPTANCE_STARTED=YES`;
+`OWNERSHIP_TREATMENT_MODE=TREATMENT`;
+`OWNERSHIP_CANDIDATE=RSI_AFTER_BBRANGE_OWNERSHIP_V1`.
+
 | Field | Current artifact value |
 | --- | --- |
-| Environment | LOCAL PAPER |
-| Treatment | RSI-after-BBRANGE ownership admission |
-| Status | TERMINAL |
-| Phase | TERMINAL |
-| Run ID | `CONTROL-118a765af6` |
-| Completed CONTROL runs | 0 in the current restart |
-| Completed TREATMENT runs | 0 |
-| Terminal reason | `GLOBAL_DB_SAFETY_FAIL` |
-| Safety classification | `CORRECT_REAL_GLOBAL_DB_RISK` |
-| Trading impact | NONE |
-| Baseline restore | PASS |
-| Economic verdict | `PROMISING_INITIAL_CAUSAL_EVIDENCE`; NOT PROVEN |
+| Environment | VPS PAPER |
+| Candidate | `RSI_AFTER_BBRANGE_OWNERSHIP_V1` |
+| Treatment mode | `TREATMENT` |
+| Status | `IN_PROGRESS` |
+| Acceptance started | `YES` |
+| Started at | `2026-08-29T07:36:49.339989Z` |
+| Affected RSI-after-BBRANGE | 0 |
+| Blocked RSI entries | 0 |
+| Mature / pending 240m | 0 / 0 |
+| Bad avoided / good missed | 0 / 0 |
+| Economic verdict | INSUFFICIENT EXPOSURE; zero initial exposure is not success |
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 
@@ -94,13 +97,21 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 ## Full PAPER Opportunity Observation throughput
 
 - `VPS_PAPER_DIRECT_SCHEMA_DEPENDENCY_REPAIR=COMPLETE`.
-- `VPS_PAPER_FULL_OPPORTUNITY_OBSERVATION_BLOCKER=THROUGHPUT_BELOW_ARRIVAL_RATE`.
 - `ROOT_CAUSE=EXPENSIVE_PROJECTION_LOOKUPS_PLUS_FIFO_SINGLE_CONSUMER`.
 - `LOCAL_THROUGHPUT_FIX=PASS`.
 - The exact projection lookup indexes preserve FIFO, observation identity, Fee V2 evidence, and 240-minute outcome linkage.
 - `OWNERSHIP_CANDIDATE=FROZEN_UNCHANGED`.
-- `VPS_PAPER_ACCEPTANCE=BLOCKED_UNTIL_VPS_THROUGHPUT_VALIDATION`.
-- VPS PAPER acceptance has not started.
+- `FUNCTIONAL_CORRECTNESS=PASS`.
+- `FULL_PAPER_OPPORTUNITY_OBSERVATION_HEALTH=PASS`.
+- `FORWARD_CANONICAL_FRESHNESS=PASS`.
+- Cutoff missing logical, 1m, and 5m keys: `0 / 0 / 0`.
+- Not-exactly-one keys, duplicate observation keys, and duplicate causal event IDs: `0 / 0 / 0`.
+- `ELIGIBLE_UNPROCESSED_THROUGH_CUTOFF=0`.
+- `DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS`.
+- `ROWS_PER_MINUTE_EFFECTIVE=25.400`; `FORWARD_SOURCE_ARRIVAL_RATE=25.300`.
+- `SERVICE_RATE_ABOVE_ARRIVAL=YES`; headroom `+0.100_ROWS_PER_MINUTE`.
+- `THROUGHPUT_HEADROOM_MONITORING_REQUIRED=YES`; narrow positive headroom is not a failure.
+- No queue change is authorized.
 
 Permanent pipeline acceptance invariant: functional correctness must pass,
 effective service rate must exceed observed source arrival rate, each completed
@@ -140,14 +151,19 @@ themselves.
 
 ## NOW
 
-- `LOCAL_DISCOVERY_NEXT_ACTION=NO_ARBITRARY_SAMPLE_WAIT`.
+- Allow VPS PAPER ownership acceptance to run naturally.
+- Perform read-only status checks only.
 - Preserve the frozen ownership candidate and its unchanged semantics.
-- Preserve the completed LOCAL evidence and safety artifacts.
+- Monitor forward freshness and throughput headroom.
+- Wait for mature VPS blocked opportunities and review `BAD_AVOIDED` versus `GOOD_MISSED` first.
 
 ## NEXT
 
-- `NEXT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION`.
+- `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
+- First formal economic review at `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes materially concerning earlier.
+- No arbitrary N=20 or N=30 requirement.
 - Require independent VPS PAPER acceptance before any LIVE eligibility decision.
+- Movement capacity remains `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
 
 ## DO_NOT_DO
 
