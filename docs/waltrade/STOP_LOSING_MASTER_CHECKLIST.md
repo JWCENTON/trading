@@ -22,6 +22,19 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] VPS pull-only authority — COMPLETE: fetch, `pull --ff-only`, deploy, independently validate
 - [x] VPS-only shared-code fixes, schema magic, pushes, and frozen-semantic changes — FORBIDDEN
 - [x] Promotion path `LOCAL → GitHub → VPS pull --ff-only → independent validation` — COMPLETE
+- [ ] `GIT_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
+- [ ] `CONTRACT_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
+- [ ] `DIRECT_SCHEMA_DEPENDENCY_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
+- [ ] `SCHEMA_OBJECT_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
+- [ ] `RUNTIME_SEMANTIC_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
+- [ ] `CONFIG_CONTRACT_PARITY` — REQUIRED WHERE SHARED/APPLICABLE
+- [x] `SCHEMA_OBJECT_PARITY` means semantic equivalence of all active-contract tables, columns/types/nullability/defaults, keys, constraints, indexes, views/materialized views, functions/procedures, triggers, extensions, required migration state, and direct dependencies — INVARIANT
+- [x] Required object missing in a corresponding environment fails parity even when `GIT_PARITY=PASS` — INVARIANT
+- [x] Required active-contract migrations/objects apply by environment contract; blind all-environment migration and LOCAL/VPS-only schema magic — FORBIDDEN
+- [x] `BUSINESS_DATA_PARITY=NOT_REQUIRED`; `BUSINESS_DATA_DIVERGENCE=EXPECTED` — INVARIANT
+- [x] Natural row-count, trade, position, fill, order, balance, Financial Truth, observation, counterfactual, timestamp, market-outcome, learning/evidence, and audit-history differences are not parity failures — INVARIANT
+- [x] Copying business data to manufacture LOCAL/VPS parity — FORBIDDEN
+- [x] `SAME_SHARED_CONTRACT; DIFFERENT_NATURAL_DATA` — COMPLETE
 - [x] PAPER research universe may intentionally remain aggregate-negative — COMPLETE
 - [x] `TOTAL_PAPER_PNL > 0` is not a universal progress prerequisite — COMPLETE
 - [x] Qualified universe requires frozen policy plus independent validation — COMPLETE

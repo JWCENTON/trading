@@ -2,9 +2,7 @@
 
 CURRENT_PHASE=STOP_LOSING
 
-CURRENT_MAIN_SHA=62fe7d79993cf83040ad1724e2392be440c1d02f
-
-CURRENT_VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
+VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
@@ -47,6 +45,41 @@ frozen candidate semantics.
 Canonical promotion path:
 
 `LOCAL → GitHub → VPS pull --ff-only → independent validation`
+
+For corresponding environments—`LOCAL PAPER ↔ VPS PAPER` and, where
+applicable, `LOCAL LIVE ↔ VPS LIVE`—the promoted shared contract requires
+`GIT_PARITY`, `CONTRACT_PARITY`, `DIRECT_SCHEMA_DEPENDENCY_PARITY`,
+`SCHEMA_OBJECT_PARITY`, `RUNTIME_SEMANTIC_PARITY`, and
+`CONFIG_CONTRACT_PARITY` where shared and applicable. The rollout gate is:
+
+`LOCAL validation → GitHub promotion → VPS pull --ff-only → GIT_PARITY → CONTRACT_PARITY → DIRECT_SCHEMA_DEPENDENCY_PARITY → SCHEMA_OBJECT_PARITY → RUNTIME_SEMANTIC_PARITY`
+
+A common Git SHA alone never proves deployment parity.
+
+`SCHEMA_OBJECT_PARITY` means every object required by the active promoted
+runtime contract is semantically equivalent between corresponding LOCAL and
+VPS environments. Where applicable this covers tables, columns, column types,
+nullability, defaults, primary keys, foreign keys, unique constraints, check
+constraints, indexes, views, materialized views, functions, procedures,
+triggers, extensions, required migration state, and direct runtime schema
+dependencies. For example, if LOCAL has a required
+`public.orc_apply_slot_decisions_v1` object and the corresponding VPS
+environment does not, parity fails even when `GIT_PARITY=PASS`.
+
+Parity does not mean blindly applying every migration everywhere. It requires
+the migrations and schema objects used by the active contract for that
+corresponding environment. Environment-specific objects are allowed only when
+they are explicit parts of the promoted environment contract; LOCAL-only or
+VPS-only schema magic is forbidden.
+
+`BUSINESS_DATA_PARITY=NOT_REQUIRED` and
+`BUSINESS_DATA_DIVERGENCE=EXPECTED`. Row counts, trades, positions, fills,
+orders, balances, Financial Truth rows, opportunity observations,
+counterfactual evidence, timestamps, market outcomes, learning/evidence
+history, and runtime-generated audit rows naturally differ. Those differences
+are not parity failures by themselves and must never be copied merely to make
+counts or histories match. Canonical principle:
+`SAME_SHARED_CONTRACT; DIFFERENT_NATURAL_DATA`.
 
 ### Equity UI canonical read authority
 
