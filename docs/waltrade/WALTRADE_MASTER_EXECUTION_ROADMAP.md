@@ -271,17 +271,29 @@ age, application/client identity, and lock detail before failing closed. This
 is an experiment-only diagnostic improvement; shared WalTrade runtime and
 trading semantics were unchanged.
 
-All four preserved treatment counterfactuals have matured:
-`MATURE_240M=4`, `PENDING_240M=0`, `BAD_AVOIDED=4`, and `GOOD_MISSED=0`.
+All four preserved LOCAL treatment counterfactuals have matured:
+`LOCAL_MATURE_240M=4`, `LOCAL_PENDING_240M=0`, `LOCAL_BAD_AVOIDED=4`, and
+`LOCAL_GOOD_MISSED=0`.
 This is
 `OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`, not proof of
 a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
 the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
-`2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Initial counters are
-`AFFECTED_RSI_AFTER_BBRANGE=0`, `BLOCKED_RSI_ENTRIES=0`, `MATURE_240M=0`,
-`PENDING_240M=0`, `BAD_AVOIDED=0`, and `GOOD_MISSED=0`. Zero initial exposure
-does not imply economic success. `LIVE_ELIGIBILITY=NOT_COMPLETE`.
+`2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. The first mature independent
+VPS evidence is now `AFFECTED_RSI_AFTER_BBRANGE=2`, `BLOCKED_RSI_ENTRIES=2`,
+`MATURE_240M=2`, `PENDING_240M=0`, `BAD_AVOIDED=2`, and `GOOD_MISSED=0`.
+`BAD_AVOIDED_RATE=100.000_PERCENT`, `GOOD_MISSED_RATE=0.000_PERCENT`,
+`COUNTERFACTUAL_FULL_COST_COVER=0/2`, and `AVOIDED_FEES=0.084000_USDC`.
+Qualifying evidence spans `2026-08-29T15:07:10.579096Z` through
+`2026-08-29T15:08:44.331574Z`. PAPER runtime, Full PAPER Opportunity
+Observation, and forward canonical freshness are PASS.
+
+This VPS result is promising, not proof. It remains independent acceptance
+evidence and must not be pooled with the LOCAL 4/4 discovery evidence as one
+formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`;
+`ACCEPTANCE_DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`. The gate is not reached,
+`LIVE_ELIGIBILITY=NOT_COMPLETE`, no second treatment is authorized, and LIVE
+Capital Preservation remains active.
 
 `OWNERSHIP_ACCEPTANCE_STARTED=YES`;
 `OWNERSHIP_TREATMENT_MODE=TREATMENT`;

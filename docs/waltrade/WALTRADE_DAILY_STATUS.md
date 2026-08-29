@@ -80,13 +80,25 @@ This document is current truth only. Git history retains prior states.
 | Status | `IN_PROGRESS` |
 | Acceptance started | `YES` |
 | Started at | `2026-08-29T07:36:49.339989Z` |
-| Affected RSI-after-BBRANGE | 0 |
-| Blocked RSI entries | 0 |
-| Mature / pending 240m | 0 / 0 |
-| Bad avoided / good missed | 0 / 0 |
-| Economic verdict | INSUFFICIENT EXPOSURE; zero initial exposure is not success |
+| Affected RSI-after-BBRANGE | 2 |
+| Blocked RSI entries | 2 |
+| Mature / pending 240m | 2 / 0 |
+| Bad avoided / good missed | 2 / 0 |
+| Bad avoided / good missed rate | 100.000% / 0.000% |
+| Counterfactual full-cost cover | 0 / 2 |
+| Avoided fees | 0.084000 USDC |
+| First / last qualifying evidence | `2026-08-29T15:07:10.579096Z` / `2026-08-29T15:08:44.331574Z` |
+| Runtime / observation / freshness health | `PASS / PASS / PASS` |
+| Acceptance decision | `WAIT_FOR_MORE_MATURE_EVIDENCE` |
+| Economic verdict | First mature independent VPS evidence is PROMISING, not proof |
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
+
+This is the first mature independent VPS PAPER ownership evidence. Keep it
+separate from the LOCAL 4/4 discovery result; the two environments are not one
+formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`, so the
+formal review gate has not been reached. `LIVE_ELIGIBILITY=NOT_COMPLETE`, and
+no second treatment is authorized.
 
 ## Equity UI canonical read authority
 
@@ -105,7 +117,7 @@ Do not hardcode this phase elsewhere. Update this current-truth file from the ex
 - Trading impact: NONE.
 - `BLOCKED_SESSION_DIAGNOSTIC_CAPTURE=COMPLETE`; coherent blocked-session, blocker, relationship, query, transaction-age, application/client, and lock evidence is persisted before failure.
 - `TESTS=40_PASS`; `FAIL_CLOSED_BEHAVIOR_WEAKENED=NO`.
-- `MATURE_240M=4`; `PENDING_240M=0`; `BAD_AVOIDED=4`; `GOOD_MISSED=0`.
+- `LOCAL_MATURE_240M=4`; `LOCAL_PENDING_240M=0`; `LOCAL_BAD_AVOIDED=4`; `LOCAL_GOOD_MISSED=0`.
 - `OWNERSHIP_ECONOMIC_VERDICT=PROMISING_INITIAL_CAUSAL_EVIDENCE`; ownership is not proven.
 - `OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`.
 - `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE`.

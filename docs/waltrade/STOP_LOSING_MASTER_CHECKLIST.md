@@ -178,7 +178,7 @@ Supporting classifications:
 - [x] Blocked-session atomic diagnostic capture — COMPLETE: `TESTS=40_PASS`
 - [x] `FAIL_CLOSED_BEHAVIOR_WEAKENED=NO` — COMPLETE
 - [x] 240-minute blocked-opportunity maturity — COMPLETE: 4 MATURE / 0 PENDING
-- [x] `MATURE_240M=4`; `BAD_AVOIDED=4`; `GOOD_MISSED=0` — COMPLETE
+- [x] `LOCAL_MATURE_240M=4`; `LOCAL_BAD_AVOIDED=4`; `LOCAL_GOOD_MISSED=0` — COMPLETE
 - [x] `BAD_AVOIDED > GOOD_MISSED` — PROMISING INITIAL CAUSAL EVIDENCE
 - [x] Longer LOCAL discovery wait — NOT REQUIRED: `NO_ARBITRARY_SAMPLE_WAIT`
 - [x] `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate freeze — COMPLETE
@@ -186,7 +186,14 @@ Supporting classifications:
 - [x] `OWNERSHIP_ACCEPTANCE_STARTED=YES`; `OWNERSHIP_TREATMENT_MODE=TREATMENT` — COMPLETE
 - [x] `LONG_RUN_SAFETY_PREFLIGHT=PASS` — COMPLETE
 - [ ] VPS PAPER treatment replication — IN_PROGRESS / `TREATMENT`
-- [ ] Initial VPS exposure — 0 affected; 0 blocked; 0 mature; 0 pending; 0 bad avoided; 0 good missed
+- [x] First mature independent VPS evidence — 2 affected; 2 blocked; 2 mature; 0 pending; 2 bad avoided; 0 good missed
+- [x] VPS rates — `BAD_AVOIDED_RATE=100.000_PERCENT`; `GOOD_MISSED_RATE=0.000_PERCENT`; full-cost cover `0/2`
+- [x] VPS avoided fees — `0.084000_USDC`
+- [x] VPS qualifying evidence window — `2026-08-29T15:07:10.579096Z` through `2026-08-29T15:08:44.331574Z`
+- [x] VPS PAPER runtime, Full PAPER Opportunity Observation, and forward canonical freshness — PASS
+- [x] LOCAL 4/4 discovery and VPS 2/2 independent acceptance remain separate; no pooled formal sample
+- [ ] First formal VPS review — NOT REACHED: `MATURE_240M=2`, gate `MATURE_240M>=5`
+- [ ] Acceptance decision — `WAIT_FOR_MORE_MATURE_EVIDENCE`
 - [ ] LIVE eligibility — NOT COMPLETE
 
 Treatment semantics remain one variable: block only an RSI PAPER admission when the same symbol already has an OPEN BBRANGE position with positive remaining inventory. Do not infer success from fewer trades alone.
@@ -202,11 +209,12 @@ initial causal evidence, not proof of a final ownership policy.
 `OWNERSHIP_CANDIDATE=FROZEN`; `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`;
 `LIVE_ELIGIBILITY=NOT_COMPLETE`.
 
-Initial zero exposure does not imply economic success. The first formal
-economic review occurs at `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes
-materially concerning earlier. No arbitrary N=20 or N=30 is required. The
-frozen candidate is unchanged, throughput headroom remains monitored, and no
-queue change or second causal treatment is authorized.
+The first mature independent VPS evidence is promising, not proof. It remains
+separate from LOCAL discovery evidence. The first formal economic review
+occurs at `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes materially
+concerning earlier. No arbitrary N=20 or N=30 is required. The frozen
+candidate is unchanged, throughput headroom remains monitored, and no queue
+change or second causal treatment is authorized.
 
 ## E. Interval, crowding, and duplication
 
