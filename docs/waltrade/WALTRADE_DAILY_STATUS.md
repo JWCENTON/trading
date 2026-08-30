@@ -1,6 +1,6 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-08-29
+LAST_UPDATED=2026-08-30
 
 VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
@@ -42,6 +42,22 @@ This document is current truth only. Git history retains prior states.
 | VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
+| Public Communication | `ACTIVE`; LinkedIn and X active; governance documented |
+
+## Public communication
+
+`PUBLIC_COMMUNICATION_LAYER=ACTIVE`
+
+`PUBLIC_LINKEDIN=ACTIVE`
+
+`PUBLIC_X=ACTIVE`
+
+`PUBLIC_COMMUNICATION_GOVERNANCE=DOCUMENTED`
+
+Public communication follows
+[WALTRADE_PUBLIC_COMMUNICATION.md](WALTRADE_PUBLIC_COMMUNICATION.md). It
+consumes canonical evidence and does not change project evidence, experiment
+gates, economic priorities, or LIVE authority.
 
 ## Authority and research methodology
 
@@ -82,7 +98,7 @@ This document is current truth only. Git history retains prior states.
 | Started at | `2026-08-29T07:36:49.339989Z` |
 | Affected RSI-after-BBRANGE | 3 |
 | Blocked RSI entries | 3 |
-| Mature / pending 240m | 3 / 0 |
+| Mature / pending 240m | 3 / 1 |
 | Bad avoided / good missed | 3 / 0 |
 | Bad avoided / good missed rate | 100.00% / 0.00% |
 | Counterfactual full-cost cover | 0 / 3 |
@@ -92,6 +108,12 @@ This document is current truth only. Git history retains prior states.
 | Formal review gate reached | `NO` (`MATURE_240M=3`; gate `>=5`) |
 | Acceptance decision | `WAIT_FOR_MORE_MATURE_EVIDENCE` |
 | Economic verdict | Independent VPS evidence is PROMISING, not proof |
+
+`OWNERSHIP_VPS_PAPER=MATURE_240M_3_OF_5`;
+`PENDING_240M=1`;
+`BAD_AVOIDED=3`;
+`GOOD_MISSED=0`;
+`DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`.
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 

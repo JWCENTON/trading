@@ -42,6 +42,11 @@ deploy promoted artifacts, and validate them independently. VPS must never
 commit, push, create VPS-only shared-code fixes or schema magic, or change
 frozen candidate semantics.
 
+Public communication is governed by
+[WALTRADE_PUBLIC_COMMUNICATION.md](WALTRADE_PUBLIC_COMMUNICATION.md). It
+consumes canonical evidence but creates no project evidence, experiment
+authority, Roadmap priority, or LIVE authority.
+
 Canonical promotion path:
 
 `LOCAL → GitHub → VPS pull --ff-only → independent validation`
@@ -303,7 +308,7 @@ the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
 `2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
 now `AFFECTED_RSI_AFTER_BBRANGE=3`, `BLOCKED_RSI_ENTRIES=3`, `MATURE_240M=3`,
-`PENDING_240M=0`, `BAD_AVOIDED=3`, and `GOOD_MISSED=0`.
+`PENDING_240M=1`, `BAD_AVOIDED=3`, and `GOOD_MISSED=0`.
 `BAD_AVOIDED_RATE=100.00_PERCENT`, `GOOD_MISSED_RATE=0.00_PERCENT`,
 `COUNTERFACTUAL_FULL_COST_COVER=0/3`, and
 `AVOIDED_FEES=0.126000_USDC_ROUNDTRIP_EQUIVALENT`. The first qualifying
