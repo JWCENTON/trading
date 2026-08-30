@@ -312,18 +312,37 @@ a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
 the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
 `2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
-now `AFFECTED_RSI_AFTER_BBRANGE=4`, `BLOCKED_RSI_ENTRIES=4`, `MATURE_240M=3`,
-`PENDING_240M=1`, `BAD_AVOIDED=3`, and `GOOD_MISSED=0`.
-`BAD_AVOIDED_RATE=100.00_PERCENT`, `GOOD_MISSED_RATE=0.00_PERCENT`,
-`COUNTERFACTUAL_FULL_COST_COVER=0/3`, and
+now `AFFECTED_RSI_AFTER_BBRANGE=11`, `BLOCKED_RSI_ENTRIES=11`,
+`MATURE_240M=4`, `PENDING_240M=7`, `BAD_AVOIDED=3`, and `GOOD_MISSED=1`.
+`BAD_AVOIDED_RATE=75.00_PERCENT`, `GOOD_MISSED_RATE=25.00_PERCENT`,
+`COUNTERFACTUAL_FULL_COST_COVER=1/4`, and
 `AVOIDED_FEES=0.126000_USDC_ROUNDTRIP_EQUIVALENT`. The first qualifying
 evidence arrived at `2026-08-29T15:07:10.579096Z`; no updated timestamp for the
 latest qualifying observation is asserted here. PAPER runtime, Full PAPER
 Opportunity Observation, and forward canonical freshness are PASS.
 
-This VPS result is promising, not proof. It remains independent acceptance
-evidence and must not be pooled with the LOCAL 4/4 discovery evidence as one
-formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`;
+The early economic review identifies one good-missed observation:
+`GOOD_MISSED_OBSERVATION_ID=9253bd79-4050-4015-afdd-d1ffaddffbba`, with
+`GOOD_MISSED_MFE_PCT=0.873661125766773671` against
+`GOOD_MISSED_FULL_COST_HURDLE_PCT=0.702458605117912694`, time to full cost
+cover `10740` seconds, `GOOD_MISSED_MARKET_ROWS=240/240`, and
+`GOOD_MISSED_MARKET_DATA_GAPS=0`. Existing BBRANGE did not capture the same
+move, so `CROSS_INTERVAL_OWNERSHIP_EFFECT=YES`; however,
+`RSI_COUNTERFACTUAL_FINAL_NET=NOT_AVAILABLE` and
+`RSI_INCREMENTAL_PORTFOLIO_VALUE=NOT_AVAILABLE`. Movement capacity is
+confirmed, but a true incremental win is not yet proven and portfolio
+redundancy is not proven.
+
+`EARLY_REVIEW_VERDICT=GOOD_MISSED_MOVEMENT_CAPACITY_CONFIRMED_TRUE_INCREMENTAL_WIN_NOT_YET_PROVEN_PORTFOLIO_REDUNDANCY_NOT_PROVEN`.
+`OWNERSHIP_CANDIDATE_STATUS=IN_PROGRESS_EARLY_REVIEW_INCONCLUSIVE`,
+`CONTINUE_TREATMENT=YES`, and `FORMAL_REVIEW_AT_5_STILL_REQUIRED=YES`.
+`REVIEW_CROSS_INTERVAL_OWNERSHIP_EFFECT=YES` is a future review question only;
+no cross-interval or ownership rule change is authorized.
+
+This VPS result remains in progress and the early review is inconclusive, not
+proof. It remains independent acceptance evidence and must not be pooled with
+the LOCAL 4/4 discovery evidence as one formal statistical sample.
+`FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`;
 `FORMAL_REVIEW_GATE_REACHED=NO` and
 `ACCEPTANCE_DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`. The gate is not reached,
 `LIVE_ELIGIBILITY=NOT_COMPLETE`, no second treatment is authorized, and LIVE

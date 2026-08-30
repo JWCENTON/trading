@@ -93,34 +93,51 @@ gates, economic priorities, or LIVE authority.
 | Environment | VPS PAPER |
 | Candidate | `RSI_AFTER_BBRANGE_OWNERSHIP_V1` |
 | Treatment mode | `TREATMENT` |
-| Status | `IN_PROGRESS` |
+| Status | `IN_PROGRESS_EARLY_REVIEW_INCONCLUSIVE` |
 | Acceptance started | `YES` |
 | Started at | `2026-08-29T07:36:49.339989Z` |
-| Affected RSI-after-BBRANGE | 4 |
-| Blocked RSI entries | 4 |
-| Mature / pending 240m | 3 / 1 |
-| Bad avoided / good missed | 3 / 0 |
-| Bad avoided / good missed rate | 100.00% / 0.00% |
-| Counterfactual full-cost cover | 0 / 3 |
+| Affected RSI-after-BBRANGE | 11 |
+| Blocked RSI entries | 11 |
+| Mature / pending 240m | 4 / 7 |
+| Bad avoided / good missed | 3 / 1 |
+| Bad avoided / good missed rate | 75.00% / 25.00% |
+| Counterfactual full-cost cover | 1 / 4 |
 | Avoided fees | 0.126000 USDC roundtrip equivalent |
 | First qualifying evidence | `2026-08-29T15:07:10.579096Z` |
 | Runtime / observation / freshness health | `PASS / PASS / PASS` |
-| Formal review gate reached | `NO` (`MATURE_240M=3`; gate `>=5`) |
+| Formal review gate reached | `NO` (`MATURE_240M=4`; gate `>=5`) |
 | Acceptance decision | `WAIT_FOR_MORE_MATURE_EVIDENCE` |
-| Economic verdict | Independent VPS evidence is PROMISING, not proof |
+| Economic verdict | `GOOD_MISSED_MOVEMENT_CAPACITY_CONFIRMED_TRUE_INCREMENTAL_WIN_NOT_YET_PROVEN_PORTFOLIO_REDUNDANCY_NOT_PROVEN` |
 
-`OWNERSHIP_VPS_PAPER=MATURE_240M_3_OF_5`;
-`PENDING_240M=1`;
+`OWNERSHIP_VPS_PAPER=MATURE_240M_4_OF_5`;
+`PENDING_240M=7`;
 `BAD_AVOIDED=3`;
-`GOOD_MISSED=0`;
+`GOOD_MISSED=1`;
 `DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`.
+
+### Early economic review
+
+- `GOOD_MISSED_OBSERVATION_ID=9253bd79-4050-4015-afdd-d1ffaddffbba`.
+- `GOOD_MISSED_MFE_PCT=0.873661125766773671`;
+  `GOOD_MISSED_FULL_COST_HURDLE_PCT=0.702458605117912694`.
+- `GOOD_MISSED_TIME_TO_FULL_COST_COVER_SECONDS=10740`.
+- `GOOD_MISSED_MARKET_ROWS=240/240`; `GOOD_MISSED_MARKET_DATA_GAPS=0`.
+- `DID_EXISTING_BBRANGE_CAPTURE_SAME_MOVE=NO`;
+  `CROSS_INTERVAL_OWNERSHIP_EFFECT=YES`.
+- `RSI_COUNTERFACTUAL_FINAL_NET=NOT_AVAILABLE`;
+  `RSI_INCREMENTAL_PORTFOLIO_VALUE=NOT_AVAILABLE`.
+- `EARLY_REVIEW_VERDICT=GOOD_MISSED_MOVEMENT_CAPACITY_CONFIRMED_TRUE_INCREMENTAL_WIN_NOT_YET_PROVEN_PORTFOLIO_REDUNDANCY_NOT_PROVEN`.
+- `OWNERSHIP_CANDIDATE_STATUS=IN_PROGRESS_EARLY_REVIEW_INCONCLUSIVE`;
+  `CONTINUE_TREATMENT=YES`; `FORMAL_REVIEW_AT_5_STILL_REQUIRED=YES`.
+- `REVIEW_CROSS_INTERVAL_OWNERSHIP_EFFECT=YES` is a future review question,
+  not an authorized ownership or cross-interval rule change.
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 
-This is promising independent VPS PAPER ownership evidence, not proof. Keep it
+This is independent VPS PAPER ownership evidence, not proof. Keep it
 separate from the LOCAL 4/4 discovery result; the two environments are not one
 formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`, so the
-3/5 formal review gate has not been reached. `LIVE_ELIGIBILITY=NOT_COMPLETE`,
+4/5 formal review gate has not been reached. `LIVE_ELIGIBILITY=NOT_COMPLETE`,
 and no second treatment is authorized.
 
 ## Equity UI canonical read authority
