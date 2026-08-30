@@ -186,13 +186,13 @@ Supporting classifications:
 - [x] `OWNERSHIP_ACCEPTANCE_STARTED=YES`; `OWNERSHIP_TREATMENT_MODE=TREATMENT` — COMPLETE
 - [x] `LONG_RUN_SAFETY_PREFLIGHT=PASS` — COMPLETE
 - [ ] VPS PAPER treatment replication — IN_PROGRESS / `TREATMENT`
-- [x] First mature independent VPS evidence — 2 affected; 2 blocked; 2 mature; 0 pending; 2 bad avoided; 0 good missed
-- [x] VPS rates — `BAD_AVOIDED_RATE=100.000_PERCENT`; `GOOD_MISSED_RATE=0.000_PERCENT`; full-cost cover `0/2`
-- [x] VPS avoided fees — `0.084000_USDC`
-- [x] VPS qualifying evidence window — `2026-08-29T15:07:10.579096Z` through `2026-08-29T15:08:44.331574Z`
+- [x] VPS 3/5 mature checkpoint — 3 affected; 3 blocked; 3 mature; 0 pending; 3 bad avoided; 0 good missed
+- [x] VPS rates — `BAD_AVOIDED_RATE=100.00_PERCENT`; `GOOD_MISSED_RATE=0.00_PERCENT`; full-cost cover `0/3`
+- [x] VPS avoided fees — `0.126000_USDC_ROUNDTRIP_EQUIVALENT`
+- [x] First qualifying VPS evidence — `2026-08-29T15:07:10.579096Z`; latest qualifying timestamp not asserted without verified evidence
 - [x] VPS PAPER runtime, Full PAPER Opportunity Observation, and forward canonical freshness — PASS
-- [x] LOCAL 4/4 discovery and VPS 2/2 independent acceptance remain separate; no pooled formal sample
-- [ ] First formal VPS review — NOT REACHED: `MATURE_240M=2`, gate `MATURE_240M>=5`
+- [x] LOCAL 4/4 discovery and VPS 3/3 independent acceptance remain separate; no pooled formal sample
+- [ ] First formal VPS review — NOT REACHED: `MATURE_240M=3`, gate `MATURE_240M>=5`
 - [ ] Acceptance decision — `WAIT_FOR_MORE_MATURE_EVIDENCE`
 - [ ] LIVE eligibility — NOT COMPLETE
 

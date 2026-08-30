@@ -279,18 +279,20 @@ This is
 a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
 the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
-`2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. The first mature independent
-VPS evidence is now `AFFECTED_RSI_AFTER_BBRANGE=2`, `BLOCKED_RSI_ENTRIES=2`,
-`MATURE_240M=2`, `PENDING_240M=0`, `BAD_AVOIDED=2`, and `GOOD_MISSED=0`.
-`BAD_AVOIDED_RATE=100.000_PERCENT`, `GOOD_MISSED_RATE=0.000_PERCENT`,
-`COUNTERFACTUAL_FULL_COST_COVER=0/2`, and `AVOIDED_FEES=0.084000_USDC`.
-Qualifying evidence spans `2026-08-29T15:07:10.579096Z` through
-`2026-08-29T15:08:44.331574Z`. PAPER runtime, Full PAPER Opportunity
-Observation, and forward canonical freshness are PASS.
+`2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
+now `AFFECTED_RSI_AFTER_BBRANGE=3`, `BLOCKED_RSI_ENTRIES=3`, `MATURE_240M=3`,
+`PENDING_240M=0`, `BAD_AVOIDED=3`, and `GOOD_MISSED=0`.
+`BAD_AVOIDED_RATE=100.00_PERCENT`, `GOOD_MISSED_RATE=0.00_PERCENT`,
+`COUNTERFACTUAL_FULL_COST_COVER=0/3`, and
+`AVOIDED_FEES=0.126000_USDC_ROUNDTRIP_EQUIVALENT`. The first qualifying
+evidence arrived at `2026-08-29T15:07:10.579096Z`; no updated timestamp for the
+latest qualifying observation is asserted here. PAPER runtime, Full PAPER
+Opportunity Observation, and forward canonical freshness are PASS.
 
 This VPS result is promising, not proof. It remains independent acceptance
 evidence and must not be pooled with the LOCAL 4/4 discovery evidence as one
 formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`;
+`FORMAL_REVIEW_GATE_REACHED=NO` and
 `ACCEPTANCE_DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`. The gate is not reached,
 `LIVE_ELIGIBILITY=NOT_COMPLETE`, no second treatment is authorized, and LIVE
 Capital Preservation remains active.

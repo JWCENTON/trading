@@ -80,25 +80,26 @@ This document is current truth only. Git history retains prior states.
 | Status | `IN_PROGRESS` |
 | Acceptance started | `YES` |
 | Started at | `2026-08-29T07:36:49.339989Z` |
-| Affected RSI-after-BBRANGE | 2 |
-| Blocked RSI entries | 2 |
-| Mature / pending 240m | 2 / 0 |
-| Bad avoided / good missed | 2 / 0 |
-| Bad avoided / good missed rate | 100.000% / 0.000% |
-| Counterfactual full-cost cover | 0 / 2 |
-| Avoided fees | 0.084000 USDC |
-| First / last qualifying evidence | `2026-08-29T15:07:10.579096Z` / `2026-08-29T15:08:44.331574Z` |
+| Affected RSI-after-BBRANGE | 3 |
+| Blocked RSI entries | 3 |
+| Mature / pending 240m | 3 / 0 |
+| Bad avoided / good missed | 3 / 0 |
+| Bad avoided / good missed rate | 100.00% / 0.00% |
+| Counterfactual full-cost cover | 0 / 3 |
+| Avoided fees | 0.126000 USDC roundtrip equivalent |
+| First qualifying evidence | `2026-08-29T15:07:10.579096Z` |
 | Runtime / observation / freshness health | `PASS / PASS / PASS` |
+| Formal review gate reached | `NO` (`MATURE_240M=3`; gate `>=5`) |
 | Acceptance decision | `WAIT_FOR_MORE_MATURE_EVIDENCE` |
-| Economic verdict | First mature independent VPS evidence is PROMISING, not proof |
+| Economic verdict | Independent VPS evidence is PROMISING, not proof |
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 
-This is the first mature independent VPS PAPER ownership evidence. Keep it
+This is promising independent VPS PAPER ownership evidence, not proof. Keep it
 separate from the LOCAL 4/4 discovery result; the two environments are not one
 formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`, so the
-formal review gate has not been reached. `LIVE_ELIGIBILITY=NOT_COMPLETE`, and
-no second treatment is authorized.
+3/5 formal review gate has not been reached. `LIVE_ELIGIBILITY=NOT_COMPLETE`,
+and no second treatment is authorized.
 
 ## Equity UI canonical read authority
 
