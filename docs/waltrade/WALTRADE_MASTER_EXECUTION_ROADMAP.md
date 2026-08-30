@@ -110,17 +110,22 @@ out for this change.
 - `FUNCTIONAL_CORRECTNESS=PASS`.
 - `FULL_PAPER_OPPORTUNITY_OBSERVATION_HEALTH=PASS`.
 - `FORWARD_CANONICAL_FRESHNESS=PASS`.
-- `CUTOFF_MISSING_LOGICAL_KEYS=0`; missing 1m keys `0`; missing 5m keys `0`.
-- `NOT_EXACTLY_ONE_KEYS=0`; duplicate observation keys `0`; duplicate causal event IDs `0`.
+- `PAPER_RUNTIME_HEALTH=PASS`; `WORKERS=32/32_FRESH`.
+- `DB_HEALTH=PASS`; `BLOCKED_DB_SESSIONS=0`.
+- `CUTOFF_MISSING_LOGICAL_KEYS=0`; `CUTOFF_MISSING_1M_KEYS=0`;
+  `CUTOFF_MISSING_5M_KEYS=0`.
+- `DUPLICATE_OBSERVATION_KEYS=0`; `DUPLICATE_CAUSAL_EVENT_IDS=0`.
+- `NOT_EXACTLY_ONE_KEYS=0`.
 - `ELIGIBLE_UNPROCESSED_THROUGH_CUTOFF=0`.
 - `DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS`.
-- `ROWS_PER_MINUTE_EFFECTIVE=25.400`; `FORWARD_SOURCE_ARRIVAL_RATE=25.300`.
-- `SERVICE_RATE_ABOVE_ARRIVAL=YES`; headroom `+0.100_ROWS_PER_MINUTE`.
-- `THROUGHPUT_HEADROOM_MONITORING_REQUIRED=YES` because the passing margin is narrow.
+- `ROWS_PER_MINUTE_EFFECTIVE=4123.713`;
+  `FORWARD_SOURCE_ARRIVAL_RATE=25.200_PER_MINUTE`.
+- `SERVICE_RATE_ABOVE_ARRIVAL=YES`;
+  `SERVICE_RATE_HEADROOM=4098.513_ROWS_PER_MINUTE`.
 
 The forward-health contract is PASS and VPS PAPER ownership acceptance has
-started. The narrow positive service-rate margin is a monitoring requirement,
-not a failure. No queue change is authorized.
+started. The effective service rate is above observed source arrival with
+verified headroom. No queue change is authorized.
 
 ## 2. Current economic reality
 
@@ -307,7 +312,7 @@ a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
 the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
 `2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
-now `AFFECTED_RSI_AFTER_BBRANGE=3`, `BLOCKED_RSI_ENTRIES=3`, `MATURE_240M=3`,
+now `AFFECTED_RSI_AFTER_BBRANGE=4`, `BLOCKED_RSI_ENTRIES=4`, `MATURE_240M=3`,
 `PENDING_240M=1`, `BAD_AVOIDED=3`, and `GOOD_MISSED=0`.
 `BAD_AVOIDED_RATE=100.00_PERCENT`, `GOOD_MISSED_RATE=0.00_PERCENT`,
 `COUNTERFACTUAL_FULL_COST_COVER=0/3`, and
@@ -405,7 +410,7 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 1. Allow VPS PAPER ownership acceptance to run naturally.
 2. Perform read-only status checks only.
 3. Preserve the frozen RSI-after-BBRANGE candidate and its exact semantics.
-4. Monitor forward canonical freshness and the narrow throughput headroom.
+4. Monitor forward canonical freshness and verified throughput headroom.
 5. Wait for mature VPS blocked opportunities and review `BAD_AVOIDED` versus `GOOD_MISSED` first.
 
 ### Next

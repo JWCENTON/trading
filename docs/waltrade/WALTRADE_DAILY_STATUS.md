@@ -36,7 +36,7 @@ This document is current truth only. Git history retains prior states.
 | LOCAL PAPER | HEALTHY / OWNERSHIP EXPERIMENT TERMINAL |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Ownership independent acceptance `IN_PROGRESS`; frozen candidate in `TREATMENT` mode |
-| Full Opportunity throughput | VPS functional correctness and forward canonical freshness PASS; narrow headroom monitored |
+| Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Equity UI canonical authority | `VPS_LIVE_COMPLETE`; Git, contract, direct-schema, and runtime-semantic parity PASS |
 | VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
@@ -96,8 +96,8 @@ gates, economic priorities, or LIVE authority.
 | Status | `IN_PROGRESS` |
 | Acceptance started | `YES` |
 | Started at | `2026-08-29T07:36:49.339989Z` |
-| Affected RSI-after-BBRANGE | 3 |
-| Blocked RSI entries | 3 |
+| Affected RSI-after-BBRANGE | 4 |
+| Blocked RSI entries | 4 |
 | Mature / pending 240m | 3 / 1 |
 | Bad avoided / good missed | 3 / 0 |
 | Bad avoided / good missed rate | 100.00% / 0.00% |
@@ -164,13 +164,18 @@ and no second treatment is authorized.
 - `FUNCTIONAL_CORRECTNESS=PASS`.
 - `FULL_PAPER_OPPORTUNITY_OBSERVATION_HEALTH=PASS`.
 - `FORWARD_CANONICAL_FRESHNESS=PASS`.
-- Cutoff missing logical, 1m, and 5m keys: `0 / 0 / 0`.
-- Not-exactly-one keys, duplicate observation keys, and duplicate causal event IDs: `0 / 0 / 0`.
+- `PAPER_RUNTIME_HEALTH=PASS`; `WORKERS=32/32_FRESH`.
+- `DB_HEALTH=PASS`; `BLOCKED_DB_SESSIONS=0`.
+- `CUTOFF_MISSING_LOGICAL_KEYS=0`; `CUTOFF_MISSING_1M_KEYS=0`;
+  `CUTOFF_MISSING_5M_KEYS=0`.
+- `DUPLICATE_OBSERVATION_KEYS=0`; `DUPLICATE_CAUSAL_EVENT_IDS=0`.
+- `NOT_EXACTLY_ONE_KEYS=0`.
 - `ELIGIBLE_UNPROCESSED_THROUGH_CUTOFF=0`.
 - `DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS`.
-- `ROWS_PER_MINUTE_EFFECTIVE=25.400`; `FORWARD_SOURCE_ARRIVAL_RATE=25.300`.
-- `SERVICE_RATE_ABOVE_ARRIVAL=YES`; headroom `+0.100_ROWS_PER_MINUTE`.
-- `THROUGHPUT_HEADROOM_MONITORING_REQUIRED=YES`; narrow positive headroom is not a failure.
+- `ROWS_PER_MINUTE_EFFECTIVE=4123.713`;
+  `FORWARD_SOURCE_ARRIVAL_RATE=25.200_PER_MINUTE`.
+- `SERVICE_RATE_ABOVE_ARRIVAL=YES`;
+  `SERVICE_RATE_HEADROOM=4098.513_ROWS_PER_MINUTE`.
 - No queue change is authorized.
 
 Permanent pipeline acceptance invariant: functional correctness must pass,
@@ -236,7 +241,7 @@ themselves.
 - Allow VPS PAPER ownership acceptance to run naturally.
 - Perform read-only status checks only.
 - Preserve the frozen ownership candidate and its unchanged semantics.
-- Monitor forward freshness and throughput headroom.
+- Monitor forward freshness and verified throughput headroom.
 - Wait for mature VPS blocked opportunities and review `BAD_AVOIDED` versus `GOOD_MISSED` first.
 
 ## NEXT
