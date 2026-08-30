@@ -189,6 +189,26 @@ themselves.
 - No movement treatment is active or authorized. The frozen ownership candidate remains unchanged and first in causal order.
 - After the ownership decision gate, ordered work is: economic floor after cost cover; context-specific movement capacity on new data; economic no-trade/new risk versus keep; same-thesis control; fee velocity; 1m/5m duplication.
 
+## Regime-dependent strategy economics
+
+- `STRATEGY_VALUE_IS_CONTEXT_DEPENDENT`.
+- Evaluate strategy value conditional on `REGIME`, `STRATEGY`, `SYMBOL`,
+  `INTERVAL`, `PORTFOLIO_STATE`, and `COST_ENVIRONMENT`.
+- Current BBRANGE dominance is not evidence for a global BBRANGE block;
+  historical TREND or SUPERTREND underperformance is not evidence for a global
+  block of either strategy.
+- Future authoritative research evaluates
+  `STRATEGY × REGIME × SYMBOL × INTERVAL` using `N`, `ADMISSION_SHARE`,
+  `NET_AFTER_COSTS`, `FEES`, `WIN_RATE`, `MFE`, `MAE`,
+  `FULL_COST_COVER_RATE`, `CAPITAL_HOURS`, `ADDITIONAL_RISK_RATE`, and
+  `MARGINAL_PORTFOLIO_VALUE`. Where sample size permits, it also evaluates
+  same-symbol existing exposure, 1m/5m overlap, same-thesis exposure, and exit
+  reason distribution.
+- Reuse existing ORC and regime evidence first: `REUSE_BEFORE_BUILD`. No new
+  regime engine or global strategy block is authorized.
+- Movement Capacity remains `NEEDS_MORE_RESEARCH` and Economic Floor remains
+  `FIRST_POST_OWNERSHIP_RESEARCH_PRIORITY`; no new treatment is authorized.
+
 ## NOW
 
 - Allow VPS PAPER ownership acceptance to run naturally.

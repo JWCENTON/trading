@@ -208,6 +208,28 @@ Additional-admission economics:
 
 The asymmetry matters. A global one-strategy-per-symbol rule is not justified. Ownership policies must be ordered, evidence-specific, and causally validated.
 
+### Regime-dependent strategy economics principle
+
+`STRATEGY_VALUE_IS_CONTEXT_DEPENDENT`. Current BBRANGE dominance does not
+prove that BBRANGE is globally bad, just as historical periods dominated by
+TREND or SUPERTREND do not prove that either strategy is globally bad.
+Strategy economics must be evaluated conditional on `REGIME`, `STRATEGY`,
+`SYMBOL`, `INTERVAL`, `PORTFOLIO_STATE`, and `COST_ENVIRONMENT`.
+
+When enough authoritative evidence exists, evaluate
+`STRATEGY × REGIME × SYMBOL × INTERVAL` with at least `N`,
+`ADMISSION_SHARE`, `NET_AFTER_COSTS`, `FEES`, `WIN_RATE`, `MFE`, `MAE`,
+`FULL_COST_COVER_RATE`, `CAPITAL_HOURS`, `ADDITIONAL_RISK_RATE`, and
+`MARGINAL_PORTFOLIO_VALUE`. Where sample size permits, also evaluate
+same-symbol existing exposure, 1m/5m overlap, same-thesis exposure, and exit
+reason distribution.
+
+Do not infer `BBRANGE_ACTIVE_NOW → BBRANGE_GLOBAL_BLOCK` or
+`TREND_LOST_IN_PRIOR_PERIOD → TREND_GLOBAL_BLOCK`. Determine whether a
+strategy is economically useful inside a specific market and regime context.
+Reuse existing ORC and regime evidence first under `REUSE_BEFORE_BUILD`; this
+principle does not authorize a new regime engine or a global strategy block.
+
 Further findings:
 
 - `SAME_THESIS_ADMISSIONS=572`

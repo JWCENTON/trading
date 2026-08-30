@@ -226,6 +226,25 @@ change or second causal treatment is authorized.
 - [x] Blind global interval block — REJECTED
 - [x] Blind one-strategy-per-symbol rule — REJECTED
 
+### Regime-dependent strategy value research contract
+
+- [x] `STRATEGY_VALUE_IS_CONTEXT_DEPENDENT` — RECORDED
+- [x] Global BBRANGE block from current activity alone — REJECTED
+- [x] Global TREND/SUPERTREND block from prior-period losses alone — REJECTED
+- [x] Required conditioning dimensions — `REGIME`, `STRATEGY`, `SYMBOL`,
+  `INTERVAL`, `PORTFOLIO_STATE`, `COST_ENVIRONMENT`
+- [x] Future matrix — `STRATEGY × REGIME × SYMBOL × INTERVAL`
+- [x] Required metrics — `N`, `ADMISSION_SHARE`, `NET_AFTER_COSTS`, `FEES`,
+  `WIN_RATE`, `MFE`, `MAE`, `FULL_COST_COVER_RATE`, `CAPITAL_HOURS`,
+  `ADDITIONAL_RISK_RATE`, `MARGINAL_PORTFOLIO_VALUE`
+- [x] Sample-permitting dimensions — same-symbol existing exposure, 1m/5m
+  overlap, same-thesis exposure, exit reason distribution
+- [x] Existing ORC/regime evidence first — `REUSE_BEFORE_BUILD`
+- [x] New regime engine — NOT REQUIRED / NOT AUTHORIZED
+- [ ] Movement Capacity — `NEEDS_MORE_RESEARCH`
+- [ ] Economic Floor — `FIRST_POST_OWNERSHIP_RESEARCH_PRIORITY`
+- [ ] New treatment — NOT AUTHORIZED
+
 ## F. Exit and profit protection
 
 - [x] Immediate tiny-positive exit — REJECTED
