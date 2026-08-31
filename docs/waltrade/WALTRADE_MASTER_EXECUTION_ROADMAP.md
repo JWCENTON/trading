@@ -312,51 +312,52 @@ a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
 the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
 `2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
-now `AFFECTED_RSI_AFTER_BBRANGE=23`, `BLOCKED_RSI_ENTRIES=23`,
-`MATURE_240M=20`, `PENDING_240M=3`, `BAD_AVOIDED=17`, and `GOOD_MISSED=3`.
-`BAD_AVOIDED_RATE=85.00_PERCENT`, `GOOD_MISSED_RATE=15.00_PERCENT`,
-`COUNTERFACTUAL_FULL_COST_COVER=3/20`, and
-`TOTAL_AVOIDED_FEES_CONFIGURED_EQUIVALENT=0.714000_USDC`. The configured fee
-equivalent is not canonical realized portfolio savings. The first qualifying
+now `AFFECTED_RSI_AFTER_BBRANGE=33`, `BLOCKED_RSI_ENTRIES=33`,
+`MATURE_240M=24`, `PENDING_240M=9`, `BAD_AVOIDED=18`, and `GOOD_MISSED=6`.
+`BAD_AVOIDED_RATE=75.00_PERCENT`, `GOOD_MISSED_RATE=25.00_PERCENT`, and
+`COUNTERFACTUAL_FULL_COST_COVER=6/24`. The first qualifying
 evidence arrived at `2026-08-29T15:07:10.579096Z`; no updated timestamp for the
 latest qualifying observation is asserted here. PAPER runtime, Full PAPER
 Opportunity Observation, and forward canonical freshness are PASS.
 
-The first formal VPS PAPER review is
-`FORMAL_REVIEW_VERDICT=PASS_BUT_MORE_EVIDENCE_REQUIRED`. All 20 mature
-observations currently cover `BTCUSDC` at `1m`. Evidence authority remains
-unavailable for counterfactual final net, counterfactual exit replay,
-incremental portfolio value, and canonical thesis linkage. The 17 bad-avoided
-observations are not 17 statistically independent trades because several
-belong to overlapping blocking-position episodes.
+The formal VPS PAPER refresh is
+`OWNERSHIP_FORMAL_REVIEW_REFRESH=PASS_BUT_MORE_EVIDENCE_REQUIRED`. Raw
+observation counts are correlated and must not be treated as independent
+trades. The current evidence spans `11` distinct blocking portfolio states,
+`8` distinct bad-avoided portfolio states, and `4` distinct good-missed
+portfolio states. All current classified observations cover `BTCUSDC` at `1m`.
 
-Same-interval evidence is `7` bad avoided and `0` good missed
-(`100.00% / 0.00%`); cross-interval evidence is `10` bad avoided and `3` good
-missed (`76.92% / 23.08%`). There are `10` distinct blocking portfolio states,
-`8` distinct bad-avoided portfolio states, and `2` distinct good-missed
-portfolio states. `AVERAGE_BAD_AVOIDED_MAE=1.080233_PERCENT`.
+Same-interval evidence is `8` bad avoided and `2` good missed;
+cross-interval evidence is `10` bad avoided and `4` good missed. Regime counts
+are bad avoided `TREND_DOWN:13,TREND_UP:3,RANGE_LOWVOL:1,SHOCK:1` and good
+missed `TREND_DOWN:4,TREND_UP:2`.
 
-The three good-missed observations—
-`9253bd79-4050-4015-afdd-d1ffaddffbba`,
-`4396bf59-e162-448e-9873-8d293f7e6b51`, and
-`cb46b545-f475-4a53-8755-c3c11dc4e3d4`—are each
-`MOVEMENT_CAPACITY_GOOD_BUT_PORTFOLIO_REDUNDANT`. Existing same-symbol BBRANGE
-exposure captured the directional movement in every case, so
-`TRUE_INCREMENTAL_GOOD_MISSED_PROVEN=0`. Authoritative terminal RSI net and
-incremental portfolio value remain unavailable.
+All six good-missed observations are portfolio-redundant:
+`TRUE_INCREMENTAL_GOOD_MISSED_COUNT=0`,
+`PORTFOLIO_REDUNDANT_GOOD_MISSED_COUNT=6`, and
+`INSUFFICIENT_EVIDENCE_GOOD_MISSED_COUNT=0`. Against the previous
+`17 BAD / 3 GOOD / 20 mature` review, the incremental cohort is
+`1 BAD / 3 GOOD / 4 mature` across `2` new distinct blocking states. All three
+new good-missed observations share `POSITION_ID=8865`:
+`NEW_GOOD_MISSED_SHARED_POSITION_COUNT=3/3`. The primary explanation is
+repeated correlated blocking states; cross-interval is secondary and explains
+only one of the three new good-missed observations. A regime-dependent failure
+and genuine rule over-blocking are not proven.
 
-`CURRENT_EVIDENCE_ECONOMICALLY_BENEFICIAL=PROMISING_BUT_NOT_FINALLY_PROVEN`;
-`GOOD_MISSED_15_PERCENT_ACCEPTABLE=YES_PROVISIONALLY`;
-`CROSS_INTERVAL_MATERIALLY_WORSE_THAN_SAME_INTERVAL=NOT_PROVEN`.
-`RULE_ACTION=KEEP_FROZEN_RULE_UNCHANGED` and
-`NARROWING_HYPOTHESIS=MONITOR_CROSS_INTERVAL_BUT_NOT_YET_SUPPORTED_FOR_CHANGE`.
-Cross-interval narrowing is a monitoring hypothesis only and creates no new
-roadmap item, treatment, or semantic authority.
+`CURRENT_RULE_ECONOMICALLY_BENEFICIAL=PROVISIONALLY_YES_MOVEMENT_PROXY_ONLY`;
+the 25% good-missed rate is provisionally acceptable because all six current
+good-missed observations are portfolio-redundant.
+`INCREMENTAL_COHORT_CONCERN_LEVEL=MODERATE_RAW_RATE_BUT_LOW_PROVEN_INCREMENTAL_HARM`,
+`CROSS_INTERVAL_MATERIALLY_WORSE=NO`, and
+`REGIME_DEPENDENT_FAILURE_SUPPORTED=NO`.
+`INSUFFICIENT_EVIDENCE_FOR_SEMANTIC_CHANGE=YES`; cross-interval narrowing
+remains a monitoring hypothesis only and creates no new roadmap item,
+treatment, or semantic authority.
 
 This VPS result remains independent acceptance evidence and must not be pooled
 with the LOCAL 4/4 discovery evidence as one formal statistical sample.
 `FORMAL_REVIEW_GATE_REACHED=YES`,
-`OWNERSHIP_FORMAL_REVIEW=PASS_BUT_MORE_EVIDENCE_REQUIRED`,
+`OWNERSHIP_FORMAL_REVIEW_REFRESH=PASS_BUT_MORE_EVIDENCE_REQUIRED`,
 `OWNERSHIP_CANDIDATE_STATUS=FROZEN_TREATMENT_CONTINUES_UNCHANGED`,
 `CONTINUE_TREATMENT=YES`, and `ADDITIONAL_NATURAL_EVIDENCE_REQUIRED=YES`.
 `SEMANTIC_CHANGE_AUTHORIZED=NO`, `LIVE_ELIGIBILITY=NOT_COMPLETE`, no second

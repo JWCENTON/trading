@@ -96,21 +96,20 @@ gates, economic priorities, or LIVE authority.
 | Status | `FROZEN_TREATMENT_CONTINUES_UNCHANGED` |
 | Acceptance started | `YES` |
 | Started at | `2026-08-29T07:36:49.339989Z` |
-| Affected RSI-after-BBRANGE | 23 |
-| Blocked RSI entries | 23 |
-| Mature / pending 240m | 20 / 3 |
-| Bad avoided / good missed | 17 / 3 |
-| Bad avoided / good missed rate | 85.00% / 15.00% |
-| Counterfactual full-cost cover | 3 / 20 |
-| Configured avoided-fee equivalent | 0.714000 USDC; not canonical realized portfolio savings |
+| Affected RSI-after-BBRANGE | 33 |
+| Blocked RSI entries | 33 |
+| Mature / pending 240m | 24 / 9 |
+| Bad avoided / good missed | 18 / 6 |
+| Bad avoided / good missed rate | 75.00% / 25.00% |
+| Counterfactual full-cost cover | 6 / 24 |
 | First qualifying evidence | `2026-08-29T15:07:10.579096Z` |
 | Runtime / observation / freshness health | `PASS / PASS / PASS` |
-| Formal review gate reached | `YES` (`MATURE_240M=20`; gate `>=5`) |
+| Formal review gate reached | `YES` (`MATURE_240M=24`; gate `>=5`) |
 | Formal review verdict | `PASS_BUT_MORE_EVIDENCE_REQUIRED` |
 | Acceptance decision | `CONTINUE_TREATMENT_UNCHANGED`; additional natural evidence required |
-| Economic assessment | `PROMISING_BUT_NOT_FINALLY_PROVEN` |
+| Economic assessment | `PROVISIONALLY_YES_MOVEMENT_PROXY_ONLY` |
 
-`OWNERSHIP_FORMAL_REVIEW=PASS_BUT_MORE_EVIDENCE_REQUIRED`;
+`OWNERSHIP_FORMAL_REVIEW_REFRESH=PASS_BUT_MORE_EVIDENCE_REQUIRED`;
 `OWNERSHIP_CANDIDATE_STATUS=FROZEN_TREATMENT_CONTINUES_UNCHANGED`;
 `CONTINUE_TREATMENT=YES`;
 `ADDITIONAL_NATURAL_EVIDENCE_REQUIRED=YES`.
@@ -123,32 +122,43 @@ gates, economic priorities, or LIVE authority.
   `COUNTERFACTUAL_EXIT_REPLAY_AUTHORITY=NOT_AVAILABLE`.
 - `INCREMENTAL_PORTFOLIO_VALUE_AUTHORITY=NOT_AVAILABLE`;
   `CANONICAL_THESIS_LINKAGE=NOT_AVAILABLE`.
-- All 20 mature observations currently cover `SYMBOL=BTCUSDC` and
-  `INTERVAL=1m`; the 17 bad-avoided observations are not 17 statistically
-  independent trades because several belong to overlapping blocking-position
-  episodes.
-- `SAME_INTERVAL_BAD_AVOIDED=7`; `SAME_INTERVAL_GOOD_MISSED=0`;
-  rates `100.00% / 0.00%`.
-- `CROSS_INTERVAL_BAD_AVOIDED=10`; `CROSS_INTERVAL_GOOD_MISSED=3`;
-  rates `76.92% / 23.08%`.
-- `DISTINCT_BLOCKING_PORTFOLIO_STATES=10`;
+- All current bad-avoided and good-missed observations cover `BTCUSDC` at
+  `1m`: `BAD_AVOIDED_BY_SYMBOL=BTCUSDC:18`,
+  `GOOD_MISSED_BY_SYMBOL=BTCUSDC:6`, `BAD_AVOIDED_BY_INTERVAL=1m:18`, and
+  `GOOD_MISSED_BY_INTERVAL=1m:6`.
+- Raw observation counts are correlated and must not be treated as independent
+  trades; several observations belong to repeated, overlapping
+  blocking-position episodes.
+- `DISTINCT_BLOCKING_PORTFOLIO_STATES=11`;
   `DISTINCT_BAD_AVOIDED_PORTFOLIO_STATES=8`;
-  `DISTINCT_GOOD_MISSED_PORTFOLIO_STATES=2`.
-- `AVERAGE_BAD_AVOIDED_MAE=1.080233%`.
-- Good-missed observations `9253bd79-4050-4015-afdd-d1ffaddffbba`,
-  `4396bf59-e162-448e-9873-8d293f7e6b51`, and
-  `cb46b545-f475-4a53-8755-c3c11dc4e3d4` are each
-  `MOVEMENT_CAPACITY_GOOD_BUT_PORTFOLIO_REDUNDANT`.
-- Existing same-symbol BBRANGE exposure captured the directional movement in
-  all three good-missed cases; `TRUE_INCREMENTAL_GOOD_MISSED_PROVEN=0`.
-- The three good-missed observations covered movement costs, but authoritative
-  terminal RSI net and incremental portfolio value remain unavailable.
-- `GOOD_MISSED_15_PERCENT_ACCEPTABLE=YES_PROVISIONALLY`;
-  `CROSS_INTERVAL_MATERIALLY_WORSE_THAN_SAME_INTERVAL=NOT_PROVEN`.
-- `RULE_ACTION=KEEP_FROZEN_RULE_UNCHANGED`;
-  `NARROWING_HYPOTHESIS=MONITOR_CROSS_INTERVAL_BUT_NOT_YET_SUPPORTED_FOR_CHANGE`.
+  `DISTINCT_GOOD_MISSED_PORTFOLIO_STATES=4`.
+- `SAME_INTERVAL_BAD_AVOIDED=8`; `SAME_INTERVAL_GOOD_MISSED=2`.
+- `CROSS_INTERVAL_BAD_AVOIDED=10`; `CROSS_INTERVAL_GOOD_MISSED=4`.
+- `BAD_AVOIDED_BY_REGIME=TREND_DOWN:13,TREND_UP:3,RANGE_LOWVOL:1,SHOCK:1`.
+- `GOOD_MISSED_BY_REGIME=TREND_DOWN:4,TREND_UP:2`.
+- `TRUE_INCREMENTAL_GOOD_MISSED_COUNT=0`;
+  `PORTFOLIO_REDUNDANT_GOOD_MISSED_COUNT=6`;
+  `INSUFFICIENT_EVIDENCE_GOOD_MISSED_COUNT=0`.
+- Previous formal review: `17 BAD / 3 GOOD / 20 mature`; incremental cohort:
+  `1 BAD / 3 GOOD / 4 mature`.
+- `NEW_INCREMENTAL_DISTINCT_BLOCKING_STATES=2`;
+  `NEW_GOOD_MISSED_SHARED_POSITION_ID=8865`;
+  `NEW_GOOD_MISSED_SHARED_POSITION_COUNT=3/3`.
+- `PRIMARY_EXPLANATION=A_REPEATED_CORRELATED_BLOCKING_STATES`;
+  `CROSS_INTERVAL_EXPLANATION=SECONDARY_ONLY_1_OF_3_NEW_GOOD_MISSED`;
+  `REGIME_EXPLANATION=NOT_SUPPORTED`.
+- `GENUINE_RULE_OVER_BLOCKING=NOT_PROVEN`;
+  `INSUFFICIENT_EVIDENCE_FOR_SEMANTIC_CHANGE=YES`.
+- `CURRENT_RULE_ECONOMICALLY_BENEFICIAL=PROVISIONALLY_YES_MOVEMENT_PROXY_ONLY`.
+- `GOOD_MISSED_RATE_ACCEPTABLE=PROVISIONALLY_YES_ALL_6_CURRENT_GOOD_MISSED_PORTFOLIO_REDUNDANT`.
+- `INCREMENTAL_COHORT_CONCERN_LEVEL=MODERATE_RAW_RATE_BUT_LOW_PROVEN_INCREMENTAL_HARM`.
+- `CROSS_INTERVAL_MATERIALLY_WORSE=NO`;
+  `REGIME_DEPENDENT_FAILURE_SUPPORTED=NO`.
 - `SEMANTIC_CHANGE_AUTHORIZED=NO`; `ECONOMIC_FLOOR_START=NO`;
   `LIVE_ELIGIBILITY=NO`.
+- `RULE_ACTION=KEEP_FROZEN_RULE_UNCHANGED`;
+  `NARROWING_HYPOTHESIS=MONITOR_CROSS_INTERVAL_BUT_NOT_YET_SUPPORTED_FOR_CHANGE`;
+  cross-interval narrowing remains monitoring only.
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 
