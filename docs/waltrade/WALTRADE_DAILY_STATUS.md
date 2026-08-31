@@ -1,6 +1,6 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-08-30
+LAST_UPDATED=2026-08-31
 
 VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
@@ -93,52 +93,70 @@ gates, economic priorities, or LIVE authority.
 | Environment | VPS PAPER |
 | Candidate | `RSI_AFTER_BBRANGE_OWNERSHIP_V1` |
 | Treatment mode | `TREATMENT` |
-| Status | `IN_PROGRESS_EARLY_REVIEW_INCONCLUSIVE` |
+| Status | `FROZEN_TREATMENT_CONTINUES_UNCHANGED` |
 | Acceptance started | `YES` |
 | Started at | `2026-08-29T07:36:49.339989Z` |
-| Affected RSI-after-BBRANGE | 11 |
-| Blocked RSI entries | 11 |
-| Mature / pending 240m | 4 / 7 |
-| Bad avoided / good missed | 3 / 1 |
-| Bad avoided / good missed rate | 75.00% / 25.00% |
-| Counterfactual full-cost cover | 1 / 4 |
-| Avoided fees | 0.126000 USDC roundtrip equivalent |
+| Affected RSI-after-BBRANGE | 23 |
+| Blocked RSI entries | 23 |
+| Mature / pending 240m | 20 / 3 |
+| Bad avoided / good missed | 17 / 3 |
+| Bad avoided / good missed rate | 85.00% / 15.00% |
+| Counterfactual full-cost cover | 3 / 20 |
+| Configured avoided-fee equivalent | 0.714000 USDC; not canonical realized portfolio savings |
 | First qualifying evidence | `2026-08-29T15:07:10.579096Z` |
 | Runtime / observation / freshness health | `PASS / PASS / PASS` |
-| Formal review gate reached | `NO` (`MATURE_240M=4`; gate `>=5`) |
-| Acceptance decision | `WAIT_FOR_MORE_MATURE_EVIDENCE` |
-| Economic verdict | `GOOD_MISSED_MOVEMENT_CAPACITY_CONFIRMED_TRUE_INCREMENTAL_WIN_NOT_YET_PROVEN_PORTFOLIO_REDUNDANCY_NOT_PROVEN` |
+| Formal review gate reached | `YES` (`MATURE_240M=20`; gate `>=5`) |
+| Formal review verdict | `PASS_BUT_MORE_EVIDENCE_REQUIRED` |
+| Acceptance decision | `CONTINUE_TREATMENT_UNCHANGED`; additional natural evidence required |
+| Economic assessment | `PROMISING_BUT_NOT_FINALLY_PROVEN` |
 
-`OWNERSHIP_VPS_PAPER=MATURE_240M_4_OF_5`;
-`PENDING_240M=7`;
-`BAD_AVOIDED=3`;
-`GOOD_MISSED=1`;
-`DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`.
+`OWNERSHIP_FORMAL_REVIEW=PASS_BUT_MORE_EVIDENCE_REQUIRED`;
+`OWNERSHIP_CANDIDATE_STATUS=FROZEN_TREATMENT_CONTINUES_UNCHANGED`;
+`CONTINUE_TREATMENT=YES`;
+`ADDITIONAL_NATURAL_EVIDENCE_REQUIRED=YES`.
 
-### Early economic review
+### Formal economic review boundaries and interpretation
 
-- `GOOD_MISSED_OBSERVATION_ID=9253bd79-4050-4015-afdd-d1ffaddffbba`.
-- `GOOD_MISSED_MFE_PCT=0.873661125766773671`;
-  `GOOD_MISSED_FULL_COST_HURDLE_PCT=0.702458605117912694`.
-- `GOOD_MISSED_TIME_TO_FULL_COST_COVER_SECONDS=10740`.
-- `GOOD_MISSED_MARKET_ROWS=240/240`; `GOOD_MISSED_MARKET_DATA_GAPS=0`.
-- `DID_EXISTING_BBRANGE_CAPTURE_SAME_MOVE=NO`;
-  `CROSS_INTERVAL_OWNERSHIP_EFFECT=YES`.
-- `RSI_COUNTERFACTUAL_FINAL_NET=NOT_AVAILABLE`;
-  `RSI_INCREMENTAL_PORTFOLIO_VALUE=NOT_AVAILABLE`.
-- `EARLY_REVIEW_VERDICT=GOOD_MISSED_MOVEMENT_CAPACITY_CONFIRMED_TRUE_INCREMENTAL_WIN_NOT_YET_PROVEN_PORTFOLIO_REDUNDANCY_NOT_PROVEN`.
-- `OWNERSHIP_CANDIDATE_STATUS=IN_PROGRESS_EARLY_REVIEW_INCONCLUSIVE`;
-  `CONTINUE_TREATMENT=YES`; `FORMAL_REVIEW_AT_5_STILL_REQUIRED=YES`.
-- `REVIEW_CROSS_INTERVAL_OWNERSHIP_EFFECT=YES` is a future review question,
-  not an authorized ownership or cross-interval rule change.
+- `SERVER=VPS`; `ENVIRONMENT=PAPER`;
+  `MODE=READ_ONLY_FORMAL_ECONOMIC_REVIEW`.
+- `COUNTERFACTUAL_FINAL_NET_AUTHORITY=NOT_AVAILABLE`;
+  `COUNTERFACTUAL_EXIT_REPLAY_AUTHORITY=NOT_AVAILABLE`.
+- `INCREMENTAL_PORTFOLIO_VALUE_AUTHORITY=NOT_AVAILABLE`;
+  `CANONICAL_THESIS_LINKAGE=NOT_AVAILABLE`.
+- All 20 mature observations currently cover `SYMBOL=BTCUSDC` and
+  `INTERVAL=1m`; the 17 bad-avoided observations are not 17 statistically
+  independent trades because several belong to overlapping blocking-position
+  episodes.
+- `SAME_INTERVAL_BAD_AVOIDED=7`; `SAME_INTERVAL_GOOD_MISSED=0`;
+  rates `100.00% / 0.00%`.
+- `CROSS_INTERVAL_BAD_AVOIDED=10`; `CROSS_INTERVAL_GOOD_MISSED=3`;
+  rates `76.92% / 23.08%`.
+- `DISTINCT_BLOCKING_PORTFOLIO_STATES=10`;
+  `DISTINCT_BAD_AVOIDED_PORTFOLIO_STATES=8`;
+  `DISTINCT_GOOD_MISSED_PORTFOLIO_STATES=2`.
+- `AVERAGE_BAD_AVOIDED_MAE=1.080233%`.
+- Good-missed observations `9253bd79-4050-4015-afdd-d1ffaddffbba`,
+  `4396bf59-e162-448e-9873-8d293f7e6b51`, and
+  `cb46b545-f475-4a53-8755-c3c11dc4e3d4` are each
+  `MOVEMENT_CAPACITY_GOOD_BUT_PORTFOLIO_REDUNDANT`.
+- Existing same-symbol BBRANGE exposure captured the directional movement in
+  all three good-missed cases; `TRUE_INCREMENTAL_GOOD_MISSED_PROVEN=0`.
+- The three good-missed observations covered movement costs, but authoritative
+  terminal RSI net and incremental portfolio value remain unavailable.
+- `GOOD_MISSED_15_PERCENT_ACCEPTABLE=YES_PROVISIONALLY`;
+  `CROSS_INTERVAL_MATERIALLY_WORSE_THAN_SAME_INTERVAL=NOT_PROVEN`.
+- `RULE_ACTION=KEEP_FROZEN_RULE_UNCHANGED`;
+  `NARROWING_HYPOTHESIS=MONITOR_CROSS_INTERVAL_BUT_NOT_YET_SUPPORTED_FOR_CHANGE`.
+- `SEMANTIC_CHANGE_AUTHORIZED=NO`; `ECONOMIC_FLOOR_START=NO`;
+  `LIVE_ELIGIBILITY=NO`.
 
 Do not hardcode this phase elsewhere. Update this current-truth file from the experiment artifact when the series changes phase or becomes terminal.
 
-This is independent VPS PAPER ownership evidence, not proof. Keep it
+This is independent VPS PAPER ownership evidence, not final proof. Keep it
 separate from the LOCAL 4/4 discovery result; the two environments are not one
-formal statistical sample. `FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`, so the
-4/5 formal review gate has not been reached. `LIVE_ELIGIBILITY=NOT_COMPLETE`,
-and no second treatment is authorized.
+formal statistical sample. The first formal review gate has been reached and
+passed with more evidence required. `LIVE_ELIGIBILITY=NOT_COMPLETE`, no second
+treatment is authorized, and no cross-interval narrowing is authorized.
 
 ## Equity UI canonical read authority
 
@@ -259,13 +277,13 @@ themselves.
 - Perform read-only status checks only.
 - Preserve the frozen ownership candidate and its unchanged semantics.
 - Monitor forward freshness and verified throughput headroom.
-- Wait for mature VPS blocked opportunities and review `BAD_AVOIDED` versus `GOOD_MISSED` first.
+- Continue unchanged treatment and collect additional natural VPS evidence after the formal review.
 
 ## NEXT
 
 - `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
-- First formal economic review at `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes materially concerning earlier.
-- `MATURE_240M >= 5` is first review, not proof or automatic LIVE eligibility; 5/5 alone cannot authorize LIVE.
+- First formal economic review — COMPLETE: `PASS_BUT_MORE_EVIDENCE_REQUIRED`.
+- Continue sequential review; the completed formal review is not proof or automatic LIVE eligibility.
 - No arbitrary N=20 or N=30 requirement.
 - Require independent VPS PAPER acceptance before any LIVE eligibility decision.
 - Movement capacity remains `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.

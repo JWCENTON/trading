@@ -312,41 +312,57 @@ a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
 the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
 Independent VPS PAPER acceptance started at
 `2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
-now `AFFECTED_RSI_AFTER_BBRANGE=11`, `BLOCKED_RSI_ENTRIES=11`,
-`MATURE_240M=4`, `PENDING_240M=7`, `BAD_AVOIDED=3`, and `GOOD_MISSED=1`.
-`BAD_AVOIDED_RATE=75.00_PERCENT`, `GOOD_MISSED_RATE=25.00_PERCENT`,
-`COUNTERFACTUAL_FULL_COST_COVER=1/4`, and
-`AVOIDED_FEES=0.126000_USDC_ROUNDTRIP_EQUIVALENT`. The first qualifying
+now `AFFECTED_RSI_AFTER_BBRANGE=23`, `BLOCKED_RSI_ENTRIES=23`,
+`MATURE_240M=20`, `PENDING_240M=3`, `BAD_AVOIDED=17`, and `GOOD_MISSED=3`.
+`BAD_AVOIDED_RATE=85.00_PERCENT`, `GOOD_MISSED_RATE=15.00_PERCENT`,
+`COUNTERFACTUAL_FULL_COST_COVER=3/20`, and
+`TOTAL_AVOIDED_FEES_CONFIGURED_EQUIVALENT=0.714000_USDC`. The configured fee
+equivalent is not canonical realized portfolio savings. The first qualifying
 evidence arrived at `2026-08-29T15:07:10.579096Z`; no updated timestamp for the
 latest qualifying observation is asserted here. PAPER runtime, Full PAPER
 Opportunity Observation, and forward canonical freshness are PASS.
 
-The early economic review identifies one good-missed observation:
-`GOOD_MISSED_OBSERVATION_ID=9253bd79-4050-4015-afdd-d1ffaddffbba`, with
-`GOOD_MISSED_MFE_PCT=0.873661125766773671` against
-`GOOD_MISSED_FULL_COST_HURDLE_PCT=0.702458605117912694`, time to full cost
-cover `10740` seconds, `GOOD_MISSED_MARKET_ROWS=240/240`, and
-`GOOD_MISSED_MARKET_DATA_GAPS=0`. Existing BBRANGE did not capture the same
-move, so `CROSS_INTERVAL_OWNERSHIP_EFFECT=YES`; however,
-`RSI_COUNTERFACTUAL_FINAL_NET=NOT_AVAILABLE` and
-`RSI_INCREMENTAL_PORTFOLIO_VALUE=NOT_AVAILABLE`. Movement capacity is
-confirmed, but a true incremental win is not yet proven and portfolio
-redundancy is not proven.
+The first formal VPS PAPER review is
+`FORMAL_REVIEW_VERDICT=PASS_BUT_MORE_EVIDENCE_REQUIRED`. All 20 mature
+observations currently cover `BTCUSDC` at `1m`. Evidence authority remains
+unavailable for counterfactual final net, counterfactual exit replay,
+incremental portfolio value, and canonical thesis linkage. The 17 bad-avoided
+observations are not 17 statistically independent trades because several
+belong to overlapping blocking-position episodes.
 
-`EARLY_REVIEW_VERDICT=GOOD_MISSED_MOVEMENT_CAPACITY_CONFIRMED_TRUE_INCREMENTAL_WIN_NOT_YET_PROVEN_PORTFOLIO_REDUNDANCY_NOT_PROVEN`.
-`OWNERSHIP_CANDIDATE_STATUS=IN_PROGRESS_EARLY_REVIEW_INCONCLUSIVE`,
-`CONTINUE_TREATMENT=YES`, and `FORMAL_REVIEW_AT_5_STILL_REQUIRED=YES`.
-`REVIEW_CROSS_INTERVAL_OWNERSHIP_EFFECT=YES` is a future review question only;
-no cross-interval or ownership rule change is authorized.
+Same-interval evidence is `7` bad avoided and `0` good missed
+(`100.00% / 0.00%`); cross-interval evidence is `10` bad avoided and `3` good
+missed (`76.92% / 23.08%`). There are `10` distinct blocking portfolio states,
+`8` distinct bad-avoided portfolio states, and `2` distinct good-missed
+portfolio states. `AVERAGE_BAD_AVOIDED_MAE=1.080233_PERCENT`.
 
-This VPS result remains in progress and the early review is inconclusive, not
-proof. It remains independent acceptance evidence and must not be pooled with
-the LOCAL 4/4 discovery evidence as one formal statistical sample.
-`FIRST_FORMAL_REVIEW_WHEN=MATURE_240M>=5`;
-`FORMAL_REVIEW_GATE_REACHED=NO` and
-`ACCEPTANCE_DECISION=WAIT_FOR_MORE_MATURE_EVIDENCE`. The gate is not reached,
-`LIVE_ELIGIBILITY=NOT_COMPLETE`, no second treatment is authorized, and LIVE
-Capital Preservation remains active.
+The three good-missed observations—
+`9253bd79-4050-4015-afdd-d1ffaddffbba`,
+`4396bf59-e162-448e-9873-8d293f7e6b51`, and
+`cb46b545-f475-4a53-8755-c3c11dc4e3d4`—are each
+`MOVEMENT_CAPACITY_GOOD_BUT_PORTFOLIO_REDUNDANT`. Existing same-symbol BBRANGE
+exposure captured the directional movement in every case, so
+`TRUE_INCREMENTAL_GOOD_MISSED_PROVEN=0`. Authoritative terminal RSI net and
+incremental portfolio value remain unavailable.
+
+`CURRENT_EVIDENCE_ECONOMICALLY_BENEFICIAL=PROMISING_BUT_NOT_FINALLY_PROVEN`;
+`GOOD_MISSED_15_PERCENT_ACCEPTABLE=YES_PROVISIONALLY`;
+`CROSS_INTERVAL_MATERIALLY_WORSE_THAN_SAME_INTERVAL=NOT_PROVEN`.
+`RULE_ACTION=KEEP_FROZEN_RULE_UNCHANGED` and
+`NARROWING_HYPOTHESIS=MONITOR_CROSS_INTERVAL_BUT_NOT_YET_SUPPORTED_FOR_CHANGE`.
+Cross-interval narrowing is a monitoring hypothesis only and creates no new
+roadmap item, treatment, or semantic authority.
+
+This VPS result remains independent acceptance evidence and must not be pooled
+with the LOCAL 4/4 discovery evidence as one formal statistical sample.
+`FORMAL_REVIEW_GATE_REACHED=YES`,
+`OWNERSHIP_FORMAL_REVIEW=PASS_BUT_MORE_EVIDENCE_REQUIRED`,
+`OWNERSHIP_CANDIDATE_STATUS=FROZEN_TREATMENT_CONTINUES_UNCHANGED`,
+`CONTINUE_TREATMENT=YES`, and `ADDITIONAL_NATURAL_EVIDENCE_REQUIRED=YES`.
+`SEMANTIC_CHANGE_AUTHORIZED=NO`, `LIVE_ELIGIBILITY=NOT_COMPLETE`, no second
+treatment is authorized, and LIVE Capital Preservation remains active.
+Economic Floor remains the next post-ownership research priority but
+`ECONOMIC_FLOOR_START=NO`.
 
 `OWNERSHIP_ACCEPTANCE_STARTED=YES`;
 `OWNERSHIP_TREATMENT_MODE=TREATMENT`;
@@ -430,12 +446,12 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 2. Perform read-only status checks only.
 3. Preserve the frozen RSI-after-BBRANGE candidate and its exact semantics.
 4. Monitor forward canonical freshness and verified throughput headroom.
-5. Wait for mature VPS blocked opportunities and review `BAD_AVOIDED` versus `GOOD_MISSED` first.
+5. Continue unchanged treatment and collect additional natural VPS evidence after the formal review.
 
 ### Next
 
 1. `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
-2. Perform the first formal economic review when `MATURE_240M >= 5`, unless `GOOD_MISSED` becomes materially concerning earlier.
+2. First formal economic review — COMPLETE: `PASS_BUT_MORE_EVIDENCE_REQUIRED`; continue sequential review.
 3. Do not impose an arbitrary N=20 or N=30 requirement.
 4. Require independent VPS PAPER causal acceptance before any LIVE decision.
 5. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until replication and its safety/economic gates pass.
