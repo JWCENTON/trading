@@ -25,11 +25,18 @@ The North Star is frozen in [WALTRADE_CONSTITUTION.md](WALTRADE_CONSTITUTION.md)
 | Full roundtrip break-even movement | `~0.7024586051%` |
 | LOCAL LIVE capital preservation | `ACTIVE`; new entries `NO`; exit/close `YES` |
 | VPS LIVE capital preservation | `ACTIVE`; new entries `NO`; exit/close `YES` |
+| Expected VPS LIVE slots | `28`; prior `32` used the full PAPER universe as the LIVE denominator |
 | LOCAL full-opportunity throughput fix | `PASS`; exact projection indexes |
 
 PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen Fee V2 contract are atomic across all four strategies. Missing or conflicting frozen ENTRY fee evidence fails closed before PAPER exit intent. The Risk Budget STATE_EVALUATION immutable-event contract is deployed with stable semantic equality, frozen upstream evidence, provenance normalization, idempotent same-cutoff retry, and true-conflict fail-closed behavior.
 
 Git SHA alone is insufficient: relevant rollouts require Git, contract, direct schema dependency, and runtime/semantic parity.
+
+`CURRENT_EXPECTED_VPS_LIVE_SLOT_COUNT=28`.
+`WHY_28_VS_32=EARLIER_STATUS_USED_FULL_PAPER_UNIVERSE_AS_LIVE_DENOMINATOR`.
+This clarification changes no config contract, runtime contract, or safety
+authority: `CONFIG_CONTRACT_CHANGE=NO`, `RUNTIME_CONTRACT_CHANGE=NO`, and
+`SAFETY_IMPACT=NO`.
 
 ### LOCAL / VPS governance
 
@@ -106,7 +113,7 @@ out for this change.
 - `VPS_PAPER_DIRECT_SCHEMA_DEPENDENCY_REPAIR=COMPLETE`.
 - `ROOT_CAUSE=EXPENSIVE_PROJECTION_LOOKUPS_PLUS_FIFO_SINGLE_CONSUMER`.
 - `LOCAL_THROUGHPUT_FIX=PASS`: exact indexes now serve the evidence and entry-trace projection lookups without changing FIFO or canonical payload semantics.
-- `OWNERSHIP_CANDIDATE=FROZEN_UNCHANGED`.
+- `OWNERSHIP_V1_FROZEN_COHORT=UNCHANGED`.
 - `FUNCTIONAL_CORRECTNESS=PASS`.
 - `FULL_PAPER_OPPORTUNITY_OBSERVATION_HEALTH=PASS`.
 - `FORWARD_CANONICAL_FRESHNESS=PASS`.
@@ -122,10 +129,12 @@ out for this change.
   `FORWARD_SOURCE_ARRIVAL_RATE=25.200_PER_MINUTE`.
 - `SERVICE_RATE_ABOVE_ARRIVAL=YES`;
   `SERVICE_RATE_HEADROOM=4098.513_ROWS_PER_MINUTE`.
+- `THROUGHPUT_COMPARISON_VERDICT=METRIC_DEFINITION_INCONSISTENCY_CATCHUP_DRAIN_CAPACITY_VS_STEADY_STATE_REALIZED_RATE_NO_ACTUAL_REGRESSION_PROVEN`.
+- `CURRENT_PIPELINE_RISK=MODERATE`; `PIPELINE_CHANGE_REQUIRED=NO`.
 
-The forward-health contract is PASS and VPS PAPER ownership acceptance has
-started. The effective service rate is above observed source arrival with
-verified headroom. No queue change is authorized.
+The forward-health contract is PASS. Catch-up drain capacity and steady-state
+realized rate are different metric definitions; no actual regression is
+proven. No queue change is authorized.
 
 ## 2. Current economic reality
 
@@ -187,8 +196,7 @@ cohort. Selection semantics must precede outcomes:
 
 ## 3. Ranked STOP LOSING mechanisms
 
-Ordered economic work after the current frozen ownership acceptance reaches
-its decision gate:
+With Ownership V1 complete, ordered economic work is:
 
 1. `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` — exit-only causal research
 2. `MOVEMENT_CAPACITY` — context-specific research on new, untouched data
@@ -275,19 +283,23 @@ Its intended semantics are upside-open with downside protection only after full 
 
 ## 7. Current causal work
 
-The frozen ownership candidate has one unchanged rule:
+The bounded V1 experiment tested this broad frozen rule:
 
 > If an RSI admission candidate has a same-symbol OPEN BBRANGE position with positive remaining inventory, block only that additional RSI PAPER admission.
 
 Reason: `STOP_LOSING_OWNERSHIP_RSI_AFTER_BBRANGE`.
 
-Sequence: `CONTROL → TREATMENT → CONTROL`, with an optional second treatment only if useful exposure justifies it. Primary outcome: `BAD_AVOIDED` versus `GOOD_MISSED`. Fewer trades alone is not success. Counterfactual observation must mature through 240-minute MFE, MAE, full-cost cover, time-to-cost-cover, and economic viability.
+Sequence: `CONTROL → TREATMENT → CONTROL`. Primary outcome: `BAD_AVOIDED`
+versus `GOOD_MISSED`. Fewer trades alone is not success. Counterfactual
+observation must mature through 240-minute MFE, MAE, full-cost cover,
+time-to-cost-cover, and economic viability. No second V1 treatment is
+authorized.
 
 Current verified state:
 
 - `LOCAL_OWNERSHIP_EXPERIMENT=TERMINAL`
-- `VPS_OWNERSHIP_ACCEPTANCE=IN_PROGRESS`
-- `OWNERSHIP_TREATMENT_MODE=TREATMENT`
+- `VPS_OWNERSHIP_V1_DECISION=TERMINAL`
+- `OWNERSHIP_V1_FINAL_VERDICT=NARROWING_HYPOTHESIS_SUPPORTED`
 - `TERMINAL_REASON=GLOBAL_DB_SAFETY_FAIL`
 - `GLOBAL_DB_RISK_ACTUALLY_PRESENT=YES`
 - `SAFETY_ABORT_CLASSIFICATION=CORRECT_REAL_GLOBAL_DB_RISK`
@@ -307,67 +319,62 @@ All four preserved LOCAL treatment counterfactuals have matured:
 `LOCAL_MATURE_240M=4`, `LOCAL_PENDING_240M=0`, `LOCAL_BAD_AVOIDED=4`, and
 `LOCAL_GOOD_MISSED=0`.
 This is
-`OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`, not proof of
+`LOCAL_OWNERSHIP_STATUS=PROMISING_INITIAL_CAUSAL_EVIDENCE_NOT_PROVEN`, not proof of
 a final ownership policy. `LOCAL_DISCOVERY=COMPLETE_FOR_CANDIDATE_FREEZE` and
-the unchanged `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate is `FROZEN`.
-Independent VPS PAPER acceptance started at
-`2026-08-29T07:36:49.339989Z` in `TREATMENT` mode. Independent VPS evidence is
-now `AFFECTED_RSI_AFTER_BBRANGE=33`, `BLOCKED_RSI_ENTRIES=33`,
-`MATURE_240M=24`, `PENDING_240M=9`, `BAD_AVOIDED=18`, and `GOOD_MISSED=6`.
-`BAD_AVOIDED_RATE=75.00_PERCENT`, `GOOD_MISSED_RATE=25.00_PERCENT`, and
-`COUNTERFACTUAL_FULL_COST_COVER=6/24`. The first qualifying
-evidence arrived at `2026-08-29T15:07:10.579096Z`; no updated timestamp for the
-latest qualifying observation is asserted here. PAPER runtime, Full PAPER
-Opportunity Observation, and forward canonical freshness are PASS.
+the LOCAL `RSI_AFTER_BBRANGE_OWNERSHIP_V1` candidate evidence is `FROZEN`.
+The VPS PAPER V3 frozen cohort contains `MATURE_240M=34`, `BAD_AVOIDED=23`,
+and `GOOD_MISSED=11`. Raw observations are correlated and must not be treated
+as independent trades. The cohort spans `16` distinct blocking portfolio
+states, `9` distinct bad-avoided portfolio states, and `8` distinct
+good-missed portfolio states. All 11 good-missed observations are
+portfolio-redundant: `TRUE_INCREMENTAL_GOOD_MISSED_COUNT=0`,
+`PORTFOLIO_REDUNDANT_GOOD_MISSED_COUNT=11`, and
+`INSUFFICIENT_EVIDENCE_GOOD_MISSED_COUNT=0`.
 
-The formal VPS PAPER refresh is
-`OWNERSHIP_FORMAL_REVIEW_REFRESH=PASS_BUT_MORE_EVIDENCE_REQUIRED`. Raw
-observation counts are correlated and must not be treated as independent
-trades. The current evidence spans `11` distinct blocking portfolio states,
-`8` distinct bad-avoided portfolio states, and `4` distinct good-missed
-portfolio states. All current classified observations cover `BTCUSDC` at `1m`.
+Same-interval evidence is `13` bad avoided and `2` good missed, with
+`SAME_INTERVAL_GOOD_RATE=13.33_PERCENT`. Cross-interval evidence is `10` bad
+avoided and `9` good missed, with `CROSS_INTERVAL_GOOD_RATE=47.37_PERCENT` and
+`CROSS_INTERVAL_VS_SAME_INTERVAL_RATE_RATIO=3.55`.
+`SYMBOL_INTERVAL_CONCENTRATION=BTCUSDC_1m_ONLY`.
 
-Same-interval evidence is `8` bad avoided and `2` good missed;
-cross-interval evidence is `10` bad avoided and `4` good missed. Regime counts
-are bad avoided `TREND_DOWN:13,TREND_UP:3,RANGE_LOWVOL:1,SHOCK:1` and good
-missed `TREND_DOWN:4,TREND_UP:2`.
+`CURRENT_RULE_ECONOMICALLY_BENEFICIAL=NOT_PROVEN`,
+`GOOD_MISSED_RATE_ACCEPTABLE=NO`, and
+`CROSS_INTERVAL_MATERIALLY_WORSE=YES`. Genuine rule over-blocking is not
+proven, regime-dependent failure is not supported, and no true-incremental
+good-missed outcome is currently proven.
 
-All six good-missed observations are portfolio-redundant:
-`TRUE_INCREMENTAL_GOOD_MISSED_COUNT=0`,
-`PORTFOLIO_REDUNDANT_GOOD_MISSED_COUNT=6`, and
-`INSUFFICIENT_EVIDENCE_GOOD_MISSED_COUNT=0`. Against the previous
-`17 BAD / 3 GOOD / 20 mature` review, the incremental cohort is
-`1 BAD / 3 GOOD / 4 mature` across `2` new distinct blocking states. All three
-new good-missed observations share `POSITION_ID=8865`:
-`NEW_GOOD_MISSED_SHARED_POSITION_COUNT=3/3`. The primary explanation is
-repeated correlated blocking states; cross-interval is secondary and explains
-only one of the three new good-missed observations. A regime-dependent failure
-and genuine rule over-blocking are not proven.
+Final V1 decision:
 
-`CURRENT_RULE_ECONOMICALLY_BENEFICIAL=PROVISIONALLY_YES_MOVEMENT_PROXY_ONLY`;
-the 25% good-missed rate is provisionally acceptable because all six current
-good-missed observations are portfolio-redundant.
-`INCREMENTAL_COHORT_CONCERN_LEVEL=MODERATE_RAW_RATE_BUT_LOW_PROVEN_INCREMENTAL_HARM`,
-`CROSS_INTERVAL_MATERIALLY_WORSE=NO`, and
-`REGIME_DEPENDENT_FAILURE_SUPPORTED=NO`.
-`INSUFFICIENT_EVIDENCE_FOR_SEMANTIC_CHANGE=YES`; cross-interval narrowing
-remains a monitoring hypothesis only and creates no new roadmap item,
-treatment, or semantic authority.
+- `OWNERSHIP_V1_STATUS=TERMINAL`
+- `OWNERSHIP_V1_FINAL_VERDICT=NARROWING_HYPOTHESIS_SUPPORTED`
+- `OWNERSHIP_V1_GLOBAL_RULE_QUALIFIED=NO`
+- `OWNERSHIP_MECHANISM_REJECTED=NO`
+- `SAME_INTERVAL_OWNERSHIP_PROMISING=YES`
+- `CROSS_INTERVAL_OWNERSHIP_CONCERN=YES`
 
-This VPS result remains independent acceptance evidence and must not be pooled
-with the LOCAL 4/4 discovery evidence as one formal statistical sample.
-`FORMAL_REVIEW_GATE_REACHED=YES`,
-`OWNERSHIP_FORMAL_REVIEW_REFRESH=PASS_BUT_MORE_EVIDENCE_REQUIRED`,
-`OWNERSHIP_CANDIDATE_STATUS=FROZEN_TREATMENT_CONTINUES_UNCHANGED`,
-`CONTINUE_TREATMENT=YES`, and `ADDITIONAL_NATURAL_EVIDENCE_REQUIRED=YES`.
-`SEMANTIC_CHANGE_AUTHORIZED=NO`, `LIVE_ELIGIBILITY=NOT_COMPLETE`, no second
-treatment is authorized, and LIVE Capital Preservation remains active.
-Economic Floor remains the next post-ownership research priority but
-`ECONOMIC_FLOOR_START=NO`.
+Ownership as a mechanism is not rejected, but broad V1 is not qualified
+unchanged. Further V1 observation is not required for the decision, and V1
+must not be tuned in place. LOCAL discovery remains separate from VPS
+acceptance; their evidence is not pooled as one formal statistical sample.
 
-`OWNERSHIP_ACCEPTANCE_STARTED=YES`;
-`OWNERSHIP_TREATMENT_MODE=TREATMENT`;
-`OWNERSHIP_CANDIDATE=RSI_AFTER_BBRANGE_OWNERSHIP_V1`.
+The next frozen ownership hypothesis is documentation-only:
+`RSI_AFTER_BBRANGE_OWNERSHIP_V2_SAME_INTERVAL`.
+
+> If the candidate strategy is RSI, a same-symbol OPEN BBRANGE position exists,
+> the BBRANGE interval equals the RSI candidate interval, and remaining
+> inventory is greater than zero, block only that additional RSI PAPER
+> admission.
+
+A BBRANGE position on another interval alone must not confer ownership. V2 is
+not implemented or active, adds no regime, symbol, age, PnL, MFE, score, or
+other condition, and performs no parameter tuning. Any future authorized V2
+activation must use new natural evidence.
+
+`OWNERSHIP_V1=COMPLETE`; `OWNERSHIP_V2_IMPLEMENTED=NO`;
+`LIVE_ELIGIBILITY=NO`; no second V1 treatment is authorized. Economic Floor
+remains the next post-ownership research priority and moves to
+`NEXT_READY_FOR_RESEARCH_DESIGN`, with `ECONOMIC_FLOOR_START=NO` and
+`ECONOMIC_FLOOR_IMPLEMENTED=NO` in this docs task.
 
 `LONG_RUN_SAFETY_PREFLIGHT=PASS`: the terminal-condition catalog is complete,
 recent logs pass replay against it, background errors are classified, task
@@ -443,23 +450,19 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 
 ### Now
 
-1. Allow VPS PAPER ownership acceptance to run naturally.
-2. Perform read-only status checks only.
-3. Preserve the frozen RSI-after-BBRANGE candidate and its exact semantics.
-4. Monitor forward canonical freshness and verified throughput headroom.
-5. Continue unchanged treatment and collect additional natural VPS evidence after the formal review.
+1. `OWNERSHIP_V1=COMPLETE`; do not tune V1 in place.
+2. Preserve V2 as a documentation-only frozen hypothesis; do not implement or activate it.
+3. Prepare Economic Floor research design without implementing or activating the exit candidate.
+4. Monitor forward canonical freshness and moderate pipeline risk; no pipeline change is required.
 
 ### Next
 
-1. `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
-2. First formal economic review — COMPLETE: `PASS_BUT_MORE_EVIDENCE_REQUIRED`; continue sequential review.
-3. Do not impose an arbitrary N=20 or N=30 requirement.
-4. Require independent VPS PAPER causal acceptance before any LIVE decision.
-5. Keep `LIVE_ELIGIBILITY=NOT_COMPLETE` until replication and its safety/economic gates pass.
-6. Keep movement capacity at `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
-7. After the ownership decision gate, prioritize `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` as separate exit-only causal research.
-8. Then perform context-specific movement-capacity research on new, untouched data only.
-9. Then evaluate economic no-trade / new-risk-versus-keep, same-thesis control, fee velocity, and finally 1m/5m semantic duplication.
+1. `CURRENT_STAGE=ECONOMIC_FLOOR_AFTER_COST_COVER_V1_RESEARCH_DESIGN_READY`.
+2. Design `ECONOMIC_FLOOR_AFTER_COST_COVER_V1` as separate exit-only causal research.
+3. Then perform context-specific movement-capacity research on new, untouched data only.
+4. Then evaluate economic no-trade / new-risk-versus-keep, same-thesis control, fee velocity, and finally 1m/5m semantic duplication.
+5. Any future V2 activation requires separate authorization and new natural evidence.
+6. Keep `LIVE_ELIGIBILITY=NO`; ownership V1 closure creates no LIVE authority.
 
 The economic-floor priority follows a proven secondary leak: 115
 tiny-positive-to-final-loss cases, of which 112 ended through
@@ -467,8 +470,8 @@ tiny-positive-to-final-loss cases, of which 112 ended through
 floor, armed only after authoritative full cost is covered, reduces giveback
 while keeping winner upside open. This does not authorize a final exit rule,
 fixed take-profit, immediate tiny-positive exit, or `TIME_EXIT` as an economic
-exit. Entry and exit treatments must not be mixed, and the exit candidate must
-not start before current ownership acceptance reaches its decision gate.
+exit. Entry and exit treatments must not be mixed. Research-design readiness
+does not implement, activate, or authorize the exit candidate.
 
 ### Only after economic proof
 
