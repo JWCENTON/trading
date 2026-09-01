@@ -36,6 +36,8 @@ from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.exit_guards.economic_floor_shadow import (
+    ACTIVE_EXIT_REASON,
+    claim_active_economic_floor_exit,
     observe_economic_floor_shadow,
     reconcile_economic_floor_shadow_closures,
 )
@@ -3100,6 +3102,36 @@ def _run_strategy(row, prev_row=None):
                             position_id=_pos_id,
                         )
                 
+            economic_floor = claim_active_economic_floor_exit(
+                trading_mode=cfg_effective.trading_mode,
+                position_id=int(_pos_id), symbol=SYMBOL, interval=INTERVAL,
+                strategy=STRATEGY_NAME, current_price=Decimal(str(price)),
+                observed_at=open_time, source_candle_id=open_time.isoformat(),
+                connection_factory=get_db_conn,
+            )
+            if economic_floor.exit_requested:
+                exit_side = "SELL" if pos_side_u == "LONG" else "BUY"
+                res = execute_exit_safe(
+                    exit_side=exit_side, price=price, qty_btc=qty_f,
+                    reason_text=ACTIVE_EXIT_REASON,
+                    candle_open_time=open_time, cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
+                    exit_kind=ACTIVE_EXIT_REASON,
+                )
+                if not _rsi_execution_succeeded(res, cfg_effective):
+                    emit_blocked(
+                        reason="EXIT_BLOCKED", decision=exit_side, price=price,
+                        candle_open_time=open_time,
+                        info={"res": res, "exit_kind": ACTIVE_EXIT_REASON},
+                    )
+                return _rsi_exit_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.BREAK_EVEN_PROTECT,
+                    reason_text=ACTIVE_EXIT_REASON, side=exit_side, price=price,
+                    position_id=_pos_id,
+                )
+
             # PROFIT LOCK: stateful high-watermark guard based on candle path since entry.
             # Captures profits for RSI/TREND/SUPERTREND/BBRANGE and intentionally excludes legacy SUPER_TREND config rows.
             if pos_entry_time is not None:

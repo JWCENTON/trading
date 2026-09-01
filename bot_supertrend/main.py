@@ -35,6 +35,8 @@ from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.exit_guards.economic_floor_shadow import (
+    ACTIVE_EXIT_REASON,
+    claim_active_economic_floor_exit,
     observe_economic_floor_shadow,
     reconcile_economic_floor_shadow_closures,
 )
@@ -2858,6 +2860,40 @@ def _run_strategy(latest, prev, *, freshness_context=None):
                     evaluation, res, cfg_effective,
                     reason_code=DecisionReason.STOP_LOSS, reason_text=reason,
                     side="SELL", price=price, position_id=int(pos[0]), is_exit=True,
+                )
+
+            economic_floor = claim_active_economic_floor_exit(
+                trading_mode=cfg_effective.trading_mode,
+                position_id=int(pos[0]), symbol=SYMBOL, interval=INTERVAL,
+                strategy=STRATEGY_NAME, current_price=Decimal(str(price)),
+                observed_at=open_time, source_candle_id=open_time.isoformat(),
+                connection_factory=get_db_conn,
+            )
+            if economic_floor.exit_requested:
+                res = execute_and_record(
+                    side="SELL", price=price, qty_btc=pos_qty,
+                    reason=ACTIVE_EXIT_REASON, candle_open_time=open_time,
+                    is_exit=True, cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
+                )
+                if res["ledger_ok"]:
+                    res = _close_supertrend_exit(
+                        res, exit_price=price, reason=ACTIVE_EXIT_REASON,
+                        candle_open_time=open_time,
+                    )
+                else:
+                    emit_strategy_event(
+                        event_type="BLOCKED", decision="SELL",
+                        reason="EXIT_BLOCKED", price=price,
+                        candle_open_time=open_time,
+                        info={"res": res, "exit_kind": ACTIVE_EXIT_REASON},
+                    )
+                return _supertrend_execution_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.BREAK_EVEN_PROTECT,
+                    reason_text=ACTIVE_EXIT_REASON, side="SELL", price=price,
+                    position_id=int(pos[0]), is_exit=True,
                 )
 
             # PROFIT LOCK: percent high-watermark guard for RSI/TREND/SUPERTREND/BBRANGE.

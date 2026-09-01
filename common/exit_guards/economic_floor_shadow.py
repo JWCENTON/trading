@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 import json
 import logging
+import os
 from typing import Any
 
 from common.db import get_db_conn
@@ -18,6 +19,9 @@ CONTRACT_VERSION = "ECONOMIC_FLOOR_AFTER_COST_COVER_V1_SHADOW"
 ARM_EVENT = "ECONOMIC_FLOOR_SHADOW_ARMED"
 OBSERVATION_EVENT = "ECONOMIC_FLOOR_SHADOW_OBSERVED"
 FINAL_EVENT = "ECONOMIC_FLOOR_SHADOW_FINAL"
+ACTIVE_INTENT_EVENT = "ECONOMIC_FLOOR_ACTIVE_EXIT_INTENT"
+ACTIVE_EXIT_REASON = "ECONOMIC_FLOOR_AFTER_COST_COVER_V1"
+MODE_ENV = "ECONOMIC_FLOOR_AFTER_COST_COVER_V1_MODE"
 ZERO = Decimal("0")
 
 
@@ -36,6 +40,66 @@ class ShadowDecision:
     event_type: str | None
     decision: str
     state: ShadowState
+
+
+@dataclass(frozen=True)
+class ActiveExitDecision:
+    status: str
+    exit_requested: bool
+    position_id: int
+    reason: str | None = None
+    realizable_net_at_floor_exit: Decimal | None = None
+    first_armed_at: datetime | None = None
+    first_armed_realizable_net: Decimal | None = None
+    peak_realizable_net_after_arming: Decimal | None = None
+
+
+def economic_floor_mode(
+    trading_mode: str, environ: dict[str, str] | None = None,
+) -> str:
+    values = os.environ if environ is None else environ
+    requested = str(values.get(MODE_ENV, "SHADOW_ONLY")).strip().upper()
+    if str(trading_mode).upper() == "PAPER" and requested == "TREATMENT":
+        return "TREATMENT"
+    return "SHADOW_ONLY"
+
+
+def evaluate_active_exit_transition(
+    *,
+    mode: str,
+    trading_mode: str,
+    state: ShadowState,
+    evidence: PaperRealizableNetEvidence,
+    first_arm_source_candle_id: str | None,
+    existing_exit_committed: bool = False,
+    intent_exists: bool = False,
+) -> ActiveExitDecision:
+    """Pure active gate. Execution remains owned by the existing bot path."""
+    base = {
+        "position_id": evidence.position_id,
+        "first_armed_at": state.first_armed_at,
+        "first_armed_realizable_net": state.first_armed_realizable_net,
+        "peak_realizable_net_after_arming": state.peak_realizable_net_after_arming,
+    }
+    if str(trading_mode).upper() != "PAPER" or str(mode).upper() != "TREATMENT":
+        return ActiveExitDecision("INACTIVE", False, **base)
+    if not evidence.authoritative or evidence.realizable_net_after_all_costs is None:
+        return ActiveExitDecision("FAIL_CLOSED_MISSING_AUTHORITY", False, **base)
+    if not state.armed:
+        return ActiveExitDecision("NOT_ARMED", False, **base)
+    if str(first_arm_source_candle_id) == str(evidence.source_candle_id):
+        return ActiveExitDecision("FIRST_ARM_EVALUATION_NO_EXIT", False, **base)
+    if evidence.realizable_net_after_all_costs > ZERO:
+        return ActiveExitDecision("ARMED_UPSIDE_OPEN", False, **base)
+    if existing_exit_committed:
+        return ActiveExitDecision("EXISTING_EXIT_PRECEDENCE", False, **base)
+    if intent_exists:
+        return ActiveExitDecision("IDEMPOTENT_ACTIVE_INTENT_EXISTS", False, **base)
+    return ActiveExitDecision(
+        "ACTIVE_EXIT_CLAIMED", True, reason=ACTIVE_EXIT_REASON,
+        realizable_net_at_floor_exit=evidence.realizable_net_after_all_costs,
+        **base,
+    )
 
 
 def evaluate_shadow_transition(
@@ -91,9 +155,13 @@ def _payload(
     existing_exit_reason: str,
 ) -> dict[str, Any]:
     state = transition.state
+    mode = economic_floor_mode("PAPER")
     return {
         "contract_version": CONTRACT_VERSION,
-        "active_exit_influence": "OFF",
+        "economic_floor_mode": mode,
+        "active_exit_influence": (
+            "ON_LOCAL_PAPER_ONLY" if mode == "TREATMENT" else "OFF"
+        ),
         "position_id": evidence.position_id,
         "symbol": evidence.symbol,
         "interval": evidence.interval,
@@ -239,6 +307,131 @@ def observe_economic_floor_shadow(
         return ShadowDecision("SHADOW_EVIDENCE_FAILURE", None, "NO_SHADOW_DECISION", ShadowState(False))
 
 
+def claim_active_economic_floor_exit(
+    *,
+    trading_mode: str,
+    position_id: int,
+    symbol: str,
+    interval: str,
+    strategy: str,
+    current_price: Decimal,
+    observed_at: datetime,
+    source_candle_id: str,
+    connection_factory=get_db_conn,
+    environ: dict[str, str] | None = None,
+) -> ActiveExitDecision:
+    """Atomically claim one PAPER-only floor exit intent; never executes it."""
+    mode = economic_floor_mode(trading_mode, environ)
+    empty = ActiveExitDecision("INACTIVE", False, int(position_id))
+    if mode != "TREATMENT":
+        return empty
+    try:
+        evidence = load_paper_realizable_net_evidence(
+            connection_factory, trading_mode=trading_mode, position_id=position_id,
+            symbol=symbol, interval=interval, strategy=strategy,
+            current_price=current_price, observed_at=observed_at,
+            source_candle_id=source_candle_id,
+        )
+        conn = connection_factory()
+        try:
+            with conn.cursor() as cur:
+                lock_key = f"{CONTRACT_VERSION}|active|{int(position_id)}"
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (lock_key,))
+                cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT info FROM strategy_events
+                    WHERE event_type=%s AND info->>'position_id'=%s
+                    ORDER BY id LIMIT 1
+                    """,
+                    (ARM_EVENT, str(int(position_id))),
+                )
+                arm_row = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT info FROM strategy_events
+                    WHERE event_type=%s AND info->>'position_id'=%s
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (OBSERVATION_EVENT, str(int(position_id))),
+                )
+                latest_row = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT 1 FROM strategy_events
+                    WHERE event_type=%s AND info->>'position_id'=%s LIMIT 1
+                    """,
+                    (ACTIVE_INTENT_EVENT, str(int(position_id))),
+                )
+                intent_exists = cur.fetchone() is not None
+                if arm_row is None:
+                    state = ShadowState(False)
+                    first_source = None
+                else:
+                    arm_info = dict(arm_row[0])
+                    state = _state_from_arm_and_latest(
+                        arm_info, dict(latest_row[0]) if latest_row else None,
+                    )
+                    first_source = arm_info.get(
+                        "source_candle_id_or_equivalent_canonical_id"
+                    )
+                decision = evaluate_active_exit_transition(
+                    mode=mode, trading_mode=trading_mode, state=state,
+                    evidence=evidence,
+                    first_arm_source_candle_id=first_source,
+                    existing_exit_committed=False,
+                    intent_exists=intent_exists,
+                )
+                if not decision.exit_requested:
+                    conn.rollback()
+                    return decision
+                payload = {
+                    "contract_version": ACTIVE_EXIT_REASON,
+                    "economic_floor_mode": "TREATMENT",
+                    "active_exit_influence": "ON_LOCAL_PAPER_ONLY",
+                    "position_id": int(position_id),
+                    "symbol": str(symbol),
+                    "interval": str(interval),
+                    "strategy": str(strategy).upper(),
+                    "first_armed_at": decision.first_armed_at,
+                    "realizable_net_at_arm": decision.first_armed_realizable_net,
+                    "peak_realizable_net_after_arming": (
+                        decision.peak_realizable_net_after_arming
+                    ),
+                    "realizable_net_at_floor_exit": (
+                        decision.realizable_net_at_floor_exit
+                    ),
+                    "economic_floor_exit_at": observed_at,
+                    "source_candle_id_or_equivalent_canonical_id": source_candle_id,
+                    "existing_exit_decision_at_same_evaluation": "NONE_COMMITTED",
+                    "exit_reason": ACTIVE_EXIT_REASON,
+                }
+                cur.execute(
+                    """
+                    INSERT INTO strategy_events
+                    (symbol,interval,strategy,event_type,decision,reason,price,
+                     candle_open_time,info)
+                    VALUES (%s,%s,%s,%s,'EXIT',%s,%s,%s,%s)
+                    """,
+                    (
+                        symbol, interval, strategy.upper(), ACTIVE_INTENT_EVENT,
+                        ACTIVE_EXIT_REASON, float(current_price), observed_at,
+                        json.dumps(payload, default=_json_default),
+                    ),
+                )
+            conn.commit()
+            return decision
+        finally:
+            conn.close()
+    except Exception:
+        logging.exception(
+            "economic floor active gate failed closed; existing exits unchanged"
+        )
+        return ActiveExitDecision(
+            "ACTIVE_GATE_FAILURE_FAIL_CLOSED", False, int(position_id)
+        )
+
+
 def reconcile_economic_floor_shadow_closures(
     *, trading_mode: str, connection_factory=get_db_conn,
 ) -> int:
@@ -281,12 +474,39 @@ def reconcile_economic_floor_shadow_closures(
                 )
                 if cur.fetchone():
                     continue
+                cur.execute(
+                    """
+                    SELECT info FROM strategy_events
+                    WHERE event_type=%s AND info->>'position_id'=%s
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (ACTIVE_INTENT_EVENT, str(int(position_id))),
+                )
+                intent_row = cur.fetchone()
+                intent = dict(intent_row[0]) if intent_row else {}
                 payload = {
                     "contract_version": CONTRACT_VERSION,
-                    "active_exit_influence": "OFF",
+                    "active_exit_influence": (
+                        "ON_LOCAL_PAPER_ONLY" if intent else "OFF"
+                    ),
                     "position_id": int(position_id),
                     "final_position_close_id": int(position_id),
-                    "existing_exit_decision": "EXIT_EXECUTED_BY_EXISTING_AUTHORITY",
+                    "first_armed_at": intent.get("first_armed_at"),
+                    "realizable_net_at_arm": intent.get("realizable_net_at_arm"),
+                    "peak_realizable_net_after_arming": intent.get(
+                        "peak_realizable_net_after_arming"
+                    ),
+                    "realizable_net_at_floor_exit": intent.get(
+                        "realizable_net_at_floor_exit"
+                    ),
+                    "economic_floor_exit_at": intent.get("economic_floor_exit_at"),
+                    "existing_exit_decision_at_same_evaluation": intent.get(
+                        "existing_exit_decision_at_same_evaluation"
+                    ),
+                    "existing_exit_decision": (
+                        "ECONOMIC_FLOOR_EXIT_EXECUTED" if intent
+                        else "EXIT_EXECUTED_BY_EXISTING_AUTHORITY"
+                    ),
                     "existing_exit_reason": exit_reason,
                     "final_financial_truth_status": ft_status,
                     "final_net_pnl_after_fees": final_net,

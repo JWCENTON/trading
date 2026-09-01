@@ -56,6 +56,8 @@ from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
 from common.exit_guards.economic_floor_shadow import (
+    ACTIVE_EXIT_REASON,
+    claim_active_economic_floor_exit,
     observe_economic_floor_shadow,
     reconcile_economic_floor_shadow_closures,
 )
@@ -2144,6 +2146,43 @@ def _run_strategy(row, decision_sink: DecisionSink | None = None):
                     evaluation, res, cfg_effective,
                     reason_code=DecisionReason.STOP_LOSS,
                     reason_text=reason, price=price, position_id=int(_pos_id),
+                ))
+
+            economic_floor = claim_active_economic_floor_exit(
+                trading_mode=cfg_effective.trading_mode,
+                position_id=int(_pos_id), symbol=SYMBOL, interval=INTERVAL,
+                strategy=STRATEGY_NAME, current_price=Decimal(str(price)),
+                observed_at=open_time, source_candle_id=open_time.isoformat(),
+                connection_factory=get_db_conn,
+            )
+            if economic_floor.exit_requested:
+                res = execute_and_record(
+                    side="SELL", price=price, qty_btc=qty_f,
+                    reason=ACTIVE_EXIT_REASON, candle_open_time=open_time,
+                    is_exit=True, cfg_used=cfg_effective,
+                    allow_live_orders=snap["allowed_orders_exit"],
+                    allow_meta=snap["allow_meta_exit"],
+                    rsi_14=rsi_val, ema_21=ema_val,
+                )
+                if res["ledger_ok"] and res["live_ok"] and (
+                    cfg_effective.trading_mode == "LIVE"
+                    or "position_close_succeeded" not in res
+                ):
+                    close_position(
+                        exit_price=price, reason=ACTIVE_EXIT_REASON,
+                        candle_open_time=open_time,
+                    )
+                elif not res["ledger_ok"]:
+                    emit_blocked(
+                        reason="EXIT_BLOCKED", decision="SELL", price=price,
+                        candle_open_time=open_time,
+                        info={"res": res, "exit_kind": ACTIVE_EXIT_REASON},
+                    )
+                return finish(_bbrange_exit_decision(
+                    evaluation, res, cfg_effective,
+                    reason_code=DecisionReason.BREAK_EVEN_PROTECT,
+                    reason_text=ACTIVE_EXIT_REASON, price=price,
+                    position_id=int(_pos_id),
                 ))
 
             # PROFIT LOCK: percent high-watermark guard for RSI/TREND/SUPERTREND/BBRANGE.

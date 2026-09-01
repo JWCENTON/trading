@@ -148,7 +148,7 @@ def load_paper_realizable_net_evidence(
             cur.execute(
                 """
                 SELECT p.status,p.side,p.remaining_inventory_qty,
-                       p.inventory_evidence_status,p.entry_time,
+                       p.inventory_evidence_status,p.entry_time,p.exit_order_id,
                        e.fee_rate_exit_assumption,e.fee_model_version
                 FROM positions p
                 LEFT JOIN entry_opportunity_evidence_v1 e
@@ -164,11 +164,13 @@ def load_paper_realizable_net_evidence(
                 or str(position[1]).upper() != "LONG"
             ):
                 return incomplete("INCOMPLETE:POSITION")
-            qty, inventory_status, entry_time, fee_rate, fee_model = position[2:]
+            qty, inventory_status, entry_time, exit_order_id, fee_rate, fee_model = position[2:]
             if str(inventory_status).upper() != "COMPLETE" or qty is None:
                 return incomplete("INCOMPLETE:INVENTORY")
             if fee_rate is None or str(fee_model) != FEE_MODEL_V2:
                 return incomplete("INCOMPLETE:COST_AUTHORITY")
+            if exit_order_id is not None:
+                return incomplete("INCOMPLETE:EXISTING_EXIT_COMMITTED")
             qty_d = Decimal(str(qty))
             rate_d = Decimal(str(fee_rate))
             if qty_d <= 0 or rate_d < 0:
