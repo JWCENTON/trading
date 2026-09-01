@@ -6,8 +6,8 @@ from decimal import Decimal, InvalidOperation
 import os
 from typing import Any, Mapping
 
-from common.paper_simulation_fee_config import FEE_MODEL_V2
 from common.realtime_engine import compute_realtime_snapshot
+from common.simulated_execution_evidence import load_paper_realizable_net_evidence
 
 
 CONTRACT_VERSION = "BBRANGE_PAPER_TREATMENT_V1"
@@ -228,77 +228,29 @@ def load_profit_lock_economic_state(
 ) -> ProfitLockEconomicState:
     """Read-only, point-in-time PAPER economics; never reconstructs history."""
     price = _decimal(current_price, "current_price")
-    conn = connection_factory()
-    try:
-        conn.set_session(readonly=True)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT p.status,p.side,p.remaining_inventory_qty,p.entry_time,
-                       e.fee_rate_exit_assumption,e.fee_model_version
-                FROM positions p
-                LEFT JOIN entry_opportunity_evidence_v1 e
-                  ON e.snapshot_id=p.entry_opportunity_snapshot_id
-                WHERE p.id=%s AND p.symbol=%s AND p.strategy='BBRANGE'
-                  AND p.interval=%s
-                """,
-                (int(position_id), str(symbol), str(interval)),
-            )
-            position = cur.fetchone()
-            if position is None or str(position[0]) != "OPEN" or str(position[1]).upper() != "LONG":
-                return _incomplete(position_id, interval, observed_at, "INCOMPLETE:POSITION")
-            qty, entry_time, fee_rate, fee_model = position[2:]
-            if qty is None or fee_rate is None or str(fee_model) != FEE_MODEL_V2:
-                return _incomplete(position_id, interval, observed_at, "INCOMPLETE:COST_AUTHORITY")
-            qty = _decimal(qty, "quantity")
-            fee_rate = _decimal(fee_rate, "fee_rate")
-            cur.execute(
-                """
-                SELECT COALESCE(sum(fill_qty),0),COALESCE(sum(fill_notional),0),
-                       COALESCE(sum(authoritative_fee_usdc),0),
-                       count(DISTINCT simulation_fee_rate),
-                       count(*) FILTER (WHERE fee_model_version<>%s)
-                FROM simulated_execution_fills_v1
-                WHERE position_id=%s AND order_purpose='ENTRY'
-                """,
-                (FEE_MODEL_V2, int(position_id)),
-            )
-            entry_qty, entry_notional, entry_fees, rates, bad_models = cur.fetchone()
-            cur.execute(
-                "SELECT count(*) FROM simulated_execution_fills_v1 "
-                "WHERE position_id=%s AND order_purpose='EXIT'",
-                (int(position_id),),
-            )
-            prior_exits = int(cur.fetchone()[0])
-            if (
-                _decimal(entry_qty, "entry_qty") != qty or int(rates) != 1
-                or int(bad_models) != 0 or prior_exits != 0
-            ):
-                return _incomplete(position_id, interval, observed_at, "INCOMPLETE:EXECUTION_SCOPE")
-            entry_notional = _decimal(entry_notional, "entry_notional")
-            entry_fees = _decimal(entry_fees, "entry_fees")
-            cur.execute(
-                """
-                SELECT max(close)
-                FROM candles
-                WHERE symbol=%s AND interval=%s
-                  AND open_time>=%s AND open_time<=%s
-                """,
-                (str(symbol), str(interval), entry_time, observed_at),
-            )
-            peak_price = cur.fetchone()[0]
-        conn.rollback()
-    finally:
-        conn.close()
+    evidence = load_paper_realizable_net_evidence(
+        connection_factory,
+        trading_mode="PAPER",
+        position_id=position_id,
+        symbol=symbol,
+        interval=interval,
+        strategy="BBRANGE",
+        current_price=price,
+        observed_at=observed_at,
+        source_candle_id=observed_at.isoformat(),
+    )
+    if not evidence.authoritative:
+        return _incomplete(position_id, interval, observed_at, evidence.status)
+    peak_price = evidence.peak_mark_price
     if peak_price is None:
         return _incomplete(position_id, interval, observed_at, "INCOMPLETE:PRICE_PATH")
-
-    def realizable(mark: Decimal) -> Decimal:
-        exit_notional = qty * mark
-        return exit_notional - entry_notional - entry_fees - exit_notional * fee_rate
-
-    current_net = realizable(price)
-    peak_net = realizable(_decimal(peak_price, "peak_price"))
+    qty = evidence.quantity
+    fee_rate = evidence.exit_fee_rate
+    current_net = evidence.realizable_net_after_all_costs
+    assert qty is not None and fee_rate is not None and current_net is not None
+    fixed_cost_basis = qty * price - qty * price * fee_rate - current_net
+    peak_mark = _decimal(peak_price, "peak_price")
+    peak_net = qty * peak_mark - qty * peak_mark * fee_rate - fixed_cost_basis
     return ProfitLockEconomicState(
         status="CANONICAL", position_id=int(position_id), interval=str(interval),
         observed_at=observed_at, economic_edge_observed=peak_net > ZERO,

@@ -84,6 +84,162 @@ class PaperEntryAtomicResult:
         return self.persisted
 
 
+@dataclass(frozen=True)
+class PaperRealizableNetEvidence:
+    """Causal PAPER full-close economics from frozen execution evidence."""
+
+    status: str
+    position_id: int
+    symbol: str
+    interval: str
+    strategy: str
+    observed_at: datetime
+    mark_price: Decimal
+    source_candle_id: str
+    entry_fill_ids: tuple[int, ...] = ()
+    fee_contract_fingerprint: str | None = None
+    exit_fee_rate: Decimal | None = None
+    quantity: Decimal | None = None
+    hypothetical_exit_notional: Decimal | None = None
+    hypothetical_exit_fee: Decimal | None = None
+    realizable_net_after_all_costs: Decimal | None = None
+    market_data_complete: bool = False
+    ordering_evidence_available: str = "CAUSAL_RUNTIME_EVALUATION_SEQUENCE"
+    position_entry_time: datetime | None = None
+    peak_mark_price: Decimal | None = None
+
+    @property
+    def authoritative(self) -> bool:
+        return self.status == "AUTHORITATIVE"
+
+
+def load_paper_realizable_net_evidence(
+    connection_factory,
+    *,
+    trading_mode: str,
+    position_id: int,
+    symbol: str,
+    interval: str,
+    strategy: str,
+    current_price: Decimal,
+    observed_at: datetime,
+    source_candle_id: str,
+) -> PaperRealizableNetEvidence:
+    """Read one point-in-time hypothetical full close; never changes trading state."""
+    mark = Decimal(str(current_price))
+
+    def incomplete(status: str) -> PaperRealizableNetEvidence:
+        return PaperRealizableNetEvidence(
+            status=status,
+            position_id=int(position_id), symbol=str(symbol), interval=str(interval),
+            strategy=str(strategy).upper(), observed_at=observed_at,
+            mark_price=mark, source_candle_id=str(source_candle_id),
+        )
+
+    if str(trading_mode).upper() != "PAPER":
+        return incomplete("NOT_APPLICABLE_NON_PAPER")
+    if not mark.is_finite() or mark <= 0:
+        return incomplete("INCOMPLETE:MARK_PRICE")
+
+    conn = connection_factory()
+    try:
+        conn.set_session(readonly=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.status,p.side,p.remaining_inventory_qty,
+                       p.inventory_evidence_status,p.entry_time,
+                       e.fee_rate_exit_assumption,e.fee_model_version
+                FROM positions p
+                LEFT JOIN entry_opportunity_evidence_v1 e
+                  ON e.snapshot_id=p.entry_opportunity_snapshot_id
+                WHERE p.id=%s AND p.symbol=%s AND p.strategy=%s
+                  AND p.interval=%s
+                """,
+                (int(position_id), str(symbol), str(strategy).upper(), str(interval)),
+            )
+            position = cur.fetchone()
+            if (
+                position is None or str(position[0]).upper() != "OPEN"
+                or str(position[1]).upper() != "LONG"
+            ):
+                return incomplete("INCOMPLETE:POSITION")
+            qty, inventory_status, entry_time, fee_rate, fee_model = position[2:]
+            if str(inventory_status).upper() != "COMPLETE" or qty is None:
+                return incomplete("INCOMPLETE:INVENTORY")
+            if fee_rate is None or str(fee_model) != FEE_MODEL_V2:
+                return incomplete("INCOMPLETE:COST_AUTHORITY")
+            qty_d = Decimal(str(qty))
+            rate_d = Decimal(str(fee_rate))
+            if qty_d <= 0 or rate_d < 0:
+                return incomplete("INCOMPLETE:COST_AUTHORITY")
+            cur.execute(
+                """
+                SELECT array_agg(id ORDER BY id),COALESCE(sum(fill_qty),0),
+                       COALESCE(sum(fill_notional),0),
+                       COALESCE(sum(authoritative_fee_usdc),0),
+                       count(DISTINCT simulation_fee_rate),
+                       count(*) FILTER (WHERE fee_model_version<>%s)
+                FROM simulated_execution_fills_v1
+                WHERE position_id=%s AND order_purpose='ENTRY'
+                """,
+                (FEE_MODEL_V2, int(position_id)),
+            )
+            fill_ids, entry_qty, entry_notional, entry_fees, rates, bad_models = cur.fetchone()
+            cur.execute(
+                "SELECT count(*) FROM simulated_execution_fills_v1 "
+                "WHERE position_id=%s AND order_purpose='EXIT'",
+                (int(position_id),),
+            )
+            prior_exits = int(cur.fetchone()[0])
+            cur.execute(
+                """
+                SELECT max(close) FROM candles
+                WHERE symbol=%s AND interval=%s
+                  AND open_time>=%s AND open_time<=%s
+                """,
+                (str(symbol), str(interval), entry_time, observed_at),
+            )
+            peak_price = cur.fetchone()[0]
+        conn.rollback()
+    finally:
+        conn.close()
+
+    entry_qty_d = Decimal(str(entry_qty))
+    if (
+        not fill_ids or entry_qty_d != qty_d or int(rates) != 1
+        or int(bad_models) != 0 or prior_exits != 0
+    ):
+        return incomplete("INCOMPLETE:EXECUTION_SCOPE")
+    entry_notional_d = Decimal(str(entry_notional))
+    entry_fees_d = Decimal(str(entry_fees))
+    exit_notional = qty_d * mark
+    exit_fee = exit_notional * rate_d
+    realizable = exit_notional - entry_notional_d - entry_fees_d - exit_fee
+    fingerprint_payload = {
+        "fee_model_version": FEE_MODEL_V2,
+        "exit_fee_rate": format(rate_d, "f"),
+        "entry_fill_ids": [int(value) for value in fill_ids],
+        "entry_fees": format(entry_fees_d, "f"),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return PaperRealizableNetEvidence(
+        status="AUTHORITATIVE", position_id=int(position_id), symbol=str(symbol),
+        interval=str(interval), strategy=str(strategy).upper(), observed_at=observed_at,
+        mark_price=mark, source_candle_id=str(source_candle_id),
+        entry_fill_ids=tuple(int(value) for value in fill_ids),
+        fee_contract_fingerprint=fingerprint, exit_fee_rate=rate_d,
+        quantity=qty_d, hypothetical_exit_notional=exit_notional,
+        hypothetical_exit_fee=exit_fee,
+        realizable_net_after_all_costs=realizable,
+        market_data_complete=True,
+        position_entry_time=entry_time,
+        peak_mark_price=(Decimal(str(peak_price)) if peak_price is not None else None),
+    )
+
+
 class _PaperEntryAtomicBlocked(RuntimeError):
     def __init__(self, result: PaperEntryAtomicResult):
         super().__init__(result.status)

@@ -98,9 +98,9 @@ def test_live_refuses_activation():
 class Cursor:
     def __init__(self):
         self.rows = iter([
-            ("OPEN", "LONG", Decimal("2"), NOW, Decimal("0.0035"),
+            ("OPEN", "LONG", Decimal("2"), "COMPLETE", NOW, Decimal("0.0035"),
              "PAPER_SIMULATOR_FINANCIAL_MODEL_V2"),
-            (Decimal("2"), Decimal("200"), Decimal("0.7"), 1, 0),
+            ([101], Decimal("2"), Decimal("200"), Decimal("0.7"), 1, 0),
             (0,),
             (Decimal("102"),),
         ])

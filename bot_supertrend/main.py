@@ -34,6 +34,10 @@ from common.user_settings import SYSTEM_MIN_ENTRY_USDC, get_user_settings_snapsh
 from common.win_streak import get_recent_win_streak
 from common.exit_guards.profit_lock import ProfitLockConfig, evaluate_profit_lock
 from common.exit_guards.profit_lock_events import emit_profit_lock_event_once
+from common.exit_guards.economic_floor_shadow import (
+    observe_economic_floor_shadow,
+    reconcile_economic_floor_shadow_closures,
+)
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
 from common.decision_contract import (
@@ -2692,6 +2696,10 @@ def _run_strategy(latest, prev, *, freshness_context=None):
         st_dir_prev = int(prev_st_dir)
         atr_pct = (float(atr_14) / price * 100.0) if price > 0 else None
 
+        reconcile_economic_floor_shadow_closures(
+            trading_mode=cfg_effective.trading_mode,
+            connection_factory=get_db_conn,
+        )
         pos = get_open_position()
         pos_qty_hb = float(pos[2]) if pos else None
         pos_entry_price_hb = float(pos[3]) if pos else None
@@ -2718,6 +2726,13 @@ def _run_strategy(latest, prev, *, freshness_context=None):
         # =========================
         if has_position:
             _, pos_side, pos_qty, pos_entry_price, pos_entry_time = pos
+            observe_economic_floor_shadow(
+                trading_mode=cfg_effective.trading_mode,
+                position_id=int(pos[0]), symbol=SYMBOL, interval=INTERVAL,
+                strategy=STRATEGY_NAME, current_price=Decimal(str(price)),
+                observed_at=open_time, source_candle_id=open_time.isoformat(),
+                connection_factory=get_db_conn,
+            )
             if str(pos_side).upper() != "LONG":
                 # safety: we don't support shorts in SPOT
                 emit_strategy_event(
