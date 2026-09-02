@@ -93,6 +93,16 @@ are not parity failures by themselves and must never be copied merely to make
 counts or histories match. Canonical principle:
 `SAME_SHARED_CONTRACT; DIFFERENT_NATURAL_DATA`.
 
+Research operating model:
+
+- `LOCAL_PAPER_CAUSAL_TREATMENTS=ONE_ACTIVE_AT_A_TIME`.
+- VPS PAPER remains the untreated natural reference for the current LOCAL
+  experiment and may also provide read-only discovery for future experiments.
+- No simultaneous second VPS treatment is authorized while VPS is required as
+  that untreated reference.
+- Evidence used to select or evaluate a candidate is burned for validation of
+  that candidate; future causal validation requires new natural evidence.
+
 ### Equity UI canonical read authority
 
 `EQUITY_UI_CANONICAL_AUTHORITY=VPS_LIVE_COMPLETE`. LIVE `/ui/equity` reads the
@@ -196,16 +206,20 @@ cohort. Selection semantics must precede outcomes:
 
 ## 3. Ranked STOP LOSING mechanisms
 
-With Ownership V1 and Economic Floor V1 decisions complete, ordered economic
-work is:
+With Ownership V1 and Economic Floor V1 decisions complete, the current
+treatment and subsequent research order is:
 
 1. `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` — active LOCAL PAPER;
    cadence independence validated; gather a small unchanged economic cohort
-2. `MOVEMENT_CAPACITY` — context-specific research on new, untouched data
-3. `ECONOMIC_NO_TRADE / NEW_RISK_VS_KEEP_EXISTING_RISK`
-4. `SAME_THESIS_CONTROL`
-5. `FEE_VELOCITY`
-6. `1m/5m MIXED_DUPLICATION`
+2. Boundary Refinement as a separate Economic Floor experiment if V2 closure
+   confirms the exact-zero boundary remains limiting
+3. `MOVEMENT_CAPACITY` — future LOCAL treatment on new natural evidence
+4. Re-evaluate authoritative thesis/marginal-capital-value synthesis only after
+   clean individual experiment results
+
+Completed read-only discovery does not schedule treatments for Economic
+No-Trade/New Risk, Same-Thesis Control, Fee Velocity, or 1m/5m Mixed
+Duplication.
 
 Additional-admission economics:
 
@@ -335,6 +349,10 @@ is reliable.
 
 `ECONOMIC_FLOOR_V2_FIRST_REVIEW=CADENCE_FIX_VALIDATED_BOUNDARY_REMAINS_PRIMARY_ISSUE`.
 
+`ECONOMIC_FLOOR_V2_STATUS=ACTIVE_LOCAL_PAPER`;
+`CADENCE_FIX_VALIDATED=YES`; `BOUNDARY_REMAINS_PRIMARY_ISSUE=YES`;
+`VPS_PROMOTION_READY=NO`.
+
 The authoritative LOCAL PAPER cohort contains `TOTAL_V2_ARM_EVENTS=6`,
 `TOTAL_V2_EXIT_INTENTS=3`, and `TOTAL_COMPLETED_V2_FLOOR_EXITS=3`, with zero
 duplicate arm or close events. Arms split `1m:5, 5m:1` by originating interval;
@@ -460,8 +478,9 @@ activation must use new natural evidence.
 `OWNERSHIP_V1=COMPLETE`; `OWNERSHIP_V2_IMPLEMENTED=NO`;
 `LIVE_ELIGIBILITY=NO`; no second Ownership V1 treatment is authorized.
 Economic Floor V1 is also complete as a bounded research decision. Economic
-Floor V2 cadence-independent protection is the next research-design priority
-and is not implemented by this docs task.
+Floor V2 cadence-independent protection is active on LOCAL PAPER, its cadence
+fix is validated, and its boundary remains the primary issue. It is not ready
+for VPS promotion and continues unchanged for a small economic cohort.
 
 `LONG_RUN_SAFETY_PREFLIGHT=PASS`: the terminal-condition catalog is complete,
 recent logs pass replay against it, background errors are classified, task
@@ -501,7 +520,85 @@ or context-specific ATR/realtime hypothesis must use new natural data or
 another genuinely untouched validation set. `NEXT_MOVEMENT_RESEARCH` is
 `CONTEXT_SPECIFIC_ON_NEW_DATA_ONLY`.
 
-## 8. Permanent research and LIVE authority gates
+## 8. Completed read-only discovery conveyor #3–#7
+
+`DISCOVERY_CONVEYOR_STATUS=COMPLETE`. The conveyor used VPS PAPER read-only
+evidence while preserving VPS as the untreated natural reference for the
+active LOCAL Economic Floor V2 experiment. It created no treatment authority.
+
+### #3 Movement Capacity
+
+`EXPERIMENT_3=MOVEMENT_CAPACITY`;
+`DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`;
+`PRE_ENTRY_PREDICTABILITY=MODERATE`; `FINAL_NET_PREDICTABILITY=WEAK`;
+`GLOBAL_GATE_SUPPORTED=NO`;
+`CONTEXT_SPECIFIC_GATE_SUPPORTED=YES_RESEARCH_ONLY`.
+
+The frozen candidate remains exactly
+`ATR_PCT <= 0.05275618624106265 AND REALTIME_SCORE <= 18.24315`, with missing
+ATR allowed. In the 458-row VPS read-only cohort it blocked 78, avoided 62 bad
+outcomes, missed 16 good outcomes, and produced diagnostic net delta
+`+11.622090 USDC`. All inspected data is burned for this candidate. The frozen
+candidate is ready for a future LOCAL test, but treatment is inactive and that
+test must use new natural evidence after activation.
+
+### #4 Economic No-Trade / New Risk vs Keep Existing Risk
+
+`EXPERIMENT_4=ECONOMIC_NO_TRADE_NEW_RISK_VS_KEEP_EXISTING_RISK`;
+`DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=NO`;
+`MARGINAL_VALUE_SIGNAL_STRENGTH=WEAK`; `GLOBAL_GATE_SUPPORTED=NO`;
+`CONTEXT_SPECIFIC_GATE_SUPPORTED=NO`; `FROZEN_CANDIDATE_READY=NO`;
+`LOCAL_TREATMENT=NO`. Additional admissions were economically negative, but
+existing portfolio risk was not isolated as the causal discriminator.
+
+### #5 Same-Thesis Control
+
+`EXPERIMENT_5=SAME_THESIS_CONTROL`;
+`DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`;
+`THESIS_PROXY_SIGNAL_STRENGTH=WEAK`; `GLOBAL_GATE_SUPPORTED=NO`;
+`CONTEXT_SPECIFIC_GATE_SUPPORTED=NO`; `LOCAL_TREATMENT=NO`.
+Redundant fee drag and correlated losses are present, but current proxies lack
+authoritative position-to-thesis identity and cannot authorize a gate.
+`INTERACTION_WITH_MOVEMENT_CAPACITY=MODERATE`.
+
+### #6 Fee Velocity
+
+`EXPERIMENT_6=FEE_VELOCITY`;
+`DISCOVERY_STATUS=COMPLETE`; `FEE_DRAG_STRONGLY_CONFIRMED=YES`;
+`FEE_VELOCITY_AS_CAUSE=NOT_SUPPORTED`. The cohort produced
+`TOTAL_FINAL_NET=-66.680402_USDC`, `TOTAL_FEES=65.513810_USDC`, and
+`TOTAL_GROSS_BEFORE_FEES=-1.166592_USDC`, with
+`FEE_DOMINATED_LOSS_RATE=75.6381_PERCENT` and
+`GROSS_POSITIVE_BUT_NET_NEGATIVE_COUNT=252`.
+`GLOBAL_FEE_VELOCITY_GATE_SUPPORTED=NO`;
+`CONTEXT_SPECIFIC_FEE_VELOCITY_GATE_SUPPORTED=NO`; `LOCAL_TREATMENT=NO`.
+Fast reentry was not intrinsically worse than quiet entry; no time-based
+reentry suppression is authorized.
+
+### #7 1m/5m Mixed Duplication
+
+`EXPERIMENT_7=1M_5M_MIXED_DUPLICATION`;
+`DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`;
+`SIGNAL_STRENGTH=WEAK`; `GLOBAL_MIXED_DUPLICATION_GATE_SUPPORTED=NO`;
+`CONTEXT_SPECIFIC_MIXED_DUPLICATION_GATE_SUPPORTED=NO`;
+`DIRECTION_ASYMMETRY_SUPPORTED=NO`; `LOCAL_TREATMENT=NO`.
+Cross-interval admission economics showed no incremental harm. Correlated
+lifecycle evidence contained 296 pairs, 250 both-loss pairs, and 6 both-win
+pairs; pair gross before fees was `+0.076939 USDC`, fees were
+`82.597695 USDC`, and net was `-82.520756 USDC`. Redundant/correlated exposure
+is descriptive evidence; interval mixing is not an authorized gate.
+
+### Conveyor synthesis
+
+`STRONGEST_REPEATED_ECONOMIC_SIGNAL=INSUFFICIENT_MOVEMENT_RELATIVE_TO_FIXED_COSTS_PLUS_REDUNDANT_CORRELATED_EXPOSURE`.
+This does not authorize a combined policy. Unsupported simple hypotheses are:
+any existing risk implies block new risk; fast reentry implies bad;
+cross-interval overlap implies bad; and a same-thesis proxy implies a global
+gate. Supported directions are Economic Floor protection, contextual Movement
+Capacity filtering, and later authoritative thesis/marginal-capital-value
+synthesis if evidence contracts improve.
+
+## 9. Permanent research and LIVE authority gates
 
 Every material research cycle records before final evaluation:
 
@@ -534,7 +631,7 @@ effect magnitude, `BAD_AVOIDED`, `GOOD_MISSED`, economic value, avoided fees,
 uncertainty, and stability across natural exposure. Five of five alone cannot
 authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 
-## 9. Ordered execution plan
+## 10. Ordered execution plan
 
 ### Now
 
@@ -543,7 +640,9 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 3. `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its exact-zero boundary in place.
 4. Continue `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` unchanged on
    LOCAL PAPER for a small economic cohort; no buffer or ratchet is frozen.
-5. Monitor forward canonical freshness and moderate pipeline risk; no pipeline change is required.
+5. `ACTIVE_LOCAL_CAUSAL_TREATMENT_COUNT=1`; completed read-only discovery #3–#7
+   changes no active treatment authority.
+6. Monitor forward canonical freshness and moderate pipeline risk; no pipeline change is required.
 
 ### Next
 
@@ -551,10 +650,15 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 2. Gather the small unchanged V2 economic cohort. The architectural cadence
    question is answered; boundary refinement remains a separate future
    experiment after V2 closure.
-3. Then perform context-specific movement-capacity research on new, untouched data only.
-4. Then evaluate economic no-trade / new-risk-versus-keep, same-thesis control, fee velocity, and finally 1m/5m semantic duplication.
-5. Any future Ownership V2 activation or Economic Floor boundary experiment requires separate authorization and new natural evidence.
-6. Keep `LIVE_ELIGIBILITY=NO`; neither completed V1 decision creates LIVE authority.
+3. If V2 closure confirms exact zero remains limiting, run Boundary Refinement
+   as a separate Economic Floor experiment.
+4. Then test the frozen Movement Capacity candidate locally on new natural
+   evidence.
+5. Re-evaluate later synthesis only after clean individual experiment results;
+   do not schedule New Risk, Same Thesis, Fee Velocity, or Mixed Duplication
+   treatments from current evidence.
+6. Any future Ownership V2 activation or Economic Floor boundary experiment requires separate authorization and new natural evidence.
+7. Keep `LIVE_ELIGIBILITY=NO`; neither completed V1 decision creates LIVE authority.
 
 The economic-floor family follows a proven secondary leak: 115
 tiny-positive-to-final-loss cases, of which 112 ended through
@@ -576,7 +680,7 @@ as an economic exit. Entry and exit treatments must not be mixed.
 - limited Learning authority
 - bounded LIVE eligibility with Product Owner approval
 
-## 10. Permanent long-run experiment standard
+## 11. Permanent long-run experiment standard
 
 Every experiment longer than 30 minutes requires all of:
 
@@ -601,9 +705,9 @@ requires all of:
 Healthy workers, fresh heartbeats, zero DB blockers, or individual successful
 inserts alone do not prove forward health.
 
-## 11. Hard scope control
+## 12. Hard scope control
 
-Do not add a new engine, brain, strategy family, ML classifier, portfolio framework, parameter sweep, DCA, campaign, averaging down, hold-until-green policy, global 1m/5m suppression, or blind one-strategy-per-symbol rule. Do not enable Risk Budget influence, Capital Allocation, or Learning auto-apply. Do not run discovery experiments on LIVE or use VPS PAPER to discover rather than independently accept a LOCAL candidate.
+Do not add a new engine, brain, strategy family, ML classifier, portfolio framework, parameter sweep, DCA, campaign, averaging down, hold-until-green policy, global 1m/5m suppression, or blind one-strategy-per-symbol rule. Do not enable Risk Budget influence, Capital Allocation, or Learning auto-apply. Do not run discovery experiments on LIVE. VPS PAPER may provide read-only discovery while remaining the untreated natural reference, but it may not run a simultaneous second treatment or confer treatment authority.
 
 Fixed 20 USDC sizing remains appropriate during current causal alpha and
 admission research because it isolates decision quality. Read-only
@@ -625,7 +729,7 @@ complex. Institutional-quality diversification will likely require broader
 markets, asset classes, or independent return drivers. This is a long-term
 constraint, not current scope, and must not delay proof of the OKX core.
 
-## 12. Success ladders
+## 13. Success ladders
 
 Research quality ladder:
 

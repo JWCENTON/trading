@@ -37,6 +37,7 @@ This document is current truth only. Git history retains prior states.
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Ownership V1 bounded research decision `TERMINAL`; runtime unchanged by docs task |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
+| Read-only discovery conveyor | Experiments #3–#7 COMPLETE; no new treatment authority |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Equity UI canonical authority | `VPS_LIVE_COMPLETE`; Git, contract, direct-schema, and runtime-semantic parity PASS |
 | VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
@@ -71,6 +72,13 @@ gates, economic priorities, or LIVE authority.
 - Canonical parity principle: `SAME_SHARED_CONTRACT; DIFFERENT_NATURAL_DATA`. A common Git SHA alone is insufficient, and business-data equality is never a rollout gate.
 - `RESEARCH_UNIVERSE` is broad PAPER evidence and may remain aggregate-negative.
 - `PAPER_RESEARCH_UNIVERSE_MAY_BE_NET_NEGATIVE=YES`.
+- `LOCAL_PAPER_CAUSAL_TREATMENTS=ONE_ACTIVE_AT_A_TIME`.
+- VPS PAPER remains the untreated natural reference for the current LOCAL
+  experiment and may also support read-only discovery for future experiments.
+  No simultaneous second VPS treatment is authorized while that reference is
+  required.
+- Evidence used to select or evaluate a candidate is burned for validation of
+  that candidate; future causal validation requires new natural evidence.
 - `QUALIFIED_UNIVERSE` contains frozen policies that survived independent validation.
 - `LIVE_UNIVERSE` contains only explicitly approved qualified decisions; it never inherits all PAPER decisions automatically.
 - Less-negative is research progress and near-zero is promising, but potential LIVE eligibility requires independently validated positive expected net after all costs, acceptable uncertainty, good-missed and risk/drawdown, execution/Financial Truth/auditability PASS, and explicit Product Owner approval.
@@ -196,6 +204,10 @@ possible.
 
 `ECONOMIC_FLOOR_V2_FIRST_REVIEW=CADENCE_FIX_VALIDATED_BOUNDARY_REMAINS_PRIMARY_ISSUE`.
 
+`ECONOMIC_FLOOR_V2_STATUS=ACTIVE_LOCAL_PAPER`;
+`CADENCE_FIX_VALIDATED=YES`; `BOUNDARY_REMAINS_PRIMARY_ISSUE=YES`;
+`VPS_PROMOTION_READY=NO`.
+
 | Active LOCAL PAPER V2 evidence | Value |
 | --- | ---: |
 | Arm events | 6 |
@@ -320,7 +332,7 @@ themselves.
 - `240M_MFE_FULL_COST_COVER=828/1517` (54.581%); insufficient 689/1,517 (45.419%).
 - `FINAL_NET_POSITIVE=172/1517`; final net -177.145833 USDC.
 - 240-minute MFE cost-cover viability is not final realized profitability and does not replace the differently defined 78.2178% VPS forensic.
-- `MOVEMENT_CAPACITY_PREDICTABILITY=STRONG`.
+- `PRIOR_LOCAL_MOVEMENT_CAPACITY_PREDICTABILITY=STRONG`.
 - `PRE_ENTRY_NON_VALUE_ADD_SEPARABILITY=WEAK`.
 - `ECONOMIC_NO_TRADE_REGION_SUPPORTED=PARTIAL`.
 - `MARGINAL_PORTFOLIO_VALUE=-103.994083_USDC_FOR_923_ADDITIONAL_ADMISSIONS`.
@@ -334,8 +346,99 @@ themselves.
 - `NO_TRADE_INTERPRETATION=PARTIAL`; `CAUSAL_ELIGIBILITY=NEEDS_MORE_RESEARCH`.
 - `GLOBAL_MOVEMENT_GATE_READY=NO`; `CURRENT_HOLDOUT_BURNED=YES`.
 - `NEXT_MOVEMENT_RESEARCH=CONTEXT_SPECIFIC_ON_NEW_DATA_ONLY`.
-- No movement treatment is active or authorized. The frozen ownership candidate remains unchanged and first in causal order.
-- After the ownership decision gate, ordered work is: economic floor after cost cover; context-specific movement capacity on new data; economic no-trade/new risk versus keep; same-thesis control; fee velocity; 1m/5m duplication.
+- No Movement Capacity treatment is active or authorized. Economic Floor V2
+  remains the sole active LOCAL PAPER treatment.
+- After Economic Floor V2 closes, ordered work is: separate boundary
+  refinement if the exact-zero boundary remains limiting; Movement Capacity
+  LOCAL treatment on new natural evidence; then later synthesis only after
+  clean individual experiment results.
+
+## Read-only discovery conveyor #3–#7
+
+`DISCOVERY_CONVEYOR_STATUS=COMPLETE`. These VPS PAPER results are read-only
+discovery, not treatment authority. Economic Floor V2 remains the sole active
+LOCAL PAPER causal treatment.
+
+### Experiment #3 — Movement Capacity
+
+- `EXPERIMENT_3=MOVEMENT_CAPACITY`.
+- `DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`.
+- `PRE_ENTRY_PREDICTABILITY=MODERATE`; `FINAL_NET_PREDICTABILITY=WEAK`.
+- `GLOBAL_GATE_SUPPORTED=NO`;
+  `CONTEXT_SPECIFIC_GATE_SUPPORTED=YES_RESEARCH_ONLY`.
+- The existing frozen candidate is unchanged: block when
+  `ATR_PCT <= 0.05275618624106265` and
+  `REALTIME_SCORE <= 18.24315`; missing ATR remains allowed.
+- VPS read-only cohort: `COHORT_N=458`, `BLOCKED=78`, `BAD_AVOIDED=62`,
+  `GOOD_MISSED=16`, `NET_DELTA_DIAGNOSTIC=+11.622090_USDC`.
+- All inspected evidence is burned for this candidate.
+  `FROZEN_CANDIDATE_READY_FOR_FUTURE_LOCAL_TEST=YES`, but any future LOCAL
+  treatment requires new natural evidence after activation.
+- `TREATMENT_ACTIVE=NO`.
+
+### Experiment #4 — Economic No-Trade / New Risk vs Keep Existing Risk
+
+- `EXPERIMENT_4=ECONOMIC_NO_TRADE_NEW_RISK_VS_KEEP_EXISTING_RISK`.
+- `DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=NO`;
+  `MARGINAL_VALUE_SIGNAL_STRENGTH=WEAK`.
+- `GLOBAL_GATE_SUPPORTED=NO`; `CONTEXT_SPECIFIC_GATE_SUPPORTED=NO`;
+  `FROZEN_CANDIDATE_READY=NO`; `LOCAL_TREATMENT=NO`.
+- Additional admissions were economically negative, but existing portfolio
+  risk was not isolated as the causal discriminator.
+
+### Experiment #5 — Same-Thesis Control
+
+- `EXPERIMENT_5=SAME_THESIS_CONTROL`.
+- `DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`;
+  `THESIS_PROXY_SIGNAL_STRENGTH=WEAK`.
+- `GLOBAL_GATE_SUPPORTED=NO`; `CONTEXT_SPECIFIC_GATE_SUPPORTED=NO`;
+  `LOCAL_TREATMENT=NO`.
+- Redundant fee drag and correlated losses exist, but authoritative
+  position-to-thesis identity does not. Current proxies cannot authorize a
+  gate. `INTERACTION_WITH_MOVEMENT_CAPACITY=MODERATE`.
+
+### Experiment #6 — Fee Velocity
+
+- `EXPERIMENT_6=FEE_VELOCITY`.
+- `DISCOVERY_STATUS=COMPLETE`; `FEE_DRAG_STRONGLY_CONFIRMED=YES`;
+  `FEE_VELOCITY_AS_CAUSE=NOT_SUPPORTED`.
+- `TOTAL_FINAL_NET=-66.680402_USDC`; `TOTAL_FEES=65.513810_USDC`;
+  `TOTAL_GROSS_BEFORE_FEES=-1.166592_USDC`.
+- `FEE_DOMINATED_LOSS_RATE=75.6381_PERCENT`;
+  `GROSS_POSITIVE_BUT_NET_NEGATIVE_COUNT=252`.
+- `GLOBAL_FEE_VELOCITY_GATE_SUPPORTED=NO`;
+  `CONTEXT_SPECIFIC_FEE_VELOCITY_GATE_SUPPORTED=NO`;
+  `LOCAL_TREATMENT=NO`.
+- Fast reentry was not intrinsically worse than quiet entry. This evidence
+  does not authorize time-based reentry suppression.
+
+### Experiment #7 — 1m/5m Mixed Duplication
+
+- `EXPERIMENT_7=1M_5M_MIXED_DUPLICATION`.
+- `DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`;
+  `SIGNAL_STRENGTH=WEAK`.
+- `GLOBAL_MIXED_DUPLICATION_GATE_SUPPORTED=NO`;
+  `CONTEXT_SPECIFIC_MIXED_DUPLICATION_GATE_SUPPORTED=NO`;
+  `DIRECTION_ASYMMETRY_SUPPORTED=NO`.
+- Cross-interval admission economics did not show incremental harm.
+- Correlated lifecycle evidence: `PAIR_COUNT=296`, `BOTH_LOSE_COUNT=250`,
+  `BOTH_WIN_COUNT=6`, `PAIR_GROSS_BEFORE_FEES=+0.076939_USDC`,
+  `PAIR_FEES=82.597695_USDC`, `PAIR_NET=-82.520756_USDC`.
+- Redundant/correlated exposure exists descriptively, but interval mixing is
+  not an authorized gate. `LOCAL_TREATMENT=NO`.
+
+### Cross-experiment synthesis
+
+`STRONGEST_REPEATED_ECONOMIC_SIGNAL=INSUFFICIENT_MOVEMENT_RELATIVE_TO_FIXED_COSTS_PLUS_REDUNDANT_CORRELATED_EXPOSURE`.
+This is not an authorized combined policy.
+
+Unsupported simple gates are: any existing risk implies block new risk; fast
+reentry implies bad; cross-interval overlap implies bad; and a same-thesis
+proxy implies a global gate. Supported research directions remain Economic
+Floor protection, Movement Capacity contextual filtering, and later
+authoritative thesis/marginal-capital-value synthesis if evidence contracts
+improve. No New Risk, Same Thesis, Fee Velocity, or Mixed Duplication treatment
+is scheduled from current evidence.
 
 ## Regime-dependent strategy economics
 
@@ -366,6 +469,8 @@ themselves.
 - `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its boundary in place.
 - Continue `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` unchanged on
   LOCAL PAPER for a small economic cohort; do not close or tune V2.
+- `ACTIVE_LOCAL_CAUSAL_TREATMENT_COUNT=1`; discovery #3–#7 changed no active
+  treatment authority.
 - Monitor forward freshness and the moderate pipeline risk; no pipeline change is required.
 
 ## NEXT
@@ -374,6 +479,12 @@ themselves.
 - Gather the small unchanged V2 economic cohort. Cadence independence is
   validated; the remaining boundary question is deferred to a separate future
   experiment after V2 closure.
+- If V2 closure confirms that exact zero remains limiting, perform Boundary
+  Refinement as a separate Economic Floor experiment. Then test the frozen
+  Movement Capacity candidate locally using new natural evidence.
+- Re-evaluate any thesis/marginal-capital-value synthesis only after clean
+  results from the individual experiments. Do not schedule New Risk, Same
+  Thesis, Fee Velocity, or Mixed Duplication treatments from current evidence.
 - Any future Ownership V2 activation or Economic Floor boundary experiment
   requires separate authorization and new natural evidence.
 - Keep `LIVE_ELIGIBILITY=NO`.
