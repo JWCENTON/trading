@@ -124,6 +124,7 @@ def load_paper_realizable_net_evidence(
     current_price: Decimal,
     observed_at: datetime,
     source_candle_id: str,
+    connection=None,
 ) -> PaperRealizableNetEvidence:
     """Read one point-in-time hypothetical full close; never changes trading state."""
     mark = Decimal(str(current_price))
@@ -141,9 +142,11 @@ def load_paper_realizable_net_evidence(
     if not mark.is_finite() or mark <= 0:
         return incomplete("INCOMPLETE:MARK_PRICE")
 
-    conn = connection_factory()
+    owns_connection = connection is None
+    conn = connection if connection is not None else connection_factory()
     try:
-        conn.set_session(readonly=True)
+        if owns_connection:
+            conn.set_session(readonly=True)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -203,9 +206,11 @@ def load_paper_realizable_net_evidence(
                 (str(symbol), str(interval), entry_time, observed_at),
             )
             peak_price = cur.fetchone()[0]
-        conn.rollback()
+        if owns_connection:
+            conn.rollback()
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
     entry_qty_d = Decimal(str(entry_qty))
     if (

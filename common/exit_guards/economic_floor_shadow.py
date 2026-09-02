@@ -58,6 +58,8 @@ def economic_floor_mode(
     trading_mode: str, environ: dict[str, str] | None = None,
 ) -> str:
     values = os.environ if environ is None else environ
+    if str(values.get("ACTIVE_ECONOMIC_FLOOR_VERSION", "")).strip().upper() == "V2":
+        return "SHADOW_ONLY"
     requested = str(values.get(MODE_ENV, "SHADOW_ONLY")).strip().upper()
     if str(trading_mode).upper() == "PAPER" and requested == "TREATMENT":
         return "TREATMENT"

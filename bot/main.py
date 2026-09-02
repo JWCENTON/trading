@@ -41,6 +41,12 @@ from common.exit_guards.economic_floor_shadow import (
     observe_economic_floor_shadow,
     reconcile_economic_floor_shadow_closures,
 )
+from common.exit_guards.economic_floor_v2 import (
+    V2_ACTIVE_EXIT_REASON,
+    economic_floor_v2_active,
+    evaluate_economic_floor_v2_owner_cycle,
+    reconcile_economic_floor_v2_closures,
+)
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
 from common.decision_contract import (
@@ -3984,6 +3990,41 @@ def run_strategy(row, prev_row=None):
 
 LAST_PROCESSED_OPEN_TIME = None
 
+
+def run_economic_floor_v2_owner_cycle():
+    """Evaluate only position-level V2 protection; never strategy logic."""
+    if not economic_floor_v2_active(cfg.trading_mode):
+        return
+    reconcile_economic_floor_v2_closures(
+        trading_mode=cfg.trading_mode, connection_factory=get_db_conn,
+    )
+    pos = get_open_position()
+    if not pos:
+        return
+    pos_id, pos_side, pos_qty, _entry_price, _entry_time = pos
+    decision = evaluate_economic_floor_v2_owner_cycle(
+        trading_mode=cfg.trading_mode, position_id=int(pos_id), symbol=SYMBOL,
+        interval=INTERVAL, strategy=STRATEGY_NAME,
+        connection_factory=get_db_conn,
+    )
+    if not decision.exit_requested:
+        return
+    exit_side = "SELL" if str(pos_side).upper() == "LONG" else "BUY"
+    res = execute_exit_safe(
+        exit_side=exit_side, price=float(decision.mark_price),
+        qty_btc=float(pos_qty), reason_text=V2_ACTIVE_EXIT_REASON,
+        candle_open_time=decision.observed_at, cfg_used=cfg,
+        allow_live_orders=False, allow_meta={"authority": "LOCAL_PAPER_V2"},
+        exit_kind=V2_ACTIVE_EXIT_REASON,
+    )
+    if not _rsi_execution_succeeded(res, cfg):
+        emit_blocked(
+            reason="EXIT_BLOCKED", decision=exit_side,
+            price=float(decision.mark_price),
+            candle_open_time=decision.observed_at,
+            info={"res": res, "exit_kind": V2_ACTIVE_EXIT_REASON},
+        )
+
 def main_loop():
     global LAST_PROCESSED_OPEN_TIME
 
@@ -4055,6 +4096,8 @@ def main_loop():
                     )
                     build_no_new_candle_decision(latest)
                     logging.info("RSI: no new candle yet (%s) -> skip strategy.", str(open_time))
+
+            run_economic_floor_v2_owner_cycle()
 
         except Exception as e:
             logging.exception("RSI loop error")

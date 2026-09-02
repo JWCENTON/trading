@@ -179,9 +179,10 @@ def test_active_missing_fee_or_inventory_fails_closed():
         assert result.status == "FAIL_CLOSED_MISSING_AUTHORITY"
 
 
-def test_paper_override_activates_treatment_without_live_config_change():
+def test_paper_override_preserves_history_but_v2_disables_v1_active_authority():
     paper = (ROOT / "docker-compose.paper.override.yaml").read_text()
-    assert 'ECONOMIC_FLOOR_AFTER_COST_COVER_V1_MODE: "TREATMENT"' in paper
+    assert 'ECONOMIC_FLOOR_AFTER_COST_COVER_V1_MODE: "SHADOW_ONLY"' in paper
+    assert 'ACTIVE_ECONOMIC_FLOOR_VERSION: "V2"' in paper
     live_files = list(ROOT.glob("docker-compose*live*.yaml"))
     assert all("ECONOMIC_FLOOR_AFTER_COST_COVER_V1_MODE" not in path.read_text() for path in live_files)
 
