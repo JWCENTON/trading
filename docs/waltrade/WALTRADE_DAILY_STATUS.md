@@ -8,7 +8,7 @@ OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 CURRENT_PHASE=STOP_LOSING
 
-CURRENT_P0=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_RESEARCH_DESIGN
+CURRENT_P0=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_SMALL_UNCHANGED_LOCAL_COHORT
 
 This document is current truth only. Git history retains prior states.
 
@@ -32,8 +32,8 @@ This document is current truth only. Git history retains prior states.
 | 1m/5m | MIXED; no global block authorized |
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
-| Exit Giveback | Economic Floor V1 mechanism validated; exact-zero active boundary not validated at 60–300 second cadence |
-| LOCAL PAPER | HEALTHY / ECONOMIC FLOOR V1 FIRST ACTIVE REVIEW COMPLETE; runtime treatment unchanged by docs task |
+| Exit Giveback | Economic Floor V2 cadence independence validated; exact-zero boundary remains the primary issue |
+| LOCAL PAPER | HEALTHY / ECONOMIC FLOOR V2 ACTIVE; first review complete; small unchanged cohort continues |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Ownership V1 bounded research decision `TERMINAL`; runtime unchanged by docs task |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
@@ -186,7 +186,7 @@ Boundary evidence is descriptive only:
 The observed value is not a frozen threshold and must not become one without a
 new experiment.
 
-### Next Economic Floor research hypothesis
+## Economic Floor V2 first active review
 
 `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` asks whether the same
 authoritative cost-cover and realizable-net protection can be evaluated at a
@@ -194,10 +194,49 @@ common causal cadence independent of the originating strategy interval, using
 existing market/evidence infrastructure and avoiding a new engine where
 possible.
 
-`ECONOMIC_FLOOR_V2_IMPLEMENTED=NO`. V2 is research-only. It freezes no buffer,
-including no `+0.025` threshold; adds no strategy-, symbol-, or regime-specific
-floor; and does not implement a ratchet. `STEPWISE_RATCHET` remains future
-research after the basic protection boundary is reliable.
+`ECONOMIC_FLOOR_V2_FIRST_REVIEW=CADENCE_FIX_VALIDATED_BOUNDARY_REMAINS_PRIMARY_ISSUE`.
+
+| Active LOCAL PAPER V2 evidence | Value |
+| --- | ---: |
+| Arm events | 6 |
+| Exit intents | 3 |
+| Completed floor exits | 3 |
+| Duplicate arm events | 0 |
+| Duplicate close events | 0 |
+| Armed by originating interval | `1m:5, 5m:1` |
+| Floor exits by originating interval | `1m:2, 5m:1` |
+| Floor-exit net sum | -0.064340584790 USDC |
+| Floor-exit average net | -0.0214468615966667 USDC |
+| Floor-exit minimum net | -0.04087355760 USDC |
+| Floor-exit maximum net | -0.006972296870 USDC |
+| 1m-origin average cross-zero gap | 0.038252924520 USDC |
+| 5m-origin average cross-zero gap | 0.008452631880 USDC |
+
+- `CADENCE_DEFECT_FIXED_ARCHITECTURALLY=YES`;
+  `FIVE_MINUTE_POSITION_NOW_EVALUATED_ON_1M_CADENCE=YES`;
+  `V2_5M_PROTECTION_LATENCY_REDUCED=YES`.
+- `V2_MECHANISM_WORKING_AS_DESIGNED=YES`;
+  `V2_CADENCE_INDEPENDENCE_VALIDATED=YES`; `V2_UPSIDE_PRESERVED=YES`.
+- `REMAINING_NEGATIVE_EXIT_PRIMARY_CAUSE=EXACT_ZERO_BOUNDARY`;
+  `V2_BOUNDARY_VALIDATED=NO`.
+- `UPSIDE_INTERFERENCE_PROVEN=NO`; `PREMATURE_EXIT_HARM_PROVEN=NO`.
+- `V2_READY_FOR_VPS_PROMOTION=NO`;
+  `ADDITIONAL_LOCAL_V2_EVIDENCE_REQUIRED=YES_SMALL_UNCHANGED_ECONOMIC_COHORT`.
+
+The frozen V1 5m cadence was 300 seconds; V2 evaluates all originating
+intervals at a common 60-second cadence. V1's three 5m floor exits averaged
+`-0.0151844783126667 USDC`, with cross-zero gaps `0.03144316240`,
+`0.02655752220`, and `0.0266234466540 USDC`. The first natural V2 5m floor
+exit finished at `-0.006972296870 USDC` with a `0.008452631880 USDC`
+cross-zero gap. This is descriptive, mechanistic evidence from one V2 5m
+example, not authority to claim statistical improvement.
+
+V2 remains active and unchanged on LOCAL PAPER for a small economic cohort; it
+is not closed or qualified for VPS promotion. The remaining research question
+is the economic boundary. Any boundary refinement must be a separate
+experiment after V2 closure. No numeric buffer is frozen, no ratchet is added,
+and no strategy-, symbol-, or regime-specific floor is authorized.
+`STEPWISE_RATCHET` remains later research.
 
 ## Equity UI canonical read authority
 
@@ -317,7 +356,7 @@ themselves.
   regime engine or global strategy block is authorized.
 - Movement Capacity remains `NEEDS_MORE_RESEARCH`. Economic Floor V1 is a
   completed bounded research decision; V2 cadence-independent protection is
-  the current research-design priority and is not implemented or active.
+  active on LOCAL PAPER and continues unchanged for a small economic cohort.
 
 ## NOW
 
@@ -325,20 +364,22 @@ themselves.
 - Preserve Ownership V2 as a documentation-only frozen hypothesis; do not
   implement or activate it.
 - `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its boundary in place.
-- Preserve `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` as a research
-  hypothesis only; no buffer or ratchet is frozen.
+- Continue `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` unchanged on
+  LOCAL PAPER for a small economic cohort; do not close or tune V2.
 - Monitor forward freshness and the moderate pipeline risk; no pipeline change is required.
 
 ## NEXT
 
-- `CURRENT_STAGE=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_RESEARCH_DESIGN`.
-- Determine whether existing infrastructure can provide a common causal
-  evaluation cadence before any separately authorized V2 experiment.
-- Any future Ownership V2 or Economic Floor V2 activation requires separate
-  authorization and new natural evidence.
+- `CURRENT_STAGE=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_ACTIVE_LOCAL_PAPER`.
+- Gather the small unchanged V2 economic cohort. Cadence independence is
+  validated; the remaining boundary question is deferred to a separate future
+  experiment after V2 closure.
+- Any future Ownership V2 activation or Economic Floor boundary experiment
+  requires separate authorization and new natural evidence.
 - Keep `LIVE_ELIGIBILITY=NO`.
 - Movement capacity remains `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
-- Economic Floor V1 is not qualified for VPS or LIVE; V2 is not implemented.
+- Economic Floor V1 is not qualified for VPS or LIVE; active LOCAL PAPER V2 is
+  not yet qualified for VPS promotion or LIVE.
 
 ## DO_NOT_DO
 

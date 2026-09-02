@@ -199,7 +199,8 @@ cohort. Selection semantics must precede outcomes:
 With Ownership V1 and Economic Floor V1 decisions complete, ordered economic
 work is:
 
-1. `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` — research design only
+1. `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` — active LOCAL PAPER;
+   cadence independence validated; gather a small unchanged economic cohort
 2. `MOVEMENT_CAPACITY` — context-specific research on new, untouched data
 3. `ECONOMIC_NO_TRADE / NEW_RISK_VS_KEEP_EXISTING_RISK`
 4. `SAME_THESIS_CONTROL`
@@ -284,7 +285,7 @@ boundary is not: at the observed 60–300 second evaluation cadence it acted too
 late to preserve non-negative final execution. V1 remains separate from entry
 treatments, is not classified as harmful, and is not qualified for VPS or LIVE.
 
-The next exit-only research hypothesis is
+The active LOCAL PAPER exit-only research candidate is
 `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION`. It asks whether the same
 authoritative protection can run at a common causal cadence independent of the
 originating strategy interval by reusing existing market/evidence
@@ -298,7 +299,7 @@ ratchet, or strategy-, symbol-, or regime-specific floor.
 `ECONOMIC_FLOOR_V1_ACTIVE_BOUNDARY_VALIDATED=NO`;
 `ECONOMIC_FLOOR_V1_VPS_PROMOTION_READY=NO`;
 `ECONOMIC_FLOOR_V1_LIVE_ELIGIBILITY=NO`;
-`ECONOMIC_FLOOR_V2_IMPLEMENTED=NO`;
+`ECONOMIC_FLOOR_V2_IMPLEMENTED=YES_LOCAL_PAPER_ONLY`;
 `ECONOMIC_FLOOR_V1_FINAL_VERDICT=MECHANISM_PROMISING_BOUNDARY_TOO_LATE_AT_DISCRETE_EVALUATION_CADENCE`.
 
 The authoritative LOCAL PAPER cohort contains `ACTIVE_ARMED_COUNT=12`,
@@ -329,6 +330,43 @@ infrastructure first. Do not add a new engine if avoidable, and do not add a
 buffer, ratchet, or strategy-, symbol-, or regime-specific floor.
 `STEPWISE_RATCHET` remains future research after the basic protection boundary
 is reliable.
+
+### Economic Floor V2 first active review
+
+`ECONOMIC_FLOOR_V2_FIRST_REVIEW=CADENCE_FIX_VALIDATED_BOUNDARY_REMAINS_PRIMARY_ISSUE`.
+
+The authoritative LOCAL PAPER cohort contains `TOTAL_V2_ARM_EVENTS=6`,
+`TOTAL_V2_EXIT_INTENTS=3`, and `TOTAL_COMPLETED_V2_FLOOR_EXITS=3`, with zero
+duplicate arm or close events. Arms split `1m:5, 5m:1` by originating interval;
+floor exits split `1m:2, 5m:1`. Completed floor exits produced net sum
+`-0.064340584790 USDC`, average `-0.0214468615966667 USDC`, minimum
+`-0.04087355760 USDC`, and maximum `-0.006972296870 USDC`. Average cross-zero
+gaps were `0.038252924520 USDC` for 1m-origin exits and
+`0.008452631880 USDC` for the single 5m-origin exit.
+
+`CADENCE_DEFECT_FIXED_ARCHITECTURALLY=YES`;
+`FIVE_MINUTE_POSITION_NOW_EVALUATED_ON_1M_CADENCE=YES`;
+`V2_5M_PROTECTION_LATENCY_REDUCED=YES`;
+`V2_MECHANISM_WORKING_AS_DESIGNED=YES`;
+`V2_CADENCE_INDEPENDENCE_VALIDATED=YES`;
+`V2_UPSIDE_PRESERVED=YES`;
+`V2_BOUNDARY_VALIDATED=NO`.
+
+The remaining negative-exit primary cause is the exact-zero boundary, not the
+removed 5m architectural cadence dependency. No upside interference or
+premature-exit harm is proven. V1's three 5m floor exits averaged
+`-0.0151844783126667 USDC`, with cross-zero gaps `0.03144316240`,
+`0.02655752220`, and `0.0266234466540 USDC`. The first natural V2 5m exit was
+`-0.006972296870 USDC`, with a `0.008452631880 USDC` cross-zero gap at the
+common 60-second cadence. Because only one natural V2 5m-origin floor exit
+exists, these figures are descriptive/mechanistic evidence and do not
+authorize a statistical improvement claim.
+
+`V2_READY_FOR_VPS_PROMOTION=NO` and
+`ADDITIONAL_LOCAL_V2_EVIDENCE_REQUIRED=YES_SMALL_UNCHANGED_ECONOMIC_COHORT`.
+V2 remains active and unchanged; it is not closed or tuned. Boundary
+refinement is a separate future experiment after V2 closure. No numeric buffer
+is frozen, no ratchet is added, and `STEPWISE_RATCHET` remains later research.
 
 ## 7. Current causal work
 
@@ -503,25 +541,27 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 1. `OWNERSHIP_V1=COMPLETE`; do not tune V1 in place.
 2. Preserve Ownership V2 as a documentation-only frozen hypothesis; do not implement or activate it.
 3. `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its exact-zero boundary in place.
-4. Preserve `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` as a
-   research-only hypothesis; no buffer or ratchet is frozen.
+4. Continue `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` unchanged on
+   LOCAL PAPER for a small economic cohort; no buffer or ratchet is frozen.
 5. Monitor forward canonical freshness and moderate pipeline risk; no pipeline change is required.
 
 ### Next
 
-1. `CURRENT_STAGE=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_RESEARCH_DESIGN`.
-2. Determine whether existing market/evidence infrastructure can supply a
-   common causal cadence before any separately authorized V2 experiment.
+1. `CURRENT_STAGE=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_ACTIVE_LOCAL_PAPER`.
+2. Gather the small unchanged V2 economic cohort. The architectural cadence
+   question is answered; boundary refinement remains a separate future
+   experiment after V2 closure.
 3. Then perform context-specific movement-capacity research on new, untouched data only.
 4. Then evaluate economic no-trade / new-risk-versus-keep, same-thesis control, fee velocity, and finally 1m/5m semantic duplication.
-5. Any future Ownership V2 or Economic Floor V2 activation requires separate authorization and new natural evidence.
+5. Any future Ownership V2 activation or Economic Floor boundary experiment requires separate authorization and new natural evidence.
 6. Keep `LIVE_ELIGIBILITY=NO`; neither completed V1 decision creates LIVE authority.
 
 The economic-floor family follows a proven secondary leak: 115
 tiny-positive-to-final-loss cases, of which 112 ended through
 `PROFIT_LOCK_TRAIL_DROP`. V1 validated the mechanism but not its exact-zero
-boundary at discrete strategy cadence. V2 research design may investigate a
-common causal evaluation cadence. This does not authorize a buffer, final exit
+boundary at discrete strategy cadence. V2 has validated a common causal
+evaluation cadence on LOCAL PAPER and continues unchanged for a small economic
+cohort. This does not authorize a buffer, final exit
 rule, fixed take-profit, immediate tiny-positive exit, ratchet, or `TIME_EXIT`
 as an economic exit. Entry and exit treatments must not be mixed.
 
