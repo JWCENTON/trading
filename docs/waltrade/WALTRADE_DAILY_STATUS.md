@@ -8,7 +8,7 @@ OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 CURRENT_PHASE=STOP_LOSING
 
-CURRENT_P0=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_SMALL_UNCHANGED_LOCAL_COHORT
+CURRENT_P0=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1_RESEARCH_DESIGN_NOT_STARTED
 
 This document is current truth only. Git history retains prior states.
 
@@ -32,8 +32,8 @@ This document is current truth only. Git history retains prior states.
 | 1m/5m | MIXED; no global block authorized |
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
-| Exit Giveback | Economic Floor V2 cadence independence validated; exact-zero boundary remains the primary issue |
-| LOCAL PAPER | HEALTHY / ECONOMIC FLOOR V2 ACTIVE; first review complete; small unchanged cohort continues |
+| Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
+| LOCAL PAPER | HEALTHY; Economic Floor V2 research decision closed; deployed runtime unchanged by docs task |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Ownership V1 bounded research decision `TERMINAL`; runtime unchanged by docs task |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
@@ -73,8 +73,8 @@ gates, economic priorities, or LIVE authority.
 - `RESEARCH_UNIVERSE` is broad PAPER evidence and may remain aggregate-negative.
 - `PAPER_RESEARCH_UNIVERSE_MAY_BE_NET_NEGATIVE=YES`.
 - `LOCAL_PAPER_CAUSAL_TREATMENTS=ONE_ACTIVE_AT_A_TIME`.
-- VPS PAPER remains the untreated natural reference for the current LOCAL
-  experiment and may also support read-only discovery for future experiments.
+- When a LOCAL experiment is active, VPS PAPER remains its untreated natural
+  reference and may also support read-only discovery for future experiments.
   No simultaneous second VPS treatment is authorized while that reference is
   required.
 - Evidence used to select or evaluate a candidate is burned for validation of
@@ -194,7 +194,7 @@ Boundary evidence is descriptive only:
 The observed value is not a frozen threshold and must not become one without a
 new experiment.
 
-## Economic Floor V2 first active review
+## Economic Floor V2 final cadence decision
 
 `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` asks whether the same
 authoritative cost-cover and realizable-net protection can be evaluated at a
@@ -202,53 +202,70 @@ common causal cadence independent of the originating strategy interval, using
 existing market/evidence infrastructure and avoiding a new engine where
 possible.
 
-`ECONOMIC_FLOOR_V2_FIRST_REVIEW=CADENCE_FIX_VALIDATED_BOUNDARY_REMAINS_PRIMARY_ISSUE`.
+`ECONOMIC_FLOOR_V2_STATUS=COMPLETE`;
+`ECONOMIC_FLOOR_V2_FINAL_VERDICT=CADENCE_FIX_VALIDATED_BOUNDARY_REMAINS_PRIMARY_ISSUE`.
 
-`ECONOMIC_FLOOR_V2_STATUS=ACTIVE_LOCAL_PAPER`;
-`CADENCE_FIX_VALIDATED=YES`; `BOUNDARY_REMAINS_PRIMARY_ISSUE=YES`;
-`VPS_PROMOTION_READY=NO`.
+`V2_1M_ORIGIN_EXIT_COUNT=2`; `V2_5M_ORIGIN_EXIT_COUNT=6`;
+`FIVE_MINUTE_ORIGIN_ARM_COUNT=8`;
+`FIVE_MINUTE_ORIGIN_FLOOR_EXIT_COUNT=6`.
 
-| Active LOCAL PAPER V2 evidence | Value |
+| Final LOCAL PAPER V2 cadence cohort | Value |
 | --- | ---: |
-| Arm events | 6 |
-| Exit intents | 3 |
-| Completed floor exits | 3 |
-| Duplicate arm events | 0 |
-| Duplicate close events | 0 |
-| Armed by originating interval | `1m:5, 5m:1` |
-| Floor exits by originating interval | `1m:2, 5m:1` |
-| Floor-exit net sum | -0.064340584790 USDC |
-| Floor-exit average net | -0.0214468615966667 USDC |
-| Floor-exit minimum net | -0.04087355760 USDC |
-| Floor-exit maximum net | -0.006972296870 USDC |
-| 1m-origin average cross-zero gap | 0.038252924520 USDC |
-| 5m-origin average cross-zero gap | 0.008452631880 USDC |
+| Arm events | 14 |
+| Exit intents | 8 |
+| Completed floor exits | 8 |
+| 1m-origin floor exits | 2 |
+| 5m-origin arms | 8 |
+| 5m-origin floor exits | 6 |
+| V2 5m average final net | -0.0128205821774 USDC |
+| V2 5m average cross-zero gap | 0.01745574779875 USDC |
 
 - `CADENCE_DEFECT_FIXED_ARCHITECTURALLY=YES`;
-  `FIVE_MINUTE_POSITION_NOW_EVALUATED_ON_1M_CADENCE=YES`;
-  `V2_5M_PROTECTION_LATENCY_REDUCED=YES`.
-- `V2_MECHANISM_WORKING_AS_DESIGNED=YES`;
   `V2_CADENCE_INDEPENDENCE_VALIDATED=YES`; `V2_UPSIDE_PRESERVED=YES`.
 - `REMAINING_NEGATIVE_EXIT_PRIMARY_CAUSE=EXACT_ZERO_BOUNDARY`;
   `V2_BOUNDARY_VALIDATED=NO`.
 - `UPSIDE_INTERFERENCE_PROVEN=NO`; `PREMATURE_EXIT_HARM_PROVEN=NO`.
-- `V2_READY_FOR_VPS_PROMOTION=NO`;
-  `ADDITIONAL_LOCAL_V2_EVIDENCE_REQUIRED=YES_SMALL_UNCHANGED_ECONOMIC_COHORT`.
+- `SMALL_V2_ECONOMIC_COHORT_SUFFICIENT=YES`;
+  `SUFFICIENCY_SCOPE=CADENCE_EXPERIMENT_CLOSURE_DECISION_ONLY_NOT_STATISTICAL_PERFORMANCE_PROOF`.
+- `ECONOMIC_FLOOR_V2_VPS_PROMOTION_READY=NO`;
+  `ECONOMIC_FLOOR_V2_LIVE_ELIGIBILITY=NO`.
 
-The frozen V1 5m cadence was 300 seconds; V2 evaluates all originating
-intervals at a common 60-second cadence. V1's three 5m floor exits averaged
-`-0.0151844783126667 USDC`, with cross-zero gaps `0.03144316240`,
-`0.02655752220`, and `0.0266234466540 USDC`. The first natural V2 5m floor
-exit finished at `-0.006972296870 USDC` with a `0.008452631880 USDC`
-cross-zero gap. This is descriptive, mechanistic evidence from one V2 5m
-example, not authority to claim statistical improvement.
+The frozen V1 5m cadence was 300 seconds; V2 evaluated every originating
+interval at a common 60-second cadence. V1's three 5m exits averaged
+`-0.0151844783127 USDC` with average cross-zero gap
+`0.0282080437513 USDC`. V2's six 5m exits averaged
+`-0.0128205821774 USDC` with average cross-zero gap
+`0.01745574779875 USDC`. The cohorts are small and non-equivalent: this is
+descriptive/mechanistic evidence and authorizes no statistical improvement
+claim.
 
-V2 remains active and unchanged on LOCAL PAPER for a small economic cohort; it
-is not closed or qualified for VPS promotion. The remaining research question
-is the economic boundary. Any boundary refinement must be a separate
-experiment after V2 closure. No numeric buffer is frozen, no ratchet is added,
-and no strategy-, symbol-, or regime-specific floor is authorized.
-`STEPWISE_RATCHET` remains later research.
+V2 is complete as a bounded cadence experiment and is not harmful, qualified
+for VPS promotion, or eligible for LIVE. It must not be tuned in place or kept
+open merely to increase N. This docs task does not change the deployed LOCAL
+PAPER runtime or treatment configuration.
+
+The next separate experiment is
+`ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1`: determine what positive protected
+economic boundary can produce non-negative realized execution under the
+validated common 1m cadence while preserving upside and avoiding premature
+exits. It is not implemented, started, or authorized by this record. No
+numeric buffer—including no `+0.025` assumption—is frozen; no parameter sweep,
+ratchet, or strategy-, symbol-, interval-, or regime-specific threshold is
+authorized. `STEPWISE_RATCHET` remains later research.
+
+`BOUNDARY_REFINEMENT_IMPLEMENTED=NO`;
+`BOUNDARY_REFINEMENT_STARTED=NO`.
+
+Current experiment roadmap:
+
+- `#1 Ownership=COMPLETE`.
+- `#2 Economic Floor V1/V2 cadence family=COMPLETE_FOR_CADENCE_QUESTION`.
+- `NEXT=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1`; not started.
+- `#3 Movement Capacity=PREPARED_FUTURE_CAUSAL_TREATMENT`.
+- `#4 New Risk=UNSUPPORTED_CURRENT_HYPOTHESIS`.
+- `#5 Same Thesis=PARTIAL_NO_GATE`.
+- `#6 Fee Velocity=FEE_DRAG_YES_VELOCITY_GATE_NO`.
+- `#7 Mixed Duplication=PARTIAL_NO_INTERVAL_GATE`.
 
 ## Equity UI canonical read authority
 
@@ -356,8 +373,8 @@ themselves.
 ## Read-only discovery conveyor #3–#7
 
 `DISCOVERY_CONVEYOR_STATUS=COMPLETE`. These VPS PAPER results are read-only
-discovery, not treatment authority. Economic Floor V2 remains the sole active
-LOCAL PAPER causal treatment.
+discovery, not treatment authority. Economic Floor V2 is complete for the
+cadence question; the conveyor changed no treatment authority.
 
 ### Experiment #3 — Movement Capacity
 
@@ -459,7 +476,7 @@ is scheduled from current evidence.
   regime engine or global strategy block is authorized.
 - Movement Capacity remains `NEEDS_MORE_RESEARCH`. Economic Floor V1 is a
   completed bounded research decision; V2 cadence-independent protection is
-  active on LOCAL PAPER and continues unchanged for a small economic cohort.
+  also complete for the cadence question.
 
 ## NOW
 
@@ -467,21 +484,21 @@ is scheduled from current evidence.
 - Preserve Ownership V2 as a documentation-only frozen hypothesis; do not
   implement or activate it.
 - `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its boundary in place.
-- Continue `ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION` unchanged on
-  LOCAL PAPER for a small economic cohort; do not close or tune V2.
-- `ACTIVE_LOCAL_CAUSAL_TREATMENT_COUNT=1`; discovery #3–#7 changed no active
-  treatment authority.
+- `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; do not tune V2 in place or collect more
+  evidence merely to increase N.
+- `ACTIVE_TREATMENT_CHANGED_BY_DOCS_TASK=NO`; deployed runtime and treatment
+  configuration are unchanged.
+- Do not start `ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1` in this docs task.
 - Monitor forward freshness and the moderate pipeline risk; no pipeline change is required.
 
 ## NEXT
 
-- `CURRENT_STAGE=ECONOMIC_FLOOR_V2_CADENCE_INDEPENDENT_PROTECTION_ACTIVE_LOCAL_PAPER`.
-- Gather the small unchanged V2 economic cohort. Cadence independence is
-  validated; the remaining boundary question is deferred to a separate future
-  experiment after V2 closure.
-- If V2 closure confirms that exact zero remains limiting, perform Boundary
-  Refinement as a separate Economic Floor experiment. Then test the frozen
-  Movement Capacity candidate locally using new natural evidence.
+- `CURRENT_STAGE=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1_RESEARCH_DESIGN_NOT_STARTED`.
+- Boundary Refinement is the next separately authorized experiment. It must
+  define a protected economic boundary without assuming a numeric buffer,
+  parameter sweep, ratchet, or context-specific threshold.
+- After Boundary Refinement, test the frozen Movement Capacity candidate
+  locally using new natural evidence.
 - Re-evaluate any thesis/marginal-capital-value synthesis only after clean
   results from the individual experiments. Do not schedule New Risk, Same
   Thesis, Fee Velocity, or Mixed Duplication treatments from current evidence.
