@@ -9,6 +9,10 @@ import os
 from typing import Any
 
 from common.db import get_db_conn
+from common.exit_guards.economic_floor_boundary_evidence import (
+    persist_boundary_evidence_cursor,
+    reconcile_boundary_finals_cursor,
+)
 from common.simulated_execution_evidence import (
     PaperRealizableNetEvidence,
     load_paper_realizable_net_evidence,
@@ -44,6 +48,9 @@ class CanonicalOneMinuteMark:
     close_time: datetime | None = None
     price: Decimal | None = None
     source_id: str | None = None
+    high: Decimal | None = None
+    low: Decimal | None = None
+    atr_pct: Decimal | None = None
 
     @property
     def authoritative(self) -> bool:
@@ -95,7 +102,7 @@ def classify_canonical_one_minute_mark(
         evaluated_at = evaluated_at.replace(tzinfo=timezone.utc)
     if row is None:
         return CanonicalOneMinuteMark("MISSING_FINALIZED_1M", symbol, evaluated_at)
-    candle_id, close, close_time = row
+    candle_id, close, close_time, *market_fields = row
     if close_time is None or close is None or candle_id is None:
         return CanonicalOneMinuteMark("INCOMPLETE_1M_SOURCE", symbol, evaluated_at)
     if close_time.tzinfo is None or close_time.utcoffset() is None:
@@ -117,10 +124,14 @@ def classify_canonical_one_minute_mark(
             candle_id=int(candle_id), close_time=close_time, price=price,
         )
     source_id = f"candles:{int(candle_id)}:close:{close_time.isoformat()}"
+    high = Decimal(str(market_fields[0])) if len(market_fields) > 0 and market_fields[0] is not None else None
+    low = Decimal(str(market_fields[1])) if len(market_fields) > 1 and market_fields[1] is not None else None
+    atr = Decimal(str(market_fields[2])) if len(market_fields) > 2 and market_fields[2] is not None else None
     return CanonicalOneMinuteMark(
         "AUTHORITATIVE", symbol, evaluated_at,
         candle_id=int(candle_id), close_time=close_time,
-        price=price, source_id=source_id,
+        price=price, source_id=source_id, high=high, low=low,
+        atr_pct=(atr / price * Decimal("100") if atr is not None else None),
     )
 
 
@@ -129,7 +140,7 @@ def load_latest_finalized_canonical_one_minute_mark(
 ) -> CanonicalOneMinuteMark:
     cur.execute(
         """
-        SELECT id,close,close_time
+        SELECT id,close,close_time,high,low,atr_14
         FROM candles
         WHERE symbol=%s AND interval='1m' AND close_time<=%s
         ORDER BY close_time DESC,id DESC
@@ -377,6 +388,21 @@ def evaluate_economic_floor_v2_owner_cycle(
                 return decision
 
             payload = _payload(evidence=evidence, decision=decision)
+            cur.execute("SAVEPOINT boundary_evidence")
+            try:
+                persist_boundary_evidence_cursor(
+                    cur, evidence=evidence, mark=mark,
+                    armed_at=decision.state.first_armed_at,
+                    is_forward_arm=decision.event_type == V2_ARM_EVENT,
+                    existing_exit_decision=("EXIT" if decision.exit_requested else "HOLD"),
+                    existing_exit_reason=(decision.exit_reason or decision.status),
+                    existing_exit_committed=decision.exit_requested,
+                )
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT boundary_evidence")
+                logging.exception("boundary evidence collection failed; V2 unchanged")
+            finally:
+                cur.execute("RELEASE SAVEPOINT boundary_evidence")
             cur.execute(
                 """
                 INSERT INTO strategy_events
@@ -487,6 +513,14 @@ def reconcile_economic_floor_v2_closures(
                         json.dumps(payload, default=_json_default),
                     ),
                 )
+            cur.execute("SAVEPOINT boundary_final")
+            try:
+                reconcile_boundary_finals_cursor(cur)
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT boundary_final")
+                logging.exception("boundary final evidence failed; V2 unchanged")
+            finally:
+                cur.execute("RELEASE SAVEPOINT boundary_final")
         conn.commit()
         return len(rows)
     except Exception:
