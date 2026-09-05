@@ -57,7 +57,7 @@ def test_forward_evidence_is_complete_idempotent_and_finalized(
         return disposable_postgres_v16.connect(database)
 
     monkeypatch.setenv("ACTIVE_ECONOMIC_FLOOR_VERSION", "V2")
-    monkeypatch.setenv("ECONOMIC_FLOOR_V2_MODE", "TREATMENT")
+    monkeypatch.setenv("ECONOMIC_FLOOR_V2_MODE", "EVIDENCE_ONLY")
     snapshot = uuid.uuid4()
     entry_at = datetime(2026, 9, 3, 11, 50, tzinfo=timezone.utc)
     first_close = datetime(2026, 9, 3, 12, 0, 59, 999000, tzinfo=timezone.utc)
@@ -117,7 +117,7 @@ def test_forward_evidence_is_complete_idempotent_and_finalized(
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO candles(symbol,interval,open_time,close_time,close,high,"
-                "low,atr_14) VALUES('BTCUSDC','1m',%s,%s,101.1,101.3,100.9,0.26)",
+                "low,atr_14) VALUES('BTCUSDC','1m',%s,%s,99,99.2,98.8,0.26)",
                 (second_close - timedelta(seconds=59, milliseconds=999), second_close),
             )
         conn.commit()
@@ -129,7 +129,8 @@ def test_forward_evidence_is_complete_idempotent_and_finalized(
         strategy="TREND", evaluated_at=second_close + timedelta(milliseconds=1),
         connection_factory=connect,
     )
-    assert second.status == "ARMED_UPSIDE_OPEN"
+    assert second.status == "EVIDENCE_ONLY_ZERO_OR_NEGATIVE"
+    assert not second.exit_requested
 
     conn = connect()
     try:
@@ -161,6 +162,11 @@ def test_forward_evidence_is_complete_idempotent_and_finalized(
             assert second_info["distinct_evaluations_since_arm"] == 2
             assert second_info["recent_realized_volatility"] is not None
             assert second_info["regime"] == "TREND_UP"
+            cur.execute(
+                "SELECT count(*) FROM strategy_events "
+                "WHERE event_type='ECONOMIC_FLOOR_V2_ACTIVE_EXIT_INTENT'"
+            )
+            assert cur.fetchone()[0] == 0
             cur.execute("UPDATE positions SET status='CLOSED',exit_reason='TAKE_PROFIT' WHERE id=77")
             cur.execute("INSERT INTO canonical_financial_truth_v1 VALUES(77,'COMPLETE',0.05)")
         conn.commit()

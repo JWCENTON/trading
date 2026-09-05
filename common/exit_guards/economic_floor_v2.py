@@ -91,6 +91,18 @@ def economic_floor_v2_active(
     )
 
 
+def economic_floor_v2_evidence_collection_active(
+    trading_mode: str, environ: dict[str, str] | None = None,
+) -> bool:
+    values = os.environ if environ is None else environ
+    return (
+        str(trading_mode).upper() == "PAPER"
+        and str(values.get(ACTIVE_VERSION_ENV, "")).strip().upper() == "V2"
+        and str(values.get(MODE_ENV, "OFF")).strip().upper()
+        in {"TREATMENT", "EVIDENCE_ONLY"}
+    )
+
+
 def classify_canonical_one_minute_mark(
     *,
     symbol: str,
@@ -160,6 +172,7 @@ def evaluate_v2_transition(
     source_already_evaluated: bool = False,
     existing_exit_committed: bool = False,
     intent_exists: bool = False,
+    exit_authority_enabled: bool = True,
 ) -> V2Decision:
     base = {
         "position_id": int(evidence.position_id),
@@ -211,6 +224,12 @@ def evaluate_v2_transition(
         return V2Decision(
             "ARMED_UPSIDE_OPEN", event_type=V2_OBSERVATION_EVENT, **updated_base,
         )
+    if not exit_authority_enabled:
+        return V2Decision(
+            "EVIDENCE_ONLY_ZERO_OR_NEGATIVE",
+            event_type=V2_OBSERVATION_EVENT,
+            **updated_base,
+        )
     if intent_exists:
         return V2Decision("IDEMPOTENT_EXIT_INTENT_EXISTS", **updated_base)
     return V2Decision(
@@ -248,12 +267,17 @@ def _state_from_payload(payload: dict[str, Any]) -> V2State:
 
 def _payload(
     *, evidence: PaperRealizableNetEvidence, decision: V2Decision,
+    exit_authority_enabled: bool,
 ) -> dict[str, Any]:
     state = decision.state
     return {
         "contract_version": CONTRACT_VERSION,
-        "economic_floor_mode": "V2_TREATMENT",
-        "active_exit_influence": "ON_LOCAL_PAPER_ONLY",
+        "economic_floor_mode": (
+            "V2_TREATMENT" if exit_authority_enabled else "V2_EVIDENCE_ONLY"
+        ),
+        "active_exit_influence": (
+            "ON_LOCAL_PAPER_ONLY" if exit_authority_enabled else "OFF"
+        ),
         "position_id": int(evidence.position_id),
         "symbol": str(evidence.symbol),
         "originating_interval": str(evidence.interval),
@@ -298,7 +322,7 @@ def evaluate_economic_floor_v2_owner_cycle(
     environ: dict[str, str] | None = None,
 ) -> V2Decision:
     empty = V2State(False)
-    if not economic_floor_v2_active(trading_mode, environ):
+    if not economic_floor_v2_evidence_collection_active(trading_mode, environ):
         return V2Decision("INACTIVE", int(position_id), empty)
     evaluated_at = evaluated_at or datetime.now(timezone.utc)
     conn = None
@@ -382,12 +406,20 @@ def evaluate_economic_floor_v2_owner_cycle(
                     evidence.status == "INCOMPLETE:EXISTING_EXIT_COMMITTED"
                 ),
                 intent_exists=intent_exists,
+                exit_authority_enabled=economic_floor_v2_active(
+                    trading_mode, environ,
+                ),
             )
             if decision.event_type is None:
                 conn.rollback()
                 return decision
 
-            payload = _payload(evidence=evidence, decision=decision)
+            payload = _payload(
+                evidence=evidence, decision=decision,
+                exit_authority_enabled=economic_floor_v2_active(
+                    trading_mode, environ,
+                ),
+            )
             cur.execute("SAVEPOINT boundary_evidence")
             try:
                 persist_boundary_evidence_cursor(
@@ -434,7 +466,7 @@ def reconcile_economic_floor_v2_closures(
     *, trading_mode: str, connection_factory=get_db_conn,
     environ: dict[str, str] | None = None,
 ) -> int:
-    if not economic_floor_v2_active(trading_mode, environ):
+    if not economic_floor_v2_evidence_collection_active(trading_mode, environ):
         return 0
     conn = None
     try:

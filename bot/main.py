@@ -43,8 +43,8 @@ from common.exit_guards.economic_floor_shadow import (
 )
 from common.exit_guards.economic_floor_v2 import (
     V2_ACTIVE_EXIT_REASON,
-    economic_floor_v2_active,
     evaluate_economic_floor_v2_owner_cycle,
+    economic_floor_v2_evidence_collection_active,
     reconcile_economic_floor_v2_closures,
 )
 from common.position_path import load_position_path_snapshot
@@ -3993,7 +3993,7 @@ LAST_PROCESSED_OPEN_TIME = None
 
 def run_economic_floor_v2_owner_cycle():
     """Evaluate only position-level V2 protection; never strategy logic."""
-    if not economic_floor_v2_active(cfg.trading_mode):
+    if not economic_floor_v2_evidence_collection_active(cfg.trading_mode):
         return
     reconcile_economic_floor_v2_closures(
         trading_mode=cfg.trading_mode, connection_factory=get_db_conn,

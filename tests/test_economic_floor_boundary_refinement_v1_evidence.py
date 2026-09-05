@@ -74,14 +74,16 @@ def test_boundary_contract_is_observation_only_and_separate_from_v2():
 
 
 def test_live_cannot_produce_boundary_evidence_through_v2_owner():
-    from common.exit_guards.economic_floor_v2 import economic_floor_v2_active
+    from common.exit_guards.economic_floor_v2 import (
+        economic_floor_v2_evidence_collection_active,
+    )
 
     values = {
         "ACTIVE_ECONOMIC_FLOOR_VERSION": "V2",
-        "ECONOMIC_FLOOR_V2_MODE": "TREATMENT",
+        "ECONOMIC_FLOOR_V2_MODE": "EVIDENCE_ONLY",
     }
-    assert economic_floor_v2_active("PAPER", values)
-    assert not economic_floor_v2_active("LIVE", values)
+    assert economic_floor_v2_evidence_collection_active("PAPER", values)
+    assert not economic_floor_v2_evidence_collection_active("LIVE", values)
 
 
 def test_predeployment_arm_is_excluded_from_forward_cohort():

@@ -16,6 +16,7 @@ from common.exit_guards.economic_floor_v2 import (
     V2State,
     classify_canonical_one_minute_mark,
     economic_floor_v2_active,
+    economic_floor_v2_evidence_collection_active,
     evaluate_v2_transition,
 )
 from common.simulated_execution_evidence import PaperRealizableNetEvidence
@@ -95,6 +96,13 @@ def test_v2_mode_is_paper_only_and_requires_explicit_version():
     assert not economic_floor_v2_active("PAPER", {MODE_ENV: "TREATMENT"})
 
 
+def test_evidence_only_mode_preserves_collection_without_exit_authority():
+    values = {ACTIVE_VERSION_ENV: "V2", MODE_ENV: "EVIDENCE_ONLY"}
+    assert economic_floor_v2_evidence_collection_active("PAPER", values)
+    assert not economic_floor_v2_active("PAPER", values)
+    assert not economic_floor_v2_evidence_collection_active("LIVE", values)
+
+
 def test_no_arm_before_authoritative_full_cost_cover():
     decision = evaluate_v2_transition(V2State(False), evidence=evidence("-0.0001"))
     assert decision.status == "NOT_COST_COVERED"
@@ -143,9 +151,29 @@ def test_later_zero_or_negative_net_claims_v2_exit(net):
     assert decision.exit_requested
 
 
+@pytest.mark.parametrize("net", ["0", "-0.01"])
+def test_evidence_only_later_zero_or_negative_net_cannot_claim_exit(net):
+    decision = evaluate_v2_transition(
+        armed(), evidence=evidence(net), exit_authority_enabled=False,
+    )
+    assert decision.status == "EVIDENCE_ONLY_ZERO_OR_NEGATIVE"
+    assert decision.event_type == V2_OBSERVATION_EVENT
+    assert decision.exit_reason is None
+    assert not decision.exit_requested
+
+
 def test_existing_committed_strategy_exit_wins():
     decision = evaluate_v2_transition(
         armed(), evidence=evidence("-1"), existing_exit_committed=True,
+    )
+    assert decision.status == "EXISTING_EXIT_PRECEDENCE"
+    assert not decision.exit_requested
+
+
+def test_existing_committed_strategy_exit_wins_in_evidence_only_mode():
+    decision = evaluate_v2_transition(
+        armed(), evidence=evidence("-1"), existing_exit_committed=True,
+        exit_authority_enabled=False,
     )
     assert decision.status == "EXISTING_EXIT_PRECEDENCE"
     assert not decision.exit_requested
@@ -206,16 +234,17 @@ def test_v2_namespace_is_distinct_from_v1():
     assert CONTRACT_VERSION == V2_ACTIVE_EXIT_REASON
 
 
-def test_v1_authority_is_disabled_when_v2_is_active():
+def test_v1_authority_is_disabled_when_v2_evidence_collection_is_active():
     from common.exit_guards.economic_floor_shadow import economic_floor_mode
 
     values = {
         ACTIVE_VERSION_ENV: "V2",
-        MODE_ENV: "TREATMENT",
+        MODE_ENV: "EVIDENCE_ONLY",
         "ECONOMIC_FLOOR_AFTER_COST_COVER_V1_MODE": "TREATMENT",
     }
     assert economic_floor_mode("PAPER", values) == "SHADOW_ONLY"
-    assert economic_floor_v2_active("PAPER", values)
+    assert economic_floor_v2_evidence_collection_active("PAPER", values)
+    assert not economic_floor_v2_active("PAPER", values)
 
 
 def test_owner_cycle_uses_finalized_1m_and_existing_locks():
@@ -235,6 +264,7 @@ def test_owner_worker_wiring_is_after_normal_strategy_cycle_and_on_idle_cycles()
         source = (ROOT / relative).read_text()
         assert "def run_economic_floor_v2_owner_cycle" in source
         assert source.count("run_economic_floor_v2_owner_cycle()") >= 2
+        assert "economic_floor_v2_evidence_collection_active" in source
         assert "V2_ACTIVE_EXIT_REASON" in source
         assert "allow_live_orders=False" in source
 
@@ -256,12 +286,12 @@ def test_v2_final_event_links_only_complete_financial_truth():
     assert "final_net_pnl_after_fees" in source
 
 
-def test_paper_override_activates_only_v2_and_live_files_remain_untouched():
+def test_paper_override_keeps_v2_evidence_only_and_live_files_untouched():
     paper = (ROOT / "docker-compose.paper.override.yaml").read_text()
-    assert 'ECONOMIC_FLOOR_MODE: "V2_TREATMENT"' in paper
+    assert 'ECONOMIC_FLOOR_MODE: "V2_EVIDENCE_ONLY"' in paper
     assert 'ACTIVE_ECONOMIC_FLOOR_VERSION: "V2"' in paper
     assert 'ECONOMIC_FLOOR_AFTER_COST_COVER_V1_MODE: "SHADOW_ONLY"' in paper
-    assert 'ECONOMIC_FLOOR_V2_MODE: "TREATMENT"' in paper
+    assert 'ECONOMIC_FLOOR_V2_MODE: "EVIDENCE_ONLY"' in paper
     for path in ROOT.glob("docker-compose*live*.yaml"):
         live = path.read_text()
         assert "ECONOMIC_FLOOR_V2_MODE" not in live
