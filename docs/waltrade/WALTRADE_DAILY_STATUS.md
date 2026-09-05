@@ -8,7 +8,7 @@ OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 CURRENT_PHASE=STOP_LOSING
 
-CURRENT_P0=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1_RESEARCH_DESIGN_NOT_STARTED
+CURRENT_P0=ECONOMIC_FLOOR_RECOVERY_EVIDENCE_COLLECTION_ACTIVE
 
 This document is current truth only. Git history retains prior states.
 
@@ -33,7 +33,7 @@ This document is current truth only. Git history retains prior states.
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
 | Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
-| LOCAL PAPER | HEALTHY; Economic Floor V2 research decision closed; deployed runtime unchanged by docs task |
+| LOCAL PAPER | HEALTHY; Economic Floor V2 exit authority OFF; boundary/recovery evidence collection ACTIVE |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Ownership V1 bounded research decision `TERMINAL`; runtime unchanged by docs task |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
@@ -255,6 +255,32 @@ authorized. `STEPWISE_RATCHET` remains later research.
 
 `BOUNDARY_REFINEMENT_IMPLEMENTED=NO`;
 `BOUNDARY_REFINEMENT_STARTED=NO`.
+
+## Economic Floor V2 active economic evaluation closure
+
+The cumulative causally matched LOCAL PAPER versus untreated VPS PAPER review
+contained 14 non-ambiguous Floor-triggered pairs: seven favored LOCAL and seven
+favored VPS. Avoided loss totaled `0.211732391635 USDC`, lost upside totaled
+`0.418828994501 USDC`, and the matched net effect was
+`-0.207096602866 USDC`. This is descriptive matched evidence, not randomized
+A/B proof.
+
+`CURRENT_FLOOR_MATCHED_ECONOMIC_DIRECTION=NEGATIVE`;
+`LOSS_PROTECTION_VALUE=MODERATE`;
+`RECOVERABLE_WINNER_OPPORTUNITY_COST=HIGH`;
+`CURRENT_FLOOR_V2_DIRECTIONALLY_USEFUL=MIXED`.
+
+`ECONOMIC_FLOOR_V2_ACTIVE_EXIT_AUTHORITY=NOT_QUALIFIED`;
+`FURTHER_ACTIVE_V2_TREATMENT=NOT_JUSTIFIED`;
+`ECONOMIC_FLOOR_V2_EXIT_AUTHORITY=OFF`;
+`ECONOMIC_FLOOR_V2_EXIT_AUTHORITY_DISABLED_AT_UTC=2026-09-05T09:43:25.453710306Z`.
+
+LOCAL PAPER now runs V2 as evidence-only. Existing strategy exit authority and
+entry semantics are unchanged. `BOUNDARY_EVIDENCE_COLLECTION=ACTIVE` and
+`RECOVERY_EVIDENCE_COLLECTION=ACTIVE`; both have zero trading authority. No
+positive boundary, recovery rule, ratchet, context-specific threshold, VPS
+promotion, or LIVE authority is created. Any future Floor treatment requires a
+separate recovery-aware evidence decision.
 
 Current experiment roadmap:
 
@@ -484,16 +510,15 @@ is scheduled from current evidence.
 - Preserve Ownership V2 as a documentation-only frozen hypothesis; do not
   implement or activate it.
 - `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its boundary in place.
-- `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; do not tune V2 in place or collect more
-  evidence merely to increase N.
-- `ACTIVE_TREATMENT_CHANGED_BY_DOCS_TASK=NO`; deployed runtime and treatment
-  configuration are unchanged.
+- `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; active V2 exit authority is OFF.
+- Continue read-only boundary/recovery evidence collection without trading
+  authority; do not tune V2 or increase N as an end in itself.
 - Do not start `ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1` in this docs task.
 - Monitor forward freshness and the moderate pipeline risk; no pipeline change is required.
 
 ## NEXT
 
-- `CURRENT_STAGE=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1_RESEARCH_DESIGN_NOT_STARTED`.
+- `CURRENT_STAGE=ECONOMIC_FLOOR_RECOVERY_EVIDENCE_COLLECTION_ACTIVE`.
 - Boundary Refinement is the next separately authorized experiment. It must
   define a protected economic boundary without assuming a numeric buffer,
   parameter sweep, ratchet, or context-specific threshold.
@@ -506,8 +531,8 @@ is scheduled from current evidence.
   requires separate authorization and new natural evidence.
 - Keep `LIVE_ELIGIBILITY=NO`.
 - Movement capacity remains `NEEDS_MORE_RESEARCH`; `SECOND_CAUSAL_TREATMENT_AUTHORIZED=NO`.
-- Economic Floor V1 is not qualified for VPS or LIVE; active LOCAL PAPER V2 is
-  not yet qualified for VPS promotion or LIVE.
+- Economic Floor V1/V2 is not qualified for VPS or LIVE; LOCAL PAPER V2 exit
+  authority is OFF.
 
 ## DO_NOT_DO
 

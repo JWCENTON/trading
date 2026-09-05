@@ -405,6 +405,33 @@ strategy-, symbol-, interval-, or regime-specific threshold is frozen.
 `BOUNDARY_REFINEMENT_IMPLEMENTED=NO`;
 `BOUNDARY_REFINEMENT_STARTED=NO`.
 
+### Economic Floor V2 active economic evaluation closure
+
+The cumulative matched LOCAL PAPER versus untreated VPS PAPER economic review
+contained 14 non-ambiguous Floor-triggered pairs. Seven favored LOCAL and seven
+favored VPS; avoided loss totaled `0.211732391635 USDC`, lost upside totaled
+`0.418828994501 USDC`, and matched net effect was
+`-0.207096602866 USDC`. This is descriptive matched evidence, not randomized
+A/B proof.
+
+`CURRENT_FLOOR_MATCHED_ECONOMIC_DIRECTION=NEGATIVE`;
+`LOSS_PROTECTION_VALUE=MODERATE`;
+`RECOVERABLE_WINNER_OPPORTUNITY_COST=HIGH`;
+`CURRENT_FLOOR_V2_DIRECTIONALLY_USEFUL=MIXED`.
+
+`ECONOMIC_FLOOR_V2_ACTIVE_EXIT_AUTHORITY=NOT_QUALIFIED`;
+`FURTHER_ACTIVE_V2_TREATMENT=NOT_JUSTIFIED`;
+`ECONOMIC_FLOOR_V2_EXIT_AUTHORITY=OFF`;
+`ECONOMIC_FLOOR_V2_EXIT_AUTHORITY_DISABLED_AT_UTC=2026-09-05T09:43:25.453710306Z`.
+
+LOCAL PAPER retains the common 60-second V2 owner cycle only as a read-only
+causal observer. `BOUNDARY_EVIDENCE_COLLECTION=ACTIVE` and
+`RECOVERY_EVIDENCE_COLLECTION=ACTIVE`, both with zero trading authority;
+existing strategy exits and entry semantics are unchanged. No positive
+boundary, recovery rule, ratchet, context-specific threshold, VPS promotion,
+or LIVE authority is created. Any future Floor treatment requires a separate
+recovery-aware evidence decision.
+
 ## 7. Current causal work
 
 The bounded V1 experiment tested this broad frozen rule:
@@ -657,16 +684,15 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 1. `OWNERSHIP_V1=COMPLETE`; do not tune V1 in place.
 2. Preserve Ownership V2 as a documentation-only frozen hypothesis; do not implement or activate it.
 3. `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its exact-zero boundary in place.
-4. `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; do not tune V2 or collect more evidence
-   merely to increase N.
-5. `ACTIVE_TREATMENT_CHANGED_BY_DOCS_TASK=NO`; deployed runtime and treatment
-   configuration are unchanged.
+4. `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; active V2 exit authority is OFF.
+5. Continue boundary/recovery evidence collection without trading authority;
+   do not tune V2 or increase N as an end in itself.
 6. Do not start `ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1` in this docs task.
 7. Monitor forward canonical freshness and moderate pipeline risk; no pipeline change is required.
 
 ### Next
 
-1. `CURRENT_STAGE=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1_RESEARCH_DESIGN_NOT_STARTED`.
+1. `CURRENT_STAGE=ECONOMIC_FLOOR_RECOVERY_EVIDENCE_COLLECTION_ACTIVE`.
 2. Boundary Refinement is the next separately authorized experiment. It must
    define a protected economic boundary without assuming a numeric buffer,
    parameter sweep, ratchet, or context-specific threshold.
