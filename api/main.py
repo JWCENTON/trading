@@ -4877,6 +4877,54 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 (TRADING_MODE,),
             )
             worker_rows = cur.fetchall()
+            cur.execute(
+                """
+                WITH expected_pairs AS (
+                  SELECT DISTINCT upper(symbol) symbol,lower(interval) interval
+                  FROM bot_control
+                  WHERE strategy IN ('RSI','TREND','SUPERTREND','BBRANGE')
+                ), latest_regime AS (
+                  SELECT pair.symbol,pair.interval,r.regime,r.ts,r.created_at,
+                         EXTRACT(EPOCH FROM (now()-r.created_at))::int age_seconds
+                  FROM expected_pairs pair
+                  LEFT JOIN LATERAL (
+                    SELECT regime,ts,created_at FROM market_regime
+                    WHERE symbol=pair.symbol AND interval=pair.interval
+                    ORDER BY ts DESC LIMIT 1
+                  ) r ON true
+                ), controls AS (
+                  SELECT count(*) slot_count,
+                         count(*) FILTER (WHERE regime_enabled AND regime_mode='ENFORCE') enforce_count,
+                         count(DISTINCT regime_mode) mode_count,
+                         min(regime_mode) effective_mode
+                  FROM bot_control
+                  WHERE strategy IN ('RSI','TREND','SUPERTREND','BBRANGE')
+                ), policy AS (
+                  SELECT count(*) FILTER (
+                           WHERE strategy IN ('RSI','TREND','SUPERTREND','BBRANGE')
+                             AND regime IN ('RANGE_HIGHVOL','RANGE_LOWVOL','SHOCK','TREND_DOWN','TREND_UP')
+                         ) canonical_count,
+                         count(*) FILTER (WHERE strategy='SUPER_TREND') legacy_count
+                  FROM regime_policy
+                )
+                SELECT controls.slot_count,controls.enforce_count,controls.mode_count,
+                       controls.effective_mode,policy.canonical_count,policy.legacy_count,
+                       (SELECT count(*) FROM latest_regime),
+                       (SELECT count(*) FROM latest_regime
+                         WHERE regime IN ('RANGE_HIGHVOL','RANGE_LOWVOL','SHOCK','TREND_DOWN','TREND_UP')
+                           AND age_seconds BETWEEN 0 AND
+                             CASE interval WHEN '1m' THEN %s WHEN '5m' THEN %s ELSE %s END),
+                       (SELECT value FROM automation_kv WHERE key='regime_watchdog_source'),
+                       (SELECT value FROM automation_kv WHERE key='regime_watchdog_contract_version')
+                FROM controls,policy
+                """,
+                (
+                    int(os.getenv("REGIME_LAG_MAX_1M_SECONDS", "420")),
+                    int(os.getenv("REGIME_LAG_MAX_5M_SECONDS", "1200")),
+                    int(os.getenv("REGIME_MAX_AGE_SECONDS", "900")),
+                ),
+            )
+            conformance_row = cur.fetchone()
             create_worker_heartbeat_notifications_if_needed(cur)
             _conn.commit()
 
@@ -4894,6 +4942,24 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
                 "age_seconds": max(_safe_int(wr[8], default=0), 0) if wr[8] is not None else None,
                 "effective_status": wr[9],
             })
+
+        expected_pairs = _safe_int(conformance_row[6])
+        fresh_pairs = _safe_int(conformance_row[7])
+        process_health = _safe_int(r[2]) == 32 and _safe_int(r[3]) == 0
+        data_health = expected_pairs == 8 and fresh_pairs == expected_pairs
+        semantic_health = (
+            _safe_int(conformance_row[4]) == 20
+            and _safe_int(conformance_row[5]) == 0
+            and conformance_row[8] == "market_regime"
+            and conformance_row[9] == "REGIME_GATE_MARKET_REGIME_SSOT_V1"
+        )
+        authority_health = (
+            _safe_int(conformance_row[0]) == 32
+            and _safe_int(conformance_row[1]) == 32
+            and _safe_int(conformance_row[2]) == 1
+            and conformance_row[3] == "ENFORCE"
+            and not bool(r[11])
+        )
 
         return jsonable_encoder({
             "api": {
@@ -4933,6 +4999,25 @@ def ui_health(user: CurrentUser = Depends(require_auth)):
             "panic_state": {
                 "enabled": bool(r[11]),
                 "updated_at": r[12],
+            },
+            "conformance": {
+                "runtime_revision": os.getenv("GIT_SHA"),
+                "regime_source": "market_regime",
+                "regime_source_fresh": data_health,
+                "regime_expected_pairs": expected_pairs,
+                "regime_fresh_pairs": fresh_pairs,
+                "effective_regime_mode": conformance_row[3],
+                "policy_coverage": f"{_safe_int(conformance_row[4])}/20",
+                "actual_entry_authority": (
+                    "REGIME_ENFORCE" if authority_health else "NOT_ACCEPTED"
+                ),
+                "process_health": process_health,
+                "data_health": data_health,
+                "semantic_health": semantic_health,
+                "authority_health": authority_health,
+                "overall_readiness": (
+                    process_health and data_health and semantic_health and authority_health
+                ),
             },
         })
 

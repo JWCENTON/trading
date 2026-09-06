@@ -554,6 +554,21 @@ export interface UiHealthResponse {
     enabled: boolean;
     updated_at: string | null;
   };
+  conformance?: {
+    runtime_revision: string | null;
+    regime_source: string;
+    regime_source_fresh: boolean;
+    regime_expected_pairs: number;
+    regime_fresh_pairs: number;
+    effective_regime_mode: string | null;
+    policy_coverage: string;
+    actual_entry_authority: string;
+    process_health: boolean;
+    data_health: boolean;
+    semantic_health: boolean;
+    authority_health: boolean;
+    overall_readiness: boolean;
+  };
   error_type?: string;
   error?: string;
   note?: string;

@@ -62,6 +62,22 @@ export function HealthPanel({ health }: HealthPanelProps) {
       tone: health?.panic_state.enabled ? 'negative' : 'positive',
       meta: `Updated: ${formatDateTime(health?.panic_state.updated_at)}`,
     },
+    {
+      title: 'Semantic / authority',
+      value: health?.conformance?.overall_readiness ? 'PASS' : 'NOT ACCEPTED',
+      tone: health?.conformance?.overall_readiness ? 'positive' : 'negative',
+      meta: health?.conformance
+        ? `${health.conformance.regime_source} · ${health.conformance.policy_coverage} · ${health.conformance.effective_regime_mode ?? '—'} · ${health.conformance.actual_entry_authority}`
+        : 'No conformance evidence',
+    },
+    {
+      title: 'Runtime revision',
+      value: health?.conformance?.runtime_revision?.slice(0, 12) || 'UNKNOWN',
+      tone: health?.conformance?.runtime_revision ? 'positive' : 'negative',
+      meta: health?.conformance
+        ? `process=${health.conformance.process_health} data=${health.conformance.data_health} semantic=${health.conformance.semantic_health} authority=${health.conformance.authority_health}`
+        : '—',
+    },
   ];
 
   return (
