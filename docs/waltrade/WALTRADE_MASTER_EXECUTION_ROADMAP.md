@@ -1,25 +1,81 @@
 # WalTrade Master Execution Roadmap
 
-CURRENT_PHASE=STOP_LOSING
+CURRENT_PHASE=SYSTEM_CONFORMANCE_REPAIR_PLANNING_COMPLETE
 
-CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION
+CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR
 
-VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
+CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
+
+VPS_PAPER_RUNTIME_REVISION_STATUS=NON_UNIFORM_NOT_ACCEPTED
+
+SUPERSEDED_VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 Execution order:
 
-`DATA → MECHANISM → MINIMUM CHANGE → LOCAL PAPER PROOF → VPS PAPER REPLICATION → LIVE LAST`
+`LOCAL implementation/tests -> commit -> push exact SHA to GitHub -> LOCAL PAPER deploy exact SHA -> LOCAL acceptance -> VPS fetch and inspect -> VPS pull --ff-only exact approved history -> VPS PAPER deploy -> independent VPS acceptance -> frozen LIVE environments last`
 
 The North Star is frozen in [WALTRADE_CONSTITUTION.md](WALTRADE_CONSTITUTION.md). This roadmap is the living execution plan and records current verified truth rather than preserving superseded blockers.
+
+## 0. System conformance repair gate
+
+Four completed conformance audits—LOCAL PAPER, VPS PAPER, LOCAL LIVE and VPS
+LIVE—have been consolidated into
+[WALTRADE_SYSTEM_CONFORMANCE_REPAIR_V1.md](WALTRADE_SYSTEM_CONFORMANCE_REPAIR_V1.md).
+The bounded repair plan contains 5 unique P0, 9 unique P1, 7 unique P2 and 3
+unique P3 findings. P3 remains backlog unless a direct repair dependency proves
+it necessary.
+
+`NEW_ECONOMIC_EXPERIMENTS=PAUSED`.
+`ACTIVE_HOLDOUT_EFFICACY_INSPECTION=PROHIBITED_DURING_REPAIR`.
+`LOCAL_LIVE_NEW_ENTRY_AUTHORITY=OFF`.
+`VPS_LIVE_NEW_ENTRY_AUTHORITY=OFF`.
+`VPS_PAPER_RUNTIME_REVISION_STATUS=NON_UNIFORM_NOT_ACCEPTED_BY_CONFORMANCE_AUDITS`.
+The former `d60c451...` runtime value is historical/superseded and is not
+current deployment truth.
+
+`REGIME_POLICY_SOURCE_CHECK=CONTRADICTION_STOP`;
+`POLICY_SEMANTICS_UNRESOLVED=YES`. The history-derived candidate and LOCAL
+PAPER DB differ for `BBRANGE/RANGE_LOWVOL` and
+`SUPERTREND/RANGE_LOWVOL`; MR2 must not implement a matrix until an explicit
+accepted authority resolves the difference.
+
+Current minimum recovery order:
+
+`MR1_MINIMAL_RELEASE_TRUTH -> MR2_CORE_ADMISSION_REPAIR -> MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
+
+MR1 is bounded to touched-service release identity using existing assets and
+one small read-only verifier. MR2 contains only the core regime/PANIC/admission
+repair and is currently policy-blocked. MR3 performs direct PAPER enforcement
+and separate economic acceptance without shadow; LIVE remains frozen.
+
+Original Wave 3/4 remainder, H12, Risk Budget, Slot Brain, ORC, Learning, UI
+and migration-wide cleanup are `DEFERRED_AUTHORITY_OFF`, not PASS.
+
+Complete-register planning order, retained for deferred defects:
+
+`WAVE_1_RELEASE_TRUTH -> WAVE_2_REGIME_SSOT -> WAVE_3_ACTIVE_CAPABILITIES -> WAVE_4_SCHEMA_DEPLOYMENT_UI -> WAVE_5_DIRECT_PAPER_ENFORCEMENT`
+
+No implementation or rollout is authorized by the plan. The next separately
+approvable implementation unit is `MR1_MINIMAL_RELEASE_TRUTH`. The minimum
+recovery path is MR1 -> MR2 -> MR3; deferred Wave 3/4 work is not a prerequisite
+for this bounded recovery and receives no authority or PASS. Shadow is not a
+substitute for a proven repair. LIVE entry authority remains frozen throughout.
+
+At the first deployment that changes entry/runtime decision semantics, close
+all affected earlier regime-dependent economic cohorts at the exact deployment
+cutoff as `PRE_CONFORMANCE_LEGACY_EVIDENCE`, `UNTREATED`, and
+`REGIME_NOT_ENFORCED`. Never pool them with post-repair evidence and do not
+inspect their efficacy during repair. These labels do not apply to independent
+Fee V2, Financial Truth, entry-atomicity or infrastructure proofs.
 
 ## 1. Foundation state
 
 | Foundation | Current verified state |
 | --- | --- |
 | PAPER entry atomicity | `PAPER_ENTRY_ATOMICITY=PASS_2_2` |
-| Risk Budget immutable-event contract | `RISK_BUDGET_CONTRACT_PARITY_4_4=PASS` |
+| Risk Budget immutable-event contract | Component contract passed historically; current four-environment runtime activation/parity requires Wave 3 re-acceptance |
 | Risk Budget promoted commit | `f965a0b35f8be1b900cbd0e73332c653b003ca0a` |
 | Risk Budget influence | `OFF` |
 | Learning auto-apply | `OFF` |
@@ -30,7 +86,7 @@ The North Star is frozen in [WALTRADE_CONSTITUTION.md](WALTRADE_CONSTITUTION.md)
 | Expected VPS LIVE slots | `28`; prior `32` used the full PAPER universe as the LIVE denominator |
 | LOCAL full-opportunity throughput fix | `PASS`; exact projection indexes |
 
-PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen Fee V2 contract are atomic across all four strategies. Missing or conflicting frozen ENTRY fee evidence fails closed before PAPER exit intent. The Risk Budget STATE_EVALUATION immutable-event contract is deployed with stable semantic equality, frozen upstream evidence, provenance normalization, idempotent same-cutoff retry, and true-conflict fail-closed behavior.
+PAPER entry order/commitment, canonical ENTRY fill, position linkage, and frozen Fee V2 contract are atomic across all four strategies. Missing or conflicting frozen ENTRY fee evidence fails closed before PAPER exit intent. The Risk Budget STATE_EVALUATION immutable-event contract passed its component proof, but the conformance audits supersede any claim that its current four-environment deployment/activation is accepted. Wave 3 must re-prove valid policy resolution, runtime revision, provenance normalization, idempotent same-cutoff retry, and true-conflict fail-closed behavior while influence remains OFF.
 
 Git SHA alone is insufficient: relevant rollouts require Git, contract, direct schema dependency, and runtime/semantic parity.
 
@@ -58,7 +114,7 @@ authority, Roadmap priority, or LIVE authority.
 
 Canonical promotion path:
 
-`LOCAL → GitHub → VPS pull --ff-only → independent validation`
+`LOCAL implementation/tests -> commit -> push exact SHA to GitHub -> LOCAL PAPER deploy exact SHA -> LOCAL acceptance -> VPS fetch and inspect -> VPS pull --ff-only exact approved history -> VPS PAPER deploy -> independent VPS acceptance -> frozen LIVE environments last`
 
 For corresponding environments—`LOCAL PAPER ↔ VPS PAPER` and, where
 applicable, `LOCAL LIVE ↔ VPS LIVE`—the promoted shared contract requires
@@ -66,7 +122,10 @@ applicable, `LOCAL LIVE ↔ VPS LIVE`—the promoted shared contract requires
 `SCHEMA_OBJECT_PARITY`, `RUNTIME_SEMANTIC_PARITY`, and
 `CONFIG_CONTRACT_PARITY` where shared and applicable. The rollout gate is:
 
-`LOCAL validation → GitHub promotion → VPS pull --ff-only → GIT_PARITY → CONTRACT_PARITY → DIRECT_SCHEMA_DEPENDENCY_PARITY → SCHEMA_OBJECT_PARITY → RUNTIME_SEMANTIC_PARITY`
+The immutable acceptance gate then requires `GIT_PARITY`, `CONTRACT_PARITY`,
+`DIRECT_SCHEMA_DEPENDENCY_PARITY`, `SCHEMA_OBJECT_PARITY`, and
+`RUNTIME_SEMANTIC_PARITY` at each applicable deployment stage; no stage is
+skipped because another stage passed.
 
 A common Git SHA alone never proves deployment parity.
 
@@ -209,13 +268,14 @@ cohort. Selection semantics must precede outcomes:
 
 ## 3. Ranked STOP LOSING mechanisms
 
-Current research order is probabilistic and capital-first:
+Prior research order was probabilistic and capital-first; it is superseded as
+current work by system conformance repair:
 
 1. preserve the current Movement V1 forward holdout untouched and uninspected;
 2. run the frozen, non-blocking P4 same-thesis forward holdout independently;
 3. preserve H12 as complete with verdict B and no capital authority;
-4. because H12 did not reach verdict A, require untouched forward calibration
-   persistence before any H13 capital-utility replay design;
+4. preserve the untouched H12 forward calibration persistence evidence without
+   inspection; it is not current work and cannot start H13;
 5. only after historical qualification and new forward proof may bounded
    risk/capital influence be reviewed;
 6. LIVE remains last and requires explicit Product Owner approval.
@@ -228,7 +288,8 @@ Current experiment roadmap:
 
 - `#1 Ownership=COMPLETE`.
 - `#2 Economic Floor V1/V2 cadence family=COMPLETE_FOR_CADENCE_QUESTION`.
-- `CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`.
+- `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
+  `CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR`.
 - `MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`.
 - `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`.
 - `#4 New Risk=UNSUPPORTED_CURRENT_HYPOTHESIS`.
@@ -736,15 +797,15 @@ binary prediction coverage against episode-bootstrap 95% intervals was
 `H12_CONTEXT_STABILITY=FAIL` for capital authority.
 
 `H12_DECISION=B_SIGNAL_EXISTS_BUT_CALIBRATION_OR_SUPPORT_INSUFFICIENT`.
-The research surface is reproducible and informative, but it is not calibrated
-well enough for a frozen H13 capital decision design. The next bounded step is
-an untouched forward calibration-persistence contract for this frozen surface,
-not runtime authority or threshold tuning.
+The research surface is reproducible and informative locally, but it is not
+calibrated for H13 and its executable estimator is not promoted/reproducible on
+VPS. Its untouched forward calibration-persistence contract is preserved
+uninspected but is not current work.
 
 `H12_CASH_BASELINE_AVAILABLE=YES`;
 `H12_CONTINUE_CLOSE_REDEPLOY_IDENTIFIABLE=NO`;
 `H12_NEW_TELEMETRY_REQUIRED=YES_FOR_CONTINUE_CLOSE_REDEPLOY_UTILITY_NOT_FOR_ENTRY_OUTCOME_SURFACE`;
-`H12_CURRENT_FORWARD_EXPERIMENT=H12_FORWARD_CALIBRATION_PERSISTENCE_V1_ACTIVE_UNINSPECTED`.
+`H12_FORWARD_CALIBRATION=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
 
 #### H12 untouched forward calibration persistence
 
@@ -759,7 +820,7 @@ episode-balanced hierarchy, support thresholds, parent-equivalent shrinkage
 weight of 20 episodes, fixed 15/30/60/120/240-minute horizons, finalized 1m
 close outcome contract, and authoritative per-position Fee V2 costs.
 
-`H12_FORWARD_CALIBRATION=ACTIVE_UNINSPECTED_NON_AUTHORITATIVE`;
+`H12_FORWARD_CALIBRATION=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`;
 `H12_FORWARD_START_UTC=2026-09-06T17:42:01.083408677Z`;
 `H12_FORWARD_CONTRACT_SHA256=9ea37d62208ced970637efc74f9e31cde829a2e69dfbea12bdaa6eaddae566ea`.
 
@@ -847,22 +908,18 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 6. Preserve `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`; no trade
    is blocked and no efficacy result is read before its checkpoints.
 7. Record H12 verdict B; do not confer filter, Capital Allocation, Risk Budget,
-   Learning, or LIVE authority.
+   Learning, or LIVE authority. `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
 8. Continue boundary/recovery collection as passive evidence only.
 
 ### Next
 
-1. `CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`.
-2. Preserve the active untouched H12 forward calibration-persistence holdout
-   without efficacy inspection before its formal checkpoint; H12 verdict B
-   does not authorize H13 capital utility replay yet.
-3. If a later independent review reaches H12 verdict A, freeze H13 design for
-   action-time continue/close/redeploy utility evidence.
-4. Only after H13 historical qualification may a new untouched forward
-   validation be defined.
-5. Only after independent PAPER proof may bounded capital/risk influence be
-   reviewed.
-6. Keep `LIVE_ELIGIBILITY=NO`; LIVE is last and requires explicit Product Owner
+1. `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
+   `CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR`.
+2. Execute no H12 checkpoint work during conformance repair;
+   `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
+3. Resume no economic roadmap item until the conformance repair exit gates and
+   a separate Product Owner decision permit it.
+4. Keep `LIVE_ELIGIBILITY=NO`; LIVE is last and requires explicit Product Owner
    approval.
 
 The economic-floor family follows a proven secondary leak: 115
