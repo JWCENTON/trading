@@ -97,6 +97,28 @@ SHA `03e5bec329520e9d16966078c5614f8ed666af09`, checksum
 `ENFORCE` slots. Reapplication produced no additional ledger row and no policy
 or authority semantic change.
 
+That applied artifact is permanently LOCAL PAPER-only and must not be run on
+VPS. The VPS pull-only handoff instead uses the separate, explicitly fenced
+`20260906_regime_ssot_direct_vps_paper_enforcement_v1.sql` companion migration.
+The operator must set `target_environment=PAPER`,
+`target_deployment_id=vps-paper`, and
+`target_runtime_deployment_id=vps-paper`; LOCAL and all LIVE identities are
+rejected transactionally before mutation. The companion records idempotency as
+`PAPER+vps-paper`, preserves policy fingerprint
+`585ab57f906dff274e5df344475eb24de6f4977a3985535427edb7852093eb3e`, and
+cannot create false `local-paper` provenance. The approved target SHA and
+companion file checksum are:
+
+- `VPS_APPROVED_TARGET_SHA=8d8b9f425eff7811fe9fc840cba97c281b42cb8e`
+- `VPS_MIGRATION_SHA256=7c1e7db71e6fb1897b88456835d97c5fd24f305202e3e76b57a1636ec3e548bd`
+
+After fetch/inspection and `pull --ff-only` of that exact approved target, VPS
+must verify the checksum, set the three explicit target settings plus the exact
+migration Git SHA/checksum, and apply only the VPS companion migration. It may
+then deploy the unchanged five-service set
+(`bot-runner`, `regime-worker`, `automation-runner`, `api`, `frontend`), and
+perform independent VPS PAPER acceptance. No LOCAL migration is transferable.
+
 The implementation code was accepted first at
 `03e5bec329520e9d16966078c5614f8ed666af09`; the touched LOCAL PAPER images are
 subsequently labelled and recreated from the final documentation-inclusive
