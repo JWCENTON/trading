@@ -97,9 +97,12 @@ SHA `03e5bec329520e9d16966078c5614f8ed666af09`, checksum
 `ENFORCE` slots. Reapplication produced no additional ledger row and no policy
 or authority semantic change.
 
-The touched LOCAL PAPER services run OCI/runtime revision
-`03e5bec329520e9d16966078c5614f8ed666af09`. A bounded six-minute acceptance
-window showed 32/32 fresh strategy slots, 5/5 healthy support workers, zero
+The implementation code was accepted first at
+`03e5bec329520e9d16966078c5614f8ed666af09`; the touched LOCAL PAPER images are
+subsequently labelled and recreated from the final documentation-inclusive
+repository HEAD. The MR1 verifier output, rather than this prose, is the
+canonical current release identity. A bounded six-minute acceptance window
+showed 32/32 fresh strategy slots, 5/5 healthy support workers, zero
 blocked DB sessions, zero critical errors/tracebacks and stable restart count
 zero. Gate and watchdog both reported source `market_regime` and contract
 `REGIME_GATE_MARKET_REGIME_SSOT_V1`. Deterministic PAPER-only E2E proof, with

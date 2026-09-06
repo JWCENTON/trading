@@ -46,8 +46,9 @@ Current minimum recovery order:
 `MR1_MINIMAL_RELEASE_TRUTH -> MR2_CORE_ADMISSION_REPAIR -> MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
 
 MR1 and MR2 are implemented and technically accepted on LOCAL PAPER. The
-touched runtime revision is `03e5bec329520e9d16966078c5614f8ed666af09`;
-32/32 slots use direct `ENFORCE`, the gate and watchdog share `market_regime`,
+implementation code revision is `03e5bec329520e9d16966078c5614f8ed666af09`;
+the final runtime release identity is the documentation-inclusive HEAD proved
+by the MR1 verifier. 32/32 slots use direct `ENFORCE`; gate and watchdog share `market_regime`,
 and missing/stale/unknown/policy/PANIC uncertainty blocks entry. MR3 technical
 direct enforcement has begun without shadow; its forward economic verdict is
 separate and pending. LIVE remains frozen.
@@ -79,7 +80,7 @@ Fee V2, Financial Truth, entry-atomicity or infrastructure proofs.
 
 - `RELEASE_TRUTH=PASS`: repository/image/runtime/config identities are
   independently reported; the pre-repair revision split was detected and all
-  touched services now run `03e5bec329520e9d16966078c5614f8ed666af09`.
+  touched services run the same final release HEAD.
 - `REGIME_SSOT=market_regime`; gate/watchdog contract
   `REGIME_GATE_MARKET_REGIME_SSOT_V1`; canonical policy coverage `20/20`;
   active legacy `SUPER_TREND` rows `0`.
