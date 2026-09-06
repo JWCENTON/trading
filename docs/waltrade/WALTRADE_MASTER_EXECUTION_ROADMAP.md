@@ -744,7 +744,44 @@ not runtime authority or threshold tuning.
 `H12_CASH_BASELINE_AVAILABLE=YES`;
 `H12_CONTINUE_CLOSE_REDEPLOY_IDENTIFIABLE=NO`;
 `H12_NEW_TELEMETRY_REQUIRED=YES_FOR_CONTINUE_CLOSE_REDEPLOY_UTILITY_NOT_FOR_ENTRY_OUTCOME_SURFACE`;
-`H12_NEXT_EXPERIMENT=H12_FORWARD_CALIBRATION_PERSISTENCE_BEFORE_H13`.
+`H12_CURRENT_FORWARD_EXPERIMENT=H12_FORWARD_CALIBRATION_PERSISTENCE_V1_ACTIVE_UNINSPECTED`.
+
+#### H12 untouched forward calibration persistence
+
+`H12_ARTIFACT_AUDIT=PASS`;
+`PREDECLARED_FROZEN_ESTIMATOR_EXISTS=YES`;
+`ESTIMATOR_VERSION=H12_HIERARCHICAL_EPISODE_BALANCED_SHRUNK_EMPIRICAL_V1`;
+`ESTIMATOR_FINGERPRINT=a51b12b9f02eb7de0e7dbe4dfc6fa051ead3a60d7f40f3175411131a6ebfe2a2`.
+
+The sole historical estimator—not a post-result selected alternative—is now
+frozen for untouched persistence testing. It retains the exact predeclared
+episode-balanced hierarchy, support thresholds, parent-equivalent shrinkage
+weight of 20 episodes, fixed 15/30/60/120/240-minute horizons, finalized 1m
+close outcome contract, and authoritative per-position Fee V2 costs.
+
+`H12_FORWARD_CALIBRATION=ACTIVE_UNINSPECTED_NON_AUTHORITATIVE`;
+`H12_FORWARD_START_UTC=2026-09-06T17:42:01.083408677Z`;
+`H12_FORWARD_CONTRACT_SHA256=9ea37d62208ced970637efc74f9e31cde829a2e69dfbea12bdaa6eaddae566ea`.
+
+The immutable contract is outside Git under
+`~/waltrade-experiments/h12-forward-calibration-persistence-v1/`. Predictions
+are deterministically reconstructable from immutable causal entry evidence
+and outcomes completed before the evaluated entry episode; no runtime write or
+new entry telemetry is required. Unsupported estimates remain `UNKNOWN`.
+
+Primary calibration covers cost-cover, +0.5% net, +1% net, drawdown worse than
+-1%, and expected terminal net at each frozen horizon. Brier score,
+calibration-in-the-large, slope, predeclared-band ECE/reliability, coverage,
+episode support, and paired Brier difference versus the causal unconditional
+base rate are primary. Episode-block uncertainty bounds—not arbitrary PASS
+numbers—govern the result; AUC remains diagnostic only.
+
+The integrity checkpoint is 25 complete 240m outcomes with no efficacy read.
+The first formal checkpoint requires at least 100 complete 240m outcomes and
+inherited adequate episode support; 200 is used only if material uncertainty
+remains. Counts never create an automatic PASS. Movement V1 and P4 remain
+unchanged and uninspected. All three contracts derive independent labels from
+the same natural PAPER stream and have no trading authority or interaction.
 
 Cash/no-trade is authoritatively available as the zero-net, zero-fee,
 zero-incremental-capital baseline. Fixed-horizon expected net, supported tail
@@ -816,8 +853,9 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 ### Next
 
 1. `CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`.
-2. Run an untouched forward calibration-persistence check for the frozen H12
-   surface; H12 verdict B does not authorize H13 capital utility replay yet.
+2. Preserve the active untouched H12 forward calibration-persistence holdout
+   without efficacy inspection before its formal checkpoint; H12 verdict B
+   does not authorize H13 capital utility replay yet.
 3. If a later independent review reaches H12 verdict A, freeze H13 design for
    action-time continue/close/redeploy utility evidence.
 4. Only after H13 historical qualification may a new untouched forward

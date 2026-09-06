@@ -10,7 +10,7 @@ CURRENT_PHASE=STOP_LOSING
 
 CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION
 
-CURRENT_P0=H12_FORWARD_CALIBRATION_PERSISTENCE_BEFORE_H13
+CURRENT_P0=H12_FORWARD_CALIBRATION_PERSISTENCE_ACTIVE_UNINSPECTED
 
 This document is current truth only. Git history retains prior states.
 
@@ -546,7 +546,37 @@ frozen surface, not a filter or authority change.
 `H12_CASH_BASELINE_AVAILABLE=YES`;
 `H12_CONTINUE_CLOSE_REDEPLOY_IDENTIFIABLE=NO`;
 `H12_NEW_TELEMETRY_REQUIRED=YES_FOR_CONTINUE_CLOSE_REDEPLOY_UTILITY_NOT_FOR_ENTRY_OUTCOME_SURFACE`;
-`H12_NEXT_EXPERIMENT=H12_FORWARD_CALIBRATION_PERSISTENCE_BEFORE_H13`.
+`H12_CURRENT_FORWARD_EXPERIMENT=H12_FORWARD_CALIBRATION_PERSISTENCE_V1_ACTIVE_UNINSPECTED`.
+
+### H12 forward calibration holdout
+
+`H12_ARTIFACT_AUDIT=PASS`;
+`PREDECLARED_FROZEN_ESTIMATOR_EXISTS=YES`;
+`ESTIMATOR_VERSION=H12_HIERARCHICAL_EPISODE_BALANCED_SHRUNK_EMPIRICAL_V1`;
+`ESTIMATOR_FINGERPRINT=a51b12b9f02eb7de0e7dbe4dfc6fa051ead3a60d7f40f3175411131a6ebfe2a2`.
+
+`H12_FORWARD_CALIBRATION=ACTIVE_UNINSPECTED_NON_AUTHORITATIVE`;
+`H12_FORWARD_START_UTC=2026-09-06T17:42:01.083408677Z`;
+`H12_FORWARD_CONTRACT_SHA256=9ea37d62208ced970637efc74f9e31cde829a2e69dfbea12bdaa6eaddae566ea`.
+
+The forward contract freezes the only predeclared historical estimator; no
+validation/holdout-driven variant was selected. Its predictions are
+reconstructable offline from immutable causal entry evidence and strictly
+earlier completed outcomes. No runtime prediction write or new entry telemetry
+is required, and unsupported estimates remain `UNKNOWN`.
+
+Primary predictions are cost-cover, +0.5% net, +1% net, drawdown worse than
+-1%, and expected terminal net across 15/30/60/120/240 minutes. Primary
+calibration uses Brier, calibration-in-the-large, slope, fixed-band ECE and
+reliability, coverage, episode support, and paired improvement versus the
+causal unconditional base rate. Episode-block uncertainty bounds define
+success; AUC cannot qualify the surface.
+
+Integrity is checked after 25 complete 240m outcomes without efficacy review;
+the first formal checkpoint is at least 100 plus adequate episode support, and
+200 is conditional on unresolved uncertainty. Movement V1 and P4 are unchanged
+and uninspected. `H12_TREATMENT_ACTIVE=NO`; `H12_TRADES_BLOCKED=NO`;
+`H12_CAPITAL_AUTHORITY=NO`.
 
 Cash/no-trade is available as the zero incremental baseline. Expected net,
 supported tail risk, capital-hours, and full Fee V2 costs are available;
@@ -594,6 +624,7 @@ control.
 - `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; active V2 exit authority is OFF.
 - Preserve `MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`.
 - Preserve `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`.
+- Preserve `H12_FORWARD_CALIBRATION=ACTIVE_UNINSPECTED_NON_AUTHORITATIVE`.
 - Continue boundary/recovery evidence collection as passive evidence only.
 - H12 is verdict B and grants no runtime or capital authority.
 - Monitor forward freshness and the moderate pipeline risk; no pipeline change is required.
@@ -601,7 +632,8 @@ control.
 ## NEXT
 
 - `CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`.
-- Run untouched forward calibration persistence for the frozen H12 surface.
+- Wait for the predeclared H12 integrity/formal checkpoints without efficacy
+  peeking.
 - Only a later H12 verdict A may permit frozen H13 capital-utility replay
   design; H13 then needs its own historical qualification and untouched
   forward validation.
