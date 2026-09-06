@@ -24,7 +24,7 @@ from common.simulated_execution_evidence import (
     simulated_order_write_status,
 )
 from common.permissions import can_trade
-from common.regime_gate import attach_regime_gate_event, decide_regime_gate, emit_regime_gate_event
+from common.regime_gate import attach_regime_gate_event, decide_regime_gate, emit_regime_gate_event, regime_source_record_from_evaluation
 from datetime import datetime, timezone, date
 from decimal import Decimal
 from psycopg2.extras import execute_batch
@@ -3501,6 +3501,11 @@ def _run_trend_strategy():
             decision="ENTRY_CHECK",
             regime_enabled=bc.regime_enabled,
             regime_mode=bc.regime_mode,
+            configured_regime_mode=cfg_effective.regime_mode,
+            decision_candle_timestamp=open_time,
+            evaluated_at=datetime.now(timezone.utc),
+            source_record=regime_source_record_from_evaluation(evaluation),
+            require_source_record=True,
         )
 
         gate_event_id = emit_regime_gate_event(

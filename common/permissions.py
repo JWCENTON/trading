@@ -115,5 +115,5 @@ def get_panic_state() -> tuple[bool, str]:
             return False, ""
         return bool(row[0]), str(row[1])
     except Exception:
-        # fail-open: jeśli DB padła, nie zabijamy bota samym checkiem
-        return False, "panic_state_check_failed"
+        # New entry authority must fail closed when PANIC state cannot be proven.
+        return True, "panic_state_check_failed_fail_closed"

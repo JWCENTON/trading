@@ -18,12 +18,12 @@ class BotControl:
     updated_at: Optional[datetime]
 
 DEFAULT = BotControl(
-    enabled=True,
-    mode="NORMAL",
-    reason=None,
+    enabled=False,
+    mode="DISABLED",
+    reason="missing bot_control row; fail closed",
     live_orders_enabled=False,
-    regime_enabled=False,
-    regime_mode="DRY_RUN",
+    regime_enabled=True,
+    regime_mode="ENFORCE",
     updated_at=None,
 )
 

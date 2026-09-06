@@ -76,6 +76,12 @@ from common.portfolio_state import read_portfolio_state
 from common.risk_budget_runtime import (
     run_risk_budget_state_evaluation_cycle,
 )
+from common.regime_gate import (
+    REGIME_GATE_CONTRACT_VERSION,
+    RegimeSourceRecord,
+    regime_freshness_limit_seconds,
+    regime_record_is_fresh,
+)
 
 cfg = RuntimeConfig.from_env()
 API_KEY = os.environ.get("BINANCE_API_KEY")
@@ -3339,43 +3345,59 @@ def run_regime_watchdog(conn):
     if os.getenv("REGIME_WATCHDOG_ENABLED", "0") != "1":
         return
 
-    # Trigger thresholds
-    max_1m = int(os.getenv("REGIME_LAG_MAX_1M_SECONDS", "420"))
-    max_5m = int(os.getenv("REGIME_LAG_MAX_5M_SECONDS", "1200"))
-
     # Clear behaviour (histereza)
     clear_good_ticks = int(os.getenv("REGIME_PANIC_CLEAR_GOOD_TICKS", "3"))
+    max_1m = regime_freshness_limit_seconds("1m")
+    max_5m = regime_freshness_limit_seconds("5m")
     clear_1m = int(os.getenv("REGIME_LAG_CLEAR_1M_SECONDS", str(max(60, max_1m // 2))))
     clear_5m = int(os.getenv("REGIME_LAG_CLEAR_5M_SECONDS", str(max(180, max_5m // 2))))
 
     with conn.cursor() as cur:
-        # IMPORTANT: staleness = freshness of pipeline, so use created_at not ts
+        # Gate and watchdog use the same SSOT and freshness contract.  Checking
+        # every configured pair prevents a fresh symbol from hiding a missing
+        # or stale peer in the same interval.
         cur.execute("""
-            SELECT interval, EXTRACT(EPOCH FROM (now() - MAX(created_at)))::int AS lag_s
+            SELECT DISTINCT ON (symbol,interval)
+                   symbol,interval,ts,regime,created_at
             FROM market_regime
-            GROUP BY interval;
+            ORDER BY symbol,interval,ts DESC;
         """)
         rows = cur.fetchall()
-
+        records = {
+            (str(row[0]).upper(), str(row[1]).lower()): RegimeSourceRecord(
+                symbol=str(row[0]).upper(), interval=str(row[1]).lower(),
+                source_ts=row[2], regime=None if row[3] is None else str(row[3]).upper(),
+                created_at=row[4],
+            )
+            for row in rows
+        }
+        symbols = [item.strip().upper() for item in os.getenv("REGIME_SYMBOLS", "").split(",") if item.strip()]
+        intervals = [item.strip().lower() for item in os.getenv("REGIME_INTERVALS", "1m,5m").split(",") if item.strip()]
+        expected = {(symbol, interval) for symbol in symbols for interval in intervals}
+        now = datetime.now(timezone.utc)
         bad = []
         good_for_clear = True  # becomes false if any interval violates clear thresholds
-
-        for interval, lag_s in rows:
-            if interval == "1m":
-                if lag_s > max_1m:
-                    bad.append((interval, lag_s, max_1m))
-                if lag_s > clear_1m:
-                    good_for_clear = False
-            elif interval == "5m":
-                if lag_s > max_5m:
-                    bad.append((interval, lag_s, max_5m))
-                if lag_s > clear_5m:
-                    good_for_clear = False
+        for symbol, interval in sorted(expected):
+            record = records.get((symbol, interval))
+            limit = regime_freshness_limit_seconds(interval)
+            if record is None:
+                bad.append((f"{symbol}/{interval}", "MISSING", limit))
+                good_for_clear = False
+                continue
+            fresh, freshness = regime_record_is_fresh(
+                record, decision_candle_timestamp=now, evaluated_at=now,
+            )
+            if record.regime is None or record.regime == "UNKNOWN" or not fresh:
+                bad.append((f"{symbol}/{interval}", int(freshness["pipeline_lag_seconds"]), limit))
+            clear_limit = clear_1m if interval == "1m" else clear_5m
+            if freshness["pipeline_lag_seconds"] > clear_limit:
+                good_for_clear = False
 
         # If stale -> engage panic (latch)
         if bad:
             msg = "FAILSAFE: stale market_regime " + ", ".join([f"{i} lag={ls}s>{mx}s" for i, ls, mx in bad])
             logging.error("regime_watchdog: %s", msg)
+            upsert_kv(cur, "regime_watchdog_contract_version", REGIME_GATE_CONTRACT_VERSION)
 
             set_panic(cur, True, msg)
             disable_live_orders(cur, msg)
@@ -3386,6 +3408,9 @@ def run_regime_watchdog(conn):
             return
 
         # Not bad: maybe clear panic if the reason matches regime stale
+        upsert_kv(cur, "regime_watchdog_contract_version", REGIME_GATE_CONTRACT_VERSION)
+        upsert_kv(cur, "regime_watchdog_source", "market_regime")
+        upsert_kv(cur, "regime_watchdog_last_healthy_at", now.isoformat())
         panic_enabled = q1(cur, "SELECT panic_enabled FROM panic_state WHERE id=true;")
         reason = q1(cur, "SELECT reason FROM panic_state WHERE id=true;")
 

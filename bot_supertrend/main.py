@@ -26,7 +26,7 @@ from common.bot_control import upsert_defaults, read as read_bot_control
 from common.runtime import RuntimeConfig
 from common.exchange_client import get_market_data_client
 from common.permissions import can_trade
-from common.regime_gate import attach_regime_gate_event, decide_regime_gate, emit_regime_gate_event
+from common.regime_gate import attach_regime_gate_event, decide_regime_gate, emit_regime_gate_event, regime_source_record_from_evaluation
 from common.execution import place_live_order
 from common.sizing import compute_qty_from_notional as common_compute_qty_from_notional
 from common.daily_loss import compute_daily_loss_pct_positions, should_block_daily_loss_positions
@@ -3349,6 +3349,11 @@ def _run_strategy(latest, prev, *, freshness_context=None):
             decision="ENTRY_CHECK",
             regime_enabled=bc.regime_enabled,
             regime_mode=bc.regime_mode,
+            configured_regime_mode=cfg_effective.regime_mode,
+            decision_candle_timestamp=open_time,
+            evaluated_at=datetime.now(timezone.utc),
+            source_record=regime_source_record_from_evaluation(evaluation),
+            require_source_record=True,
         )
 
         gate_event_id = emit_regime_gate_event(

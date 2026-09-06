@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 from common.decision_contract import DecisionReason, EvaluationContext, FinalDecision
 from common.decision_observation import event_from_final_decision
-from common.regime_gate import attach_regime_gate_event, decide_regime_gate
+from common.regime_gate import (
+    RegimeSourceRecord,
+    attach_regime_gate_event,
+    decide_regime_gate,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +20,14 @@ TRANSPORT = (ROOT / "common/decision_observation_transport.py").read_text()
 
 
 def _gate(mode: str):
-    with patch("common.regime_gate.get_current_regime", return_value="TREND_UP"), patch(
+    now = datetime.now(timezone.utc)
+    record = RegimeSourceRecord("ETHUSDC", "1m", now, "TREND_UP", now)
+    with patch("common.regime_gate.get_current_regime_record", return_value=record), patch(
         "common.regime_gate.get_policy", return_value=(False, "fixture")
     ):
         return decide_regime_gate(symbol="ETHUSDC", interval="1m", strategy="BBRANGE",
-                                  decision="ENTRY_CHECK", regime_enabled=True, regime_mode=mode)
+                                  decision="ENTRY_CHECK", regime_enabled=True, regime_mode=mode,
+                                  decision_candle_timestamp=now, evaluated_at=now)
 
 
 def test_01_dry_run_control_allowed_and_would_block():
