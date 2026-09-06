@@ -8,7 +8,7 @@ SUPERSEDED_VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
-CURRENT_PHASE=SYSTEM_CONFORMANCE_REPAIR_PLANNING_COMPLETE
+CURRENT_PHASE=SYSTEM_CONFORMANCE_MR1_MR2_LOCAL_PAPER_ACCEPTED
 
 CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR
 
@@ -23,7 +23,7 @@ This document is current truth only. Git history retains prior states.
 | Area | Current truth |
 | --- | --- |
 | North Star | FROZEN: Autonomous Capital Management Platform; CAPITAL; EQUITY CURVE HEALTH |
-| Foundation | Historical component proofs retained; current deployment/runtime conformance is not accepted pending repair |
+| Foundation | LOCAL PAPER MR1/MR2 technical conformance accepted; VPS and deferred capability acceptance remain open |
 | Exchange | OKX foundation and exchange-neutral contracts established |
 | Financial Truth | Forward health PASS; no heuristic economics permitted |
 | PAPER Entry Atomicity | `PASS_2_2` |
@@ -39,13 +39,13 @@ This document is current truth only. Git history retains prior states.
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
 | Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
-| LOCAL PAPER | HEALTHY; Economic Floor V2 exit authority OFF; boundary/recovery evidence collection ACTIVE |
+| LOCAL PAPER | HEALTHY; direct regime ENFORCE active 32/32; Economic Floor V2 exit authority OFF |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Runtime revisions `NON_UNIFORM_NOT_ACCEPTED`; former `d60c451...` value is superseded by conformance audits |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
 | Read-only discovery conveyor | Experiments #3–#7 COMPLETE; no new treatment authority |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
-| Equity UI canonical authority | Historical component proof retained; current semantic/authority health and deployment acceptance are incomplete pending Wave 4 |
+| Equity UI canonical authority | Minimum LOCAL conformance truth now exposes process/data/semantic/authority health; broader cross-environment acceptance remains open |
 | VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
@@ -63,11 +63,10 @@ This document is current truth only. Git history retains prior states.
 
 `UNIQUE_P3=3`
 
-The bounded planning and defect-register contract is
+The bounded defect-register and execution contract is
 [WALTRADE_SYSTEM_CONFORMANCE_REPAIR_V1.md](WALTRADE_SYSTEM_CONFORMANCE_REPAIR_V1.md).
-It defines five dependency-ordered waves, the permanent four-part deployment
-acceptance gate, and the Capability Activation Ledger. It grants no runtime,
-database, config, PAPER or LIVE authority.
+MR1 and MR2 have passed LOCAL PAPER technical acceptance. Deferred capabilities
+remain authority-OFF and are not promoted to PASS.
 
 `NEW_ECONOMIC_EXPERIMENTS=PAUSED`
 
@@ -77,21 +76,26 @@ database, config, PAPER or LIVE authority.
 
 `LIVE_ENTRY_AUTHORITY=OFF_LOCAL_AND_VPS`
 
-`NEXT_IMPLEMENTATION_UNIT=MR1_MINIMAL_RELEASE_TRUTH`
+`NEXT_IMPLEMENTATION_UNIT=VPS_PAPER_INDEPENDENT_PARITY_AND_DIRECT_ACCEPTANCE`
 
-`NEXT_ACTION=MR1_MINIMAL_RELEASE_TRUTH`
+`NEXT_ACTION=VPS_PAPER_INDEPENDENT_PARITY_AND_DIRECT_ACCEPTANCE`
 
 `MINIMUM_RECOVERY_SEQUENCE=MR1_MINIMAL_RELEASE_TRUTH,MR2_CORE_ADMISSION_REPAIR,MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
 
-`POLICY_SOURCE_CHECK_STATUS=CONTRADICTION_STOP`
+`POLICY_SOURCE_CHECK_STATUS=RESOLVED_BY_CORRECTED_POPULATION_REPRODUCTION`
 
-`POLICY_SEMANTICS_UNRESOLVED=YES`
+`POLICY_SEMANTICS_UNRESOLVED=NO`
 
-The history-derived 20/20 candidate conflicts with LOCAL PAPER DB for
-`BBRANGE/RANGE_LOWVOL` and `SUPERTREND/RANGE_LOWVOL`. MR2 is stopped before
-implementation pending explicit authority; no policy value is guessed.
+`CANONICAL_POLICY_VERSION=REGIME_POLICY_20260906_V1`
 
-`DEFERRED_SCOPE=ORIGINAL_WAVE_3_REMAINDER,ORIGINAL_WAVE_4,H12,RISK_BUDGET,SLOT_BRAIN,ORC,LEARNING,UI,MIGRATION_WIDE_CLEANUP`
+`CANONICAL_POLICY_FINGERPRINT=585ab57f906dff274e5df344475eb24de6f4977a3985535427edb7852093eb3e`
+
+The corrected immutable 971-position population reproduces the canonical
+matrix exactly: `POLICY_ALLOW=245` and
+`COUNTERFACTUAL_NET=-34.148466549209_USDC`. The superseded history-comment
+variant would allow 291 positions and produce `-38.400551987143_USDC`.
+
+`DEFERRED_SCOPE=ORIGINAL_WAVE_3_REMAINDER,H12,RISK_BUDGET,SLOT_BRAIN,ORC,LEARNING,MIGRATION_WIDE_CLEANUP,VPS_PARITY_ITEMS`
 
 `DEFERRED_AUTHORITY=OFF_NOT_PASS`
 
@@ -100,6 +104,31 @@ repair deployment are preserved as `PRE_CONFORMANCE_LEGACY_EVIDENCE`, `UNTREATED
 `REGIME_NOT_ENFORCED` at its exact cutoff. They are not pooled with post-repair
 evidence or inspected during repair. Independent Fee V2, Financial Truth,
 entry-atomicity and infrastructure proofs retain their original status.
+
+`MR1_IMPLEMENTED=YES`
+
+`MR2_IMPLEMENTED=YES`
+
+`LOCAL_PAPER_IMPLEMENTATION_REVISION=03e5bec329520e9d16966078c5614f8ed666af09`
+
+`REGIME_SSOT=market_regime`
+
+`WATCHDOG_GATE_CONTRACT=REGIME_GATE_MARKET_REGIME_SSOT_V1`
+
+`POLICY_COVERAGE=20/20`
+
+`LOCAL_PAPER_REGIME_ENFORCE_SLOTS=32/32`
+
+`FAIL_CLOSED_MISSING_STALE_UNKNOWN_POLICY_PANIC=PASS`
+
+`FORWARD_BASELINE_CUTOFF=2026-09-06T20:33:57.907250026Z`
+
+`LOCAL_PAPER_TECHNICAL_ACCEPTANCE=PASS`
+
+Forward economic measurement is collecting executed/blocked entries, trade
+count, fees, gross/net after costs, expectancy, cost cover, rejected capable
+entries, drawdown, capital utilization and CASH baseline. No economic verdict
+is recorded yet.
 
 ## Public communication
 

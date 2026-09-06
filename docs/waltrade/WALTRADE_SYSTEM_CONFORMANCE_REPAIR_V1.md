@@ -1,15 +1,15 @@
 # WalTrade System Conformance Repair V1
 
-STATUS=PLANNING_COMPLETE_IMPLEMENTATION_NOT_AUTHORIZED
+STATUS=MR1_MR2_LOCAL_PAPER_IMPLEMENTED_AND_ACCEPTED
 
 SCOPE=LOCAL_PAPER,VPS_PAPER,LOCAL_LIVE,VPS_LIVE
 
 AUDITS_CONSOLIDATED=4
 
-This is the bounded repair design produced from the four completed
-system-conformance audits. It is not rollout authority. New economic
-experiments remain paused, LIVE new-entry authority remains disabled, and no
-PAPER or LIVE authority changes are authorized by this plan.
+This document preserves the bounded repair design produced from the four
+completed system-conformance audits and records the accepted LOCAL PAPER MR1
+and MR2 execution. New economic experiments remain paused and LIVE new-entry
+authority remains disabled.
 
 `VPS_PAPER_RUNTIME_REVISION_STATUS=NON_UNIFORM_NOT_ACCEPTED` under the four
 conformance audits. The formerly reported `d60c451...` value is superseded
@@ -46,13 +46,15 @@ limited to three minimum-recovery units:
   entry/position identity.
 - Require focused unit, integration and natural E2E tests.
 
-MR2 is blocked before implementation because the policy-source comparison in
-Section 2A found a contradiction. No matrix value may be guessed.
+MR2 resolved the policy-source ambiguity before implementation. The corrected
+971-position population artifact reproduces the LOCAL PAPER matrix exactly:
+245 policy-allowed positions and `-34.148466549209 USDC` net. Section 2A
+records the selected policy and the rejected historical-comment variant.
 
 ### MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE
 
-- Use no shadow substitute: direct LOCAL PAPER enforcement follows MR1 and
-  MR2 acceptance and separate authority.
+- Use no shadow substitute: direct LOCAL PAPER enforcement is active following
+  MR1 and MR2 acceptance.
 - After LOCAL PASS, commit and push the exact SHA; VPS may only fetch, inspect,
   pull the approved history and validate independently before direct VPS PAPER.
 - Keep LIVE frozen.
@@ -64,10 +66,52 @@ holdouts at the exact deployment cutoff as
 `PRE_CONFORMANCE_LEGACY_EVIDENCE`. Do not pool their observations with the new
 post-repair cohort.
 
-`DEFERRED_SCOPE=ORIGINAL_WAVE_3_REMAINDER,ORIGINAL_WAVE_4,H12,RISK_BUDGET,SLOT_BRAIN,ORC,LEARNING,UI,MIGRATION_WIDE_CLEANUP`
+`DEFERRED_SCOPE=ORIGINAL_WAVE_3_REMAINDER,H12,RISK_BUDGET,SLOT_BRAIN,ORC,LEARNING,MIGRATION_WIDE_CLEANUP,VPS_PARITY_ITEMS`
 
-Every deferred capability is `DEFERRED_AUTHORITY_OFF`. It is not repaired by
-MR1-MR3 and must not be recorded as PASS.
+Every deferred capability remains authority-OFF. A capability may be recorded
+as verified inactive, but not as functionally repaired or accepted without its
+own proof.
+
+## 0A. Executed LOCAL PAPER recovery
+
+`MR1_IMPLEMENTED=YES`; commit `bb0957a` added the bounded read-only release
+truth verifier. It distinguishes repository HEAD, OCI image revision/digest,
+container runtime revision, Compose inputs, explicit env file and selected
+non-secret effective configuration. Before repair it proved non-uniform bot,
+regime and automation revisions; after rollout every touched service reported
+the same implementation revision.
+
+`MR2_IMPLEMENTED=YES`; commit `649dc42` established
+`REGIME_GATE_MARKET_REGIME_SSOT_V1`, canonical `SUPERTREND`, causal as-of
+lookup, shared freshness validation, fail-closed missing/stale/NULL/UNKNOWN/
+missing-policy paths, unambiguous effective-mode resolution, entry-only PANIC
+fail-closed behavior and immutable gate/source/policy linkage propagated into
+the admission/position path. Commit `03e5bec` exposed the minimum API/UI
+process, data, semantic and authority truth required by the audit.
+
+The idempotent LOCAL PAPER migration
+`20260906_regime_ssot_direct_paper_enforcement_v1` is ledgered at implementation
+SHA `03e5bec329520e9d16966078c5614f8ed666af09`, checksum
+`92bb110882177ce1cde10343ac3ecdd07bc7ab811f923ee1ddd21726b190658f`, with
+20 canonical policy rows, zero active `SUPER_TREND` rows and 32/32 enabled
+`ENFORCE` slots. Reapplication produced no additional ledger row and no policy
+or authority semantic change.
+
+The touched LOCAL PAPER services run OCI/runtime revision
+`03e5bec329520e9d16966078c5614f8ed666af09`. A bounded six-minute acceptance
+window showed 32/32 fresh strategy slots, 5/5 healthy support workers, zero
+blocked DB sessions, zero critical errors/tracebacks and stable restart count
+zero. Gate and watchdog both reported source `market_regime` and contract
+`REGIME_GATE_MARKET_REGIME_SSOT_V1`. Deterministic PAPER-only E2E proof, with
+no order or position creation, proved ALLOW, policy BLOCK, missing, stale,
+PANIC and canonical SUPERTREND behavior. Edge routes returned HTTP 200 for
+both PAPER and unchanged LIVE API/UI after a configuration-preserving nginx
+upstream reload.
+
+`FORWARD_BASELINE_CUTOFF=2026-09-06T20:33:57.907250026Z`, the exact start of
+the new bot-runner carrying direct entry semantics. Earlier affected economic
+cohorts are closed at this boundary as `PRE_CONFORMANCE_REPAIR`, `UNTREATED`,
+`REGIME_NOT_ENFORCED` and must not be pooled with forward evidence.
 
 ## 1. Scope and evidence convention
 
@@ -116,38 +160,38 @@ another environment's evidence was reused.
 
 `UNIQUE_P0=5`, `UNIQUE_P1=9`, `UNIQUE_P2=7`, `UNIQUE_P3=3`.
 
-## 2A. Regime policy source comparison — unresolved
+## 2A. Regime policy source comparison — resolved before implementation
 
-`POLICY_SEMANTICS_UNRESOLVED=YES`
+`POLICY_SEMANTICS_UNRESOLVED=NO`
 
-`POLICY_SOURCE_CHECK_STATUS=CONTRADICTION_STOP`
+`POLICY_SOURCE_CHECK_STATUS=RESOLVED_BY_CORRECTED_POPULATION_REPRODUCTION`
 
-`HISTORY_CANDIDATE_POLICY_VERSION=REGIME_POLICY_V1_CANONICAL_4X5`
+`CANONICAL_POLICY_VERSION=REGIME_POLICY_20260906_V1`
 
-The intended policy is recovered from accepted Git history in commit
-`17a3df614d7a1fda8ab9b2c5d057cfdaac98e37c` (the original complete
-regime-policy comments and strategy paths),
-the canonical `SUPERTREND` identity history, and the later immutable policy-
-snapshot contract in
-`db/migrations/20260812_regime_gate_paper_experiment_contract_v1.sql`.
-The history-derived candidate is complete, but a read-only LOCAL PAPER query
-of `public.regime_policy` found 20 rows with legacy `SUPER_TREND` identity and
-two semantic differences. Therefore neither source is promoted to canonical
-authority in this planning task.
+The accepted source is the corrected immutable 971-position research
+population together with its decision-time policy evidence, reconciled to the
+active LOCAL PAPER policy table and canonicalized only from `SUPER_TREND` to
+`SUPERTREND`. It reproduces `ALLOWED=245` and
+`COUNTERFACTUAL_NET=-34.148466549209 USDC` exactly. The older source comments
+in commit `17a3df6...` imply two different rows and reproduce 291 allowed
+positions with `-38.400551987143 USDC`; they are retained as superseded design
+history, not chosen because of outcome favorability. The selection is based
+on exact provenance agreement with the already accepted 245-position
+counterfactual.
 
 | Strategy | RANGE_LOWVOL | RANGE_HIGHVOL | TREND_UP | TREND_DOWN | SHOCK |
 | --- | --- | --- | --- | --- | --- |
 | RSI | ALLOW | ALLOW | BLOCK | BLOCK | BLOCK |
 | TREND | BLOCK | BLOCK | ALLOW | ALLOW | BLOCK |
-| SUPERTREND | ALLOW | ALLOW | ALLOW | ALLOW | BLOCK |
-| BBRANGE | ALLOW | ALLOW | BLOCK | BLOCK | BLOCK |
+| SUPERTREND | BLOCK | ALLOW | ALLOW | ALLOW | BLOCK |
+| BBRANGE | BLOCK | ALLOW | BLOCK | BLOCK | BLOCK |
 
 Fingerprint input is UTF-8, LF-terminated, sorted by strategy then regime,
 with one line `STRATEGY|REGIME|ALLOW_OR_BLOCK`. Its exact 20-line payload is:
 
 ```text
 BBRANGE|RANGE_HIGHVOL|ALLOW
-BBRANGE|RANGE_LOWVOL|ALLOW
+BBRANGE|RANGE_LOWVOL|BLOCK
 BBRANGE|SHOCK|BLOCK
 BBRANGE|TREND_DOWN|BLOCK
 BBRANGE|TREND_UP|BLOCK
@@ -157,7 +201,7 @@ RSI|SHOCK|BLOCK
 RSI|TREND_DOWN|BLOCK
 RSI|TREND_UP|BLOCK
 SUPERTREND|RANGE_HIGHVOL|ALLOW
-SUPERTREND|RANGE_LOWVOL|ALLOW
+SUPERTREND|RANGE_LOWVOL|BLOCK
 SUPERTREND|SHOCK|BLOCK
 SUPERTREND|TREND_DOWN|ALLOW
 SUPERTREND|TREND_UP|ALLOW
@@ -168,7 +212,7 @@ TREND|TREND_DOWN|ALLOW
 TREND|TREND_UP|ALLOW
 ```
 
-`HISTORY_CANDIDATE_POLICY_FINGERPRINT_SHA256=bef65250b06141fe64baadf4e01245a9ace7dbe25948978e4af516be7a5f1d94`
+`CANONICAL_POLICY_FINGERPRINT_SHA256=585ab57f906dff274e5df344475eb24de6f4977a3985535427edb7852093eb3e`
 
 Observed LOCAL PAPER differences after canonicalizing `SUPER_TREND` to
 `SUPERTREND`:
@@ -178,14 +222,11 @@ Observed LOCAL PAPER differences after canonicalizing `SUPER_TREND` to
 | `BBRANGE/RANGE_LOWVOL` | ALLOW | BLOCK |
 | `SUPERTREND/RANGE_LOWVOL` | ALLOW | BLOCK |
 
-The canonicalized LOCAL PAPER DB payload fingerprint is
-`585ab57f906dff274e5df344475eb24de6f4977a3985535427edb7852093eb3e`.
-The query ran inside a read-only transaction and ended with `ROLLBACK`.
-
-MR2 and original Wave 2 stop before implementation until an explicit accepted
-authority resolves both differences and freezes one versioned 20/20 matrix and
-fingerprint. Runtime rows, comments or current behavior alone may not silently
-win this decision.
+The rejected history-comment variant fingerprint is
+`bef65250b06141fe64baadf4e01245a9ace7dbe25948978e4af516be7a5f1d94`.
+The two-row delta contains 46 BBRANGE/RANGE_LOWVOL positions and zero
+SUPERTREND/RANGE_LOWVOL positions in the corrected population. The chosen
+matrix was frozen before code/config/DB mutation.
 
 ## 3. Repair contracts by issue
 
@@ -444,7 +485,9 @@ activation.
 
 ## 8. Definition of done
 
-`DEFINITION_OF_DONE_COMPLETE=YES` for this plan; implementation is pending.
+`DEFINITION_OF_DONE_COMPLETE=YES` for the complete repair contract. LOCAL
+PAPER MR1/MR2 technical acceptance is complete; deferred four-environment
+items and independent VPS PAPER acceptance remain open.
 The repair program completes only when:
 
 1. All five P0s close with failure-injection and end-to-end proof.
@@ -479,4 +522,4 @@ The repair program completes only when:
 
 `SHADOW_REQUIRED=NO_UNLESS_NEW_CONCRETE_SAFETY_REASON_IS_PROVEN`.
 
-`NEXT_ACTION=MR1_MINIMAL_RELEASE_TRUTH`.
+`NEXT_ACTION=VPS_PAPER_INDEPENDENT_PARITY_AND_DIRECT_ACCEPTANCE`.

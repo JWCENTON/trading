@@ -1,6 +1,6 @@
 # WalTrade Master Execution Roadmap
 
-CURRENT_PHASE=SYSTEM_CONFORMANCE_REPAIR_PLANNING_COMPLETE
+CURRENT_PHASE=SYSTEM_CONFORMANCE_MR1_MR2_LOCAL_PAPER_ACCEPTED
 
 CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR
 
@@ -35,31 +35,34 @@ it necessary.
 The former `d60c451...` runtime value is historical/superseded and is not
 current deployment truth.
 
-`REGIME_POLICY_SOURCE_CHECK=CONTRADICTION_STOP`;
-`POLICY_SEMANTICS_UNRESOLVED=YES`. The history-derived candidate and LOCAL
-PAPER DB differ for `BBRANGE/RANGE_LOWVOL` and
-`SUPERTREND/RANGE_LOWVOL`; MR2 must not implement a matrix until an explicit
-accepted authority resolves the difference.
+`REGIME_POLICY_SOURCE_CHECK=RESOLVED_BY_CORRECTED_POPULATION_REPRODUCTION`;
+`POLICY_SEMANTICS_UNRESOLVED=NO`. The canonical 20/20 matrix reproduces the
+accepted corrected-population counterfactual exactly: 245 of 971 positions,
+`-34.148466549209 USDC` net. Its fingerprint is
+`585ab57f906dff274e5df344475eb24de6f4977a3985535427edb7852093eb3e`.
 
 Current minimum recovery order:
 
 `MR1_MINIMAL_RELEASE_TRUTH -> MR2_CORE_ADMISSION_REPAIR -> MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
 
-MR1 is bounded to touched-service release identity using existing assets and
-one small read-only verifier. MR2 contains only the core regime/PANIC/admission
-repair and is currently policy-blocked. MR3 performs direct PAPER enforcement
-and separate economic acceptance without shadow; LIVE remains frozen.
+MR1 and MR2 are implemented and technically accepted on LOCAL PAPER. The
+touched runtime revision is `03e5bec329520e9d16966078c5614f8ed666af09`;
+32/32 slots use direct `ENFORCE`, the gate and watchdog share `market_regime`,
+and missing/stale/unknown/policy/PANIC uncertainty blocks entry. MR3 technical
+direct enforcement has begun without shadow; its forward economic verdict is
+separate and pending. LIVE remains frozen.
 
-Original Wave 3/4 remainder, H12, Risk Budget, Slot Brain, ORC, Learning, UI
-and migration-wide cleanup are `DEFERRED_AUTHORITY_OFF`, not PASS.
+Original Wave 3/4 remainder, H12, Risk Budget, Slot Brain, ORC, Learning and
+migration-wide cleanup remain deferred and authority-OFF, not PASS. The
+minimum API/UI truth needed for this repair was completed locally because the
+existing UI omitted semantic and authority health.
 
 Complete-register planning order, retained for deferred defects:
 
 `WAVE_1_RELEASE_TRUTH -> WAVE_2_REGIME_SSOT -> WAVE_3_ACTIVE_CAPABILITIES -> WAVE_4_SCHEMA_DEPLOYMENT_UI -> WAVE_5_DIRECT_PAPER_ENFORCEMENT`
 
-No implementation or rollout is authorized by the plan. The next separately
-approvable implementation unit is `MR1_MINIMAL_RELEASE_TRUTH`. The minimum
-recovery path is MR1 -> MR2 -> MR3; deferred Wave 3/4 work is not a prerequisite
+The authorized LOCAL implementation completed MR1 and MR2 and started MR3
+direct LOCAL PAPER enforcement. Deferred Wave 3/4 work is not a prerequisite
 for this bounded recovery and receives no authority or PASS. Shadow is not a
 substitute for a proven repair. LIVE entry authority remains frozen throughout.
 
@@ -69,6 +72,26 @@ cutoff as `PRE_CONFORMANCE_LEGACY_EVIDENCE`, `UNTREATED`, and
 `REGIME_NOT_ENFORCED`. Never pool them with post-repair evidence and do not
 inspect their efficacy during repair. These labels do not apply to independent
 Fee V2, Financial Truth, entry-atomicity or infrastructure proofs.
+
+`FORWARD_BASELINE_CUTOFF=2026-09-06T20:33:57.907250026Z`.
+
+### LOCAL PAPER MR1/MR2 acceptance
+
+- `RELEASE_TRUTH=PASS`: repository/image/runtime/config identities are
+  independently reported; the pre-repair revision split was detected and all
+  touched services now run `03e5bec329520e9d16966078c5614f8ed666af09`.
+- `REGIME_SSOT=market_regime`; gate/watchdog contract
+  `REGIME_GATE_MARKET_REGIME_SSOT_V1`; canonical policy coverage `20/20`;
+  active legacy `SUPER_TREND` rows `0`.
+- `DIRECT_LOCAL_PAPER_ENFORCEMENT=ACTIVE`; 32/32 slots are enabled ENFORCE.
+  Deterministic E2E proves allow/block/missing/stale/PANIC/SUPERTREND paths
+  without placing an order.
+- Bounded acceptance: 32/32 fresh slots, 5/5 support workers healthy, blocked
+  DB sessions `0`, critical errors/tracebacks `0`, restart counts stable.
+- PAPER and LIVE API/UI edge routes return HTTP 200. No LIVE service, config,
+  authority, position or order was changed.
+- Forward MR3 economic collection begins at the cutoff above; no economic
+  result is claimed yet.
 
 ## 1. Foundation state
 
