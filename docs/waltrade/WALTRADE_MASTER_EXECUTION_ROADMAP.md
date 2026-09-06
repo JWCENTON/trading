@@ -2,6 +2,8 @@
 
 CURRENT_PHASE=STOP_LOSING
 
+CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION
+
 VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
@@ -172,9 +174,10 @@ realized profitability. The earlier 78.2178% figure belongs to its recorded
 VPS cohort and trade-level forensic definition; the two rates must not be
 merged.
 
-Existing pre-entry evidence predicts movement capacity strongly, led by
-`ATR_PCT`, BBRANGE `BB_WIDTH_PCT`, and absolute EMA slope. It separates final
-non-value-add admissions only weakly. For 923 admissions made while
+Earlier binary-label evidence found movement-capacity signal led by `ATR_PCT`,
+BBRANGE `BB_WIDTH_PCT`, and absolute EMA slope, but later corrected-label
+walk-forward evidence did not support a stable current `STRONG` predictability
+claim. It separates final non-value-add admissions only weakly. For 923 admissions made while
 same-symbol risk already existed, marginal portfolio value was -103.994083
 USDC and 822/923 (89.057%) were non-value-add. No new score or engine is
 required.
@@ -206,28 +209,30 @@ cohort. Selection semantics must precede outcomes:
 
 ## 3. Ranked STOP LOSING mechanisms
 
-With Ownership V1 and the Economic Floor V1/V2 cadence question complete, the
-subsequent research order is:
+Current research order is probabilistic and capital-first:
 
-1. `ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1` — next separate experiment; not
-   implemented or started
-2. `MOVEMENT_CAPACITY` — prepared future LOCAL treatment on new natural
-   evidence
-3. Re-evaluate authoritative thesis/marginal-capital-value synthesis only after
-   clean individual experiment results
+1. preserve the current Movement V1 forward holdout untouched and uninspected;
+2. run the frozen, non-blocking P4 same-thesis forward holdout independently;
+3. preserve H12 as complete with verdict B and no capital authority;
+4. because H12 did not reach verdict A, require untouched forward calibration
+   persistence before any H13 capital-utility replay design;
+5. only after historical qualification and new forward proof may bounded
+   risk/capital influence be reviewed;
+6. LIVE remains last and requires explicit Product Owner approval.
 
-Completed read-only discovery does not schedule treatments for Economic
-No-Trade/New Risk, Same-Thesis Control, Fee Velocity, or 1m/5m Mixed
-Duplication.
+Economic Floor boundary/recovery collection remains passive evidence only and
+is not the automatic next economic priority. Completed read-only discovery
+does not itself schedule an active treatment.
 
 Current experiment roadmap:
 
 - `#1 Ownership=COMPLETE`.
 - `#2 Economic Floor V1/V2 cadence family=COMPLETE_FOR_CADENCE_QUESTION`.
-- `NEXT=ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1`; not started.
-- `#3 Movement Capacity=PREPARED_FUTURE_CAUSAL_TREATMENT`.
+- `CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`.
+- `MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`.
+- `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`.
 - `#4 New Risk=UNSUPPORTED_CURRENT_HYPOTHESIS`.
-- `#5 Same Thesis=PARTIAL_NO_GATE`.
+- `#5 Same Thesis=H11_HISTORICALLY_CONFIRMED_P4_FROZEN_NOT_AUTHORIZED`.
 - `#6 Fee Velocity=FEE_DRAG_YES_VELOCITY_GATE_NO`.
 - `#7 Mixed Duplication=PARTIAL_NO_INTERVAL_GATE`.
 
@@ -393,7 +398,7 @@ V2 is not harmful, must not be tuned in place, and requires no further evidence
 collection merely to increase N. The docs task changes no deployed runtime or
 treatment configuration.
 
-The next separate experiment is
+The historically proposed separate experiment was
 `ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1`: determine what positive protected
 economic boundary can produce non-negative realized execution under the
 validated common 1m cadence while preserving upside and avoiding premature
@@ -403,7 +408,8 @@ strategy-, symbol-, interval-, or regime-specific threshold is frozen.
 `STEPWISE_RATCHET` remains later research.
 
 `BOUNDARY_REFINEMENT_IMPLEMENTED=NO`;
-`BOUNDARY_REFINEMENT_STARTED=NO`.
+`BOUNDARY_REFINEMENT_STARTED=NO`. It is no longer the automatic current/next
+priority; its existing collector remains passive only.
 
 ### Economic Floor V2 active economic evaluation closure
 
@@ -566,6 +572,10 @@ or context-specific ATR/realtime hypothesis must use new natural data or
 another genuinely untouched validation set. `NEXT_MOVEMENT_RESEARCH` is
 `CONTEXT_SPECIFIC_ON_NEW_DATA_ONLY`.
 
+The frozen Movement V1 forward holdout now runs as an untouched observational
+contract and is deliberately not inspected here:
+`MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`.
+
 ## 8. Completed read-only discovery conveyor #3–#7
 
 `DISCOVERY_CONVEYOR_STATUS=COMPLETE`. The conveyor used VPS PAPER read-only
@@ -597,15 +607,13 @@ test must use new natural evidence after activation.
 `LOCAL_TREATMENT=NO`. Additional admissions were economically negative, but
 existing portfolio risk was not isolated as the causal discriminator.
 
-### #5 Same-Thesis Control
+### #5 Same-Thesis Control — superseded by H11
 
-`EXPERIMENT_5=SAME_THESIS_CONTROL`;
-`DISCOVERY_STATUS=COMPLETE`; `MECHANISM_SUPPORTED=PARTIAL`;
-`THESIS_PROXY_SIGNAL_STRENGTH=WEAK`; `GLOBAL_GATE_SUPPORTED=NO`;
-`CONTEXT_SPECIFIC_GATE_SUPPORTED=NO`; `LOCAL_TREATMENT=NO`.
-Redundant fee drag and correlated losses are present, but current proxies lack
-authoritative position-to-thesis identity and cannot authorize a gate.
-`INTERACTION_WITH_MOVEMENT_CAPACITY=MODERATE`.
+The initial conveyor result was partial and authorized no gate. H11 supersedes
+that current interpretation: redundant episode exposure is confirmed on
+historical replicated partitions, while causal forward proof remains absent.
+The frozen P4 first-signal candidate is observational only and has no treatment
+authority. `INTERACTION_WITH_MOVEMENT_CAPACITY=INDEPENDENT_NON_BLOCKING_LABELS`.
 
 ### #6 Fee Velocity
 
@@ -644,7 +652,119 @@ gate. Supported directions are Economic Floor protection, contextual Movement
 Capacity filtering, and later authoritative thesis/marginal-capital-value
 synthesis if evidence contracts improve.
 
-## 9. Permanent research and LIVE authority gates
+## 9. H11 closure, P4 forward holdout, and H12 outcome surface
+
+### H11 — episode redundancy and BTC market authority
+
+`H11_STATUS=COMPLETE`;
+`H11_PLAN_FINGERPRINT=c4286e14160d1d8467329d7a14636a035903b40ad87ea8d8c1480171e5e55826`.
+
+The corrected cohort contains `971` positions in `534` 15-minute UTC market
+episodes; `236` episodes contain multiple positions and the maximum episode
+size is `8`. Position count correlates `-0.677527` with episode net and
+`+0.688393` with episode loss. At least two symbols lost together in `197`
+episodes and all four symbols lost together in `18`.
+
+`H11_REDUNDANT_EXPOSURE=CONFIRMED_HISTORICALLY_REPLICATED_NOT_FORWARD_PROVEN`.
+Marginal position value is negative at every observed ordinal and fees grow
+with episode size. BTC causal leadership is not supported; BTC co-movement is
+supported, but it yields no useful BTC-to-alt veto authority.
+
+The qualified historical candidate is
+`SAME_THESIS_EPISODE_REDUNDANCY_V1_FIRST_SIGNAL`, fingerprint
+`951b7b6a41fb210fed6b4e37f6f63ff0a8d5e6083d1e8583a83890d7d80ee2fe`.
+For LONG candidates, a later signal is observationally redundant only when an
+earlier accepted candidate exists in the same 15-minute UTC decision episode
+with identical symbol, side, and causal regime. Ordering is
+`decision_created_at`, then `position_id`; missing regime admits and later
+replacement is forbidden.
+
+| Partition | Admitted | Rejected | Rejected A/B/C/D | Promising retained | Winner retained | Net delta | Fees avoided |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| TRAIN | 551 | 49 | 3/4/16/26 | 90.73% | 93.75% | +6.810305 USDC | 6.860148 USDC |
+| VALIDATION | 180 | 8 | 0/1/3/4 | 96.26% | 100% | +0.800396 USDC | 1.121082 USDC |
+| HISTORICAL_HOLDOUT | 167 | 16 | 0/1/4/11 | 93.42% | 100% | +2.376732 USDC | 2.239686 USDC |
+
+Same-rate random outperformance exists with a weak validation margin;
+historical context stability passes, but forward confirmation is required.
+No P4 entry authority or LIVE eligibility exists.
+
+### P4 untouched forward holdout
+
+`H11_P4_CANDIDATE=FROZEN_NOT_AUTHORIZED`;
+`H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`;
+`P4_FORWARD_HOLDOUT_START_UTC=2026-09-06T17:24:04.625559215Z`.
+
+The immutable non-blocking contract is stored outside Git at
+`~/waltrade-experiments/same-thesis-episode-redundancy-v1-forward-holdout/holdout-contract.json`.
+Prior H11 evidence is burned. Existing immutable entry evidence can derive
+P4 `WOULD_BLOCK` after the fact, so new telemetry and runtime authority are
+unnecessary. P4 and Movement V1 are independent observational labels on the
+same natural decisions: Movement uses each row's frozen ATR/Realtime fields;
+P4 uses episode ordering and same symbol/side/regime. Neither changes the
+sample or the other's inputs.
+
+Only integrity/health/count checks are allowed before formal checkpoints.
+Outcome efficacy remains untouched until 25 complete outcomes for integrity,
+at least 100 complete outcomes plus adequate redundant/non-redundant exposure
+for the first formal review, and 200 only if the first review leaves material
+uncertainty. `P4_TREATMENT_ACTIVE=NO`; `P4_TRADES_BLOCKED=NO`.
+
+### H12 — multi-horizon probabilistic outcome surface
+
+`H12_PLAN_FINGERPRINT=a2b33fa89149dfed6fb49744688d53bf9ae026da37e34ecebf94e84d3afeb5f2`;
+`H12_POPULATION=971`; `H12_EPISODES=534`.
+
+The plan was frozen before results and used only decisions strictly before
+`2026-09-06T10:35:00Z`. It preserved complete episodes across chronological
+TRAIN/VALIDATION/HISTORICAL_HOLDOUT partitions and never inspected either
+current forward holdout. Finalized canonical 1m closes, authoritative ENTRY
+fills, COMPLETE inventory evidence, and frozen Fee V2 costs produced complete
+15m/30m/60m/120m paths for `971/971` positions and complete 240m paths for
+`969/971`; two incomplete 240m paths were not imputed. Non-comparable 1d/7d/30d
+coverage was excluded.
+
+The deterministic walk-forward hierarchy generated `4,853` fixed-horizon
+position predictions and `275` support-qualified context rows. It used
+episode-balanced empirical estimates, fixed hierarchical shrinkage, and 500
+deterministic episode-block bootstrap repetitions. For cost-cover events, the
+hierarchical surface was worse than the expanding global base rate in both
+validation (Brier `0.171277` versus `0.167286`) and historical holdout (Brier
+`0.136815` versus `0.134768`); log loss showed the same direction. Aggregate
+binary prediction coverage against episode-bootstrap 95% intervals was
+`67.78%`. Therefore `H12_PROBABILITY_CALIBRATION=NOT_SUPPORTED` and
+`H12_CONTEXT_STABILITY=FAIL` for capital authority.
+
+`H12_DECISION=B_SIGNAL_EXISTS_BUT_CALIBRATION_OR_SUPPORT_INSUFFICIENT`.
+The research surface is reproducible and informative, but it is not calibrated
+well enough for a frozen H13 capital decision design. The next bounded step is
+an untouched forward calibration-persistence contract for this frozen surface,
+not runtime authority or threshold tuning.
+
+`H12_CASH_BASELINE_AVAILABLE=YES`;
+`H12_CONTINUE_CLOSE_REDEPLOY_IDENTIFIABLE=NO`;
+`H12_NEW_TELEMETRY_REQUIRED=YES_FOR_CONTINUE_CLOSE_REDEPLOY_UTILITY_NOT_FOR_ENTRY_OUTCOME_SURFACE`;
+`H12_NEXT_EXPERIMENT=H12_FORWARD_CALIBRATION_PERSISTENCE_BEFORE_H13`.
+
+Cash/no-trade is authoritatively available as the zero-net, zero-fee,
+zero-incremental-capital baseline. Fixed-horizon expected net, supported tail
+risk, capital-hours, and Fee V2 costs are available; correlated heat is only
+partially identifiable from causal actual exposure. `CONTINUE_HOLD` versus
+`CLOSE_TO_CASH` versus `REDEPLOY` is not identifiable because the cohort lacks
+action-time executable-close state, remaining-horizon passive paths tied to
+that action, contemporaneous eligible redeployment alternatives, and their
+causal capital/heat outcomes. New telemetry is required only for that later
+action-utility question, not for the entry outcome surface.
+
+Cost-cover is a diagnostic event, not sufficient economic utility. Class D
+means no cost cover inside its fixed complete horizon, not permanently bad;
+class C means bounded post-exit movement capacity, not realizable profit.
+A/B/C/D remain secondary diagnostics. The future primary target is
+risk-adjusted net capital utility after full costs, time, drawdown, correlation,
+and opportunity cost, with NO TRADE/CASH as baseline. PAPER explores; LIVE
+requires positive expected net with uncertainty control.
+
+## 10. Permanent research and LIVE authority gates
 
 Every material research cycle records before final evaluation:
 
@@ -677,7 +797,7 @@ effect magnitude, `BAD_AVOIDED`, `GOOD_MISSED`, economic value, avoided fees,
 uncertainty, and stability across natural exposure. Five of five alone cannot
 authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 
-## 10. Ordered execution plan
+## 11. Ordered execution plan
 
 ### Now
 
@@ -685,24 +805,27 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 2. Preserve Ownership V2 as a documentation-only frozen hypothesis; do not implement or activate it.
 3. `ECONOMIC_FLOOR_V1_STATUS=COMPLETE`; do not tune its exact-zero boundary in place.
 4. `ECONOMIC_FLOOR_V2_STATUS=COMPLETE`; active V2 exit authority is OFF.
-5. Continue boundary/recovery evidence collection without trading authority;
-   do not tune V2 or increase N as an end in itself.
-6. Do not start `ECONOMIC_FLOOR_BOUNDARY_REFINEMENT_V1` in this docs task.
-7. Monitor forward canonical freshness and moderate pipeline risk; no pipeline change is required.
+5. Preserve `MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED` without reading or
+   changing its results.
+6. Preserve `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`; no trade
+   is blocked and no efficacy result is read before its checkpoints.
+7. Record H12 verdict B; do not confer filter, Capital Allocation, Risk Budget,
+   Learning, or LIVE authority.
+8. Continue boundary/recovery collection as passive evidence only.
 
 ### Next
 
-1. `CURRENT_STAGE=ECONOMIC_FLOOR_RECOVERY_EVIDENCE_COLLECTION_ACTIVE`.
-2. Boundary Refinement is the next separately authorized experiment. It must
-   define a protected economic boundary without assuming a numeric buffer,
-   parameter sweep, ratchet, or context-specific threshold.
-3. Then test the frozen Movement Capacity candidate locally on new natural
-   evidence.
-4. Re-evaluate later synthesis only after clean individual experiment results;
-   do not schedule New Risk, Same Thesis, Fee Velocity, or Mixed Duplication
-   treatments from current evidence.
-5. Any future Ownership V2 activation or Economic Floor boundary experiment requires separate authorization and new natural evidence.
-6. Keep `LIVE_ELIGIBILITY=NO`; neither completed cadence decision creates LIVE authority.
+1. `CURRENT_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`.
+2. Run an untouched forward calibration-persistence check for the frozen H12
+   surface; H12 verdict B does not authorize H13 capital utility replay yet.
+3. If a later independent review reaches H12 verdict A, freeze H13 design for
+   action-time continue/close/redeploy utility evidence.
+4. Only after H13 historical qualification may a new untouched forward
+   validation be defined.
+5. Only after independent PAPER proof may bounded capital/risk influence be
+   reviewed.
+6. Keep `LIVE_ELIGIBILITY=NO`; LIVE is last and requires explicit Product Owner
+   approval.
 
 The economic-floor family follows a proven secondary leak: 115
 tiny-positive-to-final-loss cases, of which 112 ended through
@@ -724,7 +847,7 @@ as an economic exit. Entry and exit treatments must not be mixed.
 - limited Learning authority
 - bounded LIVE eligibility with Product Owner approval
 
-## 11. Permanent long-run experiment standard
+## 12. Permanent long-run experiment standard
 
 Every experiment longer than 30 minutes requires all of:
 
@@ -749,7 +872,7 @@ requires all of:
 Healthy workers, fresh heartbeats, zero DB blockers, or individual successful
 inserts alone do not prove forward health.
 
-## 12. Hard scope control
+## 13. Hard scope control
 
 Do not add a new engine, brain, strategy family, ML classifier, portfolio framework, parameter sweep, DCA, campaign, averaging down, hold-until-green policy, global 1m/5m suppression, or blind one-strategy-per-symbol rule. Do not enable Risk Budget influence, Capital Allocation, or Learning auto-apply. Do not run discovery experiments on LIVE. VPS PAPER may provide read-only discovery while remaining the untreated natural reference, but it may not run a simultaneous second treatment or confer treatment authority.
 
@@ -773,7 +896,7 @@ complex. Institutional-quality diversification will likely require broader
 markets, asset classes, or independent return drivers. This is a long-term
 constraint, not current scope, and must not delay proof of the OKX core.
 
-## 13. Success ladders
+## 14. Success ladders
 
 Research quality ladder:
 
