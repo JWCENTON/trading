@@ -132,6 +132,18 @@ count, fees, gross/net after costs, expectancy, cost cover, rejected capable
 entries, drawdown, capital utilization and CASH baseline. No economic verdict
 is recorded yet.
 
+## Long Horizon L3 pre-rollout correction
+
+`LONG_HORIZON_L3_ROLLOUT=NOT_APPROVED_NOT_DEPLOYED`
+
+The original `7fc517b...` 100% ALLOW / 10% BLOCK sampling must not be
+activated. The accepted capacity/power correction freezes LOCAL PAPER L3 at
+8 USDC, ALLOW sampling `13.194281540%`, BLOCK sampling `7.920637611%`, and a
+14-day enrollment target. Current LOCAL PAPER, LOCAL LIVE and VPS runtime are
+unchanged. The complete immutable pre-rollout contract is
+[LONG_HORIZON_L3_POWER_CALIBRATED_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_SAMPLING_V1.md).
+Rollout requires separate reapproval of the corrective commit.
+
 ## Public communication
 
 `PUBLIC_COMMUNICATION_LAYER=ACTIVE`

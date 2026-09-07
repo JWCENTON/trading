@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 import hashlib
 import json
 import os
@@ -28,8 +28,25 @@ PRIMARY_SLEEVE_RATE = Decimal("0.40")
 SECONDARY_SLEEVE_RATE = Decimal("0.20")
 GLOBAL_HEAT_RATE = Decimal("0.60")
 MIN_FREE_CASH_RATE = Decimal("0.20")
-EXPECTED_NOTIONAL = Decimal("20")
-SAMPLING_VERSION = "L3_SHA256_GATE_EVENT_ID_MOD10_EQ0_V1"
+EXPECTED_NOTIONAL = Decimal("8")
+SAMPLING_VERSION = "L3_POWER_CALIBRATED_SALTED_SHA256_THRESHOLD_V1"
+SAMPLING_SALT = "0487462154f625b36982d5437a9d039ff8ceb5db5e2835afc0d47e6908a16057"
+ALLOW_SAMPLING_PROBABILITY = Decimal("0.13194281540")
+BLOCK_SAMPLING_PROBABILITY = Decimal("0.07920637611")
+ALLOW_SAMPLING_THRESHOLD = int(
+    "21c7011d15cd6242162f54445f0c09cf558e20c9c172425fd3f0000000000000", 16
+)
+BLOCK_SAMPLING_THRESHOLD = int(
+    "1446de7b06f1b5b43244466635a7ba48e4b51d5979c7d8a07806000000000000", 16
+)
+ALLOW_REQUIRED_COMPLETED_EPISODES = 33
+BLOCK_REQUIRED_COMPLETED_EPISODES = 53
+ENROLLMENT_TARGET_DAYS = 14
+ALLOW_EXPECTED_CENSORED = (41, 232)
+BLOCK_EXPECTED_CENSORED = (155, 666)
+BLOCK_EXPECTED_OCCUPANCY = Decimal("12.278202639821414")
+# Capacity is discrete: 12.2782 expected concurrent positions require 13 slots.
+MINIMUM_EQUITY_FOR_BLOCK_CAPACITY = Decimal("520")
 SAME_THESIS_VERSION = "P4_15M_SYMBOL_SIDE_REGIME_V1"
 ALLOWED_MODES = {"TREATMENT"}
 
@@ -62,20 +79,92 @@ def active(environ=None) -> bool:
     )
 
 
-def canonical_sample_identity(*, gate_event_id: int, symbol: str, interval: str,
-                              strategy: str, side: str, candle_open_time) -> str:
+def canonical_opportunity_identity(*, gate_event_id: int, symbol: str, interval: str,
+                                   strategy: str, side: str, candle_open_time) -> str:
     ts = candle_open_time.astimezone(timezone.utc).isoformat()
-    return "|".join((SAMPLING_VERSION, "local-paper", str(int(gate_event_id)),
+    return "|".join(("LOCAL_PAPER_REGIME_GATE_OPPORTUNITY_V1", "local-paper",
+                     str(int(gate_event_id)),
                      symbol.upper(), interval.lower(), strategy.upper(), side.upper(), ts))
 
 
-def sample_bucket(identity: str) -> int:
-    return int(hashlib.sha256(identity.encode("utf-8")).hexdigest(), 16) % 10
+def sampling_material(canonical_opportunity_id: str, cohort: str) -> str:
+    return "|".join((canonical_opportunity_id, SAMPLING_SALT, cohort, CONTRACT_VERSION))
+
+
+def sample_digest(canonical_opportunity_id: str, cohort: str) -> int:
+    material = sampling_material(canonical_opportunity_id, cohort)
+    return int(hashlib.sha256(material.encode("utf-8")).hexdigest(), 16)
+
+
+def sampling_threshold(cohort: str) -> int:
+    if cohort == "L3_REGIME_WOULD_ALLOW":
+        return ALLOW_SAMPLING_THRESHOLD
+    if cohort == "L3_REGIME_WOULD_BLOCK_SAMPLE":
+        return BLOCK_SAMPLING_THRESHOLD
+    raise ValueError("UNKNOWN_L3_COHORT")
+
+
+def selected_from_digest(cohort: str, digest: int) -> bool:
+    return int(digest) < sampling_threshold(cohort)
+
+
+def sampling_selected(canonical_opportunity_id: str, cohort: str) -> bool:
+    return selected_from_digest(cohort, sample_digest(canonical_opportunity_id, cohort))
+
+
+def available_slots(equity: Decimal, sleeve_rate: Decimal) -> int:
+    capacity = Decimal(str(equity)) * Decimal(str(sleeve_rate))
+    return int((capacity / EXPECTED_NOTIONAL).to_integral_value(rounding=ROUND_DOWN))
+
+
+def normalize_per_allocated_usdc(value: Decimal, allocated: Decimal = EXPECTED_NOTIONAL) -> Decimal:
+    amount = Decimal(str(allocated))
+    if amount <= 0:
+        raise ValueError("ALLOCATED_CAPITAL_MUST_BE_POSITIVE")
+    return Decimal(str(value)) / amount
+
+
+def quantity_for_l3_notional(*, price: Decimal, step: Decimal, min_qty: Decimal,
+                             min_notional: Decimal) -> Decimal:
+    px = Decimal(str(price))
+    quantum = Decimal(str(step))
+    if px <= 0 or quantum <= 0:
+        raise ValueError("L3_INSTRUMENT_METADATA_REQUIRED")
+    qty = (EXPECTED_NOTIONAL / px / quantum).to_integral_value(rounding=ROUND_DOWN) * quantum
+    if qty < Decimal(str(min_qty)) or qty * px < Decimal(str(min_notional)):
+        raise ValueError("L3_8_USDC_BELOW_INSTRUMENT_MINIMUM")
+    return qty
 
 
 def treatment_fingerprint(payload: dict) -> str:
     body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def sampling_contract_payload() -> dict:
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "sampling_version": SAMPLING_VERSION,
+        "sampling_salt": SAMPLING_SALT,
+        "allow_probability": str(ALLOW_SAMPLING_PROBABILITY),
+        "block_probability": str(BLOCK_SAMPLING_PROBABILITY),
+        "allow_threshold_uint256": str(ALLOW_SAMPLING_THRESHOLD),
+        "block_threshold_uint256": str(BLOCK_SAMPLING_THRESHOLD),
+        "hash_input": "canonical_opportunity_id|frozen_sampling_salt|cohort_name|contract_version",
+        "comparison": "uint256_sha256_lt_threshold",
+        "independence_unit": "CANONICAL_SAME_THESIS_EPISODE",
+        "one_sided_alpha": "0.05",
+        "power": "0.80",
+        "allow_required_completed_episodes": ALLOW_REQUIRED_COMPLETED_EPISODES,
+        "block_required_completed_episodes": BLOCK_REQUIRED_COMPLETED_EPISODES,
+        "enrollment_target_days": ENROLLMENT_TARGET_DAYS,
+        "allow_expected_censored": "41/232",
+        "block_expected_censored": "155/666",
+        "entry_notional_usdc": str(EXPECTED_NOTIONAL),
+    }
+
+
+SAMPLING_FINGERPRINT = treatment_fingerprint(sampling_contract_payload())
 
 
 def target_reached(realizable_net: Decimal, entry_capital: Decimal) -> bool:
@@ -120,17 +209,19 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     gate_id, regime, mode, would_block, why, meta = gate
     if str(mode).upper() != "DRY_RUN" or str(why) not in {"POLICY_ALLOW", "POLICY_WOULD_BLOCK"}:
         return AdmissionResult(False, "L3_GATE_NOT_QUALIFIED")
-    identity = canonical_sample_identity(
+    identity = canonical_opportunity_identity(
         gate_event_id=gate_id, symbol=symbol, interval=interval, strategy=strategy,
         side=side, candle_open_time=candle_open_time,
     )
-    bucket = sample_bucket(identity)
     if str(why) == "POLICY_ALLOW" and not bool(would_block):
         cohort, sleeve_rate = "L3_REGIME_WOULD_ALLOW", PRIMARY_SLEEVE_RATE
-    elif str(why) == "POLICY_WOULD_BLOCK" and bool(would_block) and bucket == 0:
+    elif str(why) == "POLICY_WOULD_BLOCK" and bool(would_block):
         cohort, sleeve_rate = "L3_REGIME_WOULD_BLOCK_SAMPLE", SECONDARY_SLEEVE_RATE
     else:
         return AdmissionResult(False, "L3_REGIME_WOULD_BLOCK_OBSERVATION_ONLY")
+    digest = sample_digest(identity, cohort)
+    if not selected_from_digest(cohort, digest):
+        return AdmissionResult(False, "L3_NOT_SAMPLED")
     same_thesis = _same_thesis(symbol, side, str(regime), candle_open_time)
     cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("L3|" + same_thesis,))
     cur.fetchone()
@@ -157,6 +248,8 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     if not equity_row or equity_row[0] is None:
         return AdmissionResult(False, "L3_CANONICAL_EQUITY_REQUIRED")
     equity = Decimal(str(equity_row[0]))
+    if equity < MINIMUM_EQUITY_FOR_BLOCK_CAPACITY:
+        return AdmissionResult(False, "L3_CAPACITY_PAUSE")
     cur.execute(
         """SELECT COALESCE(sum(a.entry_notional),0) FROM long_horizon_l3_admission_v1 a
              JOIN positions p ON p.id=a.position_id WHERE a.status='ACCEPTED' AND p.status='OPEN' AND a.cohort=%s""",
@@ -178,10 +271,10 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
         return AdmissionResult(False, "L3_GLOBAL_CAPITAL_LIMIT")
     cur.execute(
         """INSERT INTO long_horizon_l3_admission_v1(
-             gate_event_id,cohort,sampling_identity,sampling_bucket,same_thesis_identity,
+             gate_event_id,cohort,sampling_identity,sampling_digest,same_thesis_identity,
              symbol,interval,strategy,side,entry_candle_open_time,entry_notional,status)
              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACCEPTED') RETURNING admission_id""",
-        (gate_id, cohort, identity, bucket, same_thesis, symbol.upper(), interval.lower(),
+        (gate_id, cohort, identity, format(digest, "064x"), same_thesis, symbol.upper(), interval.lower(),
          strategy.upper(), side.upper(), candle_open_time, requested),
     )
     return AdmissionResult(True, "L3_ACCEPTED", int(cur.fetchone()[0]), cohort)
@@ -236,11 +329,13 @@ def guard_exit_cursor(cur, *, symbol: str, interval: str, strategy: str,
     cur.execute(
         """INSERT INTO long_horizon_l3_l0_comparator_v1(
              admission_id,position_id,first_exit_at,exit_reason,exit_price,
-             source_candle_open_time,status,realizable_net_at_l0_exit,fee_contract_fingerprint)
-             VALUES (%s,%s,%s,%s,%s,%s,'FIRST_CAUSAL_L0_EXIT',%s,%s)
+             source_candle_open_time,status,realizable_net_at_l0_exit,
+             realizable_net_per_allocated_usdc,fee_contract_fingerprint)
+             VALUES (%s,%s,%s,%s,%s,%s,'FIRST_CAUSAL_L0_EXIT',%s,%s,%s)
              ON CONFLICT(position_id) DO NOTHING""",
         (row[0], row[1], datetime.now(timezone.utc), str(reason), Decimal(str(price)),
          candle_open_time, evidence.realizable_net_after_all_costs,
+         normalize_per_allocated_usdc(evidence.realizable_net_after_all_costs),
          evidence.fee_contract_fingerprint),
     )
     return False, "L3_LEGACY_EXIT_SUPPRESSED"
@@ -307,11 +402,14 @@ def evaluate_target_owner_cycle(*, trading_mode: str, symbol: str, interval: str
                 cur.execute(
                     """INSERT INTO long_horizon_l3_event_v1(
                          admission_id,position_id,event_type,source_candle_id,source_close_time,
-                         mark_price,realizable_net,entry_capital,target_rate,target_reached)
-                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                         mark_price,realizable_net,entry_capital,realizable_net_per_allocated_usdc,
+                         target_rate,target_reached)
+                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (admission_id, position_id, "TARGET_EXIT_INTENT" if reached else "MARK_TO_MARKET",
                      mark.source_id, mark.close_time, mark.price, evidence.realizable_net_after_all_costs,
-                     entry_capital, TARGET_NET_RATE, reached),
+                     entry_capital,
+                     normalize_per_allocated_usdc(evidence.realizable_net_after_all_costs, entry_capital),
+                     TARGET_NET_RATE, reached),
                 )
                 return TargetDecision(
                     "TARGET_REACHED" if reached else "TARGET_NOT_REACHED", position_id,

@@ -1928,7 +1928,27 @@ def record_forward_paper_entry_atomic(
         try:
             with conn:
                 with conn.cursor() as cur:
-                    from common.long_horizon_l3 import prepare_admission_cursor
+                    from common.long_horizon_l3 import (
+                        active as l3_active,
+                        prepare_admission_cursor,
+                        quantity_for_l3_notional,
+                    )
+                    if l3_active():
+                        instrument = _instrument_values(client, str(symbol), allow_remote=False)
+                        if instrument is None:
+                            raise _PaperEntryAtomicBlocked(PaperEntryAtomicResult(
+                                False, "L3_INSTRUMENT_METADATA_REQUIRED", None, None,
+                            ))
+                        step, min_qty, min_notional, _, _ = instrument
+                        try:
+                            quantity = quantity_for_l3_notional(
+                                price=Decimal(str(price)), step=step, min_qty=min_qty,
+                                min_notional=min_notional,
+                            )
+                        except ValueError as exc:
+                            raise _PaperEntryAtomicBlocked(PaperEntryAtomicResult(
+                                False, str(exc), None, None,
+                            )) from exc
                     l3_admission = prepare_admission_cursor(
                         cur, symbol=str(symbol), interval=str(interval),
                         strategy=str(strategy), side=str(side),

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS public.long_horizon_l3_contract_v1(
 );
 CREATE TABLE IF NOT EXISTS public.long_horizon_l3_admission_v1(
  admission_id bigserial PRIMARY KEY, gate_event_id bigint NOT NULL UNIQUE REFERENCES regime_gate_events(id),
- cohort text NOT NULL, sampling_identity text NOT NULL, sampling_bucket integer NOT NULL,
+ cohort text NOT NULL, sampling_identity text NOT NULL, sampling_digest text NOT NULL,
  same_thesis_identity text NOT NULL, symbol text NOT NULL, interval text NOT NULL,
  strategy text NOT NULL, side text NOT NULL, entry_candle_open_time timestamptz NOT NULL,
  entry_notional numeric NOT NULL, status text NOT NULL, decision_id uuid,
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS public.long_horizon_l3_admission_v1(
  position_id bigint REFERENCES positions(id), linked_at timestamptz,
  created_at timestamptz NOT NULL DEFAULT now(),
  CHECK(cohort IN ('L3_REGIME_WOULD_ALLOW','L3_REGIME_WOULD_BLOCK_SAMPLE')),
- CHECK(sampling_bucket BETWEEN 0 AND 9)
+ CHECK(sampling_digest ~ '^[0-9a-f]{64}$')
 );
 CREATE INDEX IF NOT EXISTS ix_l3_same_thesis
  ON public.long_horizon_l3_admission_v1(same_thesis_identity,status);
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS public.long_horizon_l3_event_v1(
  position_id bigint NOT NULL REFERENCES positions(id), event_type text NOT NULL,
  source_candle_id text NOT NULL, source_close_time timestamptz NOT NULL,
  mark_price numeric NOT NULL, realizable_net numeric NOT NULL, entry_capital numeric NOT NULL,
+ realizable_net_per_allocated_usdc numeric NOT NULL,
  target_rate numeric NOT NULL, target_reached boolean NOT NULL,
  created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(position_id,source_candle_id)
 );
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS public.long_horizon_l3_l0_comparator_v1(
  position_id bigint NOT NULL UNIQUE REFERENCES positions(id), first_exit_at timestamptz NOT NULL,
  exit_reason text NOT NULL, exit_price numeric NOT NULL, source_candle_open_time timestamptz NOT NULL,
  status text NOT NULL, realizable_net_at_l0_exit numeric,
+ realizable_net_per_allocated_usdc numeric,
  fee_contract_fingerprint text, final_status text, final_net numeric, completed_at timestamptz
 );
 
@@ -60,14 +62,33 @@ WITH frozen AS (
           'effective_research_mode','DRY_RUN_NON_BLOCKING',
           'primary_cohort','L3_REGIME_WOULD_ALLOW',
           'secondary_cohort','L3_REGIME_WOULD_BLOCK_SAMPLE',
-          'sampling','SHA256(canonical gate-event opportunity identity) as integer mod 10 = 0',
-          'sampling_version','L3_SHA256_GATE_EVENT_ID_MOD10_EQ0_V1',
+          'sampling','uint256(SHA256(canonical_opportunity_id|frozen_sampling_salt|cohort_name|contract_version)) < exact cohort threshold',
+          'sampling_version','L3_POWER_CALIBRATED_SALTED_SHA256_THRESHOLD_V1',
+          'sampling_salt','0487462154f625b36982d5437a9d039ff8ceb5db5e2835afc0d47e6908a16057',
+          'sampling_contract_fingerprint','e6e5e35bdc8b4eb3a6ae19ff6f884857370d6c3384d9f0dbc238d18bec90d303',
+          'allow_sampling_probability','0.13194281540',
+          'block_sampling_probability','0.07920637611',
+          'allow_sampling_threshold_uint256','15277934255019537564202551280000000000000000000000000000000000000000000000000',
+          'block_sampling_threshold_uint256','9171471770693549621713624198000000000000000000000000000000000000000000000000',
+          'allow_required_completed_episodes',33,
+          'block_required_completed_episodes',53,
+          'one_sided_alpha','0.05','power','0.80','enrollment_target_days',14,
+          'allow_expected_censored','41/232','block_expected_censored','155/666',
+          'independence_unit','CANONICAL_SAME_THESIS_EPISODE',
           'same_thesis','P4_15M_SYMBOL_SIDE_REGIME_V1',
           'target_realizable_net_rate','0.03',
           'fee_model','PAPER_SIMULATION_FEE_V2_TAKER_TAKER_0.0035_PER_SIDE',
           'primary_sleeve_rate','0.40','secondary_sleeve_rate','0.20',
           'global_heat_rate','0.60','minimum_free_cash_rate','0.20',
-          'entry_notional_usdc','20',
+          'entry_notional_usdc','8',
+          'canonical_managed_equity_usdc','635.430007829136',
+          'allow_available_slots_at_8_usdc',31,
+          'block_available_slots_at_8_usdc',15,
+          'global_available_slots_at_8_usdc',47,
+          'block_expected_occupancy','12.278202639821414',
+          'minimum_equity_for_block_capacity_usdc','520',
+          'capacity_pause_below_minimum_equity',true,
+          'capacity_pause_closes_existing_positions',false,
           'l0_comparator_version','LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1',
           'disabled_exits',jsonb_build_array('TAKE_PROFIT','PROFIT_LOCK_TRAIL_DROP',
              'PROFIT_LOCK_FLOOR','ECONOMIC_FLOOR_V1','ECONOMIC_FLOOR_V2',
