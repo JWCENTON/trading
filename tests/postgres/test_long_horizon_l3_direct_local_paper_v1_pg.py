@@ -82,9 +82,9 @@ def test_l3_migration_is_local_only_idempotent_and_sets_32_dry_run_slots(
                      FROM long_horizon_l3_contract_v1"""
             )
             assert cur.fetchone() == (
-                "8", "0.13194281540", "0.07920637611",
-                "e6e5e35bdc8b4eb3a6ae19ff6f884857370d6c3384d9f0dbc238d18bec90d303",
-                "520",
+                "9", "0.13194281540", "0.07920637611",
+                "0f67b3c42d19ab5447dc4b1e9a9f0e553f62c3b72d88bdc8d9dc64b36f0312d1",
+                "585",
             )
         monkeypatch.setenv("TRADING_MODE", "PAPER")
         monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
@@ -112,16 +112,49 @@ def test_l3_migration_is_local_only_idempotent_and_sets_32_dry_run_slots(
             )
             result = prepare_admission_cursor(
                 cur, symbol="BTCUSDC", interval="1m", strategy="TREND",
-                side="BUY", candle_open_time=at, requested_notional=Decimal("8"),
+                side="BUY", candle_open_time=at, requested_notional=Decimal("9"),
                 provenance={"regime_gate_event_id": gate_id},
+                entry_price=Decimal("79244.2"), instrument_step=Decimal("0.00000001"),
+                instrument_min_qty=Decimal("0.0001"), instrument_min_notional=Decimal("0"),
             )
             assert result.accepted and result.cohort == "L3_REGIME_WOULD_ALLOW"
             retry = prepare_admission_cursor(
                 cur, symbol="BTCUSDC", interval="1m", strategy="TREND",
-                side="BUY", candle_open_time=at, requested_notional=Decimal("8"),
+                side="BUY", candle_open_time=at, requested_notional=Decimal("9"),
                 provenance={"regime_gate_event_id": gate_id},
+                entry_price=Decimal("79244.2"), instrument_step=Decimal("0.00000001"),
+                instrument_min_qty=Decimal("0.0001"), instrument_min_notional=Decimal("0"),
             )
             assert retry.accepted and retry.admission_id == result.admission_id
+            rejected_gate_id = None
+            for _ in range(100):
+                cur.execute(
+                    "INSERT INTO regime_gate_events(regime,mode,would_block,why,meta) "
+                    "VALUES('TREND_UP','DRY_RUN',false,'POLICY_ALLOW','{}') RETURNING id"
+                )
+                candidate = int(cur.fetchone()[0])
+                identity = canonical_opportunity_identity(
+                    gate_event_id=candidate, symbol="BTCUSDC", interval="1m",
+                    strategy="TREND", side="BUY", candle_open_time=at,
+                )
+                if sampling_selected(identity, "L3_REGIME_WOULD_ALLOW"):
+                    rejected_gate_id = candidate
+                    break
+            assert rejected_gate_id is not None
+            rejected = prepare_admission_cursor(
+                cur, symbol="BTCUSDC", interval="1m", strategy="TREND",
+                side="BUY", candle_open_time=at, requested_notional=Decimal("9"),
+                provenance={"regime_gate_event_id": rejected_gate_id},
+                entry_price=Decimal("100000"), instrument_step=Decimal("0.00000001"),
+                instrument_min_qty=Decimal("0.0001"), instrument_min_notional=Decimal("0"),
+            )
+            assert not rejected.accepted and rejected.status == "MIN_NOTIONAL_NOT_MET"
+            cur.execute(
+                """SELECT status,entry_notional,effective_min_notional,position_id
+                     FROM long_horizon_l3_admission_v1 WHERE admission_id=%s""",
+                (rejected.admission_id,),
+            )
+            assert cur.fetchone() == ("MIN_NOTIONAL_NOT_MET", Decimal("9"), Decimal("10.0000"), None)
         conn.rollback()
     finally:
         conn.close()
@@ -186,11 +219,13 @@ def test_l3_capacity_pause_below_frozen_minimum_equity(
                     break
             assert gate_id is not None
             cur.execute("INSERT INTO paper_managed_equity_observation_v1 VALUES"
-                        "('local-paper','CANONICAL',519.999999999999,%s)", (at,))
+                        "('local-paper','CANONICAL',584.999999999999,%s)", (at,))
             result = prepare_admission_cursor(
                 cur, symbol="BTCUSDC", interval="1m", strategy="TREND", side="BUY",
-                candle_open_time=at, requested_notional=Decimal("8"),
+                candle_open_time=at, requested_notional=Decimal("9"),
                 provenance={"regime_gate_event_id": gate_id},
+                entry_price=Decimal("79244.2"), instrument_step=Decimal("0.00000001"),
+                instrument_min_qty=Decimal("0.0001"), instrument_min_notional=Decimal("0"),
             )
             assert not result.accepted and result.status == "L3_CAPACITY_PAUSE"
         conn.rollback()

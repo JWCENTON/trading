@@ -118,12 +118,12 @@ Git SHA alone is insufficient: relevant rollouts require Git, contract, direct s
 
 Long Horizon L3 remains pre-rollout. Commit `7fc517b...` is not approved for
 deployment in its original 100% ALLOW / 10% BLOCK configuration. The bounded
-power/capacity correction uses 8 USDC only for LOCAL PAPER L3, deterministic
+power/capacity correction uses 9 USDC only for LOCAL PAPER L3, deterministic
 salted sampling of `13.194281540%` ALLOW and `7.920637611%` BLOCK, and a
-capacity pause below `520 USDC` managed equity. Target `+3%` realizable net,
+capacity pause below `585 USDC` managed equity. Target `+3%` realizable net,
 exit/risk semantics, sleeves, portfolio heat and same-thesis limit are
 unchanged. See
-[LONG_HORIZON_L3_POWER_CALIBRATED_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_SAMPLING_V1.md).
+[LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md).
 No migration, slot change or runtime rollout is authorized until the
 corrective commit receives explicit Product Owner reapproval.
 
@@ -1011,7 +1011,7 @@ Do not add a new engine, brain, strategy family, ML classifier, portfolio framew
 Fixed 20 USDC sizing remains appropriate during general causal alpha and
 admission research because it isolates decision quality. The only documented
 exception is the not-yet-deployed LOCAL PAPER L3 power/capacity contract at
-8 USDC; it reports results per 1 USDC allocated for comparability. Read-only
+9 USDC; it reports results per 1 USDC allocated for comparability. Read-only
 `RISK_NORMALIZATION_RESEARCH` may nevertheless measure volatility-normalized
 risk, risk contribution, correlation concentration, and MAE/exposure
 normalization without changing sizing. This is distinct from

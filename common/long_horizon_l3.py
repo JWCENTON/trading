@@ -28,7 +28,7 @@ PRIMARY_SLEEVE_RATE = Decimal("0.40")
 SECONDARY_SLEEVE_RATE = Decimal("0.20")
 GLOBAL_HEAT_RATE = Decimal("0.60")
 MIN_FREE_CASH_RATE = Decimal("0.20")
-EXPECTED_NOTIONAL = Decimal("8")
+EXPECTED_NOTIONAL = Decimal("9")
 SAMPLING_VERSION = "L3_POWER_CALIBRATED_SALTED_SHA256_THRESHOLD_V1"
 SAMPLING_SALT = "0487462154f625b36982d5437a9d039ff8ceb5db5e2835afc0d47e6908a16057"
 ALLOW_SAMPLING_PROBABILITY = Decimal("0.13194281540")
@@ -46,7 +46,7 @@ ALLOW_EXPECTED_CENSORED = (41, 232)
 BLOCK_EXPECTED_CENSORED = (155, 666)
 BLOCK_EXPECTED_OCCUPANCY = Decimal("12.278202639821414")
 # Capacity is discrete: 12.2782 expected concurrent positions require 13 slots.
-MINIMUM_EQUITY_FOR_BLOCK_CAPACITY = Decimal("520")
+MINIMUM_EQUITY_FOR_BLOCK_CAPACITY = Decimal("585")
 SAME_THESIS_VERSION = "P4_15M_SYMBOL_SIDE_REGIME_V1"
 ALLOWED_MODES = {"TREATMENT"}
 
@@ -132,7 +132,7 @@ def quantity_for_l3_notional(*, price: Decimal, step: Decimal, min_qty: Decimal,
         raise ValueError("L3_INSTRUMENT_METADATA_REQUIRED")
     qty = (EXPECTED_NOTIONAL / px / quantum).to_integral_value(rounding=ROUND_DOWN) * quantum
     if qty < Decimal(str(min_qty)) or qty * px < Decimal(str(min_notional)):
-        raise ValueError("L3_8_USDC_BELOW_INSTRUMENT_MINIMUM")
+        raise ValueError("MIN_NOTIONAL_NOT_MET")
     return qty
 
 
@@ -192,7 +192,10 @@ def _same_thesis(symbol: str, side: str, regime: str, candle_open_time) -> str:
 
 def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
                              side: str, candle_open_time, requested_notional: Decimal,
-                             provenance: dict | None) -> AdmissionResult:
+                             provenance: dict | None, entry_price: Decimal | None = None,
+                             instrument_step: Decimal | None = None,
+                             instrument_min_qty: Decimal | None = None,
+                             instrument_min_notional: Decimal | None = None) -> AdmissionResult:
     """Qualify an L3 entry inside the canonical atomic-entry transaction."""
     if not active():
         return AdmissionResult(True, "L3_INACTIVE")
@@ -231,7 +234,47 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     )
     existing = cur.fetchone()
     if existing:
-        return AdmissionResult(str(existing[1]) == "ACCEPTED", "L3_IDEMPOTENT", int(existing[0]), str(existing[2]))
+        accepted = str(existing[1]) == "ACCEPTED"
+        return AdmissionResult(
+            accepted, "L3_IDEMPOTENT" if accepted else str(existing[1]),
+            int(existing[0]), str(existing[2]),
+        )
+    requested = Decimal(str(requested_notional))
+    if requested != EXPECTED_NOTIONAL:
+        return AdmissionResult(False, "L3_NOTIONAL_CONTRACT_VIOLATION")
+    if any(value is None for value in (
+        entry_price, instrument_step, instrument_min_qty, instrument_min_notional,
+    )):
+        return AdmissionResult(False, "L3_INSTRUMENT_METADATA_REQUIRED")
+    px = Decimal(str(entry_price))
+    min_qty = Decimal(str(instrument_min_qty))
+    min_notional = Decimal(str(instrument_min_notional))
+    effective_min_notional = max(min_notional, min_qty * px)
+    try:
+        quantity_for_l3_notional(
+            price=px, step=Decimal(str(instrument_step)), min_qty=min_qty,
+            min_notional=min_notional,
+        )
+    except ValueError as exc:
+        status = str(exc)
+        if status != "MIN_NOTIONAL_NOT_MET":
+            return AdmissionResult(False, status)
+        cur.execute(
+            """INSERT INTO long_horizon_l3_admission_v1(
+                 gate_event_id,cohort,sampling_identity,sampling_digest,same_thesis_identity,
+                 symbol,interval,strategy,side,entry_candle_open_time,entry_notional,
+                 entry_price,instrument_min_qty,instrument_min_notional,
+                 effective_min_notional,status)
+                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 RETURNING admission_id""",
+            (gate_id, cohort, identity, format(digest, "064x"), same_thesis,
+             symbol.upper(), interval.lower(), strategy.upper(), side.upper(),
+             candle_open_time, requested, px, min_qty, min_notional,
+             effective_min_notional, "MIN_NOTIONAL_NOT_MET"),
+        )
+        return AdmissionResult(
+            False, "MIN_NOTIONAL_NOT_MET", int(cur.fetchone()[0]), cohort,
+        )
     cur.execute(
         """SELECT 1 FROM long_horizon_l3_admission_v1 a JOIN positions p ON p.id=a.position_id
              WHERE a.same_thesis_identity=%s AND a.status='ACCEPTED' AND p.status='OPEN' LIMIT 1""",
@@ -262,9 +305,6 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
              WHERE p.status='OPEN' AND f.environment='PAPER' AND f.deployment_id='local-paper'"""
     )
     global_used = Decimal(str(cur.fetchone()[0]))
-    requested = Decimal(str(requested_notional))
-    if requested <= 0 or abs(requested - EXPECTED_NOTIONAL) > Decimal("0.75"):
-        return AdmissionResult(False, "L3_NOTIONAL_CONTRACT_VIOLATION")
     if sleeve_used + requested > equity * sleeve_rate:
         return AdmissionResult(False, "L3_SLEEVE_SATURATED")
     if global_used + requested > equity * GLOBAL_HEAT_RATE or equity - global_used - requested < equity * MIN_FREE_CASH_RATE:
@@ -272,10 +312,13 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     cur.execute(
         """INSERT INTO long_horizon_l3_admission_v1(
              gate_event_id,cohort,sampling_identity,sampling_digest,same_thesis_identity,
-             symbol,interval,strategy,side,entry_candle_open_time,entry_notional,status)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACCEPTED') RETURNING admission_id""",
+             symbol,interval,strategy,side,entry_candle_open_time,entry_notional,
+             entry_price,instrument_min_qty,instrument_min_notional,effective_min_notional,status)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACCEPTED')
+             RETURNING admission_id""",
         (gate_id, cohort, identity, format(digest, "064x"), same_thesis, symbol.upper(), interval.lower(),
-         strategy.upper(), side.upper(), candle_open_time, requested),
+         strategy.upper(), side.upper(), candle_open_time, requested, px, min_qty,
+         min_notional, effective_min_notional),
     )
     return AdmissionResult(True, "L3_ACCEPTED", int(cur.fetchone()[0]), cohort)
 

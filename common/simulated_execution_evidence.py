@@ -1929,6 +1929,7 @@ def record_forward_paper_entry_atomic(
             with conn:
                 with conn.cursor() as cur:
                     from common.long_horizon_l3 import (
+                        EXPECTED_NOTIONAL as l3_entry_notional,
                         active as l3_active,
                         prepare_admission_cursor,
                         quantity_for_l3_notional,
@@ -1940,26 +1941,39 @@ def record_forward_paper_entry_atomic(
                                 False, "L3_INSTRUMENT_METADATA_REQUIRED", None, None,
                             ))
                         step, min_qty, min_notional, _, _ = instrument
-                        try:
-                            quantity = quantity_for_l3_notional(
-                                price=Decimal(str(price)), step=step, min_qty=min_qty,
-                                min_notional=min_notional,
-                            )
-                        except ValueError as exc:
-                            raise _PaperEntryAtomicBlocked(PaperEntryAtomicResult(
-                                False, str(exc), None, None,
-                            )) from exc
+                    else:
+                        step = min_qty = min_notional = None
                     l3_admission = prepare_admission_cursor(
                         cur, symbol=str(symbol), interval=str(interval),
                         strategy=str(strategy), side=str(side),
                         candle_open_time=candle_open_time,
-                        requested_notional=(Decimal(str(price)) * Decimal(str(quantity))),
+                        requested_notional=(
+                            l3_entry_notional if l3_active()
+                            else Decimal(str(price)) * Decimal(str(quantity))
+                        ),
                         provenance=regime_source_provenance,
+                        entry_price=Decimal(str(price)) if l3_active() else None,
+                        instrument_step=step,
+                        instrument_min_qty=min_qty,
+                        instrument_min_notional=min_notional,
                     )
                     if not l3_admission.accepted:
+                        if l3_admission.status == "MIN_NOTIONAL_NOT_MET":
+                            # This is an immutable sampled-opportunity outcome,
+                            # not a partial entry. Exit the transaction normally
+                            # so its diagnostic admission row is committed while
+                            # no order, fill, position, or L3 outcome is created.
+                            return PaperEntryAtomicResult(
+                                False, "MIN_NOTIONAL_NOT_MET", None, None,
+                            )
                         raise _PaperEntryAtomicBlocked(PaperEntryAtomicResult(
                             False, l3_admission.status, None, None,
                         ))
+                    if l3_active():
+                        quantity = quantity_for_l3_notional(
+                            price=Decimal(str(price)), step=step, min_qty=min_qty,
+                            min_notional=min_notional,
+                        )
                     written = create_simulated_order_cursor(
                         cur,
                         symbol=str(symbol), interval=str(interval),
