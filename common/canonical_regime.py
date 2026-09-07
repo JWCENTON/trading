@@ -138,6 +138,14 @@ def frozen_regime_provenance(evaluation) -> dict[str, Any]:
         "regime_source_ts",
         "regime_source_created_at",
         "regime_source_confidence",
+        "regime_gate_event_id",
+        "regime_gate_regime",
+        "regime_gate_mode",
+        "regime_gate_would_block",
+        "regime_gate_why",
+        "regime_gate_contract_version",
+        "regime_gate_policy_version",
+        "regime_gate_policy_fingerprint",
     )
     values = {key: evaluation.context.get(key) for key in keys}
     for key, value in tuple(values.items()):

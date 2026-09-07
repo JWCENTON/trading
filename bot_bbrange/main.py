@@ -67,6 +67,11 @@ from common.exit_guards.economic_floor_v2 import (
     economic_floor_v2_evidence_collection_active,
     reconcile_economic_floor_v2_closures,
 )
+from common.long_horizon_l3 import (
+    TARGET_EXIT_REASON as L3_TARGET_EXIT_REASON,
+    active as long_horizon_l3_active,
+    evaluate_target_owner_cycle as evaluate_l3_target_owner_cycle,
+)
 from common.position_path import load_position_path_snapshot
 from common.exit_reason_context import build_exit_reason_context
 from common.bbrange_paper_treatment import (
@@ -2973,6 +2978,30 @@ def run_strategy(row, decision_sink: DecisionSink | None = None):
 LAST_PROCESSED_OPEN_TIME = None
 
 
+def run_long_horizon_l3_owner_cycle():
+    if not long_horizon_l3_active():
+        return
+    pos = get_open_position()
+    if not pos:
+        return
+    pos_id, _pos_side, pos_qty, _entry_price, _entry_time = pos
+    decision = evaluate_l3_target_owner_cycle(
+        trading_mode=cfg.trading_mode, symbol=SYMBOL, interval=INTERVAL,
+        strategy=STRATEGY_NAME, connection_factory=get_db_conn,
+    )
+    if not decision.exit_requested:
+        return
+    res = execute_and_record(
+        side="SELL", price=float(decision.mark_price), qty_btc=float(pos_qty),
+        reason=L3_TARGET_EXIT_REASON, candle_open_time=decision.observed_at,
+        is_exit=True, cfg_used=cfg, allow_live_orders=False,
+        allow_meta={"authority": "LOCAL_PAPER_L3"}, rsi_14=None, ema_21=None,
+    )
+    if res["ledger_ok"] and "position_close_succeeded" not in res:
+        close_position(exit_price=float(decision.mark_price), reason=L3_TARGET_EXIT_REASON,
+                       candle_open_time=decision.observed_at)
+
+
 def run_economic_floor_v2_owner_cycle():
     """Evaluate only position-level V2 protection; never strategy logic."""
     if not economic_floor_v2_evidence_collection_active(cfg.trading_mode):
@@ -3085,6 +3114,7 @@ def main_loop():
                     )
                     logging.info("BBRANGE: no new candle yet (%s) -> skip strategy.", str(open_time))
 
+            run_long_horizon_l3_owner_cycle()
             run_economic_floor_v2_owner_cycle()
 
         except Exception as e:

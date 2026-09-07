@@ -950,6 +950,16 @@ def create_simulated_order_cursor(
     if order_class == ADMINISTRATIVE_ORDER_CLASS and not namespace.is_namespace_v1:
         raise RuntimeError("SIMULATED_ORDER_NAMESPACE_MIGRATION_REQUIRED")
 
+    if order_class == FORWARD_ORDER_CLASS and is_exit:
+        from common.long_horizon_l3 import guard_exit_cursor
+        exit_allowed, exit_status = guard_exit_cursor(
+            cur, symbol=str(symbol), interval=str(interval), strategy=str(strategy),
+            reason=str(reason), candle_open_time=candle_open_time,
+            price=Decimal(str(price)),
+        )
+        if not exit_allowed:
+            return SimulatedOrderWriteBlocked(exit_status)
+
     forward_decision_id = None
     forward_contract_version = None
     if (
@@ -1918,6 +1928,18 @@ def record_forward_paper_entry_atomic(
         try:
             with conn:
                 with conn.cursor() as cur:
+                    from common.long_horizon_l3 import prepare_admission_cursor
+                    l3_admission = prepare_admission_cursor(
+                        cur, symbol=str(symbol), interval=str(interval),
+                        strategy=str(strategy), side=str(side),
+                        candle_open_time=candle_open_time,
+                        requested_notional=(Decimal(str(price)) * Decimal(str(quantity))),
+                        provenance=regime_source_provenance,
+                    )
+                    if not l3_admission.accepted:
+                        raise _PaperEntryAtomicBlocked(PaperEntryAtomicResult(
+                            False, l3_admission.status, None, None,
+                        ))
                     written = create_simulated_order_cursor(
                         cur,
                         symbol=str(symbol), interval=str(interval),
@@ -1974,6 +1996,14 @@ def record_forward_paper_entry_atomic(
                     raise _PaperEntryAtomicBlocked(blocked)
                 if failure_injector is not None:
                     failure_injector("BEFORE_ENTRY_COMMIT")
+                if l3_admission.admission_id is not None:
+                    from common.long_horizon_l3 import finalize_admission_cursor
+                    with conn.cursor() as cur:
+                        finalize_admission_cursor(
+                            cur, admission_id=l3_admission.admission_id,
+                            simulated_order_id=int(result.simulated_order_id),
+                            position_id=int(result.position_id),
+                        )
                 return result
         except _PaperEntryAtomicBlocked as exc:
             return exc.result
