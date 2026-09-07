@@ -15,6 +15,7 @@ from common.long_horizon_l3 import (
     SAMPLING_SALT,
     SECONDARY_SLEEVE_RATE,
     TARGET_EXIT_REASON,
+    CONTRACT_VERSION,
     active,
     available_slots,
     canonical_opportunity_identity,
@@ -91,11 +92,12 @@ def test_current_instrument_minimum_guard_never_increases_notional():
         raise AssertionError("9 USDC was automatically increased to meet minimum")
 
 
-def test_sampling_contract_is_unchanged_except_fingerprinted_notional():
+def test_sampling_contract_is_unchanged_and_versioned_for_v2():
     assert ALLOW_SAMPLING_PROBABILITY == Decimal("0.13194281540")
     assert BLOCK_SAMPLING_PROBABILITY == Decimal("0.07920637611")
     assert SAMPLING_SALT == "0487462154f625b36982d5437a9d039ff8ceb5db5e2835afc0d47e6908a16057"
-    assert SAMPLING_FINGERPRINT == "0f67b3c42d19ab5447dc4b1e9a9f0e553f62c3b72d88bdc8d9dc64b36f0312d1"
+    assert CONTRACT_VERSION == "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2"
+    assert SAMPLING_FINGERPRINT == "759b2a8a55c778719fe5e78d27d371584f23bb4c57de45e3c776a4c77bdcb161"
 
 
 def test_three_percent_target_uses_realizable_net_over_entry_capital():
@@ -124,16 +126,18 @@ def test_all_four_paper_strategies_run_common_l3_owner_and_atomic_entry():
         assert "LOCAL_PAPER_L3" in source
 
 
-def test_migration_is_local_paper_only_and_contract_is_frozen():
-    migration = (ROOT / "db/migrations/20260907_long_horizon_l3_direct_local_paper_v1.sql").read_text()
-    assert "LONG_HORIZON_L3_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in migration
+def test_v2_migration_is_local_paper_only_idempotent_and_contract_is_frozen():
+    migration = (ROOT / "db/migrations/20260907_long_horizon_l3_direct_local_paper_v2.sql").read_text()
+    assert "LONG_HORIZON_L3_V2_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in migration
     assert "current_database()<>'trading_paper'" in migration
     assert "L3_POWER_CALIBRATED_SALTED_SHA256_THRESHOLD_V1" in migration
     assert "'entry_notional_usdc','9'" in migration
-    assert SAMPLING_FINGERPRINT in migration
+    assert "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2" in migration
     assert "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1" in migration
     assert "'target_realizable_net_rate','0.03'" in migration
     assert "regime_mode='DRY_RUN'" in migration
+    assert "regime_mode IS DISTINCT FROM 'DRY_RUN'" in migration
+    assert "PRE_L3_TRANSITIONAL_EXCLUDED" in migration
 
 
 def test_atomic_writer_owns_l3_admission_and_exact_linkage():

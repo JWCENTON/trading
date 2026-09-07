@@ -134,7 +134,9 @@ is recorded yet.
 
 ## Long Horizon L3 pre-rollout correction
 
-`LONG_HORIZON_L3_ROLLOUT=NOT_APPROVED_NOT_DEPLOYED`
+`LONG_HORIZON_L3_V1_CONTRACT=TERMINATED`
+
+`LONG_HORIZON_L3_V2_ROLLOUT=CAPACITY_WAIT_NOT_DEPLOYED`
 
 The original `7fc517b...` 100% ALLOW / 10% BLOCK sampling must not be
 activated. The accepted capacity/power correction freezes LOCAL PAPER L3 at
@@ -142,7 +144,13 @@ activated. The accepted capacity/power correction freezes LOCAL PAPER L3 at
 14-day enrollment target. Current LOCAL PAPER, LOCAL LIVE and VPS runtime are
 unchanged. The complete immutable pre-rollout contract is
 [LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md).
-Rollout requires separate reapproval of the corrective commit.
+The premature V1 migration was rolled back without rebuilding runtime. Five
+preserved `POLICY_WOULD_BLOCK` PAPER positions remain open and are classified
+`PRE_L3_TRANSITIONAL_EXCLUDED`; their `100.002652180 USDC` occupancy leaves
+only three free BLOCK-sleeve slots. V2 requires 14, so activation is forbidden
+until they close naturally and capacity is reverified. The corrected V2
+contract is documented in
+[LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2.md](LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2.md).
 
 ## Public communication
 

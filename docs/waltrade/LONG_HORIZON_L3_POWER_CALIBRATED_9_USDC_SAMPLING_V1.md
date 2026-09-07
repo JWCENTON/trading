@@ -1,11 +1,14 @@
 # Long Horizon L3 power-calibrated 9 USDC sampling V1
 
-STATUS=CORRECTED_PRE_ROLLOUT_AWAITING_PRODUCT_OWNER_REAPPROVAL
+STATUS=TERMINATED_AFTER_PREMATURE_MIGRATION_ROLLBACK
 
 This contract corrects only the enrollment capacity and sampling surface of
 `LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V1`. Commit `7fc517bce531314f9123452bc4f49de0da5e46d3`
-must not be rolled out in its original configuration. No migration or runtime
-rollout has occurred.
+must not be rolled out in its original configuration. The V1 migration was
+prematurely applied, then rolled back with audit history preserved. L3 runtime
+was never rebuilt, recreated, or activated. V1 is immutable historical
+evidence and must never be reactivated; any future rollout uses the separate
+V2 contract.
 
 ## Scope and invariants
 
@@ -82,10 +85,10 @@ outcomes have identical absolute economics.
 
 ## Rollout gate
 
-`MIGRATION_APPLIED=NO`
+`MIGRATION_APPLIED_AND_ROLLED_BACK=YES`
 
 `RUNTIME_CHANGED=NO`
 
 `LOCAL_PAPER_CHANGED=NO`
 
-Activation requires explicit Product Owner reapproval of the corrective commit.
+V1 activation is permanently closed.

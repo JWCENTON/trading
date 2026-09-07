@@ -20,7 +20,7 @@ from common.exit_guards.economic_floor_v2 import (
 from common.simulated_execution_evidence import load_paper_realizable_net_evidence
 
 
-CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V1"
+CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2"
 L0_COMPARATOR_VERSION = "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1"
 TARGET_EXIT_REASON = "LONG_HORIZON_L3_REALIZABLE_NET_TARGET_V1"
 TARGET_NET_RATE = Decimal("0.03")
@@ -203,13 +203,23 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     if ctx is None:
         return AdmissionResult(False, "L3_EXACT_GATE_LINK_REQUIRED")
     cur.execute(
-        """SELECT id,regime,mode,would_block,why,meta FROM regime_gate_events
+        """SELECT start_cutoff,status FROM long_horizon_l3_contract_v1
+             WHERE contract_version=%s""", (CONTRACT_VERSION,),
+    )
+    contract = cur.fetchone()
+    if not contract or str(contract[1]) != "ACTIVE":
+        return AdmissionResult(False, "L3_V2_ACTIVE_CONTRACT_REQUIRED")
+    start_cutoff = contract[0]
+    cur.execute(
+        """SELECT id,regime,mode,would_block,why,meta,created_at FROM regime_gate_events
              WHERE id=%s FOR SHARE""", (ctx["gate_event_id"],),
     )
     gate = cur.fetchone()
     if gate is None:
         return AdmissionResult(False, "L3_GATE_EVENT_NOT_FOUND")
-    gate_id, regime, mode, would_block, why, meta = gate
+    gate_id, regime, mode, would_block, why, meta, gate_created_at = gate
+    if gate_created_at < start_cutoff:
+        return AdmissionResult(False, "PRE_L3_TRANSITIONAL_EXCLUDED")
     if str(mode).upper() != "DRY_RUN" or str(why) not in {"POLICY_ALLOW", "POLICY_WOULD_BLOCK"}:
         return AdmissionResult(False, "L3_GATE_NOT_QUALIFIED")
     identity = canonical_opportunity_identity(

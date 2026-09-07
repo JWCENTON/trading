@@ -116,7 +116,8 @@ Git SHA alone is insufficient: relevant rollouts require Git, contract, direct s
 
 ### Long Horizon L3 correction gate
 
-Long Horizon L3 remains pre-rollout. Commit `7fc517b...` is not approved for
+Long Horizon L3 V1 is terminated after evidence-preserving rollback and remains
+historical only. Commit `7fc517b...` is not approved for
 deployment in its original 100% ALLOW / 10% BLOCK configuration. The bounded
 power/capacity correction uses 9 USDC only for LOCAL PAPER L3, deterministic
 salted sampling of `13.194281540%` ALLOW and `7.920637611%` BLOCK, and a
@@ -124,8 +125,13 @@ capacity pause below `585 USDC` managed equity. Target `+3%` realizable net,
 exit/risk semantics, sleeves, portfolio heat and same-thesis limit are
 unchanged. See
 [LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md).
-No migration, slot change or runtime rollout is authorized until the
-corrective commit receives explicit Product Owner reapproval.
+The idempotency-corrected V2 has a new contract identity and exact pre-cutoff
+exclusion. It is not rollout-ready: five preserved transitional would-block
+positions remain open, consuming `100.002652180 USDC` and leaving only 3 of the
+required 14 BLOCK-sleeve slots. Activation may be reconsidered only after their
+natural closure and a fresh capacity check. See
+[LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2.md](LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2.md).
+No active DB migration, slot change, runtime rollout, or cutoff is authorized.
 
 `CURRENT_EXPECTED_VPS_LIVE_SLOT_COUNT=28`.
 `WHY_28_VS_32=EARLIER_STATUS_USED_FULL_PAPER_UNIVERSE_AS_LIVE_DENOMINATOR`.
