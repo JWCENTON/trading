@@ -1,16 +1,14 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-09-06
+LAST_UPDATED=2026-09-08
 
-VPS_PAPER_RUNTIME_REVISION_STATUS=NON_UNIFORM_NOT_ACCEPTED
-
-SUPERSEDED_VPS_PAPER_RUNTIME_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
+VPS_PAPER_ROLE=UNCHANGED_UNTREATED_L3_COMPARATOR
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
-CURRENT_PHASE=SYSTEM_CONFORMANCE_MR1_MR2_LOCAL_PAPER_ACCEPTED
+CURRENT_PHASE=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER
 
-CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR
+CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 
@@ -41,7 +39,7 @@ This document is current truth only. Git history retains prior states.
 | Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
 | LOCAL PAPER | HEALTHY; direct regime ENFORCE active 32/32; Economic Floor V2 exit authority OFF |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
-| VPS PAPER | Runtime revisions `NON_UNIFORM_NOT_ACCEPTED`; former `d60c451...` value is superseded by conformance audits |
+| VPS PAPER | Unchanged untreated comparator for the later independently authorized L3 comparison; no rollout in this LOCAL task |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
 | Read-only discovery conveyor | Experiments #3–#7 COMPLETE; no new treatment authority |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
@@ -76,9 +74,9 @@ remain authority-OFF and are not promoted to PASS.
 
 `LIVE_ENTRY_AUTHORITY=OFF_LOCAL_AND_VPS`
 
-`NEXT_IMPLEMENTATION_UNIT=VPS_PAPER_INDEPENDENT_PARITY_AND_DIRECT_ACCEPTANCE`
+`NEXT_IMPLEMENTATION_UNIT=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER`
 
-`NEXT_ACTION=VPS_PAPER_INDEPENDENT_PARITY_AND_DIRECT_ACCEPTANCE`
+`NEXT_ACTION=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER`
 
 `MINIMUM_RECOVERY_SEQUENCE=MR1_MINIMAL_RELEASE_TRUTH,MR2_CORE_ADMISSION_REPAIR,MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
 
@@ -132,11 +130,15 @@ count, fees, gross/net after costs, expectancy, cost cover, rejected capable
 entries, drawdown, capital utilization and CASH baseline. No economic verdict
 is recorded yet.
 
-## Long Horizon L3 pre-rollout correction
+## Long Horizon L3 V3 direct LOCAL PAPER experiment
 
 `LONG_HORIZON_L3_V1_CONTRACT=TERMINATED`
 
-`LONG_HORIZON_L3_V2_ROLLOUT=CAPACITY_WAIT_NOT_DEPLOYED`
+`LONG_HORIZON_L3_V2_ROLLOUT=SUPERSEDED_NOT_DEPLOYED`
+
+`LONG_HORIZON_L3_V3=CURRENT_PRIMARY_LOCAL_PAPER_EXPERIMENT`
+
+`EXIT_ONLY_REPAIR=COMPLETE_COMMIT_9b59e8b7bbf803b51cfef301f6556f45ffe51aa1`
 
 The original `7fc517b...` 100% ALLOW / 10% BLOCK sampling must not be
 activated. The accepted capacity/power correction freezes LOCAL PAPER L3 at
@@ -144,13 +146,21 @@ activated. The accepted capacity/power correction freezes LOCAL PAPER L3 at
 14-day enrollment target. Current LOCAL PAPER, LOCAL LIVE and VPS runtime are
 unchanged. The complete immutable pre-rollout contract is
 [LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md).
-The premature V1 migration was rolled back without rebuilding runtime. Five
-preserved `POLICY_WOULD_BLOCK` PAPER positions remain open and are classified
-`PRE_L3_TRANSITIONAL_EXCLUDED`; their `100.002652180 USDC` occupancy leaves
-only three free BLOCK-sleeve slots. V2 requires 14, so activation is forbidden
-until they close naturally and capacity is reverified. The corrected V2
-contract is documented in
-[LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2.md](LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2.md).
+The premature V1 migration remains terminated and V2 remains an immutable,
+never-deployed historical artifact. V3 removes only V2's invalid zero-open-
+position activation precondition. At one immutable activation cutoff it records
+the complete open-position inventory as `PRE_L3_EXCLUDED`. Those positions
+remain under normal canonical exit management, count toward actual global
+exposure, never enter either experimental sleeve, and their later exits never
+enter L3 results. Only a V3 assignment linked to a decision at or after the
+cutoff is eligible. Capacity and free-cash rejection remain operational
+outcomes which may extend enrollment; they do not prevent experiment start.
+
+Frozen semantics remain: `L3_NOTIONAL=9_USDC`, ALLOW sampling
+`13.194281540%`, BLOCK sampling `7.920637611%`, the existing immutable salt,
+`+3%` realizable-net target, paired L0 ledger, 40%/20% sleeves, 60% global
+heat, 20% minimum free cash, and preserved hard-risk/PANIC exits. No LIVE or
+VPS authority is granted.
 
 ## Public communication
 
@@ -396,7 +406,7 @@ Current experiment roadmap:
 - `#1 Ownership=COMPLETE`.
 - `#2 Economic Floor V1/V2 cadence family=COMPLETE_FOR_CADENCE_QUESTION`.
 - `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
-  `CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR`.
+  `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
 - `MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`.
 - `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`.
 - `#4 New Risk=UNSUPPORTED_CURRENT_HYPOTHESIS`.
@@ -740,11 +750,11 @@ control.
 ## NEXT
 
 - `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
-  `CURRENT_PRIMARY_RESEARCH=PAUSED_PENDING_SYSTEM_CONFORMANCE_REPAIR`.
+  `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
 - Perform no H12 checkpoint work during repair;
   `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
-- Resume no economic roadmap item until conformance exit gates and a separate
-  Product Owner decision permit it.
+- Run only the explicitly approved L3 V3 LOCAL PAPER treatment; no second
+  economic treatment is authorized.
 - `LIVE_ELIGIBILITY=NO`; LIVE remains last with explicit Product Owner approval.
 - Economic Floor V1/V2 is not qualified for VPS or LIVE; LOCAL PAPER V2 exit
   authority is OFF.

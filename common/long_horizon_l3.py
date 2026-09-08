@@ -20,7 +20,7 @@ from common.exit_guards.economic_floor_v2 import (
 from common.simulated_execution_evidence import load_paper_realizable_net_evidence
 
 
-CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2"
+CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3"
 L0_COMPARATOR_VERSION = "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1"
 TARGET_EXIT_REASON = "LONG_HORIZON_L3_REALIZABLE_NET_TARGET_V1"
 TARGET_NET_RATE = Decimal("0.03")
@@ -208,7 +208,7 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     )
     contract = cur.fetchone()
     if not contract or str(contract[1]) != "ACTIVE":
-        return AdmissionResult(False, "L3_V2_ACTIVE_CONTRACT_REQUIRED")
+        return AdmissionResult(False, "L3_V3_ACTIVE_CONTRACT_REQUIRED")
     start_cutoff = contract[0]
     cur.execute(
         """SELECT id,regime,mode,would_block,why,meta,created_at FROM regime_gate_events
@@ -219,7 +219,7 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
         return AdmissionResult(False, "L3_GATE_EVENT_NOT_FOUND")
     gate_id, regime, mode, would_block, why, meta, gate_created_at = gate
     if gate_created_at < start_cutoff:
-        return AdmissionResult(False, "PRE_L3_TRANSITIONAL_EXCLUDED")
+        return AdmissionResult(False, "PRE_L3_EXCLUDED")
     if str(mode).upper() != "DRY_RUN" or str(why) not in {"POLICY_ALLOW", "POLICY_WOULD_BLOCK"}:
         return AdmissionResult(False, "L3_GATE_NOT_QUALIFIED")
     identity = canonical_opportunity_identity(
@@ -240,7 +240,8 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
     cur.fetchone()
     cur.execute(
         """SELECT admission_id,status,cohort FROM long_horizon_l3_admission_v1
-             WHERE gate_event_id=%s""", (gate_id,),
+             WHERE gate_event_id=%s AND contract_version=%s""",
+        (gate_id, CONTRACT_VERSION),
     )
     existing = cur.fetchone()
     if existing:
@@ -271,13 +272,15 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
             return AdmissionResult(False, status)
         cur.execute(
             """INSERT INTO long_horizon_l3_admission_v1(
+                 contract_version,l0_comparator_version,
                  gate_event_id,cohort,sampling_identity,sampling_digest,same_thesis_identity,
                  symbol,interval,strategy,side,entry_candle_open_time,entry_notional,
                  entry_price,instrument_min_qty,instrument_min_notional,
                  effective_min_notional,status)
-                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                  RETURNING admission_id""",
-            (gate_id, cohort, identity, format(digest, "064x"), same_thesis,
+            (CONTRACT_VERSION, L0_COMPARATOR_VERSION,
+             gate_id, cohort, identity, format(digest, "064x"), same_thesis,
              symbol.upper(), interval.lower(), strategy.upper(), side.upper(),
              candle_open_time, requested, px, min_qty, min_notional,
              effective_min_notional, "MIN_NOTIONAL_NOT_MET"),
@@ -287,8 +290,9 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
         )
     cur.execute(
         """SELECT 1 FROM long_horizon_l3_admission_v1 a JOIN positions p ON p.id=a.position_id
-             WHERE a.same_thesis_identity=%s AND a.status='ACCEPTED' AND p.status='OPEN' LIMIT 1""",
-        (same_thesis,),
+             WHERE a.contract_version=%s AND a.same_thesis_identity=%s
+               AND a.status='ACCEPTED' AND p.status='OPEN' LIMIT 1""",
+        (CONTRACT_VERSION, same_thesis),
     )
     if cur.fetchone():
         return AdmissionResult(False, "L3_SAME_THESIS_ACTIVE")
@@ -305,8 +309,9 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
         return AdmissionResult(False, "L3_CAPACITY_PAUSE")
     cur.execute(
         """SELECT COALESCE(sum(a.entry_notional),0) FROM long_horizon_l3_admission_v1 a
-             JOIN positions p ON p.id=a.position_id WHERE a.status='ACCEPTED' AND p.status='OPEN' AND a.cohort=%s""",
-        (cohort,),
+             JOIN positions p ON p.id=a.position_id WHERE a.contract_version=%s
+             AND a.status='ACCEPTED' AND p.status='OPEN' AND a.cohort=%s""",
+        (CONTRACT_VERSION, cohort),
     )
     sleeve_used = Decimal(str(cur.fetchone()[0]))
     cur.execute(
@@ -321,12 +326,14 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
         return AdmissionResult(False, "L3_GLOBAL_CAPITAL_LIMIT")
     cur.execute(
         """INSERT INTO long_horizon_l3_admission_v1(
+             contract_version,l0_comparator_version,
              gate_event_id,cohort,sampling_identity,sampling_digest,same_thesis_identity,
              symbol,interval,strategy,side,entry_candle_open_time,entry_notional,
              entry_price,instrument_min_qty,instrument_min_notional,effective_min_notional,status)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACCEPTED')
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'ACCEPTED')
              RETURNING admission_id""",
-        (gate_id, cohort, identity, format(digest, "064x"), same_thesis, symbol.upper(), interval.lower(),
+        (CONTRACT_VERSION, L0_COMPARATOR_VERSION,
+         gate_id, cohort, identity, format(digest, "064x"), same_thesis, symbol.upper(), interval.lower(),
          strategy.upper(), side.upper(), candle_open_time, requested, px, min_qty,
          min_notional, effective_min_notional),
     )
@@ -336,12 +343,19 @@ def prepare_admission_cursor(cur, *, symbol: str, interval: str, strategy: str,
 def finalize_admission_cursor(cur, *, admission_id: int, simulated_order_id: int,
                               position_id: int) -> None:
     cur.execute(
-        """SELECT decision_id,entry_opportunity_snapshot_id FROM simulated_orders WHERE id=%s""",
-        (simulated_order_id,),
+        """SELECT s.decision_id,s.entry_opportunity_snapshot_id,s.created_at,
+                  a.contract_version,c.start_cutoff
+             FROM simulated_orders s
+             JOIN long_horizon_l3_admission_v1 a ON a.admission_id=%s
+             JOIN long_horizon_l3_contract_v1 c ON c.contract_version=a.contract_version
+            WHERE s.id=%s""",
+        (admission_id, simulated_order_id),
     )
     row = cur.fetchone()
     if not row or row[0] is None or row[1] is None:
         raise RuntimeError("L3_EXACT_DECISION_SNAPSHOT_LINK_REQUIRED")
+    if str(row[3]) != CONTRACT_VERSION or row[2] < row[4]:
+        raise RuntimeError("PRE_L3_DECISION_EXCLUDED")
     cur.execute(
         """UPDATE long_horizon_l3_admission_v1 SET decision_id=%s,snapshot_id=%s,
              simulated_order_id=%s,position_id=%s,linked_at=clock_timestamp()
@@ -364,9 +378,10 @@ def guard_exit_cursor(cur, *, symbol: str, interval: str, strategy: str,
     cur.execute(
         """SELECT a.admission_id,a.position_id,p.side FROM long_horizon_l3_admission_v1 a
              JOIN positions p ON p.id=a.position_id
-             WHERE a.status='ACCEPTED' AND p.status='OPEN' AND p.symbol=%s
+             WHERE a.contract_version=%s AND a.status='ACCEPTED'
+               AND p.status='OPEN' AND p.symbol=%s
                AND p.interval=%s AND p.strategy=%s ORDER BY a.admission_id DESC LIMIT 1""",
-        (symbol.upper(), interval.lower(), strategy.upper()),
+        (CONTRACT_VERSION, symbol.upper(), interval.lower(), strategy.upper()),
     )
     row = cur.fetchone()
     if not row:
@@ -405,9 +420,10 @@ def evaluate_target_owner_cycle(*, trading_mode: str, symbol: str, interval: str
                 cur.execute(
                     """SELECT a.admission_id,p.id FROM long_horizon_l3_admission_v1 a
                          JOIN positions p ON p.id=a.position_id WHERE a.status='ACCEPTED'
-                         AND p.status='OPEN' AND p.symbol=%s AND p.interval=%s AND p.strategy=%s
+                         AND a.contract_version=%s AND p.status='OPEN'
+                         AND p.symbol=%s AND p.interval=%s AND p.strategy=%s
                          ORDER BY a.admission_id DESC LIMIT 1 FOR UPDATE OF a""",
-                    (symbol.upper(), interval.lower(), strategy.upper()),
+                    (CONTRACT_VERSION, symbol.upper(), interval.lower(), strategy.upper()),
                 )
                 row = cur.fetchone()
                 if not row:

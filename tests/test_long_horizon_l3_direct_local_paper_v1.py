@@ -92,12 +92,12 @@ def test_current_instrument_minimum_guard_never_increases_notional():
         raise AssertionError("9 USDC was automatically increased to meet minimum")
 
 
-def test_sampling_contract_is_unchanged_and_versioned_for_v2():
+def test_sampling_contract_is_unchanged_and_versioned_for_v3():
     assert ALLOW_SAMPLING_PROBABILITY == Decimal("0.13194281540")
     assert BLOCK_SAMPLING_PROBABILITY == Decimal("0.07920637611")
     assert SAMPLING_SALT == "0487462154f625b36982d5437a9d039ff8ceb5db5e2835afc0d47e6908a16057"
-    assert CONTRACT_VERSION == "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2"
-    assert SAMPLING_FINGERPRINT == "759b2a8a55c778719fe5e78d27d371584f23bb4c57de45e3c776a4c77bdcb161"
+    assert CONTRACT_VERSION == "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3"
+    assert SAMPLING_FINGERPRINT == "118b9099d707df87cd531376cf2718e683cb67239e80a4232e0f65767007bbbc"
 
 
 def test_three_percent_target_uses_realizable_net_over_entry_capital():
@@ -126,18 +126,29 @@ def test_all_four_paper_strategies_run_common_l3_owner_and_atomic_entry():
         assert "LOCAL_PAPER_L3" in source
 
 
-def test_v2_migration_is_local_paper_only_idempotent_and_contract_is_frozen():
-    migration = (ROOT / "db/migrations/20260907_long_horizon_l3_direct_local_paper_v2.sql").read_text()
-    assert "LONG_HORIZON_L3_V2_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in migration
+def test_v3_migration_is_local_paper_only_idempotent_and_contract_is_frozen():
+    migration = (ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v3.sql").read_text()
+    assert "LONG_HORIZON_L3_V3_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in migration
     assert "current_database()<>'trading_paper'" in migration
     assert "L3_POWER_CALIBRATED_SALTED_SHA256_THRESHOLD_V1" in migration
     assert "'entry_notional_usdc','9'" in migration
-    assert "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2" in migration
+    assert "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3" in migration
     assert "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1" in migration
     assert "'target_realizable_net_rate','0.03'" in migration
     assert "regime_mode='DRY_RUN'" in migration
     assert "regime_mode IS DISTINCT FROM 'DRY_RUN'" in migration
-    assert "PRE_L3_TRANSITIONAL_EXCLUDED" in migration
+    assert "PRE_L3_EXCLUDED" in migration
+    assert "pre_cutoff_open_positions" in migration
+    assert "activation_requires_zero_open_positions',false" in migration
+
+
+def test_l3_assignment_and_paired_l0_use_separate_ledgers():
+    migration = (ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v3.sql").read_text()
+    source = (ROOT / "common/long_horizon_l3.py").read_text()
+    assert "long_horizon_l3_admission_v1" in source
+    assert "long_horizon_l3_l0_comparator_v1" in source
+    assert "contract_version,l0_comparator_version" in source
+    assert "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1" in migration
 
 
 def test_atomic_writer_owns_l3_admission_and_exact_linkage():
