@@ -17,6 +17,16 @@ def normalize_trading_mode(value) -> str:
     return mode
 
 
+def normalize_environment(value) -> str:
+    """Return the canonical persistence/runtime environment identity.
+
+    Execution evidence is historically stored in lower case while runtime
+    configuration uses upper case. Authority checks must compare canonical
+    identities rather than storage spelling.
+    """
+    return normalize_trading_mode(value)
+
+
 def trading_mode_from_env() -> str:
     return normalize_trading_mode(os.environ.get("TRADING_MODE"))
 

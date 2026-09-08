@@ -68,6 +68,7 @@ PAPER_OPEN_RISK_MARK_FRESHNESS = timedelta(minutes=20)
 class SimulatedOrderWriteBlocked:
     status: str
     existing_order_id: int | None = None
+    commit_evidence: bool = False
 
     def __bool__(self) -> bool:
         return False
@@ -100,6 +101,8 @@ class PaperRealizableNetEvidence:
     fee_contract_fingerprint: str | None = None
     exit_fee_rate: Decimal | None = None
     quantity: Decimal | None = None
+    entry_notional: Decimal | None = None
+    entry_fees: Decimal | None = None
     hypothetical_exit_notional: Decimal | None = None
     hypothetical_exit_fee: Decimal | None = None
     realizable_net_after_all_costs: Decimal | None = None
@@ -238,7 +241,8 @@ def load_paper_realizable_net_evidence(
         mark_price=mark, source_candle_id=str(source_candle_id),
         entry_fill_ids=tuple(int(value) for value in fill_ids),
         fee_contract_fingerprint=fingerprint, exit_fee_rate=rate_d,
-        quantity=qty_d, hypothetical_exit_notional=exit_notional,
+        quantity=qty_d, entry_notional=entry_notional_d,
+        entry_fees=entry_fees_d, hypothetical_exit_notional=exit_notional,
         hypothetical_exit_fee=exit_fee,
         realizable_net_after_all_costs=realizable,
         market_data_complete=True,
@@ -259,6 +263,11 @@ def simulated_order_write_status(value) -> str:
     if not value:
         return "DB_GUARD_DUPLICATE"
     return "INSERTED"
+
+
+def simulated_order_result_requires_commit(value) -> bool:
+    """Return true only for a blocked order that wrote immutable evidence."""
+    return isinstance(value, SimulatedOrderWriteBlocked) and value.commit_evidence
 
 
 @dataclass(frozen=True)
@@ -958,7 +967,10 @@ def create_simulated_order_cursor(
             price=Decimal(str(price)),
         )
         if not exit_allowed:
-            return SimulatedOrderWriteBlocked(exit_status)
+            return SimulatedOrderWriteBlocked(
+                exit_status,
+                commit_evidence=(exit_status == "L3_LEGACY_EXIT_SUPPRESSED"),
+            )
 
     forward_decision_id = None
     forward_contract_version = None

@@ -21,6 +21,7 @@ from common.simulated_execution_evidence import (
     paper_position_mutation_allowed_cursor,
     record_forward_paper_entry_atomic,
     record_simulated_fill_evidence,
+    simulated_order_result_requires_commit,
     simulated_order_write_status,
 )
 from common.permissions import can_trade
@@ -1306,7 +1307,7 @@ def insert_simulated_order(
             market_regime=market_regime,
             regime_source_provenance=regime_source_provenance,
         )
-        if inserted:
+        if inserted or simulated_order_result_requires_commit(inserted):
             conn.commit()
         else:
             conn.rollback()

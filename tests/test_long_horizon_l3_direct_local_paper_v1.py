@@ -19,6 +19,7 @@ from common.long_horizon_l3 import (
     active,
     available_slots,
     canonical_opportunity_identity,
+    classify_exit_authority,
     is_preserved_risk_exit,
     normalize_per_allocated_usdc,
     quantity_for_l3_notional,
@@ -92,12 +93,12 @@ def test_current_instrument_minimum_guard_never_increases_notional():
         raise AssertionError("9 USDC was automatically increased to meet minimum")
 
 
-def test_sampling_contract_is_unchanged_and_versioned_for_v3():
+def test_sampling_contract_is_unchanged_and_versioned_for_v4():
     assert ALLOW_SAMPLING_PROBABILITY == Decimal("0.13194281540")
     assert BLOCK_SAMPLING_PROBABILITY == Decimal("0.07920637611")
     assert SAMPLING_SALT == "0487462154f625b36982d5437a9d039ff8ceb5db5e2835afc0d47e6908a16057"
-    assert CONTRACT_VERSION == "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3"
-    assert SAMPLING_FINGERPRINT == "118b9099d707df87cd531376cf2718e683cb67239e80a4232e0f65767007bbbc"
+    assert CONTRACT_VERSION == "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V4"
+    assert SAMPLING_FINGERPRINT == "b17bf84f4e169743d1bb17c1f01f43d661cc7cc17663c802a0ee348b53b22268"
 
 
 def test_three_percent_target_uses_realizable_net_over_entry_capital():
@@ -117,6 +118,14 @@ def test_only_hard_risk_authorities_bypass_l3_exit_suppression():
     assert not is_preserved_risk_exit(TARGET_EXIT_REASON)
 
 
+def test_all_strategy_canonical_stop_spellings_are_typed_hard_risk():
+    for strategy in ("RSI", "TREND", "SUPERTREND", "BBRANGE"):
+        for spelling in ("STOP LOSS", "STOP_LOSS", "STOPLOSS"):
+            reason = f"{strategy} {spelling} LONG intrabar boundary"
+            assert classify_exit_authority(reason) == "HARD_RISK"
+            assert is_preserved_risk_exit(reason)
+
+
 def test_all_four_paper_strategies_run_common_l3_owner_and_atomic_entry():
     for relative in ("bot/main.py", "bot_trend/main.py", "bot_supertrend/main.py",
                      "bot_bbrange/main.py"):
@@ -126,29 +135,49 @@ def test_all_four_paper_strategies_run_common_l3_owner_and_atomic_entry():
         assert "LOCAL_PAPER_L3" in source
 
 
-def test_v3_migration_is_local_paper_only_idempotent_and_contract_is_frozen():
-    migration = (ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v3.sql").read_text()
-    assert "LONG_HORIZON_L3_V3_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in migration
+def test_v4_migration_is_local_paper_only_idempotent_and_contract_is_frozen():
+    migration = (ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v4.sql").read_text()
+    assert "LONG_HORIZON_L3_V4_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in migration
     assert "current_database()<>'trading_paper'" in migration
     assert "L3_POWER_CALIBRATED_SALTED_SHA256_THRESHOLD_V1" in migration
     assert "'entry_notional_usdc','9'" in migration
-    assert "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3" in migration
+    assert "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V4" in migration
     assert "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1" in migration
     assert "'target_realizable_net_rate','0.03'" in migration
     assert "regime_mode='DRY_RUN'" in migration
     assert "regime_mode IS DISTINCT FROM 'DRY_RUN'" in migration
-    assert "PRE_L3_EXCLUDED" in migration
-    assert "pre_cutoff_open_positions" in migration
+    assert "PRE_L3_V4_EXCLUDED" in migration
+    assert "pre_v4_excluded_positions" in migration
     assert "activation_requires_zero_open_positions',false" in migration
 
 
 def test_l3_assignment_and_paired_l0_use_separate_ledgers():
-    migration = (ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v3.sql").read_text()
+    migration = (ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v4.sql").read_text()
     source = (ROOT / "common/long_horizon_l3.py").read_text()
     assert "long_horizon_l3_admission_v1" in source
     assert "long_horizon_l3_l0_comparator_v1" in source
     assert "contract_version,l0_comparator_version" in source
     assert "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1" in migration
+
+
+def test_paired_l0_has_gross_fee_and_net_evidence_and_commits_when_suppressed():
+    source = (ROOT / "common/long_horizon_l3.py").read_text()
+    writer = (ROOT / "common/simulated_execution_evidence.py").read_text()
+    for field in (
+        "gross_pnl_at_l0_exit", "entry_fee_at_l0_exit", "exit_fee_at_l0_exit",
+        "realizable_net_at_l0_exit",
+    ):
+        assert field in source
+    assert 'commit_evidence=(exit_status == "L3_LEGACY_EXIT_SUPPRESSED")' in writer
+    for relative in ("bot/main.py", "bot_trend/main.py", "bot_supertrend/main.py", "bot_bbrange/main.py"):
+        strategy_source = (ROOT / relative).read_text()
+        assert "simulated_order_result_requires_commit(inserted)" in strategy_source
+
+
+def test_environment_identity_is_normalized_for_l3_entry_capital_lookup():
+    source = (ROOT / "common/long_horizon_l3.py").read_text()
+    assert "normalize_environment(trading_mode)" in source
+    assert "upper(btrim(environment))=%s" in source
 
 
 def test_atomic_writer_owns_l3_admission_and_exact_linkage():

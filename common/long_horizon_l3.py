@@ -18,9 +18,10 @@ from common.exit_guards.economic_floor_v2 import (
     load_latest_finalized_canonical_one_minute_mark,
 )
 from common.simulated_execution_evidence import load_paper_realizable_net_evidence
+from common.runtime import normalize_environment
 
 
-CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3"
+CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V4"
 L0_COMPARATOR_VERSION = "LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1"
 TARGET_EXIT_REASON = "LONG_HORIZON_L3_REALIZABLE_NET_TARGET_V1"
 TARGET_NET_RATE = Decimal("0.03")
@@ -366,9 +367,28 @@ def finalize_admission_cursor(cur, *, admission_id: int, simulated_order_id: int
         raise RuntimeError("L3_LINKAGE_CONFLICT")
 
 
+def classify_exit_authority(reason: str) -> str:
+    """Classify capital-protection exits independently of text separators."""
+    import re
+
+    normalized = "_".join(
+        part
+        for part in re.split(r"[^A-Z0-9]+", str(reason or "").upper())
+        if part
+    )
+    compact = normalized.replace("_", "")
+    if "STOP_LOSS" in normalized or "STOPLOSS" in compact:
+        return "HARD_RISK"
+    if any(
+        token in normalized
+        for token in ("PANIC", "MANUAL", "EMERGENCY", "INTEGRITY", "RISK_BUDGET")
+    ):
+        return "HARD_RISK"
+    return "LEGACY_EXIT"
+
+
 def is_preserved_risk_exit(reason: str) -> bool:
-    value = str(reason or "").upper()
-    return any(token in value for token in ("STOP_LOSS", "PANIC", "MANUAL", "EMERGENCY", "INTEGRITY", "RISK_BUDGET"))
+    return classify_exit_authority(reason) == "HARD_RISK"
 
 
 def guard_exit_cursor(cur, *, symbol: str, interval: str, strategy: str,
@@ -394,17 +414,32 @@ def guard_exit_cursor(cur, *, symbol: str, interval: str, strategy: str,
     )
     if not evidence.authoritative:
         return True, "L3_L0_COMPARATOR_INCOMPLETE_EXISTING_EXIT_PRESERVED"
+    if any(
+        value is None
+        for value in (
+            evidence.hypothetical_exit_notional,
+            evidence.entry_notional,
+            evidence.entry_fees,
+            evidence.hypothetical_exit_fee,
+            evidence.realizable_net_after_all_costs,
+            evidence.fee_contract_fingerprint,
+        )
+    ):
+        return True, "L3_L0_COMPARATOR_INCOMPLETE_EXISTING_EXIT_PRESERVED"
     cur.execute(
         """INSERT INTO long_horizon_l3_l0_comparator_v1(
              admission_id,position_id,first_exit_at,exit_reason,exit_price,
              source_candle_open_time,status,realizable_net_at_l0_exit,
-             realizable_net_per_allocated_usdc,fee_contract_fingerprint)
-             VALUES (%s,%s,%s,%s,%s,%s,'FIRST_CAUSAL_L0_EXIT',%s,%s,%s)
+             realizable_net_per_allocated_usdc,fee_contract_fingerprint,
+             gross_pnl_at_l0_exit,entry_fee_at_l0_exit,exit_fee_at_l0_exit)
+             VALUES (%s,%s,%s,%s,%s,%s,'FIRST_CAUSAL_L0_EXIT',%s,%s,%s,%s,%s,%s)
              ON CONFLICT(position_id) DO NOTHING""",
         (row[0], row[1], datetime.now(timezone.utc), str(reason), Decimal(str(price)),
          candle_open_time, evidence.realizable_net_after_all_costs,
          normalize_per_allocated_usdc(evidence.realizable_net_after_all_costs),
-         evidence.fee_contract_fingerprint),
+         evidence.fee_contract_fingerprint,
+         evidence.hypothetical_exit_notional - evidence.entry_notional,
+         evidence.entry_fees, evidence.hypothetical_exit_fee),
     )
     return False, "L3_LEGACY_EXIT_SUPPRESSED"
 
@@ -456,10 +491,13 @@ def evaluate_target_owner_cycle(*, trading_mode: str, symbol: str, interval: str
                 )
                 if not evidence.authoritative:
                     return TargetDecision(evidence.status, position_id)
+                canonical_environment = normalize_environment(trading_mode)
                 cur.execute(
                     """SELECT sum(fill_notional) FROM simulated_execution_fills_v1
-                         WHERE position_id=%s AND order_purpose='ENTRY' AND environment='PAPER'
-                         AND deployment_id='local-paper'""", (position_id,),
+                         WHERE position_id=%s AND order_purpose='ENTRY'
+                           AND upper(btrim(environment))=%s
+                           AND lower(btrim(deployment_id))='local-paper'""",
+                    (position_id, canonical_environment),
                 )
                 entry_capital = cur.fetchone()[0]
                 if entry_capital is None or Decimal(str(entry_capital)) <= 0:

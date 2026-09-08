@@ -5,6 +5,7 @@ from pathlib import Path
 import uuid
 
 import common.long_horizon_l3 as long_horizon_l3
+from common.exit_guards.economic_floor_v2 import CanonicalOneMinuteMark
 from common.long_horizon_l3 import (
     canonical_opportunity_identity,
     finalize_admission_cursor,
@@ -12,6 +13,7 @@ from common.long_horizon_l3 import (
     prepare_admission_cursor,
     sampling_selected,
 )
+from common.simulated_execution_evidence import PaperRealizableNetEvidence
 
 V2_CONTRACT_VERSION = "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V2"
 
@@ -23,12 +25,16 @@ V2_MIGRATION_PATH = ROOT / "db/migrations/20260907_long_horizon_l3_direct_local_
 V2_ROLLBACK_PATH = ROOT / "db/rollback/20260907_long_horizon_l3_direct_local_paper_v2_rollback.sql"
 V3_MIGRATION_PATH = ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v3.sql"
 V3_ROLLBACK_PATH = ROOT / "db/rollback/20260908_long_horizon_l3_direct_local_paper_v3_rollback.sql"
+V4_MIGRATION_PATH = ROOT / "db/migrations/20260908_long_horizon_l3_direct_local_paper_v4.sql"
+V4_ROLLBACK_PATH = ROOT / "db/rollback/20260908_long_horizon_l3_direct_local_paper_v4_rollback.sql"
 V1_MIGRATION = V1_MIGRATION_PATH.read_text()
 V1_ROLLBACK = V1_ROLLBACK_PATH.read_text()
 V2_MIGRATION = V2_MIGRATION_PATH.read_text()
 V2_ROLLBACK = V2_ROLLBACK_PATH.read_text()
 V3_MIGRATION = V3_MIGRATION_PATH.read_text()
 V3_ROLLBACK = V3_ROLLBACK_PATH.read_text()
+V4_MIGRATION = V4_MIGRATION_PATH.read_text()
+V4_ROLLBACK = V4_ROLLBACK_PATH.read_text()
 
 
 def _sha256(path: Path) -> str:
@@ -108,6 +114,14 @@ def _prepare_v1_history(conn) -> None:
             "UPDATE bot_control SET regime_enabled=true,regime_mode='ENFORCE' "
             "WHERE strategy IN ('RSI','TREND','SUPERTREND','BBRANGE')"
         )
+    conn.commit()
+
+
+def _prepare_v3_history(conn) -> None:
+    _prepare_v1_history(conn)
+    with conn.cursor() as cur:
+        _settings(cur, checksum=_sha256(V3_MIGRATION_PATH))
+        cur.execute(V3_MIGRATION)
     conn.commit()
 
 
@@ -431,6 +445,11 @@ def test_v3_cutoff_excludes_old_lifecycle_and_links_first_post_cutoff_assignment
         monkeypatch.setenv("TRADING_MODE", "PAPER")
         monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
         monkeypatch.setenv("LONG_HORIZON_L3_MODE", "TREATMENT")
+        monkeypatch.setattr(
+            long_horizon_l3,
+            "CONTRACT_VERSION",
+            "LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3",
+        )
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT start_cutoff FROM long_horizon_l3_contract_v1
@@ -521,5 +540,254 @@ def test_v3_cutoff_excludes_old_lifecycle_and_links_first_post_cutoff_assignment
             )
             assert cur.fetchone()[0] == 0
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_v4_first_second_apply_zero_change_and_invalidates_v3(
+    disposable_postgres_v16,
+):
+    database = "waltrade_baseline_test_l3_v4_idem_" + uuid.uuid4().hex[:10]
+    disposable_postgres_v16.create_database(database)
+    conn = disposable_postgres_v16.connect(database)
+    try:
+        _bootstrap(conn)
+        _prepare_v3_history(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO positions(id,status,symbol,interval,strategy,side,entry_time)
+                   VALUES(13551,'OPEN','BTCUSDC','1m','BBRANGE','LONG',%s)""",
+                (datetime(2026, 9, 8, 7, 0, tzinfo=timezone.utc),),
+            )
+            cur.execute(
+                """INSERT INTO regime_gate_events(regime,mode,would_block,why,meta)
+                   VALUES('TREND_DOWN','DRY_RUN',true,'POLICY_WOULD_BLOCK','{}')
+                   RETURNING id"""
+            )
+            gate_id = cur.fetchone()[0]
+            cur.execute(
+                """INSERT INTO long_horizon_l3_admission_v1(
+                   gate_event_id,cohort,sampling_identity,sampling_digest,
+                   same_thesis_identity,symbol,interval,strategy,side,
+                   entry_candle_open_time,entry_notional,entry_price,
+                   instrument_min_qty,instrument_min_notional,effective_min_notional,
+                   status,position_id,contract_version,l0_comparator_version)
+                   VALUES(%s,'L3_REGIME_WOULD_BLOCK_SAMPLE','v3-id',%s,'thesis',
+                   'BTCUSDC','1m','BBRANGE','BUY',%s,9,78000,0.0001,0,0,
+                   'ACCEPTED',13551,'LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3',
+                   'LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1')""",
+                (gate_id, "a" * 64, datetime(2026, 9, 8, 6, 54, tzinfo=timezone.utc)),
+            )
+        conn.commit()
+        with conn.cursor() as cur:
+            _settings(cur, checksum=_sha256(V4_MIGRATION_PATH))
+            cur.execute(V4_MIGRATION)
+        conn.commit()
+        after_first = _snapshot(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT status,contract_payload->>'invalidation_reason'
+                   FROM long_horizon_l3_contract_v1
+                   WHERE contract_version='LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V3'"""
+            )
+            assert cur.fetchone() == (
+                "INVALID",
+                "MISSING_L3_LEDGER_PLUS_HARD_RISK_SUPPRESSION_PLUS_MISSING_PAIRED_L0",
+            )
+            cur.execute(
+                """SELECT status,contract_payload->'pre_v4_excluded_positions'
+                   FROM long_horizon_l3_contract_v1
+                   WHERE contract_version='LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V4'"""
+            )
+            status, excluded = cur.fetchone()
+            assert status == "ACTIVE"
+            assert [row["position_id"] for row in excluded] == [13551]
+        with conn.cursor() as cur:
+            _settings(cur, checksum=_sha256(V4_MIGRATION_PATH))
+            cur.execute(V4_MIGRATION)
+        conn.commit()
+        assert _snapshot(conn) == after_first
+    finally:
+        conn.close()
+
+
+def test_v4_rejects_non_local_paper_without_writes(disposable_postgres_v16):
+    database = "waltrade_baseline_test_l3_v4_guard_" + uuid.uuid4().hex[:10]
+    disposable_postgres_v16.create_database(database)
+    conn = disposable_postgres_v16.connect(database)
+    try:
+        _bootstrap(conn)
+        _prepare_v3_history(conn)
+        before = _snapshot(conn)
+        for deployment in ("vps-paper", "local-live", "vps-live"):
+            try:
+                with conn.cursor() as cur:
+                    _settings(cur, deployment=deployment, checksum=_sha256(V4_MIGRATION_PATH))
+                    cur.execute(V4_MIGRATION)
+            except Exception as exc:
+                assert "LONG_HORIZON_L3_V4_LOCAL_PAPER_DEPLOYMENT_REQUIRED" in str(exc)
+                conn.rollback()
+            else:
+                raise AssertionError(f"{deployment} migration unexpectedly succeeded")
+            assert _snapshot(conn) == before
+    finally:
+        conn.close()
+
+
+def test_lowercase_paper_fill_creates_v4_mark_event(
+    disposable_postgres_v16, monkeypatch,
+):
+    database = "waltrade_baseline_test_l3_v4_env_" + uuid.uuid4().hex[:10]
+    disposable_postgres_v16.create_database(database)
+    conn = disposable_postgres_v16.connect(database)
+    try:
+        _bootstrap(conn)
+        _prepare_v3_history(conn)
+        with conn.cursor() as cur:
+            _settings(cur, checksum=_sha256(V4_MIGRATION_PATH))
+            cur.execute(V4_MIGRATION)
+            cur.execute("ALTER TABLE positions ADD COLUMN exit_order_id text")
+            cur.execute(
+                """INSERT INTO positions(id,status,symbol,interval,strategy,side,entry_time)
+                   VALUES(20001,'OPEN','BTCUSDC','1m','TREND','LONG',%s)""",
+                (datetime.now(timezone.utc) - timedelta(minutes=5),),
+            )
+            cur.execute(
+                """INSERT INTO regime_gate_events(regime,mode,would_block,why,meta)
+                   VALUES('TREND_UP','DRY_RUN',false,'POLICY_ALLOW','{}') RETURNING id"""
+            )
+            gate_id = cur.fetchone()[0]
+            cur.execute(
+                """INSERT INTO long_horizon_l3_admission_v1(
+                   gate_event_id,cohort,sampling_identity,sampling_digest,
+                   same_thesis_identity,symbol,interval,strategy,side,
+                   entry_candle_open_time,entry_notional,entry_price,
+                   instrument_min_qty,instrument_min_notional,effective_min_notional,
+                   status,position_id,contract_version,l0_comparator_version)
+                   VALUES(%s,'L3_REGIME_WOULD_ALLOW','v4-id',%s,'thesis-v4',
+                   'BTCUSDC','1m','TREND','BUY',%s,9,78000,0.0001,0,0,
+                   'ACCEPTED',20001,'LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V4',
+                   'LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1')""",
+                (gate_id, "b" * 64, datetime.now(timezone.utc)),
+            )
+            cur.execute(
+                "INSERT INTO simulated_execution_fills_v1 VALUES(20001,'ENTRY',9,'paper','local-paper')"
+            )
+        conn.commit()
+        now = datetime.now(timezone.utc)
+        monkeypatch.setenv("TRADING_MODE", "PAPER")
+        monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
+        monkeypatch.setenv("LONG_HORIZON_L3_MODE", "TREATMENT")
+        monkeypatch.setattr(
+            long_horizon_l3,
+            "load_latest_finalized_canonical_one_minute_mark",
+            lambda *_args, **_kwargs: CanonicalOneMinuteMark(
+                "AUTHORITATIVE", "BTCUSDC", now, candle_id=1,
+                close_time=now, price=Decimal("78100"), source_id="candle:1",
+            ),
+        )
+        monkeypatch.setattr(
+            long_horizon_l3,
+            "load_paper_realizable_net_evidence",
+            lambda *_args, **_kwargs: PaperRealizableNetEvidence(
+                status="AUTHORITATIVE", position_id=20001, symbol="BTCUSDC",
+                interval="1m", strategy="TREND", observed_at=now,
+                mark_price=Decimal("78100"), source_candle_id="candle:1",
+                realizable_net_after_all_costs=Decimal("0.01"),
+            ),
+        )
+        result = long_horizon_l3.evaluate_target_owner_cycle(
+            trading_mode="paper", symbol="BTCUSDC", interval="1m",
+            strategy="TREND", connection_factory=lambda: disposable_postgres_v16.connect(database),
+        )
+        assert result.status == "TARGET_NOT_REACHED"
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM long_horizon_l3_event_v1 WHERE position_id=20001")
+            assert cur.fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_v4_hard_risk_bypasses_suppression_and_paired_l0_is_idempotent(
+    disposable_postgres_v16, monkeypatch,
+):
+    database = "waltrade_baseline_test_l3_v4_l0_" + uuid.uuid4().hex[:10]
+    disposable_postgres_v16.create_database(database)
+    conn = disposable_postgres_v16.connect(database)
+    try:
+        _bootstrap(conn)
+        _prepare_v3_history(conn)
+        with conn.cursor() as cur:
+            _settings(cur, checksum=_sha256(V4_MIGRATION_PATH))
+            cur.execute(V4_MIGRATION)
+            cur.execute(
+                """INSERT INTO positions(id,status,symbol,interval,strategy,side,entry_time)
+                   VALUES(20002,'OPEN','SOLUSDC','1m','BBRANGE','LONG',%s)""",
+                (datetime.now(timezone.utc) - timedelta(minutes=10),),
+            )
+            cur.execute(
+                """INSERT INTO regime_gate_events(regime,mode,would_block,why,meta)
+                   VALUES('TREND_DOWN','DRY_RUN',true,'POLICY_WOULD_BLOCK','{}') RETURNING id"""
+            )
+            gate_id = cur.fetchone()[0]
+            cur.execute(
+                """INSERT INTO long_horizon_l3_admission_v1(
+                   gate_event_id,cohort,sampling_identity,sampling_digest,
+                   same_thesis_identity,symbol,interval,strategy,side,
+                   entry_candle_open_time,entry_notional,entry_price,
+                   instrument_min_qty,instrument_min_notional,effective_min_notional,
+                   status,position_id,contract_version,l0_comparator_version)
+                   VALUES(%s,'L3_REGIME_WOULD_BLOCK_SAMPLE','v4-l0',%s,'thesis-l0',
+                   'SOLUSDC','1m','BBRANGE','BUY',%s,9,100,0.001,0,0,
+                   'ACCEPTED',20002,'LONG_HORIZON_L3_DIRECT_LOCAL_PAPER_V4',
+                   'LONG_HORIZON_L3_FROZEN_PRE_L3_EXIT_L0_V1')""",
+                (gate_id, "c" * 64, datetime.now(timezone.utc)),
+            )
+        conn.commit()
+        monkeypatch.setenv("TRADING_MODE", "PAPER")
+        monkeypatch.setenv("DEPLOYMENT_ID", "local-paper")
+        monkeypatch.setenv("LONG_HORIZON_L3_MODE", "TREATMENT")
+        evidence = PaperRealizableNetEvidence(
+            status="AUTHORITATIVE", position_id=20002, symbol="SOLUSDC",
+            interval="1m", strategy="BBRANGE", observed_at=datetime.now(timezone.utc),
+            mark_price=Decimal("101"), source_candle_id="candle:2",
+            fee_contract_fingerprint="fee", hypothetical_exit_notional=Decimal("9.09"),
+            hypothetical_exit_fee=Decimal("0.031815"), entry_notional=Decimal("9"),
+            entry_fees=Decimal("0.0315"), realizable_net_after_all_costs=Decimal("0.026685"),
+        )
+        monkeypatch.setattr(
+            long_horizon_l3, "load_paper_realizable_net_evidence",
+            lambda *_args, **_kwargs: evidence,
+        )
+        with conn.cursor() as cur:
+            allowed, status = guard_exit_cursor(
+                cur, symbol="SOLUSDC", interval="1m", strategy="BBRANGE",
+                reason="BBRANGE STOP LOSS LONG", candle_open_time=datetime.now(timezone.utc),
+                price=Decimal("99"),
+            )
+            assert allowed and status == "L3_NOT_APPLICABLE_OR_PRESERVED"
+        conn.rollback()
+        for _ in range(2):
+            with conn.cursor() as cur:
+                allowed, status = guard_exit_cursor(
+                    cur, symbol="SOLUSDC", interval="1m", strategy="BBRANGE",
+                    reason="BBRANGE PROFIT LOCK", candle_open_time=datetime.now(timezone.utc),
+                    price=Decimal("101"),
+                )
+                assert not allowed and status == "L3_LEGACY_EXIT_SUPPRESSED"
+            conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT count(*),gross_pnl_at_l0_exit,entry_fee_at_l0_exit,
+                          exit_fee_at_l0_exit,realizable_net_at_l0_exit
+                   FROM long_horizon_l3_l0_comparator_v1
+                   WHERE position_id=20002
+                   GROUP BY gross_pnl_at_l0_exit,entry_fee_at_l0_exit,
+                            exit_fee_at_l0_exit,realizable_net_at_l0_exit"""
+            )
+            assert cur.fetchone() == (
+                1, Decimal("0.09"), Decimal("0.0315"),
+                Decimal("0.031815"), Decimal("0.026685"),
+            )
     finally:
         conn.close()
