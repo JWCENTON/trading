@@ -140,6 +140,29 @@ Frozen L3 semantics remain 9 USDC, ALLOW `13.194281540%`, BLOCK
 rejections are recorded operational outcomes and may lengthen enrollment; no
 top-up or forced close is authorized. LIVE remains frozen and VPS unchanged.
 
+The EXIT_ONLY repair commit above is promoted. L3 V3 commit
+`a1009160f0141c945d3d8e0f3006d616b230a3f8` is deployed on LOCAL PAPER at the
+same runtime revision with `L3_MODE=TREATMENT`. Migration first apply and
+second-apply idempotency passed; the immutable forward cutoff is
+`2026-09-08T06:53:28.596698Z`. The three positions open at activation
+(`13546`, `13547`, `13549`) were snapshotted as `PRE_L3_EXCLUDED` and later
+closed naturally through canonical exits. They are not L3 outcomes.
+Post-rollout acceptance recorded 32/32 fresh strategy heartbeats, healthy DB,
+and no LOCAL LIVE or VPS change.
+
+The current checkpoint has four accepted, open V3 positions: ALLOW `0`, BLOCK
+`4`, CLOSED `0`. Exact opportunity/decision/snapshot/order/position linkage,
+9 USDC notional, and frozen Fee V2 entry/exit-cost authority are present.
+Finalized canonical 1m `realizable_net_per_allocated_usdc` events are sufficient
+to derive first causal touches of 1%, 2%, and the active 3% target before the
+actual L3 close, once those events exist. The current event count is `0`, so no
+target-touch result is claimed. The current contract does not continue a
+shadow price path after the real 3% L3 close; consequently a 5% replay is not
+authoritatively available. Any later repair is limited to an evidence-only,
+fee-aware post-close 1m continuation tied to the immutable admission and
+paired-L0 identities; it must not change the active 3% exit or admission
+semantics.
+
 `CURRENT_EXPECTED_VPS_LIVE_SLOT_COUNT=28`.
 `WHY_28_VS_32=EARLIER_STATUS_USED_FULL_PAPER_UNIVERSE_AS_LIVE_DENOMINATOR`.
 This clarification changes no config contract, runtime contract, or safety
@@ -967,7 +990,8 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
    `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
 2. Execute no H12 checkpoint work during conformance repair;
    `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
-3. Run only the explicitly approved L3 V3 LOCAL PAPER treatment; no second
+3. Observe the frozen L3 V3 LOCAL PAPER treatment unchanged until at least 33
+   ALLOW and 53 BLOCK same-thesis episodes have mature outcomes; no second
    economic treatment is authorized.
 4. Keep `LIVE_ELIGIBILITY=NO`; LIVE is last and requires explicit Product Owner
    approval.
@@ -1023,8 +1047,8 @@ Do not add a new engine, brain, strategy family, ML classifier, portfolio framew
 
 Fixed 20 USDC sizing remains appropriate during general causal alpha and
 admission research because it isolates decision quality. The only documented
-exception is the not-yet-deployed LOCAL PAPER L3 power/capacity contract at
-9 USDC; it reports results per 1 USDC allocated for comparability. Read-only
+exception is the deployed LOCAL PAPER L3 V3 power/capacity contract at 9 USDC;
+it reports results per 1 USDC allocated for comparability. Read-only
 `RISK_NORMALIZATION_RESEARCH` may nevertheless measure volatility-normalized
 risk, risk contribution, correlation concentration, and MAE/exposure
 normalization without changing sizing. This is distinct from

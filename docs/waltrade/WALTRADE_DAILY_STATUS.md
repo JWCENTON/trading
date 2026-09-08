@@ -37,7 +37,7 @@ This document is current truth only. Git history retains prior states.
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
 | Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
-| LOCAL PAPER | HEALTHY; direct regime ENFORCE active 32/32; Economic Floor V2 exit authority OFF |
+| LOCAL PAPER | HEALTHY; L3 V3 TREATMENT active at runtime `a1009160`; 32/32 fresh; regime evidence is DRY_RUN/non-blocking for L3; Economic Floor V2 exit authority OFF |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
 | VPS PAPER | Unchanged untreated comparator for the later independently authorized L3 comparison; no rollout in this LOCAL task |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
@@ -74,9 +74,9 @@ remain authority-OFF and are not promoted to PASS.
 
 `LIVE_ENTRY_AUTHORITY=OFF_LOCAL_AND_VPS`
 
-`NEXT_IMPLEMENTATION_UNIT=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER`
+`NEXT_IMPLEMENTATION_UNIT=NONE_L3_V3_ALREADY_DEPLOYED`
 
-`NEXT_ACTION=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER`
+`NEXT_ACTION=OBSERVE_L3_V3_UNCHANGED_TO_33_ALLOW_AND_53_BLOCK_MATURE_OUTCOMES`
 
 `MINIMUM_RECOVERY_SEQUENCE=MR1_MINIMAL_RELEASE_TRUTH,MR2_CORE_ADMISSION_REPAIR,MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
 
@@ -117,7 +117,7 @@ entry-atomicity and infrastructure proofs retain their original status.
 
 `POLICY_COVERAGE=20/20`
 
-`LOCAL_PAPER_REGIME_ENFORCE_SLOTS=32/32`
+`MR2_PRE_L3_LOCAL_PAPER_REGIME_ENFORCE_SLOTS=32/32`
 
 `FAIL_CLOSED_MISSING_STALE_UNKNOWN_POLICY_PANIC=PASS`
 
@@ -140,11 +140,27 @@ is recorded yet.
 
 `EXIT_ONLY_REPAIR=COMPLETE_COMMIT_9b59e8b7bbf803b51cfef301f6556f45ffe51aa1`
 
+`EXIT_ONLY_REPAIR_PUSH=PASS`
+
+`LONG_HORIZON_L3_V3_COMMIT=a1009160f0141c945d3d8e0f3006d616b230a3f8`
+
+`LOCAL_PAPER_RUNTIME_REVISION=a1009160f0141c945d3d8e0f3006d616b230a3f8`
+
+`L3_FORWARD_CUTOFF=2026-09-08T06:53:28.596698Z`
+
+`L3_V3_MIGRATION_FIRST_APPLY=PASS`
+
+`L3_V3_SECOND_APPLY_STATE_CHANGES=0`
+
+`L3_MODE=TREATMENT`
+
+`L3_V3_STRATEGY_HEARTBEATS=32/32_FRESH`
+
 The original `7fc517b...` 100% ALLOW / 10% BLOCK sampling must not be
 activated. The accepted capacity/power correction freezes LOCAL PAPER L3 at
 9 USDC, ALLOW sampling `13.194281540%`, BLOCK sampling `7.920637611%`, and a
-14-day enrollment target. Current LOCAL PAPER, LOCAL LIVE and VPS runtime are
-unchanged. The complete immutable pre-rollout contract is
+14-day enrollment target. L3 V3 is active only on LOCAL PAPER; LOCAL LIVE and
+VPS remain unchanged. The complete immutable pre-rollout contract is
 [LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md](LONG_HORIZON_L3_POWER_CALIBRATED_9_USDC_SAMPLING_V1.md).
 The premature V1 migration remains terminated and V2 remains an immutable,
 never-deployed historical artifact. V3 removes only V2's invalid zero-open-
@@ -161,6 +177,21 @@ Frozen semantics remain: `L3_NOTIONAL=9_USDC`, ALLOW sampling
 `+3%` realizable-net target, paired L0 ledger, 40%/20% sleeves, 60% global
 heat, 20% minimum free cash, and preserved hard-risk/PANIC exits. No LIVE or
 VPS authority is granted.
+
+The activation snapshot contains positions `13546`, `13547`, and `13549` as
+`PRE_L3_EXCLUDED`. All three subsequently closed naturally through canonical
+exit paths and remain excluded from both L3 cohorts. The current checkpoint is
+`ALLOW_ENROLLED=0`, `BLOCK_ENROLLED=4`, `L3_OPEN=4`, and `L3_CLOSED=0`.
+Opportunity/decision/snapshot/order/position and Fee V2 linkage are present;
+pre-cutoff leakage is `0`.
+
+The existing finalized canonical 1m event shape can derive fee-aware first
+touches of 1%, 2%, and 3% before an L3 close, but the current V3 event count is
+`0`, so no touch evidence is claimed yet. A 5% replay is not authoritative
+because the current collector does not continue the shadow price path after a
+real 3% L3 close. The minimum future correction, if separately authorized, is
+evidence-only post-close 1m continuation linked to the immutable L3 admission,
+Fee V2 contract, and paired-L0 identity; it must not change treatment.
 
 ## Public communication
 
@@ -753,8 +784,9 @@ control.
   `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
 - Perform no H12 checkpoint work during repair;
   `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
-- Run only the explicitly approved L3 V3 LOCAL PAPER treatment; no second
-  economic treatment is authorized.
+- Observe the explicitly approved L3 V3 LOCAL PAPER treatment unchanged until
+  at least 33 ALLOW and 53 BLOCK same-thesis episodes have mature outcomes; no
+  second economic treatment is authorized.
 - `LIVE_ELIGIBILITY=NO`; LIVE remains last with explicit Product Owner approval.
 - Economic Floor V1/V2 is not qualified for VPS or LIVE; LOCAL PAPER V2 exit
   authority is OFF.
