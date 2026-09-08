@@ -1923,6 +1923,12 @@ def record_forward_paper_entry_atomic(
     caller-owned PostgreSQL transaction.  The canonical order identity makes a
     retry return the one already-complete entry instead of duplicating it.
     """
+    from common.entry_authority import EXIT_ONLY_BLOCK_REASON, exit_only_active
+
+    # Final shared fence before any PAPER order/position transaction exists.
+    if exit_only_active():
+        return PaperEntryAtomicResult(False, EXIT_ONLY_BLOCK_REASON, None, None)
+
     conn = connection_factory()
     try:
         try:

@@ -5,6 +5,7 @@ import signal
 import logging
 import subprocess
 import math
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Tuple, Optional
@@ -58,6 +59,7 @@ class BotProc:
     started_at: float
     last_exit_at: Optional[float] = None
     last_exit_code: Optional[int] = None
+    exit_only: bool = False
 
 
 _shutdown = False
@@ -111,7 +113,14 @@ def fetch_desired_configs(conn) -> Dict[BotKey, dict]:
               enabled,
               live_orders_enabled,
               regime_enabled,
-              regime_mode
+              regime_mode,
+              EXISTS (
+                SELECT 1 FROM positions p
+                WHERE p.symbol=bot_control.symbol
+                  AND p.strategy=bot_control.strategy
+                  AND p."interval"=bot_control.interval
+                  AND p.status='OPEN'
+              ) AS has_open_position
             FROM bot_control
             ORDER BY
               CASE strategy
@@ -149,6 +158,17 @@ def worker_sort_key(key: BotKey) -> tuple[int, str, str, str]:
     )
 
 
+def worker_exit_only(row: dict) -> bool:
+    return (
+        not bool(row.get("enabled", False))
+        and bool(row.get("has_open_position", False))
+    )
+
+
+def worker_should_run(row: dict) -> bool:
+    return bool(row.get("enabled", False)) or worker_exit_only(row)
+
+
 def ordered_start_candidates(
     desired: Dict[BotKey, dict],
     running: Dict[BotKey, BotProc],
@@ -156,7 +176,7 @@ def ordered_start_candidates(
     candidates = [
         (key, row)
         for key, row in desired.items()
-        if row.get("enabled", False) and key not in running
+        if worker_should_run(row) and key not in running
     ]
     return sorted(candidates, key=lambda item: worker_sort_key(item[0]))
 
@@ -176,6 +196,7 @@ def build_env(row: dict) -> dict:
     env["LIVE_ORDERS_ENABLED"] = "1" if row.get("live_orders_enabled") else "0"
     env["REGIME_ENABLED"] = "1" if row.get("regime_enabled") else "0"
     env["REGIME_MODE"] = (row.get("regime_mode") or "DRY_RUN")
+    env["WALTRADE_EXIT_ONLY"] = "1" if worker_exit_only(row) else "0"
 
     return env
     
@@ -192,12 +213,13 @@ def start_bot(row: dict) -> subprocess.Popen:
     env = build_env(row)
 
     logger.info(
-        "START %s %s %s (TRADING_MODE=%s LIVE_ORDERS=%s REGIME_ENABLED=%s REGIME_MODE=%s)",
+        "START %s %s %s (TRADING_MODE=%s LIVE_ORDERS=%s REGIME_ENABLED=%s REGIME_MODE=%s RUNTIME_MODE=%s)",
         row["strategy"], row["symbol"], row["interval"],
         TRADING_MODE,
         "1" if row.get("live_orders_enabled") else "0",
         "1" if row.get("regime_enabled") else "0",
-        row.get("regime_mode")
+        row.get("regime_mode"),
+        "EXIT_ONLY" if worker_exit_only(row) else "NORMAL",
     )
 
     # stdout/stderr dziedziczone -> widoczne w docker logs bot-runner
@@ -264,7 +286,12 @@ def start_worker_batch(
         )
         try:
             popen = start_fn(row)
-            running[key] = BotProc(key=key, popen=popen, started_at=now_fn())
+            running[key] = BotProc(
+                key=key,
+                popen=popen,
+                started_at=now_fn(),
+                exit_only=worker_exit_only(row),
+            )
             started += 1
         except Exception as exc:
             logger.exception("Failed to start %s: %s", key, exc)
@@ -322,7 +349,11 @@ def reconcile_worker_processes(
     """Reconcile actual worker processes to read-only bot_control desired state."""
     for key, proc in list(running.items()):
         row = desired.get(key)
-        if not row or not row.get("enabled", False):
+        if (
+            not row
+            or not worker_should_run(row)
+            or proc.exit_only != worker_exit_only(row)
+        ):
             stop_fn(proc)
             running.pop(key, None)
 
@@ -355,6 +386,53 @@ def reconcile_worker_processes(
         last_restart_attempt,
         stagger_seconds=STARTUP_STAGGER_SECONDS,
     )
+
+
+def record_exit_only_slot_heartbeats(conn, running: Dict[BotKey, BotProc]) -> int:
+    """Publish process liveness for disabled slots retained for exits.
+
+    Strategy telemetry is preserved: the supervisor merges a small, explicit
+    process-liveness payload while the child remains responsible for strategy
+    evaluation details.
+    """
+    alive = [
+        proc
+        for proc in running.values()
+        if proc.exit_only and proc.popen.poll() is None
+    ]
+    if not alive:
+        return 0
+
+    with conn.cursor() as cur:
+        for proc in alive:
+            cur.execute(
+                """
+                INSERT INTO public.bot_heartbeat(
+                  symbol, strategy, interval, last_seen, info
+                )
+                VALUES (%s, %s, %s, now(), %s::jsonb)
+                ON CONFLICT ON CONSTRAINT
+                  bot_heartbeat_symbol_strategy_interval_key
+                DO UPDATE SET
+                  last_seen=now(),
+                  info=COALESCE(bot_heartbeat.info, '{}'::jsonb)
+                    || EXCLUDED.info
+                """,
+                (
+                    proc.key.symbol,
+                    proc.key.strategy,
+                    proc.key.interval,
+                    json.dumps(
+                        {
+                            "runtime_mode": "EXIT_ONLY",
+                            "heartbeat_source": "bot_runner_supervisor",
+                            "child_process_alive": True,
+                            "child_pid": proc.popen.pid,
+                        }
+                    ),
+                ),
+            )
+    return len(alive)
 
 
 def main():
@@ -407,6 +485,7 @@ def main():
                 running,
                 last_restart_attempt,
             )
+            exit_only_workers = record_exit_only_slot_heartbeats(conn, running)
 
             elapsed = time.perf_counter() - tick_start
             record_worker_heartbeat(
@@ -415,6 +494,7 @@ def main():
                 loop_duration_s=elapsed,
                 meta={
                     "running_bots": len(running),
+                    "exit_only_bots": exit_only_workers,
                     "desired_bots": len(desired),
                     "poll_seconds": POLL_SECONDS,
                     "trading_mode": TRADING_MODE,

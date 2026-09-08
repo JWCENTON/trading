@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections import Counter
 
 import pytest
@@ -38,12 +39,13 @@ class FakeClock:
         return True
 
 
-def row(strategy, symbol, interval, *, enabled=True):
+def row(strategy, symbol, interval, *, enabled=True, has_open_position=False):
     return {
         "strategy": strategy,
         "symbol": symbol,
         "interval": interval,
         "enabled": enabled,
+        "has_open_position": has_open_position,
         "live_orders_enabled": False,
         "regime_enabled": True,
         "regime_mode": "DRY_RUN",
@@ -172,6 +174,108 @@ def test_disabled_and_running_slots_are_not_candidates(module):
         {already_running: object()},
     )
     assert candidates == []
+
+
+def test_disabled_slot_with_open_position_runs_exit_only(module):
+    item = row(
+        "TREND", "BTCUSDC", "1m", enabled=False, has_open_position=True
+    )
+    candidates = module.ordered_start_candidates(desired(module, [item]), {})
+    assert [key for key, _ in candidates] == [
+        module.BotKey("BTCUSDC", "1m", "TREND")
+    ]
+    assert module.worker_exit_only(item) is True
+    assert module.build_env(item)["WALTRADE_EXIT_ONLY"] == "1"
+
+
+def test_disabled_slot_without_open_position_stays_stopped(module):
+    item = row("TREND", "BTCUSDC", "1m", enabled=False)
+    assert module.worker_should_run(item) is False
+    assert module.ordered_start_candidates(desired(module, [item]), {}) == []
+
+
+def test_restart_reconstructs_disabled_open_position_as_exit_only(module):
+    item = row("BBRANGE", "SOLUSDC", "5m", enabled=False, has_open_position=True)
+    key = module.BotKey("SOLUSDC", "5m", "BBRANGE")
+    running = {}
+
+    def start_batch(candidates, active, attempts, **_kwargs):
+        for candidate, desired_row in candidates:
+            active[candidate] = module.BotProc(
+                candidate, FakeProcess(), 0,
+                exit_only=module.worker_exit_only(desired_row),
+            )
+
+    module.reconcile_worker_processes(
+        desired(module, [item]), running, {}, now_fn=lambda: 100,
+        start_batch_fn=start_batch,
+    )
+    assert running[key].exit_only is True
+
+
+def test_natural_close_stops_disabled_exit_only_worker(module):
+    before = row("RSI", "ETHUSDC", "1m", enabled=False, has_open_position=True)
+    after = row("RSI", "ETHUSDC", "1m", enabled=False, has_open_position=False)
+    key = module.BotKey("ETHUSDC", "1m", "RSI")
+    proc = module.BotProc(key, FakeProcess(), 0, exit_only=True)
+    running = {key: proc}
+    stopped = []
+    module.reconcile_worker_processes(
+        desired(module, [after]), running, {}, now_fn=lambda: 100,
+        stop_fn=lambda item: stopped.append(item.key),
+        start_batch_fn=lambda *_args, **_kwargs: None,
+    )
+    assert module.worker_should_run(before) is True
+    assert stopped == [key]
+    assert running == {}
+
+
+def test_exit_only_supervisor_heartbeat_is_fresh_and_preserves_strategy_info(module):
+    class Cursor:
+        def __init__(self):
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, params):
+            self.calls.append((sql, params))
+
+    class Connection:
+        def __init__(self):
+            self.cursor_value = Cursor()
+
+        def cursor(self):
+            return self.cursor_value
+
+    key = module.BotKey("SOLUSDC", "1m", "BBRANGE")
+    popen = FakeProcess()
+    running = {
+        key: module.BotProc(
+            key=key,
+            popen=popen,
+            started_at=1.0,
+            exit_only=True,
+        )
+    }
+    conn = Connection()
+
+    count = module.record_exit_only_slot_heartbeats(conn, running)
+
+    assert count == 1
+    sql, params = conn.cursor_value.calls[0]
+    assert "last_seen=now()" in sql
+    assert "COALESCE(bot_heartbeat.info" in sql
+    assert params[:3] == ("SOLUSDC", "BBRANGE", "1m")
+    assert json.loads(params[3]) == {
+        "runtime_mode": "EXIT_ONLY",
+        "heartbeat_source": "bot_runner_supervisor",
+        "child_process_alive": True,
+        "child_pid": 123,
+    }
 
 
 def test_single_worker_restart_has_no_batch_delay(module):

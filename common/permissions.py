@@ -4,6 +4,7 @@ from common.db import get_db_conn
 from dataclasses import dataclass
 from typing import Optional
 import psycopg2.extras
+from common.entry_authority import entry_authority
 
 
 @dataclass
@@ -62,6 +63,10 @@ def can_trade(
             - does NOT block EXIT (so we can always flatten risk)
         - regime_allows_trade: blocks ENTRY only (exit should not be blocked by regime)
     """
+    process_allowed, process_reason = entry_authority(is_exit=is_exit)
+    if not process_allowed:
+        return False, {"why": process_reason, "runtime_mode": "EXIT_ONLY"}
+
     # PANIC (DB) blocks ENTRY, allows EXIT
     panic_enabled, panic_reason = get_panic_state()
     if panic_enabled and not is_exit:
