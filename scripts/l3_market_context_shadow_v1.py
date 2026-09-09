@@ -11,6 +11,7 @@ from decimal import Decimal
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import sqlite3
 import statistics
@@ -29,6 +30,7 @@ THRESHOLDS = {
 NA = "NOT_AVAILABLE"
 ROOT = Path(__file__).resolve().parents[1]
 STORE = Path("/home/jacek/waltrade-experiments/l3-market-context-shadow-v1")
+AVAILABILITY_VERSION = "SOURCE_OBSERVED_BEFORE_DECISION_V1"
 
 
 def now():
@@ -36,7 +38,25 @@ def now():
 
 
 def dt(value):
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    """Python 3.10 ISO parsing with exact microseconds and explicit timezone.
+
+    Preserve the original source string in stored payloads. Reject precision
+    we cannot represent exactly rather than silently moving a causal boundary.
+    """
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})",
+        str(value),
+    )
+    if not match:
+        raise ValueError(f"INVALID_AWARE_TIMESTAMP:{value!r}")
+    base, fraction, offset = match.groups()
+    fraction = fraction or ""
+    if len(fraction) > 6 and any(c != "0" for c in fraction[6:]):
+        raise ValueError(f"UNREPRESENTABLE_SUBMICROSECOND_TIMESTAMP:{value!r}")
+    offset = "+00:00" if offset == "Z" else offset
+    if ":" not in offset:
+        offset = offset[:3] + ":" + offset[3:]
+    return datetime.fromisoformat(base + "." + fraction[:6].ljust(6, "0") + offset)
 
 
 def encode(value):
@@ -128,6 +148,21 @@ def open_store(path):
       CREATE TABLE IF NOT EXISTS outcomes (identity TEXT, observed_at TEXT, payload TEXT, hash TEXT,
                                            PRIMARY KEY(identity,hash));
       CREATE TABLE IF NOT EXISTS polls (at TEXT PRIMARY KEY, payload TEXT);
+      CREATE TABLE IF NOT EXISTS processing_errors (
+        identity TEXT, stage TEXT, error_hash TEXT, payload TEXT,
+        first_seen TEXT, last_seen TEXT, attempts INTEGER, resolved_at TEXT,
+        PRIMARY KEY(identity,stage,error_hash));
+      CREATE TABLE IF NOT EXISTS source_reads (
+        source_type TEXT, source_id TEXT, hash TEXT, source_timestamp TEXT,
+        observed_at TEXT, stored_at TEXT, payload TEXT,
+        PRIMARY KEY(source_type,source_id,hash));
+      CREATE TABLE IF NOT EXISTS snapshot_assessments (
+        identity TEXT PRIMARY KEY, assessed_at TEXT, payload TEXT);
+      CREATE TABLE IF NOT EXISTS collector_releases (
+        code_hash TEXT PRIMARY KEY, activated_at TEXT, snapshots_before INTEGER);
+      CREATE VIEW IF NOT EXISTS effective_snapshots AS
+        SELECT s.*,a.payload AS availability_assessment FROM snapshots s
+        LEFT JOIN snapshot_assessments a ON a.identity=s.identity;
     """)
     return db
 
@@ -177,6 +212,71 @@ def candles_for(symbol, start, end):
 def save_raw(db, candles, observed):
     db.executemany("INSERT OR IGNORE INTO raw_candles VALUES(?,?,?,?,?,?)",
                    [(c["id"], fingerprint(c), encode(c), observed,c["symbol"],c["open_time"]) for c in candles])
+    save_source_reads(db, "candle", candles, observed)
+
+
+def save_source_reads(db, kind, rows, observed):
+    stored = now()
+    for row in rows:
+        sid = str(row["id"]) if kind == "candle" else "|".join((row["symbol"],row["interval"],row["ts"]))
+        source_ts = row["close_time"] if kind == "candle" else row["ts"]
+        db.execute("INSERT OR IGNORE INTO source_reads VALUES(?,?,?,?,?,?,?)",
+                   (kind,sid,fingerprint(row),source_ts,observed,stored,encode(row)))
+
+
+def record_error(db, identity, stage, exc, source):
+    payload = {"identity":identity,"stage":stage,"error_class":type(exc).__name__,
+               "error_message":str(exc),"source":source}
+    digest, at = fingerprint(payload), now()
+    db.execute("""INSERT INTO processing_errors VALUES(?,?,?,?,?,?,1,NULL)
+      ON CONFLICT(identity,stage,error_hash) DO UPDATE SET
+      last_seen=excluded.last_seen,attempts=processing_errors.attempts+1,resolved_at=NULL""",
+      (identity,stage,digest,encode(payload),at,at))
+    db.commit()
+    print(encode({"status":"EXPLICIT_ERROR","identity":identity,"stage":stage,
+                  "error_class":type(exc).__name__,"error_message":str(exc)}),flush=True)
+
+
+def resolve_error(db, identity, stage):
+    db.execute("UPDATE processing_errors SET resolved_at=? WHERE identity=? AND stage=? AND resolved_at IS NULL",
+               (now(),identity,stage))
+
+
+def assess_snapshot(db, identity, snapshot, references=None):
+    """Assessment is additive: never rewrite old snapshot evidence or timestamps."""
+    if db.execute("SELECT 1 FROM snapshot_assessments WHERE identity=?",(identity,)).fetchone():
+        return
+    at = dt(snapshot["opportunity"]["evaluation_started_at"])
+    proof = []
+    for kind,row in references or []:
+        sid = str(row["id"]) if kind == "candle" else "|".join((row["symbol"],row["interval"],row["ts"]))
+        found = db.execute("SELECT observed_at FROM source_reads WHERE source_type=? AND source_id=? AND hash=?",
+                           (kind,sid,fingerprint(row))).fetchone()
+        source_time = row["close_time"] if kind == "candle" else row["created_at"]
+        proven = bool(found and dt(found[0]) < at and dt(source_time) < at)
+        proof.append({"source_type":kind,"source_id":sid,"source_hash":fingerprint(row),
+                      "source_timestamp":source_time,"observed_at":found[0] if found else "UNKNOWN",
+                      "available_before_decision":"PROVEN" if proven else "UNKNOWN"})
+    feature_groups = [snapshot["symbol_context"]] + [b["features"] for b in snapshot["btc_context"].values()]
+    complete = all(g.get("status") == "AVAILABLE" for g in feature_groups)
+    source_proven = bool(proof) and complete and all(p["available_before_decision"] == "PROVEN" for p in proof)
+    assessment = {"version":AVAILABILITY_VERSION,"snapshot_kind":"POST_EVENT_RECONSTRUCTION",
+                  "original_snapshot_hash":fingerprint(snapshot),"original_recorded_at":snapshot["recorded_at"],
+                  "pre_entry_prediction":False,"pre_entry_filter_eligible":source_proven,
+                  "source_availability":"PROVEN" if source_proven else "UNKNOWN",
+                  "full_no_lookahead_proof":"UNKNOWN",
+                  "source_proof":proof,"legacy_evidence":references is None,
+                  "note":"CANDLE_CLOSE_TIME_ALONE_IS_NOT_AVAILABILITY_PROOF"}
+    db.execute("INSERT INTO snapshot_assessments VALUES(?,?,?)",(identity,now(),encode(assessment)))
+
+
+def initialize_release(db):
+    for identity,payload in db.execute("SELECT identity,payload FROM snapshots").fetchall():
+        assess_snapshot(db,identity,json.loads(payload))
+    code_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    db.execute("INSERT OR IGNORE INTO collector_releases VALUES(?,?,?)",
+               (code_hash,now(),db.execute("SELECT count(*) FROM snapshots").fetchone()[0]))
+    db.commit()
 
 
 def collect(db, contract):
@@ -194,60 +294,90 @@ def collect(db, contract):
                  "AND o.evaluation_started_at >= " + literal(contract["start_utc"]) + "::timestamptz "
                  "AND g.created_at >= " + literal(contract["start_utc"]) + "::timestamptz "
                  "ORDER BY o.evaluation_started_at")
+    opportunity_read_at = now()
     added = 0
+    identities = []
     for item in rows:
         o, gate = item["opportunity"], item["gate"]
-        if not eligible(o, gate):
-            continue
-        identity = o["observation_key"]
+        identity = o.get("observation_key") or fingerprint(item)
+        identities.append(identity)
         if db.execute("SELECT 1 FROM snapshots WHERE identity=?", (identity,)).fetchone():
             continue
-        at = o["evaluation_started_at"]
-        if any(Decimal(str(o[k])) != Decimal("0.0035") for k in ("fee_rate_entry", "fee_rate_exit")):
-            raise RuntimeError("FROZEN_FEE_V2_RATES_NOT_CONFIRMED")
-        if dt(o["candle_open_time"]) + timedelta(minutes=int(o["interval"][:-1])) > dt(at):
-            raise RuntimeError("OPPORTUNITY_SOURCE_CANDLE_NOT_FINAL")
-        histories = {}
-        for symbol in sorted({o["symbol"], "BTCUSDC"}):
-            history = candles_for(symbol, (dt(at) - timedelta(days=1, minutes=1)).isoformat(), at)
-            save_raw(db, history, observed)
-            histories[symbol] = history
-        regimes = query("SELECT to_jsonb(r) FROM market_regime r WHERE symbol IN ('BTCUSDC'," +
-                        literal(o["symbol"]) + ") AND ts < " + literal(at) + "::timestamptz "
-                        "AND created_at <= " + literal(at) + "::timestamptz "
-                        "AND ts >= " + literal((dt(at)-timedelta(days=2)).isoformat()) +
-                        "::timestamptz ORDER BY ts")
-        latest = {}
-        for r in regimes:
-            latest[r["symbol"] + ":" + r["interval"]] = r
-        own = context(histories[o["symbol"]], at, 15)
-        price_targets = targets(o["reference_price"], o["fee_rate_entry"], o["fee_rate_exit"])
-        room = {}
-        for n in (1, 2, 3):
-            target = float(price_targets[str(n)])
-            resistance = own.get("resistance")
-            room[str(n)] = {"target_price": price_targets[str(n)],
-                            "resistance_minus_target": resistance-target if resistance else NA,
-                            "resistance_before_target": resistance < target if resistance else NA}
-        snapshot = {**item, "recorded_at": observed, "contract_fingerprint": contract["fingerprint"],
-                    "sampling": assignment(o, gate), "symbol_context": own,
-                    "symbol_regime": latest.get(o["symbol"]+":"+o["interval"], NA),
-                    "btc_context": {tf: {"features": context(histories["BTCUSDC"], at, mins),
-                         "regime": latest.get("BTCUSDC:"+tf, NA)}
-                         for tf, mins in (("15m",15),("1h",60),("4h",240),("1d",1440))},
-                    "fee_aware_target_prices": price_targets, "room_to_target": room,
-                    "fee_basis": "CANONICAL_OPPORTUNITY_FROZEN_FEE_MODEL_REFERENCE_PRICE_NO_FILL_ASSUMPTION",
-                    "external": {k: NA for k in ("funding", "open_interest", "etf_flows", "dxy",
-                                                  "yields", "oil", "cpi_fomc_calendar", "news_sentiment")},
-                    "lookahead_status": "PASS_EVENT_TIME_ONLY_INGESTION_TIME_NOT_AVAILABLE"}
-        db.execute("INSERT INTO snapshots VALUES(?,?,?,?)", (identity, at, encode(snapshot), fingerprint(snapshot)))
-        added += 1
-        db.commit()
-    update_outcomes(db, observed)
-    status = {"observed_at": observed, "eligible_seen": len(rows), "added": added,
+        db.execute("SAVEPOINT snapshot_record")
+        try:
+            if not eligible(o, gate):
+                raise ValueError("SOURCE_ELIGIBILITY_CONTRACT_MISMATCH")
+            at = o["evaluation_started_at"]
+            if any(Decimal(str(o[k])) != Decimal("0.0035") for k in ("fee_rate_entry", "fee_rate_exit")):
+                raise RuntimeError("FROZEN_FEE_V2_RATES_NOT_CONFIRMED")
+            if dt(o["candle_open_time"]) + timedelta(minutes=int(o["interval"][:-1])) > dt(at):
+                raise RuntimeError("OPPORTUNITY_SOURCE_CANDLE_NOT_FINAL")
+            histories = {}
+            for symbol in sorted({o["symbol"], "BTCUSDC"}):
+                history = candles_for(symbol, (dt(at) - timedelta(days=1, minutes=1)).isoformat(), at)
+                read_at = now()
+                save_raw(db, history, read_at)
+                histories[symbol] = history
+            regimes = query("SELECT to_jsonb(r) FROM market_regime r WHERE symbol IN ('BTCUSDC'," +
+                            literal(o["symbol"]) + ") AND ts < " + literal(at) + "::timestamptz "
+                            "AND created_at <= " + literal(at) + "::timestamptz "
+                            "AND ts >= " + literal((dt(at)-timedelta(days=2)).isoformat()) +
+                            "::timestamptz ORDER BY ts")
+            save_source_reads(db, "regime", regimes, now())
+            latest = {}
+            for r in regimes:
+                latest[r["symbol"] + ":" + r["interval"]] = r
+            own = context(histories[o["symbol"]], at, 15)
+            price_targets = targets(o["reference_price"], o["fee_rate_entry"], o["fee_rate_exit"])
+            room = {}
+            for n in (1, 2, 3):
+                target = float(price_targets[str(n)])
+                resistance = own.get("resistance")
+                room[str(n)] = {"target_price": price_targets[str(n)],
+                                "resistance_minus_target": resistance-target if resistance else NA,
+                                "resistance_before_target": resistance < target if resistance else NA}
+            snapshot = {**item, "recorded_at": now(), "opportunity_read_observed_at": opportunity_read_at,
+                        "snapshot_kind": "POST_EVENT_RECONSTRUCTION", "pre_entry_prediction": False, "contract_fingerprint": contract["fingerprint"],
+                        "sampling": assignment(o, gate), "symbol_context": own,
+                        "symbol_regime": latest.get(o["symbol"]+":"+o["interval"], NA),
+                        "btc_context": {tf: {"features": context(histories["BTCUSDC"], at, mins),
+                             "regime": latest.get("BTCUSDC:"+tf, NA)}
+                             for tf, mins in (("15m",15),("1h",60),("4h",240),("1d",1440))},
+                        "fee_aware_target_prices": price_targets, "room_to_target": room,
+                        "fee_basis": "CANONICAL_OPPORTUNITY_FROZEN_FEE_MODEL_REFERENCE_PRICE_NO_FILL_ASSUMPTION",
+                        "external": {k: NA for k in ("funding", "open_interest", "etf_flows", "dxy",
+                                                      "yields", "oil", "cpi_fomc_calendar", "news_sentiment")},
+                        "lookahead_status": "UNKNOWN_PRE_DECISION_SOURCE_AVAILABILITY"}
+            db.execute("INSERT INTO snapshots VALUES(?,?,?,?)", (identity, at, encode(snapshot), fingerprint(snapshot)))
+            used_ids = set(own.get("source_ids", []))
+            for btc in snapshot["btc_context"].values():
+                used_ids.update(btc["features"].get("source_ids", []))
+            refs = [("candle",c) for history in histories.values() for c in history if c["id"] in used_ids]
+            selected_regimes = [snapshot["symbol_regime"]] + [b["regime"] for b in snapshot["btc_context"].values()]
+            refs.extend(("regime",r) for r in selected_regimes if isinstance(r,dict))
+            assess_snapshot(db,identity,snapshot,refs)
+            resolve_error(db,identity,"snapshot")
+            db.execute("RELEASE snapshot_record")
+            db.commit()
+            added += 1
+        except Exception as exc:
+            db.execute("ROLLBACK TO snapshot_record")
+            db.execute("RELEASE snapshot_record")
+            record_error(db,identity,"snapshot",exc,item)
+    update_outcomes(db, now())
+    pending = query("SELECT jsonb_build_object('pending',count(*)) FROM regime_gate_events g "
+                    "WHERE g.decision='ENTRY_CHECK' AND g.why IN ('POLICY_ALLOW','POLICY_WOULD_BLOCK') "
+                    f"AND g.created_at >= {literal(contract['start_utc'])}::timestamptz "
+                    "AND NOT EXISTS (SELECT 1 FROM causal_decision_observation_v1 d "
+                    "JOIN paper_opportunity_observation_v1 o ON o.causal_event_id=d.event_id "
+                    "WHERE d.regime_gate_event_id=g.id)")
+    error_count = db.execute("SELECT count(*) FROM processing_errors WHERE resolved_at IS NULL AND identity<>'__cycle__'").fetchone()[0]
+    resolve_error(db,"__cycle__","cycle")
+    status = {"observed_at": now(), "cycle_started_at": observed, "eligible_seen": len(set(identities)), "added": added,
               "snapshots": db.execute("SELECT count(*) FROM snapshots").fetchone()[0],
-              "active_db_writes": 0, "collector_status": "ACTIVE"}
-    db.execute("INSERT INTO polls VALUES(?,?)", (observed, encode(status)))
+              "explicit_errors":error_count,"pending_source_gate_records":pending[0]["pending"] if pending else 0,
+              "active_db_writes": 0, "collector_status": "DEGRADED_EXPLICIT_ERRORS" if error_count else "ACTIVE"}
+    db.execute("INSERT INTO polls VALUES(?,?)", (status["observed_at"], encode(status)))
     db.commit()
     print(encode(status), flush=True)
     return status
@@ -288,7 +418,8 @@ def update_outcomes(db, observed):
     for symbol,start in starts.items():
         latest = db.execute("SELECT max(open_time) FROM raw_candles WHERE symbol=?",(symbol,)).fetchone()[0]
         fetch_start = max(start,latest) if latest else start
-        save_raw(db,candles_for(symbol,fetch_start,observed),observed)
+        fetched = candles_for(symbol,fetch_start,observed)
+        save_raw(db,fetched,now())
         histories[symbol] = [json.loads(r[0]) for r in db.execute(
             "SELECT payload FROM raw_candles WHERE rowid IN (SELECT max(rowid) FROM raw_candles "
             "WHERE symbol=? AND open_time>=? GROUP BY id) ORDER BY open_time",(symbol,start))]
@@ -304,14 +435,28 @@ def update_outcomes(db, observed):
     for row in canonical_rows:
         by_gate.setdefault(row["admission"]["gate_event_id"],[]).append(row)
     for identity,snap in parsed:
-        o = snap["opportunity"]
-        candles = histories[o["symbol"]]
-        gate_id = int(snap["gate"]["id"])
-        canonical = by_gate.get(gate_id,[])
-        result = {"diagnostic_path": path_outcome(snap, candles), "canonical_l3_and_paired_l0": canonical,
-                  "unaccepted_outcome": "NO_ACTUAL_PNL_OR_HARD_RISK_FOR_UNEXECUTED_OPPORTUNITY"}
-        digest = fingerprint(result)
-        db.execute("INSERT OR IGNORE INTO outcomes VALUES(?,?,?,?)", (identity, observed, encode(result), digest))
+        try:
+            o = snap["opportunity"]
+            candles = histories[o["symbol"]]
+            gate_id = int(snap["gate"]["id"])
+            canonical = by_gate.get(gate_id,[])
+            result = {"diagnostic_path": path_outcome(snap, candles), "canonical_l3_and_paired_l0": canonical,
+                      "unaccepted_outcome": "NO_ACTUAL_PNL_OR_HARD_RISK_FOR_UNEXECUTED_OPPORTUNITY"}
+            digest = fingerprint(result)
+            db.execute("INSERT OR IGNORE INTO outcomes VALUES(?,?,?,?)", (identity, now(), encode(result), digest))
+            resolve_error(db,identity,"outcome")
+        except Exception as exc:
+            record_error(db,identity,"outcome",exc,{"opportunity":snap["opportunity"]})
+
+
+def run_cycle(db, contract):
+    try:
+        return collect(db,contract)
+    except Exception as exc:
+        # Keep the process alive and retry on the normal polling cadence. No
+        # silent skip: source/contract failures have a durable explicit record.
+        record_error(db,"__cycle__","cycle",exc,{"contract":contract["fingerprint"]})
+        return {"collector_status":"DEGRADED_EXPLICIT_CYCLE_ERROR"}
 
 
 def main():
@@ -325,8 +470,16 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         db = open_store(STORE)
         contract = initialize(db)
+        initialize_release(db)
         while True:
-            collect(db, contract)
+            try:
+                run_cycle(db, contract)
+            except Exception as exc:
+                # Local storage failure: unable to persist an error. Report and
+                # exit normally rather than entering systemd Restart=on-failure.
+                print(encode({"status":"STOPPED_LOCAL_ERROR_LEDGER_UNAVAILABLE",
+                              "error_class":type(exc).__name__,"error_message":str(exc)}),flush=True)
+                return
             if args.once:
                 break
             time.sleep(30)
