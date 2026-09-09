@@ -53,6 +53,7 @@ def test_features_never_use_future_candles_and_require_complete_path():
     assert baseline["status"] == "AVAILABLE"
     future = dict(b[-1],id=99,open_time=at,close_time="2026-09-09T10:16:00Z",close=999999)
     assert s.context(b+[future],at,15) == baseline
+    assert s.context(b,"2026-09-09T10:15:12Z",15) == baseline
     assert s.context(b[:-1],at,15)["status"] == s.NA
 
 

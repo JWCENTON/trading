@@ -1,14 +1,38 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-09-08
+LAST_UPDATED=2026-09-09
 
 VPS_PAPER_ROLE=UNCHANGED_UNTREATED_L3_COMPARATOR
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
-CURRENT_PHASE=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER
+CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
-CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER
+CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
+
+## Current LOCAL discovery shadow — 2026-09-09
+
+L3 V4 is unchanged: runtime `47b6cbd4ff13f386ad4f1abfd558fea49bef2859`,
+fingerprint `da53f8e4f0477d23cc405215746bf8c6920d5bd0f4372eb11f06db8dc33078d5`,
+cutoff `2026-09-08T20:04:40.744078Z`. Earlier V3 current-state descriptions
+below are superseded historical context.
+
+`LOCAL=DISCOVERY_SHADOW`; `VPS=UNTOUCHED_FUTURE_HOLDOUT`.
+The independent Market Context Shadow V1 collector started at
+`2026-09-09T12:09:00.623741+00:00`, fingerprint
+`200715555dc1ddf1621205347b75ff16ceb5c1b0f854c38a483b998efef1efc6`.
+Storage: `/home/jacek/waltrade-experiments/l3-market-context-shadow-v1/shadow.sqlite`.
+Active DB sessions are read-only; entry/exit/sizing authority is NONE.
+L3 parameters, bot-runner and all other active WalTrade services are unchanged.
+
+Scope is actual recorded canonical eligible opportunities only; occupied-slot
+observations are excluded. Decision-quality research on the observed stream is
+identifiable after maturity; portfolio slot-reuse counterfactuals are not.
+Features use prior finalized candle windows and timestamped existing regimes.
+Missing external sources remain NOT_AVAILABLE. Candle ingestion timestamps
+are unavailable: causality proof is event-time only. Outcomes use diagnostic
+fee-aware finalized-close touches, never guaranteed intrabar fills; canonical
+L3 and paired L0 results are linked separately. No rule or threshold is selected.
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 

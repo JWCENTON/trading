@@ -87,7 +87,7 @@ def assignment(o, gate):
 
 
 def context(candles, at, minutes):
-    end = dt(at)
+    end = dt(at).replace(second=0, microsecond=0)
     rows = [c for c in candles if end - timedelta(minutes=minutes) <= dt(c["open_time"])
             and dt(c["close_time"]) < end]
     rows.sort(key=lambda c: c["open_time"])

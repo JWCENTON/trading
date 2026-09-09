@@ -1,8 +1,36 @@
 # WalTrade Master Execution Roadmap
 
-CURRENT_PHASE=LONG_HORIZON_L3_V3_DIRECT_LOCAL_PAPER
+CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
-CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER
+CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
+
+### Current LOCAL discovery shadow — 2026-09-09
+
+L3 V4 remains the primary, unchanged LOCAL PAPER treatment: runtime
+`47b6cbd4ff13f386ad4f1abfd558fea49bef2859`, fingerprint
+`da53f8e4f0477d23cc405215746bf8c6920d5bd0f4372eb11f06db8dc33078d5`,
+cutoff `2026-09-08T20:04:40.744078Z`. Earlier V3 deployment/checkpoint
+descriptions below are superseded historical context, not current authority.
+
+`LOCAL_MARKET_CONTEXT_SHADOW_V1=ACTIVE_DISCOVERY_ONLY`, starting
+`2026-09-09T12:09:00.623741+00:00`; contract fingerprint
+`200715555dc1ddf1621205347b75ff16ceb5c1b0f854c38a483b998efef1efc6`.
+The independent collector uses enforced read-only LOCAL PAPER transactions and
+stores immutable snapshots, raw candle evidence and separate outcomes in
+`/home/jacek/waltrade-experiments/l3-market-context-shadow-v1/shadow.sqlite`.
+It has no entry, exit, sizing, order or position authority. Restarting it does
+not restart WalTrade. VPS remains an untouched future holdout; LIVE is unchanged.
+
+Only actual canonical opportunities with PRESENT signal, BUY base decision
+and an ENTRY_CHECK policy gate are eligible. Occupied-slot/no-signal observations
+are excluded. `COUNTERFACTUAL_PORTFOLIO_REUSE=NOT_IDENTIFIABLE_IN_V1`;
+`DECISION_QUALITY_ON_OBSERVED_OPPORTUNITIES=IDENTIFIABLE` after outcomes mature.
+No thresholds or candidate rules are selected. Existing timestamped regimes
+and complete trailing finalized-candle features are reused; unavailable sources
+remain NOT_AVAILABLE. Candle close time proves event-time ordering, but the
+schema does not prove historical ingestion time. Diagnostic fee-aware close
+touches are not guaranteed fills; actual L3/Financial Truth/paired L0 remain
+separate. External macro/news/funding/OI sources are currently NOT_AVAILABLE.
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 
