@@ -33,6 +33,13 @@ Missing external sources remain NOT_AVAILABLE. Candle ingestion timestamps
 are unavailable: causality proof is event-time only. Outcomes use diagnostic
 fee-aware finalized-close touches, never guaranteed intrabar fills; canonical
 L3 and paired L0 results are linked separately. No rule or threshold is selected.
+Initial verification: 15 focused tests pass and the independent collector is
+running. Restart leaves the immutable shadow cutoff and active bot-runner
+unchanged. `FIRST_NATURAL_SNAPSHOT=PENDING_SOURCE_PROJECTION`: at 12:14 UTC,
+the opportunity/causal projections still ended around 11:48 UTC, before the
+shadow cutoff, despite current gate events. No snapshots or natural outcome
+linkage are claimed yet. The collector retains the post-start window for late
+projection arrivals; no active source service was changed.
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 

@@ -31,6 +31,13 @@ remain NOT_AVAILABLE. Candle close time proves event-time ordering, but the
 schema does not prove historical ingestion time. Diagnostic fee-aware close
 touches are not guaranteed fills; actual L3/Financial Truth/paired L0 remain
 separate. External macro/news/funding/OI sources are currently NOT_AVAILABLE.
+Initial acceptance: 15 focused tests pass, source-schema SELECTs pass, collector
+restart preserves its immutable start and does not change bot-runner start,
+image or restart count. First natural snapshot is PENDING_SOURCE_PROJECTION:
+at 12:14 UTC the opportunity/causal projections still ended around 11:48 UTC,
+before shadow start, while gate events were current. No source-service repair
+is included. The collector retries the whole post-start identity window so
+projection delay does not silently advance its cursor past missing evidence.
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 
