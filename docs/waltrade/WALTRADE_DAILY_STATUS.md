@@ -26,20 +26,42 @@ Active DB sessions are read-only; entry/exit/sizing authority is NONE.
 L3 parameters, bot-runner and all other active WalTrade services are unchanged.
 
 Scope is actual recorded canonical eligible opportunities only; occupied-slot
-observations are excluded. Decision-quality research on the observed stream is
-identifiable after maturity; portfolio slot-reuse counterfactuals are not.
+observations are excluded. Descriptive decision-quality research is possible
+after maturity; feasible pre-entry filter validation requires proven source
+availability before the decision. Portfolio slot-reuse counterfactuals are not.
 Features use prior finalized candle windows and timestamped existing regimes.
 Missing external sources remain NOT_AVAILABLE. Candle ingestion timestamps
 are unavailable: causality proof is event-time only. Outcomes use diagnostic
 fee-aware finalized-close touches, never guaranteed intrabar fills; canonical
 L3 and paired L0 results are linked separately. No rule or threshold is selected.
-Initial verification: 15 focused tests pass and the independent collector is
-running. Restart leaves the immutable shadow cutoff and active bot-runner
-unchanged. `FIRST_NATURAL_SNAPSHOT=PENDING_SOURCE_PROJECTION`: at 12:14 UTC,
-the opportunity/causal projections still ended around 11:48 UTC, before the
-shadow cutoff, despite current gate events. No snapshots or natural outcome
-linkage are claimed yet. The collector retains the post-start window for late
-projection arrivals; no active source service was changed.
+First natural snapshot exists: opportunity `13:47:19.412534Z`, original snapshot
+`14:26:31.422563Z` on 2026-09-09. It is a post-event reconstruction. The collector
+then failed on Python 3.10.12 parsing of `2026-09-09T14:12:32.41953+00:00`.
+The bounded correction passes 58 focused tests and started at
+`2026-09-09T18:05:05Z` with `Restart=no`; record errors are explicit and isolated.
+Acceptance through `2026-09-09T18:11:16Z`: collector ACTIVE, restarts since fix 0;
+51 eligible / 51 unique snapshots / 0 explicit errors / 0 pending projection.
+42 backlog snapshots recovered; nine original snapshots unchanged. All 51 are
+post-event reconstructions, proven pre-entry snapshots 0. Repeated processing
+creates no duplicates. New natural opportunity after repair: PENDING.
+Collector implementation: `25669dfd89528827bfa67dfd776d03c680ae02e0`.
+The original cutoff, contract and snapshot bytes remain preserved. Use external
+`effective_snapshots.availability_assessment`: existing/recovered snapshots are
+not pre-entry predictions; source availability and full no-lookahead proof are
+UNKNOWN unless independently demonstrated. New source reads preserve exact
+values, actual observation/write timestamps and hashes. Old close timestamps
+alone never qualify a feasible pre-entry filter. Backlog recovery is deduplicated.
+
+`PAIRED_L0_REVIEW=10_V4_POSITIONS_8_FIRST_CAUSAL_L0_ROWS`.
+Four closed positions (13561/13563/13564/13565) have COMPLETE Financial Truth
+and a recorded hypothetical first-L0 net; four open positions
+(13558/13559/13560/13562) await L3 close. 13566/13567 have no L0 row because
+their preserved hard-risk path bypasses suppressed-legacy-exit insertion.
+`final_status/final_net/completed_at` have no writer/trigger or V4 completion
+schedule: their NULL is structural, not a delayed reconciliation. Four pairs
+are ready only for descriptive actual-L3 versus hypothetical-L0 comparison;
+the complete ten-position paired dataset is not ready. No L0 result was
+manually populated and L3/runtime/active DB/LIVE/VPS were unchanged.
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 

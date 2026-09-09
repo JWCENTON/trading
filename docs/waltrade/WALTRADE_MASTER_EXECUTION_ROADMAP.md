@@ -23,21 +23,57 @@ not restart WalTrade. VPS remains an untouched future holdout; LIVE is unchanged
 
 Only actual canonical opportunities with PRESENT signal, BUY base decision
 and an ENTRY_CHECK policy gate are eligible. Occupied-slot/no-signal observations
-are excluded. `COUNTERFACTUAL_PORTFOLIO_REUSE=NOT_IDENTIFIABLE_IN_V1`;
-`DECISION_QUALITY_ON_OBSERVED_OPPORTUNITIES=IDENTIFIABLE` after outcomes mature.
+are excluded. `COUNTERFACTUAL_PORTFOLIO_REUSE=NOT_IDENTIFIABLE_IN_V1`.
+Descriptive decision-quality analysis is possible after outcomes mature;
+feasible pre-entry filter validation additionally requires proven source
+availability before the decision, not just a historical candle close time.
 No thresholds or candidate rules are selected. Existing timestamped regimes
 and complete trailing finalized-candle features are reused; unavailable sources
 remain NOT_AVAILABLE. Candle close time proves event-time ordering, but the
 schema does not prove historical ingestion time. Diagnostic fee-aware close
 touches are not guaranteed fills; actual L3/Financial Truth/paired L0 remain
 separate. External macro/news/funding/OI sources are currently NOT_AVAILABLE.
-Initial acceptance: 15 focused tests pass, source-schema SELECTs pass, collector
-restart preserves its immutable start and does not change bot-runner start,
-image or restart count. First natural snapshot is PENDING_SOURCE_PROJECTION:
-at 12:14 UTC the opportunity/causal projections still ended around 11:48 UTC,
-before shadow start, while gate events were current. No source-service repair
-is included. The collector retries the whole post-start identity window so
-projection delay does not silently advance its cursor past missing evidence.
+The first natural snapshot arrived after delayed projection: opportunity
+`2026-09-09T13:47:19.412534Z`, original snapshot time
+`2026-09-09T14:26:31.422563Z`. It is a post-event reconstruction, not a pre-entry
+prediction. Python 3.10.12 subsequently rejected the valid timestamp
+`2026-09-09T14:12:32.41953+00:00`, causing 372 automatic restarts before the
+collector was stopped for repair. The bounded collector correction handles
+variable fractional precision and explicit timezones; unsupported or malformed
+records are durably identified and retried without aborting other records.
+58 focused tests pass in the actual collector interpreter. The corrected
+collector started at `2026-09-09T18:05:05Z` with `Restart=no`.
+Bounded acceptance through `2026-09-09T18:11:16Z`: ACTIVE, zero restarts,
+51 eligible opportunities / 51 unique snapshots / zero explicit errors /
+zero pending source projections. Recovery added 42 reconstructions to the
+original nine; all 51 have unproven pre-decision availability, with zero
+proven pre-entry snapshots. Repeated cycles add no duplicates. No opportunity
+after the corrected collector's start appeared in this window:
+`NEW_NATURAL_EVENT_PROOF=PENDING`. Implementation commit:
+`25669dfd89528827bfa67dfd776d03c680ae02e0`.
+
+The original shadow contract/cutoff and original snapshot bytes are preserved.
+Use `effective_snapshots` and its `availability_assessment` in external SQLite:
+these supersede older event-time-only PASS labels. Existing and recovered
+snapshots are `POST_EVENT_RECONSTRUCTION`, `pre_entry_prediction=false`;
+unproven availability and full no-lookahead status remain UNKNOWN. New source
+reads retain exact values, source timestamp, actual observed/stored timestamps
+and content hashes. A pre-entry feature can be eligible only when the identical
+values were demonstrably observed before the decision. No timestamp is backdated.
+`processing_errors` identifies unresolved/resolved records; post-start retries
+deduplicate snapshots and separately count missing source projections.
+
+Paired L0 read-only clarification for V4 positions 13558–13567: 13558/13559/
+13560/13562 are OPEN with one L0 row each; 13561/13563/13564/13565 are CLOSED
+with COMPLETE Financial Truth and one L0 row each. 13566/13567 closed by hard
+stop before any recorded suppressed legacy exit, so have no L0 row. The V4
+contract persists only the first suppressed legacy exit's hypothetical net,
+gross and fees. Hard-risk returns before this insertion. The nullable
+`final_status/final_net/completed_at` columns have no writer or trigger and no
+V4 completion schedule; NULL is structural, not a delayed job. Four closed
+pairs support a descriptive actual-L3 versus recorded-hypothetical-L0 comparison;
+four await L3 close and two lack a recorded L0 comparison. No active DB repair
+or imputed L0 result is authorized by this clarification.
 
 CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
 
