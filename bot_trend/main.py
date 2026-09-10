@@ -5,6 +5,7 @@ import logging
 import psycopg2
 import hashlib
 import pandas as pd
+from common.trend_candle_snapshot import load_snapshot, snapshot_atr, VERSION as TREND_SOURCE_VERSION, FINGERPRINT as TREND_SOURCE_FINGERPRINT
 from common.adaptive_time_exit import hard_time_exit_enabled, time_exit_policy_name
 from common.safe_json import sanitize_json
 from common.entry_trace import record_entry_trace_shadow
@@ -2242,11 +2243,22 @@ def compute_daily_pnl_pct(symbol: str, interval: str, current_price: float) -> f
     return (equity_now - equity_start_today) / equity_start_today * 100.0
 
 
-def _run_trend_strategy():
-    global LAST_TREND_STATE
-    evaluation_started_at = datetime.now(timezone.utc)
+def _local_paper_final_source_enabled():
+    return (cfg.trading_mode == "PAPER" and
+            os.environ.get("DEPLOYMENT_ID", os.environ.get("WALTRADE_DEPLOYMENT_ID")) == "local-paper")
 
-    rows = get_latest_candles(limit=max(EMA_SLOW + 20, 100))
+
+def _run_trend_strategy(candle_snapshot=None):
+    global LAST_TREND_STATE
+    if candle_snapshot is None and _local_paper_final_source_enabled():
+        candle_snapshot = load_snapshot(get_db_conn, SYMBOL, INTERVAL,
+                                        datetime.now(timezone.utc), max(EMA_SLOW + 20, 100))
+    evaluation_started_at = candle_snapshot.evaluated_at if candle_snapshot is not None else datetime.now(timezone.utc)
+    rows = candle_snapshot.rows if candle_snapshot is not None else get_latest_candles(limit=max(EMA_SLOW + 20, 100))
+    if candle_snapshot is not None:
+        logging.info("TREND_FINAL_SOURCE version=%s fingerprint=%s source_id=%s open_time=%s evaluated_at=%s rows=%s",
+                     TREND_SOURCE_VERSION, TREND_SOURCE_FINGERPRINT, candle_snapshot.source_id,
+                     candle_snapshot.open_time, evaluation_started_at, len(rows))
     if not rows or len(rows) < EMA_SLOW + 5:
         logging.info("TREND: not enough candles yet (have %d).", len(rows) if rows else 0)
         if not rows:
@@ -2311,7 +2323,14 @@ def _run_trend_strategy():
         reason="ENTER",
         price=float(price),
         candle_open_time=open_time,
-        info={"bot_version": os.environ.get("BOT_VERSION")},
+        info={"bot_version": os.environ.get("BOT_VERSION"),
+              **({"source_contract": TREND_SOURCE_VERSION,
+                  "source_contract_fingerprint": TREND_SOURCE_FINGERPRINT,
+                  "source_candle_id": candle_snapshot.source_id,
+                  "source_close_time": candle_snapshot.rows[0][8].isoformat(),
+                  "evaluation_started_at": evaluation_started_at.isoformat(),
+                  "source_set_fingerprint": hashlib.sha256(json.dumps(candle_snapshot.rows, default=str).encode()).hexdigest()}
+                 if candle_snapshot is not None else {})},
     )
     # Telemetry: zapisuj status reżimu raz na świecę (baseline), nawet bez sygnału
     emit_regime_gate_event(
@@ -2736,7 +2755,7 @@ def _run_trend_strategy():
                     asof_open_time=open_time,
                     entry_price=pos_entry_price,
                 )
-                atr_abs = load_recent_atr_abs(
+                atr_abs = snapshot_atr(candle_snapshot) if candle_snapshot is not None else load_recent_atr_abs(
                     symbol=SYMBOL,
                     interval=INTERVAL,
                     asof_open_time=open_time,
@@ -3721,9 +3740,9 @@ def _run_trend_strategy():
         )
 
 
-def run_trend_strategy():
+def run_trend_strategy(candle_snapshot=None):
     return finalize_decision_observation(
-        _run_trend_strategy(), source_service="bot-trend",
+        _run_trend_strategy(candle_snapshot), source_service="bot-trend",
     )
 
 
@@ -3996,12 +4015,19 @@ def main_loop():
             save_klines(rows)
             update_indicators()
 
-            latest = get_last_closed_candle()         
+            final_snapshot = None
+            if _local_paper_final_source_enabled():
+                final_snapshot = load_snapshot(get_db_conn, SYMBOL, INTERVAL,
+                                               datetime.now(timezone.utc), max(EMA_SLOW + 20, 100))
+                r = final_snapshot.rows[0] if final_snapshot.rows else None
+                latest = (r[2], None, r[6], r[7], r[3], r[4], r[5]) if r else None
+            else:
+                latest = get_last_closed_candle()
             if latest:
                 open_time = latest[0]                
                 if LAST_PROCESSED_OPEN_TIME != open_time:
                     LAST_PROCESSED_OPEN_TIME = open_time
-                    _final_decision = run_trend_strategy()
+                    _final_decision = run_trend_strategy(final_snapshot)
                 else:
                     emit_strategy_event(
                         event_type="IDLE",

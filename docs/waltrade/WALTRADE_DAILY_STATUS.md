@@ -1,6 +1,6 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-09-09
+LAST_UPDATED=2026-09-10
 
 VPS_PAPER_ROLE=UNCHANGED_UNTREATED_L3_COMPARATOR
 
@@ -9,6 +9,32 @@ OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
 CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
+
+## Current bounded repair — TREND finality / Shadow proof scope
+
+LOCAL PAPER TREND 1m/5m now selects one immutable candle set with
+`close_time < evaluation_started_at`, shared by the loop and evaluator.
+Prices, EMA inputs, causal-prefix EMA21/RSI and ATR use that same cutoff.
+Source contract `LOCAL_PAPER_TREND_FINAL_CANDLE_SET_V1`, fingerprint
+`83c98a4d2400f35e556cbf81cd8b61fa165c20e52c6adc85e3e5b65753589427`.
+Deployment acceptance/cutoff: PENDING_DEPLOYMENT. L3 economic contract,
+target, hard-risk, sampling, salt, sizing and original V4 cutoff are unchanged.
+
+Historical executed TREND V4 inventory before repair: CONFIRMED_AFFECTED=2
+(13564, 13579), VERIFIED_FINAL=0, UNKNOWN=0. Both gate and entry fill preceded
+the end of the attributed candle. Full gate/admission/order/fill linkage was
+used, not nullable opportunity projection fields. Preserve all trades and PnL;
+label these two separately in entry-quality analysis. Pre/post semantic epochs
+must not be pooled. No historical timestamps or financial outcomes are rewritten.
+
+Shadow uses `CONTEXT_SOURCE_AVAILABILITY` only for observed identical candle/
+selected-regime values. Full pre-entry eligibility is false and availability
+UNKNOWN without the explicit price/fee/opportunity/gate/sampling provenance
+contract. This is an unimplemented full-input proof mechanism, not merely a
+pending natural event. Existing derived assessments are narrowed; original raw
+snapshots remain immutable post-event reconstructions. No new collection system.
+Focused regressions: 70 PASS; five incident timestamps tested at 1m and 5m.
+Earlier 2026-09-09 sections below remain historical checkpoint evidence.
 
 ## Current LOCAL discovery shadow — 2026-09-09
 

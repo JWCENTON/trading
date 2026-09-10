@@ -201,7 +201,7 @@ def test_post_event_source_reads_cannot_be_promoted(tmp_path):
     s.assess_snapshot(db,"late",snap,[("candle",c)])
     a = json.loads(db.execute("SELECT payload FROM snapshot_assessments").fetchone()[0])
     assert not a["pre_entry_filter_eligible"]
-    assert a["source_availability"] == "UNKNOWN"
+    assert a["context_source_availability"] == "UNKNOWN"
     assert a["snapshot_kind"] == "POST_EVENT_RECONSTRUCTION"
     assert not a["pre_entry_prediction"]
 
@@ -215,8 +215,23 @@ def test_proof_requires_same_values_observed_before_decision(tmp_path):
     s.assess_snapshot(db,"proven",snap,[("candle",c)])
     s.assess_snapshot(db,"changed",snap,[("candle",dict(c,close=999))])
     rows = {i:json.loads(p) for i,p in db.execute("SELECT identity,payload FROM snapshot_assessments")}
-    assert rows["proven"]["pre_entry_filter_eligible"]
+    assert rows["proven"]["context_source_availability"] == "PROVEN"
+    assert not rows["proven"]["pre_entry_filter_eligible"]
+    assert rows["proven"]["full_pre_entry_availability"] == "UNKNOWN"
     assert not rows["changed"]["pre_entry_filter_eligible"]
+
+
+def test_legacy_full_eligibility_is_narrowed_without_fabricated_proof():
+    old = {"source_availability":"PROVEN", "pre_entry_filter_eligible":True,
+           "original_recorded_at":"2026-09-09T22:16:16.871086Z", "source_proof":[{"id":1}]}
+    new = s.scoped_assessment(old)
+    assert new['context_source_availability']=='PROVEN'
+    assert new['full_pre_entry_availability']=='UNKNOWN'
+    assert not new['pre_entry_filter_eligible']
+    assert new['original_recorded_at']==old['original_recorded_at']
+    assert new['source_proof']==old['source_proof']
+    assert s.scoped_assessment(new)==new
+    assert len(new['required_input_evidence'])==5
 
 
 def test_old_snapshot_is_preserved_and_downgraded_additively(tmp_path):

@@ -30,7 +30,24 @@ THRESHOLDS = {
 NA = "NOT_AVAILABLE"
 ROOT = Path(__file__).resolve().parents[1]
 STORE = Path("/home/jacek/waltrade-experiments/l3-market-context-shadow-v1")
-AVAILABILITY_VERSION = "SOURCE_OBSERVED_BEFORE_DECISION_V1"
+AVAILABILITY_VERSION = "CONTEXT_SOURCE_AVAILABILITY_V2"
+
+
+def scoped_assessment(assessment):
+    """Narrow derived metadata, never overwrite raw snapshots or event times."""
+    result = dict(assessment)
+    context = result.pop("source_availability", result.get("context_source_availability", "UNKNOWN"))
+    result.update(version=AVAILABILITY_VERSION, context_source_availability=context,
+                  pre_entry_filter_eligible=False, full_pre_entry_availability="UNKNOWN",
+                  full_no_lookahead_proof="UNKNOWN", pre_entry_prediction=False,
+                  required_input_evidence={
+                      "candles_and_selected_regimes": context,
+                      "opportunity_identity_and_evaluation_timestamp": "UNKNOWN",
+                      "reference_price_source_values_and_observed_at": "UNKNOWN",
+                      "fee_contract_values_and_observed_at": "UNKNOWN",
+                      "gate_cohort_and_sampling_inputs": "UNKNOWN",
+                  })
+    return result
 
 
 def now():
@@ -244,7 +261,13 @@ def resolve_error(db, identity, stage):
 
 def assess_snapshot(db, identity, snapshot, references=None):
     """Assessment is additive: never rewrite old snapshot evidence or timestamps."""
-    if db.execute("SELECT 1 FROM snapshot_assessments WHERE identity=?",(identity,)).fetchone():
+    existing = db.execute("SELECT payload FROM snapshot_assessments WHERE identity=?",(identity,)).fetchone()
+    if existing:
+        previous = json.loads(existing[0])
+        revised = scoped_assessment(previous)
+        if revised != previous:
+            db.execute("UPDATE snapshot_assessments SET payload=?,assessed_at=? WHERE identity=?",
+                       (encode(revised),now(),identity))
         return
     at = dt(snapshot["opportunity"]["evaluation_started_at"])
     proof = []
@@ -267,7 +290,7 @@ def assess_snapshot(db, identity, snapshot, references=None):
                   "full_no_lookahead_proof":"UNKNOWN",
                   "source_proof":proof,"legacy_evidence":references is None,
                   "note":"CANDLE_CLOSE_TIME_ALONE_IS_NOT_AVAILABILITY_PROOF"}
-    db.execute("INSERT INTO snapshot_assessments VALUES(?,?,?)",(identity,now(),encode(assessment)))
+    db.execute("INSERT INTO snapshot_assessments VALUES(?,?,?)",(identity,now(),encode(scoped_assessment(assessment))))
 
 
 def initialize_release(db):

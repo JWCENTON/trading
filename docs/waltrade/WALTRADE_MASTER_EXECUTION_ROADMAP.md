@@ -4,6 +4,35 @@ CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
 CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
 
+### Current bounded repair — 2026-09-10
+
+Repair only LOCAL PAPER TREND finality and Shadow proof scope. TREND 1m/5m
+loop/evaluator share one immutable finalized set; price, EMA/RSI causal-prefix
+values and ATR are constrained by the same evaluation cutoff. Source identity,
+set hash and semantic contract fingerprint are recorded in existing RUN_START
+evidence. Contract: `LOCAL_PAPER_TREND_FINAL_CANDLE_SET_V1`; fingerprint:
+`83c98a4d2400f35e556cbf81cd8b61fa165c20e52c6adc85e3e5b65753589427`.
+Deployment acceptance/cutoff: PENDING_DEPLOYMENT.
+
+All executed historical TREND V4 entries checked by gate→admission→order→fill→
+position: CONFIRMED_AFFECTED=2 (13564,13579), VERIFIED_FINAL=0, UNKNOWN=0.
+Their attributed candles were still open at gate and execution. Keep trades,
+Financial Truth and actual PnL unchanged; affected/unknown records are separate
+entry-quality strata. Partition V4 by the exact deployment epoch, without
+resetting the original V4 cutoff or changing any L3 economic parameter.
+
+Shadow can compare reconstructed context with subsequent observed outcomes;
+it cannot establish a deployable full pre-entry filter or portfolio slot reuse.
+`CONTEXT_SOURCE_AVAILABILITY` covers only identical prior-read candles/regimes.
+Full eligibility additionally requires source/value/observed-at evidence for
+reference price, frozen fee contract, opportunity identity/timing and gate/
+cohort/sampling inputs. Missing proof remains UNKNOWN. A minimal future solution
+is an input manifest captured at the actual pre-decision read boundary; not a
+new model or external-source platform. That mechanism is not implemented here.
+Existing raw snapshots remain reconstructions; derived scope flags are corrected.
+Focused regressions: 70 PASS. LIVE/VPS runtime and authority remain unchanged.
+Older current-state headings below are historical checkpoints superseded here.
+
 ### Current LOCAL discovery shadow — 2026-09-09
 
 L3 V4 remains the primary, unchanged LOCAL PAPER treatment: runtime
