@@ -17,7 +17,23 @@ LOCAL PAPER TREND 1m/5m now selects one immutable candle set with
 Prices, EMA inputs, causal-prefix EMA21/RSI and ATR use that same cutoff.
 Source contract `LOCAL_PAPER_TREND_FINAL_CANDLE_SET_V1`, fingerprint
 `83c98a4d2400f35e556cbf81cd8b61fa165c20e52c6adc85e3e5b65753589427`.
-Deployment acceptance/cutoff: PENDING_DEPLOYMENT. L3 economic contract,
+Runtime revision: `d0680e214706d76fe422e83e7fe493152bd49b86`.
+PRE runtime ended `2026-09-10T14:43:07.296121766Z`; POST semantic cutoff
+`2026-09-10T14:43:30.665096808Z` (new container StartedAt). The intervening
+deployment gap is not an economic observation window. Cohort partition uses
+decision time plus runtime/source-contract provenance, not close time; earlier
+positions remain PRE even if closed later. Bounded acceptance ended
+`2026-09-10T14:47:59.625930Z` (4m29s): 32/32 heartbeat fresh within 420s,
+all refreshed after deployment; DB blocked sessions 0; runtime errors/tracebacks
+0; restarts 0. Natural source proof: 16 evaluations 1m and 8 evaluations 5m,
+all four symbols in both intervals, finality violations 0. New accepted TREND
+entry proof remains PENDING_NATURAL_EVENT; observation was not extended.
+Shadow restarted only at `2026-09-10T14:43:51Z`, restarts 0. All 352 derived
+assessments use narrowed scope: context-proven 1, full-pre-entry eligible 0.
+360 eligible = 352 snapshots + 8 explicit pre-repair finality errors; pending
+source projection 0. Historical errors remain preserved, not relabeled as fixed
+historical data. No production DB migration or manual financial write.
+L3 economic contract,
 target, hard-risk, sampling, salt, sizing and original V4 cutoff are unchanged.
 
 Historical executed TREND V4 inventory before repair: CONFIRMED_AFFECTED=2

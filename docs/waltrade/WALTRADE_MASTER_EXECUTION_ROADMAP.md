@@ -12,7 +12,20 @@ values and ATR are constrained by the same evaluation cutoff. Source identity,
 set hash and semantic contract fingerprint are recorded in existing RUN_START
 evidence. Contract: `LOCAL_PAPER_TREND_FINAL_CANDLE_SET_V1`; fingerprint:
 `83c98a4d2400f35e556cbf81cd8b61fa165c20e52c6adc85e3e5b65753589427`.
-Deployment acceptance/cutoff: PENDING_DEPLOYMENT.
+Runtime revision: `d0680e214706d76fe422e83e7fe493152bd49b86`.
+PRE runtime ended `2026-09-10T14:43:07.296121766Z`; POST semantic cutoff
+`2026-09-10T14:43:30.665096808Z`, the new container StartedAt. Exclude the
+deployment gap from economic observation. Classify by decision timestamp and
+runtime/source-contract provenance; a later exit never relabels an old entry
+as POST. Bounded acceptance ended `2026-09-10T14:47:59.625930Z` (4m29s):
+32/32 fresh heartbeat within 420s, all updated since start; DB blocked sessions
+0; errors/tracebacks 0; restarts 0. Natural proof covers 16 evaluations 1m and
+8 evaluations 5m across all four symbols, with zero finality violations and
+matching source identity. Accepted new TREND entry remains PENDING_NATURAL_EVENT.
+No extension of the observation window. Shadow active after its sole restart
+at `2026-09-10T14:43:51Z`: 352 narrowed assessments, 1 context-source proof,
+0 full pre-entry qualifications. Eight retained explicit finality errors are
+all PRE-repair (360 eligible / 352 snapshots / 0 pending source projections).
 
 All executed historical TREND V4 entries checked by gate→admission→order→fill→
 position: CONFIRMED_AFFECTED=2 (13564,13579), VERIFIED_FINAL=0, UNKNOWN=0.
