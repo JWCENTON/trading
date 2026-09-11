@@ -1,8 +1,8 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-09-10
+LAST_UPDATED=2026-09-11
 
-VPS_PAPER_ROLE=UNCHANGED_UNTREATED_L3_COMPARATOR
+VPS_PAPER_ROLE=INDEPENDENT_RECOVERY_V1_EXPERIMENT
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
@@ -10,7 +10,48 @@ CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
 CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
 
-## Current bounded repair — TREND finality / Shadow proof scope
+## Current morning checkpoints — 2026-09-11
+
+LOCAL source: read-only checkpoint `2026-09-11T07:37Z`, supplied for this
+documentation update; no new runtime/DB inspection performed here.
+
+| V4 measure | Checkpoint value |
+| --- | --- |
+| Positions | 38: 32 CLOSED / 6 OPEN |
+| ALLOW completed | 6/33 |
+| BLOCK completed | 26/53 |
+| Realized NET | -4.232660 USDC |
+| Open liquidation NET after fees | +0.050780 USDC |
+| Combined NET | -4.181880 USDC |
+| Runtime +1/+2/+3% NET touches | 3/0/0 |
+| Closed paired comparisons | 21 |
+| Diagnostic Σ(L3 NET − hypothetical L0 NET) | -1.775303 USDC; not full replay |
+
+TREND: no new finality violations after repair. Keep the PRE/POST semantic
+cutoff below; historical affected 13564/13579 retain their real financial
+results and separate entry-quality classification.
+Shadow: `506 eligible = 498 reconstructions + 8 PRE errors`. Three new
+query-cycle errors; collector recovered, diagnosis remains OPEN.
+CONTEXT_SOURCE_AVAILABILITY is context-only; full pre-entry input availability
+proof has no implemented mechanism. Waiting alone cannot establish it.
+
+VPS source: operator report `2026-09-11T07:41:35Z`, provided by the Product
+Owner, NOT independently verified. Recovery V1: 10 OPEN / 0 CLOSED;
+realized NET 0 USDC; cash 909.689473 USDC; liquidation equity 999.309573 USDC.
+One owner top-up 376.839619 USDC is outside trading PnL. Natural TREND and two
+re-entries reported; full observer sample continuity remains unproven.
+News refresh approximately 300 s without reported validity overrun.
+17 simulated_orders lock timeouts and 3 used-candle conflicts: separate VPS
+TREND concurrency repair remains OPEN.
+
+Authority effective 2026-09-11: LOCAL only commits/pushes to GitHub. VPS
+performs no Git pull/commit/push. LOCAL L3 V4 and VPS Recovery V1 are
+independent experiments; do not synchronize their code/parameters or pool
+their outcomes. All LIVE remains untouched. Older shared-promotion and
+untreated-comparator instructions are superseded for these experiments by
+the dated Constitution exception.
+
+## Historical deployment checkpoint — TREND finality / Shadow proof scope
 
 LOCAL PAPER TREND 1m/5m now selects one immutable candle set with
 `close_time < evaluation_started_at`, shared by the loop and evaluator.
@@ -52,7 +93,7 @@ snapshots remain immutable post-event reconstructions. No new collection system.
 Focused regressions: 70 PASS; five incident timestamps tested at 1m and 5m.
 Earlier 2026-09-09 sections below remain historical checkpoint evidence.
 
-## Current LOCAL discovery shadow — 2026-09-09
+## Historical LOCAL discovery shadow — 2026-09-09
 
 L3 V4 is unchanged: runtime `47b6cbd4ff13f386ad4f1abfd558fea49bef2859`,
 fingerprint `da53f8e4f0477d23cc405215746bf8c6920d5bd0f4372eb11f06db8dc33078d5`,
@@ -105,7 +146,7 @@ are ready only for descriptive actual-L3 versus hypothetical-L0 comparison;
 the complete ten-position paired dataset is not ready. No L0 result was
 manually populated and L3/runtime/active DB/LIVE/VPS were unchanged.
 
-CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
+CURRENT_EXECUTION_SCOPE=INDEPENDENT_PAPER_EXPERIMENT_OBSERVATION
 
 CURRENT_P0=SYSTEM_CONFORMANCE_REPAIR_REQUIRED
 
@@ -132,9 +173,9 @@ This document is current truth only. Git history retains prior states.
 | Portfolio Crowding | WEAK effect |
 | Winner Tail | LOW dependence; top 10% winners offset 1.875% of losses |
 | Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
-| LOCAL PAPER | HEALTHY; L3 V3 TREATMENT active at runtime `a1009160`; 32/32 fresh; regime evidence is DRY_RUN/non-blocking for L3; Economic Floor V2 exit authority OFF |
+| LOCAL PAPER | L3 V4 active; latest economic checkpoint above; repaired TREND runtime `d0680e214706d76fe422e83e7fe493152bd49b86`; historical deployment health proof above is not a new health check |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
-| VPS PAPER | Unchanged untreated comparator for the later independently authorized L3 comparison; no rollout in this LOCAL task |
+| VPS PAPER | Independent Recovery V1; operator-reported checkpoint above, not independently verified; concurrency repair OPEN |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
 | Read-only discovery conveyor | Experiments #3–#7 COMPLETE; no new treatment authority |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
@@ -169,9 +210,9 @@ remain authority-OFF and are not promoted to PASS.
 
 `LIVE_ENTRY_AUTHORITY=OFF_LOCAL_AND_VPS`
 
-`NEXT_IMPLEMENTATION_UNIT=NONE_L3_V3_ALREADY_DEPLOYED`
+`NEXT_IMPLEMENTATION_UNIT=NONE_L3_V4_UNCHANGED_COLLECTION`
 
-`NEXT_ACTION=OBSERVE_L3_V3_UNCHANGED_TO_33_ALLOW_AND_53_BLOCK_MATURE_OUTCOMES`
+`NEXT_ACTION=OBSERVE_L3_V4_UNCHANGED_TO_33_ALLOW_AND_53_BLOCK_MATURE_OUTCOMES`
 
 `MINIMUM_RECOVERY_SEQUENCE=MR1_MINIMAL_RELEASE_TRUTH,MR2_CORE_ADMISSION_REPAIR,MR3_DIRECT_PAPER_ENFORCEMENT_AND_ECONOMIC_ACCEPTANCE`
 
@@ -304,6 +345,11 @@ consumes canonical evidence and does not change project evidence, experiment
 gates, economic priorities, or LIVE authority.
 
 ## Authority and research methodology
+
+Current exception, 2026-09-11: only LOCAL commits/pushes; VPS does not
+pull/commit/push. L3 V4 / Recovery V1 are independent and are not synchronized.
+Shared-promotion and untreated-reference rules below describe the prior or
+future separately authorized shared contract, not current experiment actions.
 
 - LOCAL and VPS share promoted contracts but have independent runtime and data histories.
 - `LOCAL_GIT_PROMOTION_AUTHORITY=ONLY`; implementation, tests, commits, pushes, and canonical doc updates originate on LOCAL.
@@ -532,7 +578,7 @@ Current experiment roadmap:
 - `#1 Ownership=COMPLETE`.
 - `#2 Economic Floor V1/V2 cadence family=COMPLETE_FOR_CADENCE_QUESTION`.
 - `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
-  `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
+  `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER`.
 - `MOVEMENT_V1_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED`.
 - `H11_P4_FORWARD_HOLDOUT=ACTIVE_UNINSPECTED_NON_BLOCKING`.
 - `#4 New Risk=UNSUPPORTED_CURRENT_HYPOTHESIS`.
@@ -876,12 +922,17 @@ control.
 ## NEXT
 
 - `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
-  `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
+  `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER`.
 - Perform no H12 checkpoint work during repair;
   `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
-- Observe the explicitly approved L3 V3 LOCAL PAPER treatment unchanged until
+- Observe the explicitly approved L3 V4 LOCAL PAPER treatment unchanged until
   at least 33 ALLOW and 53 BLOCK same-thesis episodes have mature outcomes; no
-  second economic treatment is authorized.
+  second LOCAL economic treatment is authorized. VPS Recovery V1 is independent.
+- After a larger sample, separately analyze stop and NET target levels, costs,
+  event ordering and capital occupancy. No new threshold or analysis now.
+- Keep Shadow query-cycle errors as an OPEN diagnostic item. VPS TREND lock
+  concurrency repair is separate and remains OPEN per operator report.
+- Prepare LinkedIn/X communication in a separate task; no publication here.
 - `LIVE_ELIGIBILITY=NO`; LIVE remains last with explicit Product Owner approval.
 - Economic Floor V1/V2 is not qualified for VPS or LIVE; LOCAL PAPER V2 exit
   authority is OFF.

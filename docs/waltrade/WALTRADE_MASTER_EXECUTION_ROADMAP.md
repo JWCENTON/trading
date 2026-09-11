@@ -4,7 +4,48 @@ CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
 CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
 
-### Current bounded repair — 2026-09-10
+### Current checkpoints and authority — 2026-09-11
+
+Source: LOCAL read-only checkpoint `2026-09-11T07:37Z`, supplied for this
+documentation update. V4 has 38 positions: 32 CLOSED / 6 OPEN. Completed
+same-thesis progress: ALLOW 6/33, BLOCK 26/53. Realized NET is
+`-4.232660 USDC`; open liquidation NET after fees is `+0.050780 USDC`;
+combined `-4.181880 USDC`. Runtime touches +1/+2/+3% NET: 3/0/0.
+For 21 closed paired comparisons, diagnostic Σ(L3 NET − hypothetical L0 NET)
+is `-1.775303 USDC`; this is not a full replay or profitability qualification.
+TREND has no new post-repair finality violations. Preserve the semantic
+cutoff below and actual PnL of historical affected positions 13564/13579;
+do not pool PRE/POST entry-quality evidence.
+
+Shadow: 506 eligible = 498 reconstructions + 8 PRE errors. Three new
+query-cycle errors occurred; the collector recovered, but diagnosis remains
+open. Reconstructions and CONTEXT_SOURCE_AVAILABILITY are not full pre-entry
+proof. The full input-availability mechanism is still absent, not merely
+waiting for a natural event.
+
+Separate source: VPS operator report `2026-09-11T07:41:35Z`, supplied by the
+Product Owner; no independent VPS verification in this task. Recovery V1:
+10 OPEN / 0 CLOSED, realized NET 0 USDC; cash `909.689473 USDC`, liquidation
+equity `999.309573 USDC`. One owner top-up `376.839619 USDC` is excluded from
+trading PnL. Natural TREND and two re-entries are reported; full observer
+sample continuity is unproven. News refresh approximately 300 seconds with
+no reported validity overrun. 17 simulated_orders lock timeouts and 3
+used-candle conflicts remain an open, separate VPS TREND concurrency repair.
+
+Current authority: LOCAL alone commits/pushes; VPS performs no Git pull,
+commit, or push. L3 V4 and Recovery V1 are independent experiments, with no
+code/parameter synchronization and no pooling of results. All LIVE remains
+untouched. The Constitution's dated exception supersedes older comparator
+and automatic promotion instructions for these experiments.
+
+Next: collect LOCAL V4 unchanged to at least 33 ALLOW / 53 BLOCK mature
+same-thesis outcomes. After a larger sample, separately analyze stop and NET
+target levels, costs, event ordering and capital occupancy; no threshold is
+chosen and no analysis is started here. Keep Shadow query errors open.
+VPS concurrency repair is separate. LinkedIn/X updates are to be prepared
+separately; no publication is authorized by this task.
+
+### Historical bounded repair — 2026-09-10
 
 Repair only LOCAL PAPER TREND finality and Shadow proof scope. TREND 1m/5m
 loop/evaluator share one immutable finalized set; price, EMA/RSI causal-prefix
@@ -46,7 +87,7 @@ Existing raw snapshots remain reconstructions; derived scope flags are corrected
 Focused regressions: 70 PASS. LIVE/VPS runtime and authority remain unchanged.
 Older current-state headings below are historical checkpoints superseded here.
 
-### Current LOCAL discovery shadow — 2026-09-09
+### Historical LOCAL discovery shadow — 2026-09-09
 
 L3 V4 remains the primary, unchanged LOCAL PAPER treatment: runtime
 `47b6cbd4ff13f386ad4f1abfd558fea49bef2859`, fingerprint
@@ -117,13 +158,14 @@ pairs support a descriptive actual-L3 versus recorded-hypothetical-L0 comparison
 four await L3 close and two lack a recorded L0 comparison. No active DB repair
 or imputed L0 result is authorized by this clarification.
 
-CURRENT_EXECUTION_SCOPE=MINIMUM_WALTRADE_CONFORMANCE_RECOVERY
+CURRENT_EXECUTION_SCOPE=INDEPENDENT_PAPER_EXPERIMENT_OBSERVATION
 
-VPS_PAPER_ROLE=UNCHANGED_UNTREATED_L3_COMPARATOR
+VPS_PAPER_ROLE=INDEPENDENT_RECOVERY_V1_EXPERIMENT
 
 OWNERSHIP_CANDIDATE_INTRODUCED_SHA=d60c4517892c220b6450876c47f27d99e8bf4dc8
 
-Execution order:
+Historical shared-release execution order (not authorized for the current
+independent experiments under the 2026-09-11 exception):
 
 `LOCAL implementation/tests -> commit -> push exact SHA to GitHub -> LOCAL PAPER deploy exact SHA -> LOCAL acceptance -> VPS fetch and inspect -> VPS pull --ff-only exact approved history -> VPS PAPER deploy -> independent VPS acceptance -> frozen LIVE environments last`
 
@@ -142,9 +184,9 @@ it necessary.
 `ACTIVE_HOLDOUT_EFFICACY_INSPECTION=PROHIBITED_DURING_REPAIR`.
 `LOCAL_LIVE_NEW_ENTRY_AUTHORITY=OFF`.
 `VPS_LIVE_NEW_ENTRY_AUTHORITY=OFF`.
-VPS PAPER is unchanged by the LOCAL L3 activation and remains the untreated
-comparator for a later, separately authorized comparison. This task makes no
-claim about or change to its runtime revision.
+VPS PAPER now runs independent Recovery V1 per operator report, not an
+untreated L3 comparator. This documentation task neither verifies nor changes
+its runtime revision.
 
 `REGIME_POLICY_SOURCE_CHECK=RESOLVED_BY_CORRECTED_POPULATION_REPRODUCTION`;
 `POLICY_SEMANTICS_UNRESOLVED=NO`. The canonical 20/20 matrix reproduces the
@@ -284,6 +326,11 @@ authority: `CONFIG_CONTRACT_CHANGE=NO`, `RUNTIME_CONTRACT_CHANGE=NO`, and
 
 ### LOCAL / VPS governance
 
+The 2026-09-11 Constitution exception governs current L3 V4 / Recovery V1:
+only LOCAL commits/pushes, VPS does not pull/commit/push, and no experiment
+code or parameter synchronization is authorized. The following shared-release
+policy is historical/conditional on a future separately approved promotion.
+
 LOCAL and VPS consume the same promoted shared software contract, but they are
 operationally isolated and retain independent runtime and data histories.
 LOCAL is the only implementation and Git promotion authority: implementation,
@@ -340,7 +387,8 @@ are not parity failures by themselves and must never be copied merely to make
 counts or histories match. Canonical principle:
 `SAME_SHARED_CONTRACT; DIFFERENT_NATURAL_DATA`.
 
-Research operating model:
+Research operating model (untreated-reference rules below are historical and
+do not apply to the independent Recovery V1 experiment):
 
 - `LOCAL_PAPER_CAUSAL_TREATMENTS=ONE_ACTIVE_AT_A_TIME`.
 - When a LOCAL experiment is active, VPS PAPER remains its untreated natural
@@ -1100,12 +1148,12 @@ authorize LIVE, and no arbitrary N=20 or N=30 is imposed.
 ### Next
 
 1. `PRIOR_PRIMARY_RESEARCH=PROBABILISTIC_CAPITAL_DECISION_FOUNDATION`;
-   `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V3_LOCAL_PAPER`.
+   `CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER`.
 2. Execute no H12 checkpoint work during conformance repair;
    `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`.
-3. Observe the frozen L3 V3 LOCAL PAPER treatment unchanged until at least 33
+3. Observe the frozen L3 V4 LOCAL PAPER treatment unchanged until at least 33
    ALLOW and 53 BLOCK same-thesis episodes have mature outcomes; no second
-   economic treatment is authorized.
+   LOCAL economic treatment is authorized. VPS Recovery V1 remains independent.
 4. Keep `LIVE_ELIGIBILITY=NO`; LIVE is last and requires explicit Product Owner
    approval.
 
@@ -1156,7 +1204,7 @@ inserts alone do not prove forward health.
 
 ## 13. Hard scope control
 
-Do not add a new engine, brain, strategy family, ML classifier, portfolio framework, parameter sweep, DCA, campaign, averaging down, hold-until-green policy, global 1m/5m suppression, or blind one-strategy-per-symbol rule. Do not enable Risk Budget influence, Capital Allocation, or Learning auto-apply. Do not run discovery experiments on LIVE. VPS PAPER may provide read-only discovery while remaining the untreated natural reference, but it may not run a simultaneous second treatment or confer treatment authority.
+Do not add a new engine, brain, strategy family, ML classifier, portfolio framework, parameter sweep, DCA, campaign, averaging down, hold-until-green policy, global 1m/5m suppression, or blind one-strategy-per-symbol rule. Do not enable Risk Budget influence, Capital Allocation, or Learning auto-apply. Do not run discovery experiments on LIVE. Under the 2026-09-11 exception, VPS PAPER Recovery V1 is independent, not an untreated reference for current LOCAL L3 V4; no synchronization or additional treatment is authorized here.
 
 Fixed 20 USDC sizing remains appropriate during general causal alpha and
 admission research because it isolates decision quality. The only documented

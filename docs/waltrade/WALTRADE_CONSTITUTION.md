@@ -72,6 +72,16 @@ Git SHA alone does not prove deployment parity. Where applicable, acceptance req
 
 No LOCAL-only or VPS-only schema magic may substitute for a shared, promoted contract. Business data is not copied between LOCAL and VPS to manufacture parity.
 
+### Product Owner exception — 2026-09-11
+
+LOCAL PAPER L3 V4 and VPS PAPER Recovery V1 are currently independent
+experiments, not synchronized deployments or a treated/untreated pair.
+Their code and economic parameters must not be synchronized. Only LOCAL
+commits and pushes to GitHub; VPS performs no Git pull, commit, or push.
+All LIVE environments remain untouched. This dated exception preserves
+historical evidence and the economic principles above; it does not waive
+acceptance gates for any future separately approved shared promotion.
+
 ## Capital, risk, and allocation
 
 Capital allocation is subordinate to the active Risk Budget. Increased exposure must follow increased evidence quality, not a recent winning streak or an urge to recover losses. Cash is a valid allocation. The system must compare opening new risk with keeping existing risk and doing nothing.
