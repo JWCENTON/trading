@@ -310,7 +310,7 @@ class DecisionObservationOutboxConsumer:
         self.logger = logger or logging.getLogger(__name__)
         self.last_skip_reason: str | None = None
 
-    def poll(self) -> int:
+    def poll(self, *, max_duration_seconds: float | None = None) -> int:
         started = time.monotonic()
         self.metrics.set("consumer_last_poll_timestamp", time.time())
         if not self.flags.decision_observation_enabled:
@@ -326,6 +326,10 @@ class DecisionObservationOutboxConsumer:
         processed = 0
         try:
             with conn.cursor() as cur:
+                if max_duration_seconds is not None:
+                    # Only the independent scheduler opts in; transaction-local.
+                    cur.execute("SET LOCAL statement_timeout = '5s'")
+                    cur.execute("SET LOCAL lock_timeout = '500ms'")
                 cur.execute("""UPDATE causal_decision_observation_outbox_v1 SET processing_status='RETRY',
                             claimed_at=NULL,claimed_by=NULL,last_error_code='STALE_CLAIM',last_error_at=now(),
                             next_attempt_at=now()
@@ -338,10 +342,13 @@ class DecisionObservationOutboxConsumer:
                               AND (next_attempt_at IS NULL OR next_attempt_at<=now())
                             ORDER BY decision_created_at,inserted_at,event_id
                             FOR UPDATE SKIP LOCKED LIMIT %s""",
-                            (self.flags.deployment_id, self.flags.batch_size))
+                            (self.flags.deployment_id, min(self.flags.batch_size, 100)
+                             if max_duration_seconds is not None else self.flags.batch_size))
                 rows = cur.fetchall()
                 self.metrics.set("current_batch_in_progress", float(len(rows)))
                 for event_id, payload, payload_hash, semantic_digest, attempt_count in rows:
+                    if max_duration_seconds is not None and time.monotonic() - started >= max_duration_seconds:
+                        break  # remaining locked rows were never claimed; release at commit
                     cur.execute("""UPDATE causal_decision_observation_outbox_v1 SET processing_status='PROCESSING',
                                 claimed_at=now(),claimed_by=%s,attempt_count=attempt_count+1 WHERE event_id=%s""",
                                 (self.consumer_id, event_id))

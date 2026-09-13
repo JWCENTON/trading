@@ -22,6 +22,7 @@ from common.decision_observation_transport import (
     TransportFlags,
     TransportMetrics,
 )
+from common.outbox_schedule import OutboxSchedule, local_paper_schedule
 from common.control_plane_authority import (
     CONTROL_PLANE_APPLY_ADVISORY_LOCK_ID,
     try_acquire_control_plane_apply_lock,
@@ -253,8 +254,8 @@ def run_thesis_evidence_bundle_v1() -> dict:
     return result
 
 
-def run_causal_decision_observation_consumer() -> int:
-    """Poll independently of the long-loop heartbeat; defaults are fully off."""
+def run_causal_decision_observation_consumer(*, max_duration_seconds=None) -> int:
+    """One bounded batch; scheduling is owned by main, defaults fully off."""
     flags = TransportFlags.from_env()
     consumer = DecisionObservationOutboxConsumer(
         get_db_conn,
@@ -262,7 +263,7 @@ def run_causal_decision_observation_consumer() -> int:
         consumer_id=f"automation-runner:{os.getenv('HOSTNAME', 'unknown')}",
         metrics=CAUSAL_TRANSPORT_METRICS,
     )
-    return consumer.poll()
+    return consumer.poll(max_duration_seconds=max_duration_seconds)
 
 
 def _sql_literal(value: str) -> str:
@@ -3824,6 +3825,11 @@ def main():
     last_ip = 0.0
     last_rg = 0.0
 
+    independent_outbox = local_paper_schedule(os.environ, cfg.trading_mode)
+    if independent_outbox:
+        outbox_schedule = OutboxSchedule(run_causal_decision_observation_consumer)
+        outbox_schedule.start()
+
     while True:
         tick_start = time.perf_counter()
         tick_error = None
@@ -3870,8 +3876,9 @@ def main():
                     logging.exception("live_drawdown_history_v1 failed")
 
             try:
-                causal_processed = run_causal_decision_observation_consumer()
-                logging.info("causal_observation_consumer processed=%s", causal_processed)
+                if not independent_outbox:
+                    causal_processed = run_causal_decision_observation_consumer()
+                    logging.info("causal_observation_consumer processed=%s", causal_processed)
             except Exception:
                 logging.exception("causal_observation_consumer failed")
 
