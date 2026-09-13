@@ -1,6 +1,6 @@
 # WalTrade Daily Status
 
-LAST_UPDATED=2026-09-11
+LAST_UPDATED=2026-09-13
 
 VPS_PAPER_ROLE=INDEPENDENT_RECOVERY_V1_EXPERIMENT
 
@@ -10,46 +10,152 @@ CURRENT_PHASE=LONG_HORIZON_L3_V4_DIRECT_LOCAL_PAPER
 
 CURRENT_PRIMARY_RESEARCH=LONG_HORIZON_L3_V4_LOCAL_PAPER
 
-## Current morning checkpoints — 2026-09-11
+## Current checkpoints and authority — 2026-09-13
 
-LOCAL source: read-only checkpoint `2026-09-11T07:37Z`, supplied for this
-documentation update; no new runtime/DB inspection performed here.
+This is a documentation-only consolidation of existing LOCAL reports and VPS
+operator reports supplied by the Product Owner. No new DB/runtime inspection,
+VPS access or LIVE access was performed for this update.
 
-| V4 measure | Checkpoint value |
+### Current environment authority
+
+| Environment | Current state and evidence authority |
 | --- | --- |
-| Positions | 38: 32 CLOSED / 6 OPEN |
-| ALLOW completed | 6/33 |
-| BLOCK completed | 26/53 |
-| Realized NET | -4.232660 USDC |
-| Open liquidation NET after fees | +0.050780 USDC |
-| Combined NET | -4.181880 USDC |
-| Runtime +1/+2/+3% NET touches | 3/0/0 |
-| Closed paired comparisons | 21 |
-| Diagnostic Σ(L3 NET − hypothetical L0 NET) | -1.775303 USDC; not full replay |
+| LOCAL PAPER | L3 V4, unchanged independent experiment |
+| VPS PAPER | Independent Recovery V1; operator-reported, not independently verified by LOCAL |
+| VPS LIVE | Owner-approved Recovery ACTIVE after manual resumption on 2026-09-13, confirmed at 20:15:37.861489 UTC by operator |
+| LOCAL LIVE | No new trading changes in these tasks; no new authority granted here |
 
-TREND: no new finality violations after repair. Keep the PRE/POST semantic
-cutoff below; historical affected 13564/13579 retain their real financial
-results and separate entry-quality classification.
-Shadow: `506 eligible = 498 reconstructions + 8 PRE errors`. Three new
-query-cycle errors; collector recovered, diagnosis remains OPEN.
-CONTEXT_SOURCE_AVAILABILITY is context-only; full pre-entry input availability
-proof has no implemented mechanism. Waiting alone cannot establish it.
+Only LOCAL commits/pushes to GitHub. VPS performs no Git pull/commit/push.
+Do not synchronize code/parameters or pool independent experiments. The
+2026-09-11 frozen Constitution exception is preserved verbatim; its statement
+that LIVE was untouched records that date's scope. The subsequent explicit
+2026-09-13 owner approval for VPS LIVE Recovery is recorded here operationally,
+not as a Constitution rewrite, a new approval by LOCAL, or proof of economic
+qualification. Former global VPS LIVE OFF/freeze statements below are
+historical restrictions, not the current operator-reported Recovery state.
 
-VPS source: operator report `2026-09-11T07:41:35Z`, provided by the Product
-Owner, NOT independently verified. Recovery V1: 10 OPEN / 0 CLOSED;
-realized NET 0 USDC; cash 909.689473 USDC; liquidation equity 999.309573 USDC.
-One owner top-up 376.839619 USDC is outside trading PnL. Natural TREND and two
-re-entries reported; full observer sample continuity remains unproven.
-News refresh approximately 300 s without reported validity overrun.
-17 simulated_orders lock timeouts and 3 used-candle conflicts: separate VPS
-TREND concurrency repair remains OPEN.
+### LOCAL financial checkpoint — 2026-09-13T20:15:00Z
 
-Authority effective 2026-09-11: LOCAL only commits/pushes to GitHub. VPS
-performs no Git pull/commit/push. LOCAL L3 V4 and VPS Recovery V1 are
-independent experiments; do not synchronize their code/parameters or pool
-their outcomes. All LIVE remains untouched. Older shared-promotion and
-untreated-comparator instructions are superseded for these experiments by
-the dated Constitution exception.
+| V4 measure | Value |
+| --- | --- |
+| Positions | 66: 58 CLOSED / 8 OPEN |
+| ALLOW enrolled / completed | 15 / 14; required completed independent episodes 33 |
+| BLOCK enrolled / completed | 51 / 44; required completed independent episodes 53 |
+| Realized NET | -5.683550 USDC |
+| Open liquidation NET after both fees | -0.241490 USDC |
+| Combined NET | -5.925039 USDC (calculated before rounding) |
+| PRE TREND repair | 29 CLOSED / 0 OPEN; realized -3.420201 USDC |
+| POST TREND repair | 29 CLOSED / 8 OPEN; realized -2.263348, marked total -2.504838 USDC |
+
+Completed counts above are closed positions with COMPLETE Financial Truth;
+independent same-thesis episode sufficiency must not be inferred from position
+counts alone. Since 09:30 UTC: six entries (13618–13623), one close (13618,
+ETH/BBRANGE/1m, canonical STOP LOSS, -0.134730 USDC, FT COMPLETE).
+TREND partition boundary remains 2026-09-10T14:43:30.665096808Z. Preserve
+actual PnL and the historical affected classification of 13564/13579.
+
+Morning valuation reconciliation, using existing LOCAL artifacts only:
+the original 09:30 report used last recorded runtime L3 events, each sourced
+at 09:28:59.999 UTC: 13596=-0.1114059559025, 13606=-0.1073534911150,
+13617=-0.09345003360 USDC; sum=-0.3122094806175 USDC.
+Evidence: local session artifact
+/home/jacek/.codex/sessions/2026/09/13/rollout-2026-09-13T09-38-52-01a09a22-4468-7610-a602-a56e1b0b3a2c.jsonl,
+recorded SQL/result [233]. The evening recalculation used the later final
+09:29:59.999 close (BTC 76650; SOL 99.67), giving -0.3365884525245 USDC.
+These are different mark bases, not a corrected historical runtime reading.
+Keep both; do not silently replace the original -0.312209 report.
+Evening open NET uses 20:14:59.999 final closes. Relative to the original
+runtime-mark report its change is +0.070720 USDC; relative to the comparable
+final-close recalculation it is +0.095099 USDC. Neither is realized profit.
+
+Cross-environment mark discrepancy remains UNRESOLVED: for 20:14:59.999 UTC
+LOCAL reported BTC 77257.7 while the VPS report gave 77286.7. Do not overwrite,
+pool, or assume identical price paths; resolving provenance is a separate
+read-only comparison, not performed here.
+
+### LOCAL evidence-pipeline repair — deployed and pushed
+
+- Shadow: c20c30ae568ab967515458779280bf6d1d143cd5.
+- Outbox / automation runtime: 7dbb1590e7fbaed29935b0d6bcce09bfa9b26d38.
+- Shadow acceptance: five complete cycles, no new cycle errors; both lookup
+  indexes VALID/READY. Eight historical PRE snapshot errors remain explicit.
+- Outbox acceptance 19:25:32–19:31:32 UTC: six batches / 600 processed,
+  145 arrivals; PENDING 4780→4325; RETRY=0. Single independent bounded
+  scheduler, legacy long-loop invocation disabled; no bot-runner change.
+- Later health read 20:52:56.770817 UTC: PENDING 4325→11 since 19:31:32,
+  arrivals 1912, processed 6226; oldest pending approximately 21 seconds.
+  This is observed throughput, not the conditional 80/min calculation.
+- Shadow at 20:52:52 UTC: 864 eligible = 856 snapshots/reconstructions +
+  8 PRE errors; missing decision/projection/snapshot=0/0/0, ambiguous=0;
+  87 complete cycles since repair, no new cycle errors.
+- Bot runtime remains d0680e214706d76fe422e83e7fe493152bd49b86;
+  32/32 fresh within 420 seconds, DB blocked sessions=0 at the later read.
+  Four transient strategy loop timeouts occurred around 12:26 UTC (SSL/read);
+  work recovered. Automation reported no errors since replacement.
+
+The known expensive-query and schedule defects are repaired, not OPEN
+implementation tasks. Continue monitoring, without claiming permanent queue
+emptiness or treating collector repair as the cause of outbox recovery.
+Late materialization and reconstructed snapshots do not prove historical
+pre-entry availability. CONTEXT_SOURCE_AVAILABILITY is narrower than full
+input proof; the full pre-entry mechanism remains unimplemented.
+
+### VPS operator reports — NOT independently read by LOCAL
+
+PAPER, financial cutoff 20:15 UTC: 32 entries, 16 CLOSED / 16 OPEN,
+5 reentries; realized +1.668453226192 USDC; cash 857.174538697225;
+open liquidation NET -2.943530460700; equity after exit fee
+998.724922765492 USDC. Do not pool with LOCAL V4.
+
+LIVE: ACTIVE / RECOVERY_CASH / FIXED_USDC_9_V1, 9 USDC plus fee;
+restart policy unless-stopped. Runtime fingerprint:
+e6322b8e6bfaa73106ca353557d2c4719630e40549a62e10c856ac5f70e30d6c.
+Image: sha256:62a76b5cc0c84fbff26457b76a6cf4eade0345ee5587738b90616e0bf1acbd86.
+Operator reports corrected candle-fetch time context / waiting for confirm=1,
+adoption revision provenance and structural submission-result handling.
+Two historical UNKNOWN executions were audit-resolved as REJECTED /
+LOCAL_NOT_SENT; reserves released without changes to cash, fills or PnL,
+and without retrying old signals. This does not authorize treating an
+arbitrary exception or NOT_FOUND as proof of non-submission.
+
+New +100 USDC owner top-up: flow 1799, APPLIED 20:49:28.015385 UTC,
+one cash event FLOW:1799. LIVE cash 246.4644054490205, baseline
+146.4644054490205 USDC; earlier 100 remains IN_BASELINE.
+Owner flows are not trading PnL. This top-up is after the 20:15 financial cutoff.
+
+LIVE observation 20:49:36–20:55:36 UTC: no new intents/orders/fills,
+reserves or uncertain executions; finances reconciled. Evaluations 32/32
+since resumption, but 31/32 inside the six-minute window. No submission,
+STALE/FUTURE or 429 errors in the reported period. Natural LIVE execution
+after repair and natural target exit remain PENDING_NATURAL_EVENT; do not
+declare those E2E paths proven by an idle observation.
+
+PAPER/LIVE news: BTC NO_VETO; ETH/SOL/BNB UNKNOWN /
+NO_RELEVANT_COVERAGE, not evidence of benign news.
+VPS-only artifacts reported by operator:
+ /opt/waltrade-recovery-live-submission-20260913/
+ and /opt/recovery-live-submission-deploy-20260913/REPORT.md.
+These paths are unavailable locally and were NOT read. Earlier VPS concurrency
+incidents remain historical; the supplied report is not a blanket proof that
+every earlier audit finding has been repaired.
+
+### Standing checkpoint / next work
+
+Checkpoint three environments separately: LOCAL PAPER, VPS PAPER, VPS LIVE.
+Entry comparison includes all executed OPEN/CLOSED entries in a common
+window, execution time/price, quantity/notional/fees and signal identity.
+Use final 1m close no later than execution+15/60/240 minutes, less than
+60 seconds old; report N, MISSING and NOT_MATURE. Follow the price path
+after actual exit only as entry diagnostics. Analyze exit policies separately;
+unsent intents are not executed entries.
+
+Latest common entry window: [2026-09-12T20:15:00Z,2026-09-13T20:15:00Z):
+LOCAL=7, VPS PAPER=1, VPS LIVE=0. No superiority or profitability claim.
+Keep LOCAL V4 unchanged toward 33 ALLOW / 53 BLOCK mature independent
+same-thesis outcomes. Only after a larger sample consider a separately
+authorized analysis of stops, NET targets, costs, chronology and capital
+occupancy. No new threshold, analysis, treatment or rollout is authorized by
+this documentation update. LinkedIn/X preparation is a separate task; no publication.
 
 ## Historical deployment checkpoint — TREND finality / Shadow proof scope
 
@@ -148,7 +254,7 @@ manually populated and L3/runtime/active DB/LIVE/VPS were unchanged.
 
 CURRENT_EXECUTION_SCOPE=INDEPENDENT_PAPER_EXPERIMENT_OBSERVATION
 
-CURRENT_P0=SYSTEM_CONFORMANCE_REPAIR_REQUIRED
+HISTORICAL_CONFORMANCE_P0=SYSTEM_CONFORMANCE_REPAIR_REQUIRED
 
 This document is current truth only. Git history retains prior states.
 
@@ -175,12 +281,12 @@ This document is current truth only. Git history retains prior states.
 | Exit Giveback | Economic Floor V2 cadence experiment COMPLETE; exact-zero boundary remains the primary issue |
 | LOCAL PAPER | L3 V4 active; latest economic checkpoint above; repaired TREND runtime `d0680e214706d76fe422e83e7fe493152bd49b86`; historical deployment health proof above is not a new health check |
 | Harness Safety | Correct real global DB risk abort; blocked-session diagnostic capture COMPLETE; 40 tests passed |
-| VPS PAPER | Independent Recovery V1; operator-reported checkpoint above, not independently verified; concurrency repair OPEN |
+| VPS PAPER | Independent Recovery V1; 2026-09-13 operator-reported checkpoint above; no independent LOCAL verification |
 | Full Opportunity throughput | VPS functional correctness, forward canonical freshness, and service-rate headroom PASS |
 | Read-only discovery conveyor | Experiments #3–#7 COMPLETE; no new treatment authority |
 | LOCAL LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
 | Equity UI canonical authority | Minimum LOCAL conformance truth now exposes process/data/semantic/authority health; broader cross-environment acceptance remains open |
-| VPS LIVE | Capital Preservation Mode `ACTIVE`; new entries `NO`; exit/close `YES` |
+| VPS LIVE | Owner-approved Recovery ACTIVE after manual resumption 2026-09-13; operator-reported; natural post-fix execution and target exit PENDING |
 | Economic Proof | Stable positive net expectancy after costs is NOT PROVEN |
 | Capital Allocation | NOT NOW; requires economic and Risk Budget policy proof |
 | Public Communication | `ACTIVE`; LinkedIn and X active; governance documented |
@@ -208,7 +314,8 @@ remain authority-OFF and are not promoted to PASS.
 
 `H12=PRESERVED_UNINSPECTED_BUT_NOT_CURRENT_WORK`
 
-`LIVE_ENTRY_AUTHORITY=OFF_LOCAL_AND_VPS`
+`LOCAL_LIVE=NO_NEW_TRADING_CHANGES`; `VPS_LIVE=OWNER_APPROVED_RECOVERY_ACTIVE_OPERATOR_REPORTED_2026_09_13`.
+Former OFF_LOCAL_AND_VPS was the historical conformance-repair restriction.
 
 `NEXT_IMPLEMENTATION_UNIT=NONE_L3_V4_UNCHANGED_COLLECTION`
 
@@ -266,7 +373,7 @@ count, fees, gross/net after costs, expectancy, cost cover, rejected capable
 entries, drawdown, capital utilization and CASH baseline. No economic verdict
 is recorded yet.
 
-## Long Horizon L3 V3 direct LOCAL PAPER experiment
+## Historical Long Horizon L3 V3 direct LOCAL PAPER experiment — 2026-09-08
 
 `LONG_HORIZON_L3_V1_CONTRACT=TERMINATED`
 
@@ -610,7 +717,11 @@ Current experiment roadmap:
 - `LOCAL_OWNERSHIP_CANDIDATE=FROZEN` (`RSI_AFTER_BBRANGE_OWNERSHIP_V1`).
 - `LIVE_ELIGIBILITY=NO`.
 
-## Capital preservation
+## Historical capital preservation — before 2026-09-13 Recovery approval
+
+The VPS OFF restriction and 28-slot denominator below are retained as history,
+not current Recovery authority. See the dated operator report above. No new
+LOCAL LIVE trading changes are authorized or independently verified here.
 
 - `LOCAL_LIVE_CAPITAL_PRESERVATION_MODE=ACTIVE`.
 - `VPS_LIVE_CAPITAL_PRESERVATION_MODE=ACTIVE`.
@@ -655,7 +766,7 @@ must reach that cutoff with no eligible gaps. Worker health, heartbeat
 freshness, zero blockers, and isolated successful inserts are insufficient by
 themselves.
 
-## Current economic baseline
+## Historical economic baseline — pre-current independent experiments
 
 - Fee V2: 0.35% per side.
 - Full roundtrip break-even movement: approximately 0.7024586051%.
@@ -930,10 +1041,12 @@ control.
   second LOCAL economic treatment is authorized. VPS Recovery V1 is independent.
 - After a larger sample, separately analyze stop and NET target levels, costs,
   event ordering and capital occupancy. No new threshold or analysis now.
-- Keep Shadow query-cycle errors as an OPEN diagnostic item. VPS TREND lock
-  concurrency repair is separate and remains OPEN per operator report.
+- Monitor the deployed Shadow/outbox fixes; known PRE errors remain historical.
+  Track VPS operator evidence separately, especially pending natural LIVE
+  execution/target proof; do not assume all old concurrency findings are closed.
 - Prepare LinkedIn/X communication in a separate task; no publication here.
-- `LIVE_ELIGIBILITY=NO`; LIVE remains last with explicit Product Owner approval.
+- LOCAL research grants no new LIVE eligibility. VPS LIVE Recovery has the
+  separately reported 2026-09-13 owner approval; no further authority here.
 - Economic Floor V1/V2 is not qualified for VPS or LIVE; LOCAL PAPER V2 exit
   authority is OFF.
 

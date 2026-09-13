@@ -4,6 +4,45 @@ This is the single living evidence tracker for the STOP LOSING phase. Git histor
 
 Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_COMPLETE`, `REJECTED`.
 
+## Current operational evidence — 2026-09-13
+
+Current numerical checkpoints and provenance are maintained in Daily/Roadmap,
+not inferred from the historical forensic checklist below.
+
+- [x] LOCAL Shadow c20c30ae568ab967515458779280bf6d1d143cd5 deployed/pushed;
+  two valid/ready indexes, five acceptance cycles without new cycle errors.
+- [x] LOCAL outbox 7dbb1590e7fbaed29935b0d6bcce09bfa9b26d38 deployed/pushed;
+  bounded independent consumer; observed PENDING 4325→11 after acceptance,
+  arrivals 1912 / processed 6226 at approximately 20:52 UTC.
+- [x] Shadow full counts: 864 eligible = 856 reconstructions + 8 historical
+  PRE errors; missing decision/projection/snapshot 0/0/0; 87 complete cycles.
+- [ ] Full pre-entry availability proof — mechanism absent; late materialization
+  and context-only availability do not qualify it.
+- [ ] LOCAL L3 V4 — IN_PROGRESS: 66 positions, 58 CLOSED/8 OPEN at 20:15 UTC;
+  completed positions ALLOW 14/33, BLOCK 44/53, independent episode gate still
+  required. Realized -5.683550, open NET -0.241490, combined -5.925039 USDC.
+- [x] Morning mark discrepancy documented: original runtime 09:28:59.999
+  -0.312209 versus recalculated close 09:29:59.999 -0.336588; neither overwritten.
+- [ ] Cross-source BTC mark discrepancy at 20:14:59.999 — LOCAL 77257.7 versus
+  operator-reported VPS 77286.7; comparison limitation, not repaired data.
+- [x] VPS PAPER Recovery independent; operator reports 32 entries / 16 CLOSED /
+  16 OPEN / 5 reentries, realized +1.668453226192 USDC; no LOCAL verification.
+- [x] VPS LIVE owner-approved Recovery ACTIVE confirmed 20:15:37.861489 UTC;
+  candle finality/submission/adoption repairs and two UNKNOWN resolutions are
+  operator-reported, not independently verified by LOCAL.
+- [x] Operator-reported LIVE +100 USDC FLOW:1799 at 20:49:28.015385 UTC is
+  owner capital, not trading PnL; prior 100 remains IN_BASELINE.
+- [ ] Natural post-fix LIVE execution and natural target exit — PENDING.
+- [x] Only LOCAL authors/commits/pushes; VPS no Git operations. No synchronization
+  or pooling of LOCAL L3 V4, VPS PAPER Recovery and VPS LIVE evidence.
+- [ ] Standing checkpoint: three environments, common execution-based entry
+  window, 15/60/240-minute gross price diagnostics with N/MISSING/NOT_MATURE;
+  exits separate. Latest counts 7/1/0 do not prove superiority or profitability.
+
+The August ownership/floor milestones and their then-current restrictions below
+are historical evidence, not active work or current LIVE authority. Permanent
+methodology requirements remain requirements; past PASS is not fresh health.
+
 ## A. Foundation and safety
 
 - [x] `PAPER_ENTRY_ATOMICITY=PASS_2_2` — COMPLETE
@@ -17,11 +56,13 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] Learning auto-apply OFF — COMPLETE
 - [x] Explicit environments: `PAPER=.env.okx.paper`, `LIVE=.env.okx.live` — COMPLETE
 - [x] Deployment parity invariant: Git + contract + direct schema dependency + runtime semantics — COMPLETE
-- [x] LOCAL/VPS authority model — COMPLETE: shared promoted contract; isolated runtime/data histories
+- [x] Historical shared-contract authority model — isolated runtime/data histories;
+  current independent experiments follow the dated owner exception above
 - [x] LOCAL-only implementation, commit, push, and canonical-doc promotion authority — COMPLETE
-- [x] VPS pull-only authority — COMPLETE: fetch, `pull --ff-only`, deploy, independently validate
+- [x] Historical VPS pull-only promotion path — superseded for current experiments:
+  VPS performs no Git pull/commit/push
 - [x] VPS-only shared-code fixes, schema magic, pushes, and frozen-semantic changes — FORBIDDEN
-- [x] Promotion path `LOCAL → GitHub → VPS pull --ff-only → independent validation` — COMPLETE
+- [x] Historical shared promotion path — not an instruction to synchronize current experiments
 - [ ] `GIT_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
 - [ ] `CONTRACT_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
 - [ ] `DIRECT_SCHEMA_DEPENDENCY_PARITY` — REQUIRED FOR EACH FUTURE RELEVANT SHARED ROLLOUT
@@ -61,7 +102,8 @@ Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_CO
 - [x] `EQUITY_UI_DIRECT_SCHEMA_DEPENDENCY_PARITY=PASS` — COMPLETE
 - [x] `EQUITY_UI_RUNTIME_SEMANTIC_PARITY=PASS` — COMPLETE
 - [x] LOCAL LIVE Capital Preservation Mode — ACTIVE: new entries NO; exit/close YES
-- [x] VPS LIVE Capital Preservation Mode — ACTIVE: new entries NO; exit/close YES
+- [x] Historical VPS LIVE Capital Preservation restriction — superseded by
+  separately owner-approved Recovery ACTIVE on 2026-09-13; see current evidence
 - [x] VPS PAPER direct schema dependency repair — COMPLETE
 - [x] Full Opportunity projection lookup RCA — COMPLETE: expensive lookups plus FIFO single consumer
 - [x] LOCAL Full Opportunity throughput optimization — PASS
@@ -121,7 +163,7 @@ Ordered economic work after ownership reaches its decision gate:
 new data, `ECONOMIC_NO_TRADE / NEW_RISK_VS_KEEP`, `SAME_THESIS_CONTROL`,
 `FEE_VELOCITY`, then `1m/5m_DUPLICATION`.
 
-Latest VPS PAPER baseline:
+Historical pre-Recovery VPS PAPER forensic baseline:
 
 | Metric | Value |
 | --- | ---: |
@@ -166,7 +208,7 @@ Supporting classifications:
 - `REGIME_TRANSITION_NET=-45.423024 USDC`
 - `OWNERSHIP_FAILURE_IS_TRANSITION_DRIVEN=NO`
 
-## D. Current ownership causal experiment
+## D. Historical ownership causal experiment — August checkpoint
 
 - [x] RSI-after-BBRANGE LOCAL PAPER causal experiment — TERMINAL / EVIDENCE PRESERVED
 - [x] Previous valid sequence exposure — COMPLETE: two CONTROL runs and one TREATMENT run
@@ -245,7 +287,7 @@ change or second causal treatment is authorized.
 - [ ] Economic Floor — `FIRST_POST_OWNERSHIP_RESEARCH_PRIORITY`
 - [ ] New treatment — NOT AUTHORIZED
 
-## F. Exit and profit protection
+## F. Historical exit and profit-protection research stage
 
 - [x] Immediate tiny-positive exit — REJECTED
 - [x] `112/115` tiny-positive-to-loss outcomes via `PROFIT_LOCK_TRAIL_DROP` — COMPLETE
@@ -273,13 +315,14 @@ and no exit treatment starts before the current ownership decision gate.
 - [ ] Limited Learning authority — NOT COMPLETE
 - [ ] Read-only risk-normalization evidence — FUTURE: volatility-normalized risk, risk contribution, correlation concentration, MAE/exposure normalization
 - [x] `RISK_NORMALIZATION_RESEARCH` is separate from `DYNAMIC_CAPITAL_ALLOCATION_AUTHORITY` — COMPLETE
-- [x] Fixed 20 USDC sizing remains appropriate during current causal decision-quality research — COMPLETE
+- [x] Historical fixed 20 USDC discovery sizing — not current L3/Recovery sizing;
+  current contracts remain fixed 9 USDC, with no dynamic sizing authority
 - [x] BTC/ETH/SOL/BNB are a correlated crypto complex, not institutional-quality diversification — STRATEGIC CONSTRAINT
 - [ ] Broader markets / asset classes / independent return drivers — LONG-TERM ONLY; must not delay OKX-core proof
 
 No sizing or capital-allocation change is authorized during STOP LOSING causal work.
 
-## H. Decision gate
+## H. Historical ownership decision gate — not the current experiment
 
 1. Preserve the frozen RSI-after-BBRANGE ownership candidate and semantics.
 2. `CURRENT_STAGE=VPS_PAPER_INDEPENDENT_REPLICATION_IN_PROGRESS`.
