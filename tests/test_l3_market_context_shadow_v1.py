@@ -120,7 +120,7 @@ def test_collection_restart_no_duplicate_and_outcomes_separate(tmp_path):
     o["candle_open_time"] = "2026-09-09T10:14:00Z"
     item = {"opportunity":o,"gate":gate(),"decision":{"event_id":"test"}}
     candles = [dict(c,symbol="BTCUSDC") for c in bars()]
-    def read(sql):
+    def read(sql, **kwargs):
         if "SELECT jsonb_build_object('opportunity'" in sql:
             return [item]
         return []
@@ -166,7 +166,7 @@ def test_bad_record_is_explicit_other_records_continue_and_retry_resolves(tmp_pa
                 candle_open_time="2026-09-09T10:14:00Z")
     bad = dict(good,observation_key="bad",evaluation_started_at="INVALID-TIMESTAMP")
     rows = [{"opportunity":o,"gate":gate(),"decision":{"event_id":o["observation_key"]}} for o in (bad,good)]
-    def read(sql):
+    def read(sql, **kwargs):
         return rows if "paper_opportunity_observation_v1 o JOIN" in sql and "SELECT jsonb_build_object('opportunity'" in sql else []
     contract = {"start_utc":"2026-09-09T10:00:00Z","fingerprint":"test"}
     with patch.object(s,"query",side_effect=read),patch.object(s,"check_contract"), \

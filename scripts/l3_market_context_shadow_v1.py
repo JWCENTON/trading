@@ -88,7 +88,21 @@ def literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def query(sql):
+class SourceQueryError(RuntimeError):
+    pass
+
+
+def safe_sql_cause(stderr):
+    # Allowlist known server causes: never print DETAIL, SQL, DSN or parameters.
+    for cause in ("canceling statement due to statement timeout",
+                  "canceling statement due to lock timeout", "deadlock detected",
+                  "permission denied", "connection refused", "could not connect"):
+        if cause in str(stderr).lower():
+            return cause
+    return "UNCLASSIFIED_SQL_ERROR_REDACTED"
+
+
+def query(sql, *, stage="source", query_id=None):
     # All call sites supply fixed SELECTs; never accept SQL from the CLI.
     if not sql.lstrip().upper().startswith("SELECT ") or ";" in sql:
         raise ValueError("SELECT_ONLY")
@@ -98,9 +112,82 @@ def query(sql):
            'PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=10000 '
            '-c lock_timeout=1000 -c application_name=l3_market_context_shadow_v1" '
            'psql -X -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d trading_paper']
-    result = subprocess.run(cmd, cwd=ROOT, input="BEGIN READ ONLY;\n" + sql + ";\nROLLBACK;\n",
-                            text=True, capture_output=True, timeout=25, check=True)
+    query_id = query_id or hashlib.sha256(sql.encode()).hexdigest()[:16]
+    try:
+        result = subprocess.run(cmd, cwd=ROOT, input="BEGIN READ ONLY;\n" + sql + ";\nROLLBACK;\n",
+                                text=True, capture_output=True, timeout=25, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SourceQueryError(encode({"stage":stage,"query_id":query_id,
+            "returncode":exc.returncode,"sql_cause":safe_sql_cause(exc.stderr)})) from None
+    except subprocess.TimeoutExpired:
+        raise SourceQueryError(encode({"stage":stage,"query_id":query_id,
+            "sql_cause":"TRANSPORT_TIMEOUT"})) from None
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+
+
+def linkage_counts(db, start, cutoff, *, read=None, batch_size=256):
+    """Complete scan of the original gate scope, bounded per request.
+
+    No persistent high-water skip: late decisions/projections are revisited.
+    Totals are published only after every page succeeds. Source links can
+    arrive during the scan; report the observation interval, not atomicity.
+    Deployment prerequisite: the two reviewed lookup indexes (not installed here).
+    """
+    read = read or query
+    counts = dict(gates_total=0, missing_decision=0, missing_projection=0,
+                  missing_snapshot=0, snapshot_present=0, snapshot_explicit_error=0,
+                  projected_out_of_scope=0, ambiguous_linkage=0)
+    cursor_time, cursor_id = start, 0
+    begun = now()
+    while True:
+        gates = read("SELECT to_jsonb(g) FROM regime_gate_events g WHERE "
+            "g.decision='ENTRY_CHECK' AND g.why IN ('POLICY_ALLOW','POLICY_WOULD_BLOCK') "
+            f"AND g.created_at >= {literal(start)}::timestamptz "
+            f"AND g.created_at <= {literal(cutoff)}::timestamptz "
+            f"AND (g.created_at,g.id)>({literal(cursor_time)}::timestamptz,{cursor_id}) "
+            f"ORDER BY g.created_at,g.id LIMIT {int(batch_size)}",
+            stage="linkage", query_id="linkage_gates_page_v1")
+        if not gates:
+            break
+        ids = ','.join(str(int(g['id'])) for g in gates)
+        decisions = read("SELECT jsonb_build_object('event_id',event_id,'gate_id',regime_gate_event_id) "
+            f"FROM causal_decision_observation_v1 WHERE regime_gate_event_id IN ({ids})",
+            stage="linkage", query_id="linkage_decisions_batch_v1")
+        observations = []
+        # Bound the second lookup even if one gate has multiple decisions.
+        for offset in range(0, len(decisions), batch_size):
+            event_ids = ','.join(literal(d['event_id'])+'::uuid' for d in decisions[offset:offset+batch_size])
+            observations.extend(read("SELECT to_jsonb(o) FROM paper_opportunity_observation_v1 o "
+                f"WHERE causal_event_id IN ({event_ids})", stage="linkage",
+                query_id="linkage_projections_batch_v1"))
+        by_event = {o['causal_event_id']:o for o in observations}
+        for g in gates:
+            counts['gates_total'] += 1
+            ds = [d for d in decisions if d['gate_id']==g['id']]
+            if not ds:
+                counts['missing_decision'] += 1
+                continue
+            if len(ds)!=1:
+                counts['ambiguous_linkage'] += 1
+            obs = [by_event[d['event_id']] for d in ds if d['event_id'] in by_event]
+            if not obs:
+                counts['missing_projection'] += 1
+                continue
+            for o in obs:
+                if not eligible(o,g) or dt(o['evaluation_started_at'])<dt(start):
+                    counts['projected_out_of_scope'] += 1
+                    continue
+                identity = o['observation_key']
+                if db.execute('SELECT 1 FROM snapshots WHERE identity=?',(identity,)).fetchone():
+                    counts['snapshot_present'] += 1
+                elif db.execute("SELECT 1 FROM processing_errors WHERE identity=? AND stage='snapshot' AND resolved_at IS NULL",(identity,)).fetchone():
+                    counts['snapshot_explicit_error'] += 1
+                else:
+                    counts['missing_snapshot'] += 1
+        cursor_time, cursor_id = gates[-1]['created_at'], int(gates[-1]['id'])
+    return {**counts, 'pending_source_gate_records':counts['missing_decision']+counts['missing_projection'],
+            'linkage_scan_complete':True,'linkage_gate_cutoff':cutoff,
+            'linkage_observed_from':begun,'linkage_observed_until':now()}
 
 
 def eligible(o, gate):
@@ -388,17 +475,12 @@ def collect(db, contract):
             db.execute("RELEASE snapshot_record")
             record_error(db,identity,"snapshot",exc,item)
     update_outcomes(db, now())
-    pending = query("SELECT jsonb_build_object('pending',count(*)) FROM regime_gate_events g "
-                    "WHERE g.decision='ENTRY_CHECK' AND g.why IN ('POLICY_ALLOW','POLICY_WOULD_BLOCK') "
-                    f"AND g.created_at >= {literal(contract['start_utc'])}::timestamptz "
-                    "AND NOT EXISTS (SELECT 1 FROM causal_decision_observation_v1 d "
-                    "JOIN paper_opportunity_observation_v1 o ON o.causal_event_id=d.event_id "
-                    "WHERE d.regime_gate_event_id=g.id)")
+    pending = linkage_counts(db, contract['start_utc'], observed)
     error_count = db.execute("SELECT count(*) FROM processing_errors WHERE resolved_at IS NULL AND identity<>'__cycle__'").fetchone()[0]
     resolve_error(db,"__cycle__","cycle")
     status = {"observed_at": now(), "cycle_started_at": observed, "eligible_seen": len(set(identities)), "added": added,
               "snapshots": db.execute("SELECT count(*) FROM snapshots").fetchone()[0],
-              "explicit_errors":error_count,"pending_source_gate_records":pending[0]["pending"] if pending else 0,
+              "explicit_errors":error_count, **pending,
               "active_db_writes": 0, "collector_status": "DEGRADED_EXPLICIT_ERRORS" if error_count else "ACTIVE"}
     db.execute("INSERT INTO polls VALUES(?,?)", (status["observed_at"], encode(status)))
     db.commit()
