@@ -45,11 +45,20 @@ or research execution is authorized by listing an idea.
 
 | IDEA_ID | Idea / economic question | Existing-mechanism and prior-method check required | Evidence needed before proposing a test |
 | --- | --- | --- | --- |
-| DYNAMIC_ENTRY_NOTIONAL | Dynamic entry notional versus current FIXED 9: capital efficiency under risk constraints | Existing sizing, exchange-minimum rounding, sleeves/cash guards; established position-sizing methods | Fee-aware outcomes normalized per allocated USDC, capacity, drawdown and liquidity; no size selected |
+| DYNAMIC_ENTRY_NOTIONAL | Owner clarification 2026-09-14: future PAPER test of dynamic TREND entry notional versus FIXED 9; proposed minimum 9 USDC plus fee is a hypothesis, not an active rule | First inspect existing sizing, exchange-minimum rounding, reconciled cash/reserves, portfolio/correlation risk and prior methods; only then a separate experiment plan | Compare NET, drawdown, capital-hours and missed opportunities. Larger sizing would require signal quality, verified news/regime context and portfolio capacity; insufficient cash or failed gates may still mean no entry. No maximum, multiplier or algorithm selected |
 | RECOVERY_ENTRY_SELECTION | Better selection of Recovery entries without conflating exit policy and entry quality | Existing regime/context/admission evidence and prior precision-first selection research | All actual OPEN/CLOSED entries, causal input availability, common 15/60/240-minute outcomes and false rejection of winners |
-| NEWS_UNKNOWN_COVERAGE | Effect of UNKNOWN news on entry availability and quality | Existing news TTL, coverage labels and veto semantics; established missing-data/coverage analysis | Source/published/observed timestamps, explicit no-coverage versus no-veto, decisions and mature outcomes; UNKNOWN is not benign news |
+| NEWS_UNKNOWN_COVERAGE | Owner clarification 2026-09-14: candidate future VPS PAPER Recovery test of relevant macro/regulatory news, including Fed/CPI and CLARITY | First inspect existing ingestion, attribution, TTL, coverage/veto semantics and prior methods. VPS operator reports supplied by the owner say some material was fetched but assigned to no coin; not independently verified by LOCAL | Assess coverage, correctness, availability time, decision impact, avoided losses and missed good opportunities. Preserve source/published/observed provenance; UNKNOWN is not benign news. Binance may be comparative material, not source of truth or an automatic trading instruction |
 | POSITION_AGE_CAPITAL_DEMAND | Observe position age, maximum exposure and cash demand | Existing portfolio/owner-flow ledgers, age and capital-utilization reporting; established liquidity/occupancy analysis | Holding-time distribution, simultaneous exposure, minimum free cash and rejected opportunities; owner flows separate from trading PnL |
 | UI_WARSAW_TIME | Display UI time in Europe/Warsaw while retaining UTC in stored data/calculations | Existing frontend timezone formatting and established IANA/DST handling | Timestamp provenance, UTC/PL examples including DST boundaries; presentation-only proposal, not a timestamp rewrite |
+
+The two clarified ideas remain BACKLOG / NOT_APPROVED_FOR_IMPLEMENTATION.
+Do not combine a news change and a sizing change in an initial experiment.
+Any proposed larger TREND entry must respect reconciled cash, reserves, fees,
+exchange constraints and aggregate portfolio risk, including correlation.
+A positive news item or the last winning trade alone cannot justify a larger
+position. The proposed 9 USDC minimum does not override no-entry decisions.
+LOCAL V4 and all LIVE behavior remain unchanged; these notes grant no trading
+or implementation authority in any environment.
 
 ## Governance
 
