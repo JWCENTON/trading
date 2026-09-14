@@ -38,7 +38,8 @@ STATUS=BACKLOG
 
 ## Owner-supplied ideas — 2026-09-13
 
-All five ideas below are BACKLOG / NOT_APPROVED_FOR_IMPLEMENTATION. Before
+Research ideas below remain BACKLOG / NOT_APPROVED_FOR_IMPLEMENTATION;
+UI_WARSAW_TIME has the explicitly scoped operator-reported deployment status below. Before
 designing any experiment, inspect existing WalTrade mechanisms and established
 earlier methods; reuse before build. No parameter, treatment, LIVE/PAPER change
 or research execution is authorized by listing an idea.
@@ -49,7 +50,7 @@ or research execution is authorized by listing an idea.
 | RECOVERY_ENTRY_SELECTION | Better selection of Recovery entries without conflating exit policy and entry quality | Existing regime/context/admission evidence and prior precision-first selection research | All actual OPEN/CLOSED entries, causal input availability, common 15/60/240-minute outcomes and false rejection of winners |
 | NEWS_UNKNOWN_COVERAGE | Owner clarification 2026-09-14: candidate future VPS PAPER Recovery test of relevant macro/regulatory news, including Fed/CPI and CLARITY | First inspect existing ingestion, attribution, TTL, coverage/veto semantics and prior methods. VPS operator reports supplied by the owner say some material was fetched but assigned to no coin; not independently verified by LOCAL | Assess coverage, correctness, availability time, decision impact, avoided losses and missed good opportunities. Preserve source/published/observed provenance; UNKNOWN is not benign news. Binance may be comparative material, not source of truth or an automatic trading instruction |
 | POSITION_AGE_CAPITAL_DEMAND | Observe position age, maximum exposure and cash demand | Existing portfolio/owner-flow ledgers, age and capital-utilization reporting; established liquidity/occupancy analysis | Holding-time distribution, simultaneous exposure, minimum free cash and rejected opportunities; owner flows separate from trading PnL |
-| UI_WARSAW_TIME | Display UI time in Europe/Warsaw while retaining UTC in stored data/calculations | Existing frontend timezone formatting and established IANA/DST handling | Timestamp provenance, UTC/PL examples including DST boundaries; presentation-only proposal, not a timestamp rewrite |
+| UI_WARSAW_TIME | 2026-09-14 operator-reported DEPLOYED on VPS PAPER/LIVE: Europe/Warsaw UI presentation, UTC data/calculations; LOCAL deployment NOT_ASSERTED | Existing frontend timezone formatting and IANA/DST handling; operator evidence supplied by owner, not an independent LOCAL read | Retain timestamp provenance and DST checks. Full production browser-interaction acceptance remains incomplete; no new LOCAL implementation authority |
 
 The two clarified ideas remain BACKLOG / NOT_APPROVED_FOR_IMPLEMENTATION.
 Do not combine a news change and a sizing change in an initial experiment.

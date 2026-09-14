@@ -4,10 +4,12 @@ This is the single living evidence tracker for the STOP LOSING phase. Git histor
 
 Status legend: `COMPLETE`, `IN_PROGRESS`, `EVIDENCE_NEEDS_CAUSAL_PROOF`, `NOT_COMPLETE`, `REJECTED`.
 
-## Current operational evidence — 2026-09-13
+## Current operational evidence — updated 2026-09-14
 
 Current numerical checkpoints and provenance are maintained in Daily/Roadmap,
 not inferred from the historical forensic checklist below.
+LOCAL and VPS PAPER numerical observations below retain their 2026-09-13
+source date; they are not new production readings in this documentation task.
 
 - [x] LOCAL Shadow c20c30ae568ab967515458779280bf6d1d143cd5 deployed/pushed;
   two valid/ready indexes, five acceptance cycles without new cycle errors.
@@ -27,12 +29,20 @@ not inferred from the historical forensic checklist below.
   operator-reported VPS 77286.7; comparison limitation, not repaired data.
 - [x] VPS PAPER Recovery independent; operator reports 32 entries / 16 CLOSED /
   16 OPEN / 5 reentries, realized +1.668453226192 USDC; no LOCAL verification.
-- [x] VPS LIVE owner-approved Recovery ACTIVE confirmed 20:15:37.861489 UTC;
-  candle finality/submission/adoption repairs and two UNKNOWN resolutions are
-  operator-reported, not independently verified by LOCAL.
-- [x] Operator-reported LIVE +100 USDC FLOW:1799 at 20:49:28.015385 UTC is
-  owner capital, not trading PnL; prior 100 remains IN_BASELINE.
-- [ ] Natural post-fix LIVE execution and natural target exit — PENDING.
+- [x] VPS LIVE Recovery ACTIVE — operator-reported 2026-09-14 20:33:40 UTC;
+  RECOVERY_CASH / FIXED 9 plus fee. No independent LOCAL verification or code parity claim.
+- [x] Natural VPS LIVE ENTRY and EXIT — PROVEN in the operator-reported scope.
+- [x] VPS LIVE finality/selectors/checkpoints and submission — deployed, reported acceptance complete.
+- [x] VPS LIVE lifecycle FT6 repaired; closed IDs 6/11/12/17 Financial Truth COMPLETE.
+- [x] VPS dashboard, notional/percentage correction and pagination — deployed per operator.
+- [x] VPS equity persistence — deployed; history accumulating. Panel-closed writing has controlled test proof.
+- [ ] Full production browser-interaction acceptance and complete equity history — not complete.
+- [ ] Earlier network root causes — unresolved; do not infer closure from natural trades.
+- [ ] Full-precision cash-NET/FT-NET/dust bridge unavailable in supplied final summary;
+  preserve distinct reported measures, not an invented reconciliation (see Daily).
+- [x] Owner flows remain capital, not trading PnL. Historical FLOW:1799 on
+  2026-09-13 is not a complete current owner-capital statement.
+- [ ] Platform-wide completion / economic effectiveness — NOT PROVEN by four wins.
 - [x] Only LOCAL authors/commits/pushes; VPS no Git operations. No synchronization
   or pooling of LOCAL L3 V4, VPS PAPER Recovery and VPS LIVE evidence.
 - [ ] Standing checkpoint: three environments, common execution-based entry
