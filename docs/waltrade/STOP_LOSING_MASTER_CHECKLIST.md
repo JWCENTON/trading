@@ -38,8 +38,12 @@ source date; they are not new production readings in this documentation task.
 - [x] VPS equity persistence — deployed; history accumulating. Panel-closed writing has controlled test proof.
 - [ ] Full production browser-interaction acceptance and complete equity history — not complete.
 - [ ] Earlier network root causes — unresolved; do not infer closure from natural trades.
-- [ ] Full-precision cash-NET/FT-NET/dust bridge unavailable in supplied final summary;
-  preserve distinct reported measures, not an invented reconciliation (see Daily).
+- [x] FT6 cash-NET/FT-NET/dust reconciliation — operator-reported VPS acceptance
+  2026-09-14 20:29:53 UTC: cash NET 0.10063005402 USDC + unsold-dust cost
+  0.00024000105970898143808144496 USDC = FT NET
+  0.10087005507970898143808144496 USDC. No additional cash or financial-data
+  mutation; BTC entry fee reduced inventory without a second USDC deduction.
+  Full component values in Daily/Roadmap; no independent LOCAL verification.
 - [x] Owner flows remain capital, not trading PnL. Historical FLOW:1799 on
   2026-09-13 is not a complete current owner-capital statement.
 - [ ] Platform-wide completion / economic effectiveness — NOT PROVEN by four wins.

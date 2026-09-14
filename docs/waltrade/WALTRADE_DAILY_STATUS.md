@@ -142,10 +142,28 @@ is the closed-lifecycle result, and liquidation equity includes marked inventory
 Owner flows are capital, never trading PnL. The displayed FT NET + open NET
 is +0.461897 USDC, whereas the separately reported capital-adjusted result
 is +0.457542 USDC (displayed-value difference 0.004355 USDC).
-The supplied final summary does not include the full-precision cash-NET/FT-NET/
-dust bridge. Preserve the reported figures; exact component reconciliation
-is NOT_REPRODUCIBLE_FROM_THIS_SUMMARY, not an inferred dust amount or an invented
-fee adjustment. Do not derive exact owner contributions from rounded equity.
+FT6 reconciliation — operator-reported VPS evidence, acceptance
+2026-09-14T20:29:53Z, supplied by the owner; not an independent LOCAL read:
+
+| FT6 component | Value |
+| --- | --- |
+| Entry cost | 8.998337984 USDC |
+| Gross sale proceeds | 9.130926280 USDC |
+| Exit fee | 0.03195824198 USDC |
+| Net cash proceeds | 9.09896803802 USDC |
+| Cash NET | 0.10063005402 USDC |
+| Cost allocated to unsold dust | 0.00024000105970898143808144496 USDC |
+| Canonical FT NET | 0.10087005507970898143808144496 USDC |
+| Remaining dust | 0.00000000309 BTC |
+| Entry fee | 0.00000040691 BTC; reduced inventory, not deducted again from USDC |
+
+Net cash proceeds = gross sale proceeds - exit fee.
+Cash NET = net cash proceeds - entry cost.
+FT NET = cash NET + cost allocated to unsold dust.
+The FT/cash difference is not additional cash. VPS confirmed reconciliation
+without changing financial data. This position-specific reconciliation must not
+be equated with the separate aggregate displayed-value difference above.
+Do not derive exact owner contributions from rounded equity.
 
 Remaining acceptance limits: equity history is incomplete and accumulating;
 writing equity with the panel closed has controlled/test proof, not full
